@@ -18,30 +18,42 @@ GITHUB_RETRO_OPS_SH_LOADED=1
 
 # --- URL handling ---
 
-forge_validate_originating_url() {
+_forge_validate_originating_url() {
   if [[ ! "${ORIGINATING_URL}" =~ ^https://github\.com/[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+/(issues|pull)/[0-9]+$ ]]; then
     echo "ERROR: ORIGINATING_URL does not match expected pattern: $(_gha_sanitize "${ORIGINATING_URL}")" >&2
     return 1
   fi
 }
+forge_validate_originating_url() {
+  _forge_validate_originating_url
+}
 
-forge_parse_originating_url() {
+_forge_parse_originating_url() {
   # shellcheck disable=SC2034 # ORIGINATING_REPO consumed by callers after function returns
   ORIGINATING_REPO=$(echo "${ORIGINATING_URL}" | sed -E 's#https://github.com/##; s#/(issues|pull)/.*##')
   # shellcheck disable=SC2034 # ORIGINATING_NUMBER consumed by callers after function returns
   ORIGINATING_NUMBER=$(basename "${ORIGINATING_URL}")
 }
+forge_parse_originating_url() {
+  _forge_parse_originating_url
+}
 
 # --- Token handling ---
 
-forge_mask_token() {
+_forge_mask_token() {
   if [[ -n "${GITHUB_ACTIONS:-}" ]]; then
     echo "::add-mask::${GH_TOKEN}"
   fi
 }
+forge_mask_token() {
+  _forge_mask_token
+}
 
-forge_require_token() {
+_forge_require_token() {
   : "${GH_TOKEN:?GH_TOKEN is required}"
+}
+forge_require_token() {
+  _forge_require_token
 }
 
 # --- Config workspace ---
@@ -52,8 +64,11 @@ forge_get_config_workspace() {
 
 # --- Comment limits ---
 
-forge_get_comment_max_len() {
+_forge_get_comment_max_len() {
   echo "65000"
+}
+forge_get_comment_max_len() {
+  _forge_get_comment_max_len
 }
 
 # --- Labels ---
@@ -78,9 +93,12 @@ forge_create_issue() {
 
 # --- Comments ---
 
-forge_post_comment() {
+_forge_post_comment() {
   local repo="$1" number="$2" body="$3"
   jq -nc --arg body "${body}" '{body: $body}' | gh api \
     "repos/${repo}/issues/${number}/comments" \
     --input - 2>&1
+}
+forge_post_comment() {
+  _forge_post_comment "$@"
 }

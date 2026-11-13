@@ -59,13 +59,19 @@ See [Customizing with AGENTS.md](https://fullsend.sh/docs/guides/user/customizin
 | `RETRO_JIRA_PROJECT` | Jira project key where proposal issues are filed when `FULLSEND_TRACKER=jira`. | none (required for Jira issue creation) | Jira project key (e.g. `"PROJ"`) |
 | `RETRO_JIRA_ISSUE_TYPE` | Issue type name for created Jira issues. | `"Task"` | e.g. `"Task"`, `"Improvement"` |
 | `RETRO_JIRA_LABELS` | Comma-separated allowlist of labels that retro may apply to created Jira issues. | `"ready-for-triage"` | Alphanumeric label names |
+| `JIRA_BASE_URL` | Jira Cloud base URL (`https://<site>.atlassian.net`). Required when `FULLSEND_TRACKER=jira` (except forge summary-only runs). | none | Jira Cloud URL (`https://<site>.atlassian.net`) |
+| `JIRA_TOKEN` | Jira API token. Required when `FULLSEND_TRACKER=jira` (except forge summary-only runs). | none | Secret string |
+| `FULLSEND_DIR` | Directory containing `.fullsend/config.yaml` for CLI issue operations. Required when `FULLSEND_TRACKER=jira` (except forge summary-only runs). | none | Directory path |
+| `JIRA_USER_EMAIL` | Bot-user email. When set, uses Basic auth with email and token; when unset or empty, uses Bearer auth. | none | Email address |
+| `JIRA_API_URL` | REST API gateway base URL. | `JIRA_BASE_URL` | Valid HTTPS URL |
+| `RETRO_JIRA_MAX_PAGES` | Maximum pages fetched per paginated Jira read. | `50` | Positive integer |
 
 ### Jira integration
 
 Retro can deliver findings and improvement proposals to Jira Cloud instead of (or in addition to) GitHub/GitLab:
 
 - **Jira issue creation:** When `FULLSEND_TRACKER=jira`, retro files validated proposals into an operator-configured Jira Cloud project (`RETRO_JIRA_PROJECT`). Model proposals do not select arbitrary Jira projects.
-- **Retrospectives on Jira-originated work:** Retro can run against Jira issue URLs (`https://<site>.atlassian.net/browse/PROJ-123`) or against GitHub PRs / GitLab MRs associated with Jira work.
+- **Retrospectives on Jira-originated work:** Retro can run against Jira issue URLs (`https://<site>.atlassian.net/browse/PROJ-123`) via manual dispatch, or against GitHub PRs / GitLab MRs associated with Jira work.
 - **Configurable output modes:** `RETRO_MODE` supports `all` (default: creates Jira issues and posts summary comment), `summary_only` (posts summary comment with proposals listed without creating issues), or `issues_only` (creates issues without posting summary).
 - **Idempotency & retry protection:** Before filing an issue in Jira, retro checks for an existing issue in `RETRO_JIRA_PROJECT` with the exact same summary. Rerunning retro on the same workflow will not create duplicate Jira issues.
 - **Traceability:** Created Jira issues preserve the originating GitHub/GitLab PR URL in the body footer, and the retro summary comment links back to all created Jira issues.
@@ -89,25 +95,27 @@ env:
     FULLSEND_DIR: ${FULLSEND_DIR}
 ```
 
-Cross-project issue creation in Jira can also be restricted via `tracker.jira.allowed_targets.projects` in `config.yaml`.
+Cross-project issue creation in Jira can also be restricted via `tracker.jira.allowed_targets.projects` in `config.yaml`. The `tracker.jira` configuration in `config.yaml` (under `FULLSEND_DIR`) is required by the `fullsend` CLI for Jira issue operations; ensure the configured primary project or allowed targets match `RETRO_JIRA_PROJECT`.
 
 ### Issue filing allowlist
 
 Cross-repo issue creation is governed by `tracker.<provider>.allowed_targets`
 in `config.yaml` — the same allowlist used by the [triage agent](triage.md)
 for prerequisite issues. The post-script honors the targets of the
-`tracker` provider block that matches `FULLSEND_FORGE`:
-`tracker.github.allowed_targets.orgs` and `repos` on GitHub, or
+`tracker` provider block that matches `FULLSEND_TRACKER` (falling back to
+`FULLSEND_FORGE`): `tracker.github.allowed_targets.orgs` and `repos` on GitHub,
 `tracker.gitlab.allowed_targets.groups` and `repos` on GitLab (a group
-also covers its subgroups' projects). A `tracker` mapping for another
-provider, or one with more than one provider block, grants no cross-repo
-targets (the post-script logs a warning naming the providers it found).
-The former `create_issues.allow_targets` key is no longer read and logs a
+also covers its subgroups' projects), or `tracker.jira.allowed_targets.projects`
+on Jira. A `tracker` mapping for another provider, or one with more than one
+provider block, grants no cross-repo/cross-project targets (the post-script
+logs a warning naming the providers it found). The former
+`create_issues.allow_targets` key is no longer read and logs a
 warning if present; move `orgs` and `repos` to
-`tracker.github.allowed_targets`, or `repos` to
-`tracker.gitlab.allowed_targets` (with `groups` for group-wide access).
-Proposals targeting repos outside the allowlist are skipped with a warning
-and surfaced in the summary comment so they can be filed manually.
+`tracker.github.allowed_targets`, `repos` to
+`tracker.gitlab.allowed_targets` (with `groups` for group-wide access), or
+`projects` to `tracker.jira.allowed_targets`. Proposals targeting repos or
+projects outside the allowlist are skipped with a warning and surfaced in the
+summary comment so they can be filed manually.
 
 A configuration preset (`config.base.yaml`, beside `config.yaml`) is
 composed beneath the overlay with fullsend's whole-object `tracker` merge:

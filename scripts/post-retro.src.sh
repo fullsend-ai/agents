@@ -111,8 +111,10 @@ ALLOW_TARGETS_KEY="tracker.${TRACKER_PROVIDER}.allowed_targets"
 # repositories allowed by exact path (or Jira project keys when FULLSEND_TRACKER=jira).
 ALLOWED_SCOPES=""
 ALLOWED_REPOS=""
+JIRA_ALLOWLIST_STATE="unset"
 if [[ -f "${CONFIG_FILE}" || -f "${BASE_CONFIG_FILE}" ]] && ! command -v yq &>/dev/null; then
   echo "::warning::yq not found — cannot read ${ALLOW_TARGETS_KEY} from config; cross-repo issue creation disabled"
+  JIRA_ALLOWLIST_STATE="failed"
 fi
 if command -v yq &>/dev/null; then
   TRACKER_JSON="null"
@@ -123,6 +125,7 @@ if command -v yq &>/dev/null; then
     if ! layer_tracker=$(yq -o=json '.tracker' "${layer_file}" 2>/dev/null); then
       echo "::warning::cannot parse $(basename "${layer_file}") — cross-repo issue creation disabled"
       TRACKER_JSON="null"
+      JIRA_ALLOWLIST_STATE="failed"
       break
     fi
     # The old create_issues.allow_targets key is no longer read.
@@ -148,7 +151,10 @@ if command -v yq &>/dev/null; then
     | [("github", "gitlab", "jira") | select($t[.] != null)] | join(",")
   ' <<<"${TRACKER_JSON}" 2>/dev/null || true)
   if [[ -n "${TRACKER_PROVIDERS}" && "${TRACKER_PROVIDERS}" != "${TRACKER_PROVIDER}" ]]; then
-    echo "::warning::tracker mapping selects provider(s) '${TRACKER_PROVIDERS}' but FULLSEND_FORGE requires only '${TRACKER_PROVIDER}' — no cross-repo targets granted"
+    echo "::warning::tracker mapping selects provider(s) '${TRACKER_PROVIDERS}' but FULLSEND_TRACKER requires only '${TRACKER_PROVIDER}' — no cross-repo targets granted"
+    if [[ "${JIRA_ALLOWLIST_STATE}" != "failed" ]]; then
+      JIRA_ALLOWLIST_STATE="failed"
+    fi
   fi
   # Honor targets only when the tracker selects exactly one provider and it
   # is the forge issues are created on; otherwise nothing is granted.
@@ -166,6 +172,13 @@ if command -v yq &>/dev/null; then
     (if $provider == "jira" then .projects else .repos end)
     | if type == "array" then .[] | strings else empty end
   ' <<<"${ALLOWED_TARGETS_JSON}" 2>/dev/null || true)
+  if [[ "${TRACKER_PROVIDER}" == "jira" && "${JIRA_ALLOWLIST_STATE}" != "failed" ]]; then
+    if [[ "${TRACKER_JSON}" != "null" && -n "${TRACKER_JSON}" ]]; then
+      if jq -e 'type == "object" and has("jira")' <<<"${TRACKER_JSON}" &>/dev/null; then
+        JIRA_ALLOWLIST_STATE="configured"
+      fi
+    fi
+  fi
 fi
 
 # The originating repo is always implicitly allowed.
@@ -174,13 +187,23 @@ is_target_allowed() {
   local scope
 
   if [[ "${FULLSEND_TRACKER}" == "jira" ]]; then
-    if [[ -z "${ALLOWED_REPOS}" ]]; then
+    if [[ "${target_repo}" == "${ORIGINATING_REPO}" ]]; then
       return 0
     fi
-    if echo "${ALLOWED_REPOS}" | grep -qFx "${target_repo}"; then
-      return 0
-    fi
-    return 1
+    case "${JIRA_ALLOWLIST_STATE}" in
+      failed)
+        return 1
+        ;;
+      configured)
+        if [[ -n "${ALLOWED_REPOS}" ]] && echo "${ALLOWED_REPOS}" | grep -qFx "${target_repo}"; then
+          return 0
+        fi
+        return 1
+        ;;
+      unset)
+        return 0
+        ;;
+    esac
   fi
 
   # Source repo is always allowed.
@@ -269,6 +292,13 @@ if [[ "${PROPOSAL_COUNT}" -gt 0 ]]; then
       continue
     fi
 
+    if [[ "${RETRO_MODE}" == "summary_only" ]]; then
+      echo "Mode is summary_only — skipping issue creation for proposal[$i] (${SAFE_TITLE})"
+      SUMMARY_ONLY_PROPOSALS="${SUMMARY_ONLY_PROPOSALS}
+- **${TITLE}** (\`${TARGET_REPO}\`): $(jq -r ".proposals[$i].what_happened | split(\"\\n\")[0]" "${RESULT_FILE}")"
+      continue
+    fi
+
     # Allowlist gate: reject proposals targeting repos not in allowed_targets.
     if [[ "${FULLSEND_TRACKER}" == "jira" ]]; then
       if ! is_target_allowed "${RETRO_JIRA_PROJECT}"; then
@@ -310,13 +340,6 @@ if [[ "${PROPOSAL_COUNT}" -gt 0 ]]; then
       echo "::warning::proposal[$i] not filed — missing or malformed dedup receipt (related_issues.searched must be at least 2 distinct non-empty phrases). Folding into summary."
       RECEIPT_SKIPPED="${RECEIPT_SKIPPED}
 - **${TITLE}** (${TARGET_REPO}): $(jq -r ".proposals[$i].what_happened | split(\"\\n\")[0]" "${RESULT_FILE}")"
-      continue
-    fi
-
-    if [[ "${RETRO_MODE}" == "summary_only" ]]; then
-      echo "Mode is summary_only — skipping issue creation for proposal[$i] (${SAFE_TITLE})"
-      SUMMARY_ONLY_PROPOSALS="${SUMMARY_ONLY_PROPOSALS}
-- **${TITLE}** (\`${TARGET_REPO}\`): $(jq -r ".proposals[$i].what_happened | split(\"\\n\")[0]" "${RESULT_FILE}")"
       continue
     fi
 
@@ -375,7 +398,9 @@ if [[ "${PROPOSAL_COUNT}" -gt 0 ]]; then
 
     # A failed creation is non-fatal: record it, keep filing the remaining
     # proposals, and report it in the summary comment.
-    if ! ISSUE_URL=$(forge_create_issue "${TARGET_REPO}" "${TITLE}" "${BODY}" "ready-for-triage"); then
+    CREATE_RC=0
+    ISSUE_URL=$(forge_create_issue "${TARGET_REPO}" "${TITLE}" "${BODY}" "ready-for-triage") || CREATE_RC=$?
+    if [[ ${CREATE_RC} -ne 0 && ${CREATE_RC} -ne 2 ]]; then
       SAFE_OUTPUT=$(_gha_sanitize "${ISSUE_URL}")
       if [[ "${FULLSEND_TRACKER}" == "jira" ]]; then
         echo "::warning::Failed to create Jira issue in ${RETRO_JIRA_PROJECT} for proposal[$i] (${SAFE_TITLE}): ${SAFE_OUTPUT}"
@@ -387,6 +412,10 @@ if [[ "${PROPOSAL_COUNT}" -gt 0 ]]; then
 - **${TITLE}** (\`${TARGET_REPO}\`)"
       fi
       continue
+    fi
+
+    if [[ ${CREATE_RC} -eq 2 ]]; then
+      echo "::warning::Issue created but failed to apply label in Jira for proposal[$i] (${SAFE_TITLE}): ${ISSUE_URL}"
     fi
 
     echo "Created: ${ISSUE_URL}"

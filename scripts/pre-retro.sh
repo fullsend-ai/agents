@@ -56,30 +56,42 @@ GITHUB_RETRO_OPS_SH_LOADED=1
 
 # --- URL handling ---
 
-forge_validate_originating_url() {
+_forge_validate_originating_url() {
   if [[ ! "${ORIGINATING_URL}" =~ ^https://github\.com/[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+/(issues|pull)/[0-9]+$ ]]; then
     echo "ERROR: ORIGINATING_URL does not match expected pattern: $(_gha_sanitize "${ORIGINATING_URL}")" >&2
     return 1
   fi
 }
+forge_validate_originating_url() {
+  _forge_validate_originating_url
+}
 
-forge_parse_originating_url() {
+_forge_parse_originating_url() {
   # shellcheck disable=SC2034 # ORIGINATING_REPO consumed by callers after function returns
   ORIGINATING_REPO=$(echo "${ORIGINATING_URL}" | sed -E 's#https://github.com/##; s#/(issues|pull)/.*##')
   # shellcheck disable=SC2034 # ORIGINATING_NUMBER consumed by callers after function returns
   ORIGINATING_NUMBER=$(basename "${ORIGINATING_URL}")
 }
+forge_parse_originating_url() {
+  _forge_parse_originating_url
+}
 
 # --- Token handling ---
 
-forge_mask_token() {
+_forge_mask_token() {
   if [[ -n "${GITHUB_ACTIONS:-}" ]]; then
     echo "::add-mask::${GH_TOKEN}"
   fi
 }
+forge_mask_token() {
+  _forge_mask_token
+}
 
-forge_require_token() {
+_forge_require_token() {
   : "${GH_TOKEN:?GH_TOKEN is required}"
+}
+forge_require_token() {
+  _forge_require_token
 }
 
 # --- Config workspace ---
@@ -90,8 +102,11 @@ forge_get_config_workspace() {
 
 # --- Comment limits ---
 
-forge_get_comment_max_len() {
+_forge_get_comment_max_len() {
   echo "65000"
+}
+forge_get_comment_max_len() {
+  _forge_get_comment_max_len
 }
 
 # --- Labels ---
@@ -116,11 +131,14 @@ forge_create_issue() {
 
 # --- Comments ---
 
-forge_post_comment() {
+_forge_post_comment() {
   local repo="$1" number="$2" body="$3"
   jq -nc --arg body "${body}" '{body: $body}' | gh api \
     "repos/${repo}/issues/${number}/comments" \
     --input - 2>&1
+}
+forge_post_comment() {
+  _forge_post_comment "$@"
 }
 # END bundled: lib/github-retro-ops.lib.sh
     ;;
@@ -235,7 +253,7 @@ _gitlab_api() {
 
 # --- URL handling ---
 
-forge_validate_originating_url() {
+_forge_validate_originating_url() {
   if [[ ! "${ORIGINATING_URL}" =~ ^https://[a-zA-Z0-9._-]+(/[a-zA-Z0-9._-]+){2,}/-/(issues|merge_requests)/[0-9]+$ ]]; then
     echo "ERROR: ORIGINATING_URL does not match expected GitLab pattern: $(_gha_sanitize "${ORIGINATING_URL}")" >&2
     return 1
@@ -244,8 +262,11 @@ forge_validate_originating_url() {
   host=$(echo "${ORIGINATING_URL}" | sed -E 's#^https://([^/:]+)/.*#\1#')
   _validate_gitlab_host "${host}" || return 1
 }
+forge_validate_originating_url() {
+  _forge_validate_originating_url
+}
 
-forge_parse_originating_url() {
+_forge_parse_originating_url() {
   # Extract host, project path, resource type, and number from URL.
   # e.g., https://gitlab.com/group/subgroup/project/-/issues/42
   # e.g., https://gitlab.com/group/project/-/merge_requests/10
@@ -264,18 +285,27 @@ forge_parse_originating_url() {
     ORIGINATING_RESOURCE="issues"
   fi
 }
+forge_parse_originating_url() {
+  _forge_parse_originating_url
+}
 
 # --- Token handling ---
 
-forge_mask_token() {
+_forge_mask_token() {
   # ::add-mask:: is GHA-only; on non-GHA runners the echo would leak the token.
   if [[ -n "${GITHUB_ACTIONS:-}" ]]; then
     echo "::add-mask::${GITLAB_TOKEN}"
   fi
 }
+forge_mask_token() {
+  _forge_mask_token
+}
 
-forge_require_token() {
+_forge_require_token() {
   : "${GITLAB_TOKEN:?GITLAB_TOKEN is required}"
+}
+forge_require_token() {
+  _forge_require_token
 }
 
 # --- Config workspace ---
@@ -286,8 +316,11 @@ forge_get_config_workspace() {
 
 # --- Comment limits ---
 
-forge_get_comment_max_len() {
+_forge_get_comment_max_len() {
   echo "1000000"
+}
+forge_get_comment_max_len() {
+  _forge_get_comment_max_len
 }
 
 # --- Labels ---
@@ -333,7 +366,7 @@ forge_create_issue() {
 
 # Requires ORIGINATING_RESOURCE (set by forge_parse_originating_url) to
 # resolve the correct GitLab notes endpoint (merge_requests vs issues).
-forge_post_comment() {
+_forge_post_comment() {
   : "${ORIGINATING_RESOURCE:?forge_parse_originating_url must be called before forge_post_comment}"
   local repo="$1" number="$2" body="$3"
   local repo_encoded body_file rc=0
@@ -344,6 +377,9 @@ forge_post_comment() {
     --data-urlencode "body@${body_file}" 2>&1 || rc=$?
   rm -f "${body_file}"
   return "${rc}"
+}
+forge_post_comment() {
+  _forge_post_comment "$@"
 }
 # END bundled: lib/gitlab-retro-ops.lib.sh
     ;;
@@ -397,12 +433,11 @@ case "${FULLSEND_TRACKER}" in
 [[ -n "${JIRA_RETRO_OPS_SH_LOADED:-}" ]] && return 0
 JIRA_RETRO_OPS_SH_LOADED=1
 
-: "${JIRA_TOKEN:?JIRA_TOKEN must be set}"
-: "${JIRA_BASE_URL:?JIRA_BASE_URL must be set}"
-
 RETRO_JIRA_PROJECT="${RETRO_JIRA_PROJECT:-${JIRA_PROJECT:-}}"
 RETRO_MODE="${RETRO_MODE:-all}"
 if [[ "${RETRO_MODE}" != "summary_only" ]]; then
+  : "${JIRA_TOKEN:?JIRA_TOKEN must be set}"
+  : "${JIRA_BASE_URL:?JIRA_BASE_URL must be set}"
   : "${RETRO_JIRA_PROJECT:?RETRO_JIRA_PROJECT must be set}"
 fi
 
@@ -487,21 +522,25 @@ jira_auth_fullsend() {
 }
 # END bundled: lib/jira-auth.lib.sh
 
-while [[ "${JIRA_BASE_URL}" == */ ]]; do
-  JIRA_BASE_URL="${JIRA_BASE_URL%/}"
-done
-if [[ ! "${JIRA_BASE_URL}" =~ ^https://[a-zA-Z0-9-]+\.atlassian\.net$ ]]; then
-  echo "ERROR: JIRA_BASE_URL must be a Jira Cloud URL (https://<site>.atlassian.net)" >&2
-  exit 1
+if [[ -n "${JIRA_BASE_URL:-}" ]]; then
+  while [[ "${JIRA_BASE_URL}" == */ ]]; do
+    JIRA_BASE_URL="${JIRA_BASE_URL%/}"
+  done
+  if [[ ! "${JIRA_BASE_URL}" =~ ^https://[a-zA-Z0-9-]+\.atlassian\.net$ ]]; then
+    echo "ERROR: JIRA_BASE_URL must be a Jira Cloud URL (https://<site>.atlassian.net)" >&2
+    exit 1
+  fi
 fi
 
-RETRO_JIRA_API_BASE="${JIRA_API_URL:-${JIRA_BASE_URL}}"
-while [[ "${RETRO_JIRA_API_BASE}" == */ ]]; do
-  RETRO_JIRA_API_BASE="${RETRO_JIRA_API_BASE%/}"
-done
-if [[ "${RETRO_JIRA_API_BASE}" != https://* ]]; then
-  echo "ERROR: JIRA_API_URL must start with https://" >&2
-  exit 1
+RETRO_JIRA_API_BASE="${JIRA_API_URL:-${JIRA_BASE_URL:-}}"
+if [[ -n "${RETRO_JIRA_API_BASE}" ]]; then
+  while [[ "${RETRO_JIRA_API_BASE}" == */ ]]; do
+    RETRO_JIRA_API_BASE="${RETRO_JIRA_API_BASE%/}"
+  done
+  if [[ "${RETRO_JIRA_API_BASE}" != https://* ]]; then
+    echo "ERROR: JIRA_API_URL must start with https://" >&2
+    exit 1
+  fi
 fi
 
 if [[ -n "${RETRO_JIRA_PROJECT}" && ! "${RETRO_JIRA_PROJECT}" =~ ^[A-Z][A-Z0-9_]*$ ]]; then
@@ -795,33 +834,32 @@ forge_normalize_labels() {
 
 # --- Originating URL handling and comments ---
 
-if declare -f forge_validate_originating_url >/dev/null 2>&1; then
-  eval "_prev_forge_validate_originating_url() $(declare -f forge_validate_originating_url | sed '1d')"
-fi
-
 forge_validate_originating_url() {
   if [[ "${ORIGINATING_URL}" =~ ^https://[a-zA-Z0-9.-]+/browse/[A-Z][A-Z0-9]*-[0-9]+$ ]]; then
     local host
     host=$(echo "${ORIGINATING_URL}" | sed -E 's|^https://([^/]+)/.*|\1|')
     case "${host}" in
-      *.atlassian.net) return 0 ;;
+      *.atlassian.net)
+        : "${JIRA_BASE_URL:?JIRA_BASE_URL must be set}"
+        if [[ "https://${host}" != "${JIRA_BASE_URL}" ]]; then
+          echo "ERROR: ORIGINATING_URL Jira host ('${host}') does not match JIRA_BASE_URL ('${JIRA_BASE_URL}')" >&2
+          return 1
+        fi
+        return 0
+        ;;
       *)
         echo "ERROR: ORIGINATING_URL Jira host '${host}' is not in the allowed host list (*.atlassian.net)" >&2
         return 1
         ;;
     esac
   fi
-  if declare -f _prev_forge_validate_originating_url >/dev/null 2>&1; then
-    _prev_forge_validate_originating_url
+  if declare -f _forge_validate_originating_url >/dev/null 2>&1; then
+    _forge_validate_originating_url
   else
     echo "ERROR: ORIGINATING_URL does not match expected pattern: $(_gha_sanitize "${ORIGINATING_URL}")" >&2
     return 1
   fi
 }
-
-if declare -f forge_parse_originating_url >/dev/null 2>&1; then
-  eval "_prev_forge_parse_originating_url() $(declare -f forge_parse_originating_url | sed '1d')"
-fi
 
 forge_parse_originating_url() {
   if [[ "${ORIGINATING_URL}" =~ ^https://[a-zA-Z0-9.-]+/browse/[A-Z][A-Z0-9]*-[0-9]+$ ]]; then
@@ -836,16 +874,20 @@ forge_parse_originating_url() {
   else
     # shellcheck disable=SC2034 # consumed by post-retro
     JIRA_ORIGINATING="false"
-    if declare -f _prev_forge_parse_originating_url >/dev/null 2>&1; then
-      _prev_forge_parse_originating_url
+    if declare -f _forge_parse_originating_url >/dev/null 2>&1; then
+      _forge_parse_originating_url
     fi
   fi
 }
 
-_jira_retro_post_comment() {
+_retro_jira_post_comment() {
   local repo="$1" number="$2" body="$3"
   if [[ -z "${FULLSEND_DIR:-}" ]]; then
     echo "ERROR: FULLSEND_DIR is not set; the fullsend CLI needs it for the tracker.jira settings" >&2
+    return 1
+  fi
+  if [[ -z "${JIRA_TOKEN:-}" ]]; then
+    echo "ERROR: JIRA_TOKEN must be set to post comments to Jira" >&2
     return 1
   fi
   local num="${number##*-}"
@@ -855,58 +897,44 @@ _jira_retro_post_comment() {
     --marker "<!-- fullsend:retro-agent -->" --result -
 }
 
-if declare -f forge_post_comment >/dev/null 2>&1; then
-  eval "_prev_forge_post_comment() $(declare -f forge_post_comment | sed '1d')"
-fi
-
 forge_post_comment() {
   local repo="$1" number="$2" body="$3"
   if [[ "${JIRA_ORIGINATING:-false}" == "true" ]]; then
-    _jira_retro_post_comment "${repo}" "${number}" "${body}"
-  elif declare -f _prev_forge_post_comment >/dev/null 2>&1; then
-    _prev_forge_post_comment "${repo}" "${number}" "${body}"
+    _retro_jira_post_comment "${repo}" "${number}" "${body}"
+  elif declare -f _forge_post_comment >/dev/null 2>&1; then
+    _forge_post_comment "${repo}" "${number}" "${body}"
   else
     echo "ERROR: no forge_post_comment defined" >&2
     return 1
   fi
 }
 
-if declare -f forge_require_token >/dev/null 2>&1; then
-  eval "_prev_forge_require_token() $(declare -f forge_require_token | sed '1d')"
-fi
-
 forge_require_token() {
-  : "${JIRA_TOKEN:?JIRA_TOKEN must be set}"
-  if [[ "${ORIGINATING_URL}" =~ ^https://[a-zA-Z0-9.-]+/browse/[A-Z][A-Z0-9]*-[0-9]+$ ]]; then
+  if [[ "${RETRO_MODE}" != "summary_only" || "${JIRA_ORIGINATING:-false}" == "true" ]]; then
+    : "${JIRA_TOKEN:?JIRA_TOKEN must be set}"
+  fi
+  if [[ "${JIRA_ORIGINATING:-false}" == "true" ]]; then
     return 0
   fi
-  if declare -f _prev_forge_require_token >/dev/null 2>&1; then
-    _prev_forge_require_token
+  if declare -f _forge_require_token >/dev/null 2>&1; then
+    _forge_require_token
   fi
 }
 
-if declare -f forge_mask_token >/dev/null 2>&1; then
-  eval "_prev_forge_mask_token() $(declare -f forge_mask_token | sed '1d')"
-fi
-
 forge_mask_token() {
-  if declare -f _prev_forge_mask_token >/dev/null 2>&1; then
-    _prev_forge_mask_token
+  if declare -f _forge_mask_token >/dev/null 2>&1; then
+    _forge_mask_token
   fi
   if [[ -n "${JIRA_TOKEN:-}" ]]; then
     printf '::add-mask::%s\n' "$(printf '%s' "${JIRA_TOKEN}" | tr -d '\n\r')"
   fi
 }
 
-if declare -f forge_get_comment_max_len >/dev/null 2>&1; then
-  eval "_prev_forge_get_comment_max_len() $(declare -f forge_get_comment_max_len | sed '1d')"
-fi
-
 forge_get_comment_max_len() {
   if [[ "${JIRA_ORIGINATING:-false}" == "true" ]]; then
     echo "32768"
-  elif declare -f _prev_forge_get_comment_max_len >/dev/null 2>&1; then
-    _prev_forge_get_comment_max_len
+  elif declare -f _forge_get_comment_max_len >/dev/null 2>&1; then
+    _forge_get_comment_max_len
   else
     echo "65000"
   fi
@@ -920,16 +948,18 @@ forge_get_comment_max_len() {
 esac
 # END bundled: lib/retro-ops.lib.sh
 
-if [[ "${FULLSEND_TRACKER}" == "jira" && -z "${FULLSEND_DIR:-}" ]]; then
-  echo "ERROR: FULLSEND_DIR must be set when FULLSEND_TRACKER=jira (the fullsend CLI reads tracker.jira from its config.yaml)" >&2
-  exit 1
-fi
-
-if [[ -n "${JIRA_TOKEN:-}" ]]; then
-  printf '::add-mask::%s\n' "$(printf '%s' "${JIRA_TOKEN}" | tr -d '\n\r')"
-fi
-
+forge_mask_token
 forge_validate_originating_url
+forge_parse_originating_url
+
+if [[ "${FULLSEND_TRACKER}" == "jira" ]]; then
+  if [[ "${RETRO_MODE:-all}" != "summary_only" || "${JIRA_ORIGINATING:-false}" == "true" ]]; then
+    if [[ -z "${FULLSEND_DIR:-}" ]]; then
+      echo "ERROR: FULLSEND_DIR must be set when FULLSEND_TRACKER=jira (the fullsend CLI reads tracker.jira from its config.yaml)" >&2
+      exit 1
+    fi
+  fi
+fi
 
 echo "::notice::Retro target: $(_gha_sanitize "${ORIGINATING_URL}")"
 

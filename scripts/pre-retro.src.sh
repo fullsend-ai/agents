@@ -23,16 +23,18 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/retro-ops.lib.sh
 source "${SCRIPT_DIR}/lib/retro-ops.lib.sh"
 
-if [[ "${FULLSEND_TRACKER}" == "jira" && -z "${FULLSEND_DIR:-}" ]]; then
-  echo "ERROR: FULLSEND_DIR must be set when FULLSEND_TRACKER=jira (the fullsend CLI reads tracker.jira from its config.yaml)" >&2
-  exit 1
-fi
-
-if [[ -n "${JIRA_TOKEN:-}" ]]; then
-  printf '::add-mask::%s\n' "$(printf '%s' "${JIRA_TOKEN}" | tr -d '\n\r')"
-fi
-
+forge_mask_token
 forge_validate_originating_url
+forge_parse_originating_url
+
+if [[ "${FULLSEND_TRACKER}" == "jira" ]]; then
+  if [[ "${RETRO_MODE:-all}" != "summary_only" || "${JIRA_ORIGINATING:-false}" == "true" ]]; then
+    if [[ -z "${FULLSEND_DIR:-}" ]]; then
+      echo "ERROR: FULLSEND_DIR must be set when FULLSEND_TRACKER=jira (the fullsend CLI reads tracker.jira from its config.yaml)" >&2
+      exit 1
+    fi
+  fi
+fi
 
 echo "::notice::Retro target: $(_gha_sanitize "${ORIGINATING_URL}")"
 

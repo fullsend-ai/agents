@@ -169,6 +169,15 @@ run_test "jira-untrusted-host-fails" 1 "ORIGINATING_URL Jira host 'evil.example'
   JIRA_BASE_URL="https://test.atlassian.net" RETRO_JIRA_PROJECT="PROJ" \
   ORIGINATING_URL="https://evil.example/browse/PROJ-123"
 
+run_test "jira-tenant-mismatch-fails" 1 "does not match JIRA_BASE_URL" \
+  FULLSEND_TRACKER=jira FULLSEND_DIR="${TMPDIR}/dot-fullsend" JIRA_TOKEN="test-token" \
+  JIRA_BASE_URL="https://test.atlassian.net" RETRO_JIRA_PROJECT="PROJ" \
+  ORIGINATING_URL="https://other.atlassian.net/browse/PROJ-123"
+
+run_test "jira-summary-only-forge-no-credentials" 0 "Pre-retro validation complete." \
+  FULLSEND_TRACKER=jira RETRO_MODE="summary_only" \
+  ORIGINATING_URL="https://github.com/test-org/test-repo/pull/42"
+
 # --- Summary ---
 
 echo ""

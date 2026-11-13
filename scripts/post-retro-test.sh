@@ -173,7 +173,12 @@ if [[ "${URL}" == *"atlassian.net/rest/api/3"* ]]; then
       fi
       ;;
     */issue/PROJ-*)
-      printf '\n204'
+      if [[ "${JIRA_MOCK_LABEL_FAIL:-}" == "1" ]]; then
+        echo '{"errorMessages":["Custom label field update failed"]}'
+        printf '\n500'
+      else
+        printf '\n204'
+      fi
       ;;
     *)
       exit 22
@@ -2416,6 +2421,18 @@ fi
 # Jira tracker test cases (FULLSEND_FORGE=github, FULLSEND_TRACKER=jira)
 # ---------------------------------------------------------------------------
 
+JIRA_WORKSPACE="${TMPDIR}/jira-workspace"
+mkdir -p "${JIRA_WORKSPACE}"
+cat > "${JIRA_WORKSPACE}/config.yaml" <<CFGEOF
+version: "1"
+tracker:
+  jira:
+    allowed_targets:
+      projects:
+        - PROJ
+CFGEOF
+export GITHUB_WORKSPACE="${JIRA_WORKSPACE}"
+
 export FULLSEND_FORGE="github"
 export GH_TOKEN="fake-token"
 export ORIGINATING_URL="https://github.com/test-org/test-repo/pull/10"
@@ -2589,6 +2606,7 @@ ORIGINATING_URL="https://gitlab.com/test-group/test-project/-/merge_requests/10"
 FULLSEND_FORGE="gitlab" \
 CI_SERVER_HOST="gitlab.com" \
 GITLAB_TOKEN="fake-gitlab-token" \
+CI_PROJECT_DIR="${JIRA_WORKSPACE}" \
   run_test_stdout "jira/gitlab-mr-originating" \
   "${GL_FIXTURE_ONE_PROPOSAL}" \
   "Posting summary comment on test-group/test-project#10"
@@ -2607,6 +2625,135 @@ else
   cat "${CURL_LOG}" 2>/dev/null || true
   FAILURES=$((FAILURES + 1))
 fi
+
+# 11. Failed label update returns status 2, issue treated as created and linked in summary
+export JIRA_MOCK_LABEL_FAIL="1"
+export FULLSEND_FORGE="github"
+export GH_TOKEN="fake-token"
+export ORIGINATING_URL="https://github.com/test-org/test-repo/pull/10"
+export FULLSEND_TRACKER="jira"
+export JIRA_BASE_URL="https://mock.atlassian.net"
+export JIRA_USER_EMAIL="bot@mock.example"
+export JIRA_TOKEN="fake-jira-token"
+export FULLSEND_DIR="${TMPDIR}/dot-fullsend"
+export RETRO_JIRA_PROJECT="PROJ"
+export RETRO_MODE="all"
+export GITHUB_WORKSPACE="${JIRA_WORKSPACE}"
+
+run_test_stdout "jira/label-fail-treated-as-created" \
+  "${FIXTURE_ONE_PROPOSAL}" \
+  "Created: https://mock.atlassian.net/browse/PROJ-100"
+
+if grep -qF -- "- [Improve error handling in widget service](https://mock.atlassian.net/browse/PROJ-100) (in \`PROJ\`)" "${GH_STDIN_LOG}" 2>/dev/null; then
+  echo "PASS: jira/label-fail-linked-in-summary"
+else
+  echo "FAIL: jira/label-fail-linked-in-summary — created issue link missing from summary"
+  cat "${GH_STDIN_LOG}" 2>/dev/null || true
+  FAILURES=$((FAILURES + 1))
+fi
+
+if grep -qF "Proposals not filed" "${GH_STDIN_LOG}" 2>/dev/null; then
+  echo "FAIL: jira/label-fail-not-under-failed — issue incorrectly listed under Proposals not filed"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: jira/label-fail-not-under-failed"
+fi
+unset JIRA_MOCK_LABEL_FAIL
+
+# 12. Allowlist: explicit empty projects list revokes access (fail closed)
+cat > "${JIRA_WORKSPACE}/config.yaml" <<CFGEOF
+version: "1"
+tracker:
+  jira:
+    allowed_targets:
+      projects: []
+CFGEOF
+run_test_stdout "jira/allowlist-explicit-empty-denies" \
+  "${FIXTURE_ONE_PROPOSAL}" \
+  "Skipping issue creation in Jira project 'PROJ' — not in tracker.jira.allowed_targets"
+
+if grep -qF "Proposals skipped (target repo not allowed)" "${GH_STDIN_LOG}" 2>/dev/null; then
+  echo "PASS: jira/allowlist-explicit-empty-summary"
+else
+  echo "FAIL: jira/allowlist-explicit-empty-summary — proposal missing from skipped section"
+  FAILURES=$((FAILURES + 1))
+fi
+
+# 13. Allowlist: config parse error fails closed
+printf 'version: "1"\ntracker: [invalid yaml\n' > "${JIRA_WORKSPACE}/config.yaml"
+run_test_stdout "jira/allowlist-parse-failure-denies" \
+  "${FIXTURE_ONE_PROPOSAL}" \
+  "cannot parse config.yaml — cross-repo issue creation disabled"
+
+# 14. Allowlist: missing yq fails closed
+cat > "${JIRA_WORKSPACE}/config.yaml" <<CFGEOF
+version: "1"
+tracker:
+  jira:
+    allowed_targets:
+      projects:
+        - PROJ
+CFGEOF
+MOCK_NO_YQ_BIN="${TMPDIR}/bin-no-yq"
+mkdir -p "${MOCK_NO_YQ_BIN}"
+for tool in bash jq sed grep awk cat date mktemp rm tr tail curl dirname basename seq printf cut head sort uniq; do
+  p=$(which "${tool}" 2>/dev/null || true)
+  [[ -n "${p}" ]] && ln -sf "${p}" "${MOCK_NO_YQ_BIN}/${tool}"
+done
+(
+  export PATH="${MOCK_BIN}:${MOCK_NO_YQ_BIN}:/bin:/usr/bin"
+  run_test_stdout "jira/allowlist-missing-yq-denies" \
+    "${FIXTURE_ONE_PROPOSAL}" \
+    "yq not found"
+)
+rm -rf "${MOCK_NO_YQ_BIN}"
+
+# 15. Allowlist: unset config allows configured RETRO_JIRA_PROJECT
+rm -f "${JIRA_WORKSPACE}/config.yaml"
+run_test_stdout "jira/allowlist-unset-allows" \
+  "${FIXTURE_ONE_PROPOSAL}" \
+  "Created: https://mock.atlassian.net/browse/PROJ-100"
+
+# Restore valid config.yaml
+cat > "${JIRA_WORKSPACE}/config.yaml" <<CFGEOF
+version: "1"
+tracker:
+  jira:
+    allowed_targets:
+      projects:
+        - PROJ
+CFGEOF
+
+# 16. Summary-only mode with unset RETRO_JIRA_PROJECT and configured allowlist
+export RETRO_MODE="summary_only"
+unset RETRO_JIRA_PROJECT
+run_test_stdout "jira/summary-only-unset-project-with-allowlist" \
+  "${FIXTURE_ONE_PROPOSAL}" \
+  "Mode is summary_only — skipping issue creation for proposal[0]"
+
+if grep -qF "### Proposals (issue creation disabled)" "${GH_STDIN_LOG}" 2>/dev/null; then
+  echo "PASS: jira/summary-only-unset-project-in-summary"
+else
+  echo "FAIL: jira/summary-only-unset-project-in-summary — proposal missing from summary"
+  cat "${GH_STDIN_LOG}" 2>/dev/null || true
+  FAILURES=$((FAILURES + 1))
+fi
+
+# 17. Summary-only mode includes proposals without dedup receipt
+export RETRO_JIRA_PROJECT="PROJ"
+run_test_stdout "jira/summary-only-no-dedup-receipt" \
+  "${FIXTURE_NO_RECEIPT}" \
+  "Mode is summary_only — skipping issue creation for proposal[0]"
+
+if grep -qF "### Proposals (issue creation disabled)" "${GH_STDIN_LOG}" 2>/dev/null \
+  && ! grep -qF "missing or malformed dedup receipt" "${TMPDIR}/stdout.log" 2>/dev/null; then
+  echo "PASS: jira/summary-only-no-dedup-receipt-collected"
+else
+  echo "FAIL: jira/summary-only-no-dedup-receipt-collected — proposal not properly collected in summary-only mode"
+  cat "${TMPDIR}/stdout.log" 2>/dev/null || true
+  FAILURES=$((FAILURES + 1))
+fi
+export RETRO_MODE="all"
 
 unset FULLSEND_TRACKER JIRA_BASE_URL JIRA_USER_EMAIL JIRA_TOKEN FULLSEND_DIR RETRO_JIRA_PROJECT RETRO_MODE
 

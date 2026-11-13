@@ -41,7 +41,7 @@ _gitlab_api() {
 
 # --- URL handling ---
 
-forge_validate_originating_url() {
+_forge_validate_originating_url() {
   if [[ ! "${ORIGINATING_URL}" =~ ^https://[a-zA-Z0-9._-]+(/[a-zA-Z0-9._-]+){2,}/-/(issues|merge_requests)/[0-9]+$ ]]; then
     echo "ERROR: ORIGINATING_URL does not match expected GitLab pattern: $(_gha_sanitize "${ORIGINATING_URL}")" >&2
     return 1
@@ -50,8 +50,11 @@ forge_validate_originating_url() {
   host=$(echo "${ORIGINATING_URL}" | sed -E 's#^https://([^/:]+)/.*#\1#')
   _validate_gitlab_host "${host}" || return 1
 }
+forge_validate_originating_url() {
+  _forge_validate_originating_url
+}
 
-forge_parse_originating_url() {
+_forge_parse_originating_url() {
   # Extract host, project path, resource type, and number from URL.
   # e.g., https://gitlab.com/group/subgroup/project/-/issues/42
   # e.g., https://gitlab.com/group/project/-/merge_requests/10
@@ -70,18 +73,27 @@ forge_parse_originating_url() {
     ORIGINATING_RESOURCE="issues"
   fi
 }
+forge_parse_originating_url() {
+  _forge_parse_originating_url
+}
 
 # --- Token handling ---
 
-forge_mask_token() {
+_forge_mask_token() {
   # ::add-mask:: is GHA-only; on non-GHA runners the echo would leak the token.
   if [[ -n "${GITHUB_ACTIONS:-}" ]]; then
     echo "::add-mask::${GITLAB_TOKEN}"
   fi
 }
+forge_mask_token() {
+  _forge_mask_token
+}
 
-forge_require_token() {
+_forge_require_token() {
   : "${GITLAB_TOKEN:?GITLAB_TOKEN is required}"
+}
+forge_require_token() {
+  _forge_require_token
 }
 
 # --- Config workspace ---
@@ -92,8 +104,11 @@ forge_get_config_workspace() {
 
 # --- Comment limits ---
 
-forge_get_comment_max_len() {
+_forge_get_comment_max_len() {
   echo "1000000"
+}
+forge_get_comment_max_len() {
+  _forge_get_comment_max_len
 }
 
 # --- Labels ---
@@ -139,7 +154,7 @@ forge_create_issue() {
 
 # Requires ORIGINATING_RESOURCE (set by forge_parse_originating_url) to
 # resolve the correct GitLab notes endpoint (merge_requests vs issues).
-forge_post_comment() {
+_forge_post_comment() {
   : "${ORIGINATING_RESOURCE:?forge_parse_originating_url must be called before forge_post_comment}"
   local repo="$1" number="$2" body="$3"
   local repo_encoded body_file rc=0
@@ -150,4 +165,7 @@ forge_post_comment() {
     --data-urlencode "body@${body_file}" 2>&1 || rc=$?
   rm -f "${body_file}"
   return "${rc}"
+}
+forge_post_comment() {
+  _forge_post_comment "$@"
 }
