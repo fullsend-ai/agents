@@ -278,6 +278,24 @@ else
   assert_pass "skill-jira-email-no-command-substitution"
 fi
 
+# The same hook blocks the issue-key command substitution, and blocks a
+# shell variable inside --data-urlencode, so the Jira skills derive the key
+# with parameter expansion and write the project key into JQL literally.
+for skill_file in "${SKILL_FILES[@]}"; do
+  skill_name="$(basename "$(dirname "${skill_file}")")"
+  [ -f "${skill_file}" ] || continue  # already reported above
+  if grep -qF -- 'ISSUE_KEY=$(' "${skill_file}"; then
+    assert_fail "skill-${skill_name}-issue-key-expansion" "ISSUE_KEY=\$( found in ${skill_file}"
+  else
+    assert_pass "skill-${skill_name}-issue-key-expansion"
+  fi
+  if grep -qE -- '--data-urlencode "jql=[^"]*\$' "${skill_file}"; then
+    assert_fail "skill-${skill_name}-jql-literal" "a shell variable inside --data-urlencode \"jql=...\" in ${skill_file}"
+  else
+    assert_pass "skill-${skill_name}-jql-literal"
+  fi
+done
+
 # Every Jira curl uses the selected auth, and none passes --user directly.
 for skill_file in "${SKILL_FILES[@]}"; do
   skill_name="$(basename "$(dirname "${skill_file}")")"

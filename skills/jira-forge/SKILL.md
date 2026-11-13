@@ -35,9 +35,13 @@ curl --silent "${JIRA_AUTH_FLAG}" "${JIRA_AUTH}" \
 
 Extract the issue key and project key from the issue URL:
 ```bash
-ISSUE_KEY=$(echo "${ISSUE_URL}" | sed -E 's|.*/browse/||')
+ISSUE_KEY="${ISSUE_URL##*/browse/}"
 PROJECT_KEY="${ISSUE_KEY%-*}"
 ```
+
+In JQL, write the project key itself in place of `PROJ` in the examples
+below. The sandbox command check blocks a shell variable inside
+`--data-urlencode`.
 
 Jira Cloud only (v1) — the issue host must be `*.atlassian.net`. Jira
 Server/Data Center is not supported.
@@ -60,7 +64,7 @@ curl --fail-with-body --silent "${JIRA_AUTH_FLAG}" "${JIRA_AUTH}" \
 # List open issues in the project
 curl --fail-with-body --silent "${JIRA_AUTH_FLAG}" "${JIRA_AUTH}" \
   --header "Content-Type: application/json" \
-  --get --data-urlencode "jql=project = ${PROJECT_KEY} AND statusCategory != Done" \
+  --get --data-urlencode "jql=project = PROJ AND statusCategory != Done" \
   --data-urlencode "fields=summary,status,labels" \
   "${JIRA_API_URL:-${JIRA_BASE_URL}}/rest/api/3/search/jql"
 ```
@@ -92,7 +96,7 @@ JIRA_AUTH="${JIRA_EMAIL:+${JIRA_EMAIL}:}${JIRA_TOKEN}"
 # Search issues by keyword (JQL text search)
 curl --fail-with-body --silent "${JIRA_AUTH_FLAG}" "${JIRA_AUTH}" \
   --header "Content-Type: application/json" \
-  --get --data-urlencode "jql=project = ${PROJECT_KEY} AND text ~ \"keyword\"" \
+  --get --data-urlencode "jql=project = PROJ AND text ~ \"keyword\"" \
   --data-urlencode "fields=summary,status,labels" \
   "${JIRA_API_URL:-${JIRA_BASE_URL}}/rest/api/3/search/jql"
 

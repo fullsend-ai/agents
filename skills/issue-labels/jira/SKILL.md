@@ -20,7 +20,7 @@ control labels -- just recommend what fits and the pipeline will filter.
 ## Step 0: Derive variables from ISSUE_URL
 
 ```bash
-ISSUE_KEY=$(echo "${ISSUE_URL}" | sed -E 's|.*/browse/||')
+ISSUE_KEY="${ISSUE_URL##*/browse/}"
 PROJECT_KEY="${ISSUE_KEY%-*}"
 ```
 
@@ -52,14 +52,16 @@ labeling entirely -- do not emit `label_actions`.
 Spawn a sub-agent to investigate how labels have been applied to recent
 issues in the project. The sub-agent should:
 
-1. Query recent issues via JQL:
+1. Query recent issues via JQL, with the project key written in place of
+   `PROJ` (the sandbox command check blocks a shell variable inside
+   `--data-urlencode`):
    ```bash
    JIRA_EMAIL="${JIRA_USER_EMAIL:-}"; JIRA_EMAIL="${JIRA_EMAIL//[[:space:]]/}"
    JIRA_AUTH_FLAG=--oauth2-bearer; test -n "${JIRA_EMAIL}" && JIRA_AUTH_FLAG=--user
    JIRA_AUTH="${JIRA_EMAIL:+${JIRA_EMAIL}:}${JIRA_TOKEN}"
    curl --fail-with-body --silent "${JIRA_AUTH_FLAG}" "${JIRA_AUTH}" \
      --header "Content-Type: application/json" \
-     --get --data-urlencode "jql=project = ${PROJECT_KEY} ORDER BY updated DESC" \
+     --get --data-urlencode "jql=project = PROJ ORDER BY updated DESC" \
      --data-urlencode "maxResults=50" \
      --data-urlencode "fields=summary,labels" \
      "${JIRA_API_URL:-${JIRA_BASE_URL}}/rest/api/3/search/jql"

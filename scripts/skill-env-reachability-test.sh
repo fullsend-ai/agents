@@ -84,6 +84,8 @@ NON_ENV_TOKENS=(
   MAX_RETRIES
   # Review keyword (as in "REQUEST CHANGES")
   REQUEST
+  # Placeholder project key in the Jira skills' JQL examples
+  PROJ
 )
 
 # ---------------------------------------------------------------------------

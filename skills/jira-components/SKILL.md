@@ -16,7 +16,7 @@ ones to assign.
 ## Step 0: Derive variables from ISSUE_URL
 
 ```bash
-ISSUE_KEY=$(echo "${ISSUE_URL}" | sed -E 's|.*/browse/||')
+ISSUE_KEY="${ISSUE_URL##*/browse/}"
 PROJECT_KEY="${ISSUE_KEY%-*}"
 ```
 
