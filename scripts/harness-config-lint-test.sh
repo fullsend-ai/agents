@@ -95,7 +95,7 @@ check_validation_loop_at_path() {
     return 0
   fi
 
-  # For per-location blocks, allow inheritance when schema is empty/absent or script matches top-level
+  # For per-location blocks, allow inheritance only when applicable inherited schema exists
   if [[ "${path}" != "." ]]; then
     local per_location_script
     per_location_script="$(yq "${path}.validation_loop.script" "${harness}")" || {
@@ -107,9 +107,20 @@ check_validation_loop_at_path() {
       echo "${harness_name}: yq failed to extract schema at ${location}"
       return 1
     }
-    # Allow inheritance when schema is empty/null (same as engine behavior via mergeValidationLoop)
+    # Allow inheritance only when schema is empty/null AND there is a top-level schema
     if [[ -z "${per_location_schema}" || "${per_location_schema}" == "null" ]]; then
-      return 0
+      # Check if top-level schema exists
+      local top_level_has_schema
+      top_level_has_schema="$(yq '.validation_loop | has("schema")' "${harness}")" || {
+        echo "${harness_name}: yq failed to check top-level schema"
+        return 1
+      }
+      if [[ "${top_level_has_schema}" == "true" ]]; then
+        return 0
+      else
+        echo "${harness_name}: ${location} validation_loop has script but no schema (and no top-level schema to inherit)"
+        return 1
+      fi
     fi
     # Also allow inheritance when script matches top-level (both script and schema inherited)
     if [[ -n "${top_level_script}" && "${per_location_script}" == "${top_level_script}" ]]; then
@@ -400,7 +411,8 @@ check_schema_files_at_path() {
     echo "${harness_name}: yq failed to extract schema path at ${location}"
     return 1
   }
-  if [[ -z "${schema_path}" ]]; then
+  # Skip if schema is empty or null (inherited schema will be checked separately)
+  if [[ -z "${schema_path}" || "${schema_path}" == "null" ]]; then
     return 0
   fi
 
@@ -569,6 +581,8 @@ test_negative_fixtures() {
   local expected_failures=(
     "script-no-schema.yaml:test_validation_loop_schema:^script-no-schema.yaml.*top-level validation_loop has script but no schema"
     "empty-schema.yaml:test_validation_loop_schema:^empty-schema.yaml.*top-level validation_loop.schema is empty or null"
+    "forge-script-no-inherited-schema.yaml:test_validation_loop_schema:^forge-script-no-inherited-schema.yaml.*validation_loop has script but no schema.*no top-level schema"
+    "overlay-script-no-inherited-schema.yaml:test_validation_loop_schema:^overlay-script-no-inherited-schema.yaml.*validation_loop has script but no schema.*no top-level schema"
     "missing-schema-file.yaml:test_schema_files_exist_and_valid:^missing-schema-file.yaml.*top-level schema file not found"
     "hardcoded-env-runner.yaml:test_no_hardcoded_schema:^hardcoded-env-runner.yaml: env.runner contains hardcoded FULLSEND_OUTPUT_SCHEMA"
     "hardcoded-forge-env-runner.yaml:test_no_hardcoded_schema:^hardcoded-forge-env-runner.yaml.*forge.*env.runner contains hardcoded"
@@ -613,11 +627,53 @@ test_negative_fixtures() {
   fi
 }
 
+# Test 6: Verify positive fixtures pass (prove the checks allow valid configs)
+test_positive_fixtures() {
+  local found_error=0
+  local fixtures_dir="${SCRIPT_DIR}/test-fixtures/harness-config-good"
+
+  if [[ ! -d "${fixtures_dir}" ]]; then
+    return 0
+  fi
+
+  local expected_passes=(
+    "null-schema-inheritance.yaml"
+  )
+
+  for fixture_name in "${expected_passes[@]}"; do
+    local fixture_file="${fixtures_dir}/${fixture_name}"
+
+    if [[ ! -f "${fixture_file}" ]]; then
+      echo "Missing positive fixture: ${fixture_name}"
+      found_error=1
+      continue
+    fi
+
+    local output
+    local exit_code=0
+    output="$(HARNESS_DIR="${fixtures_dir}" REPO_ROOT="${SCRIPT_DIR}"/test-fixtures test_validation_loop_schema test_schema_files_exist_and_valid 2>&1)" || exit_code=$?
+
+    if [[ ${exit_code} -eq 0 ]]; then
+      continue
+    else
+      echo "Fixture ${fixture_name}: exit_code=${exit_code}, expected 0 (pass)"
+      found_error=1
+    fi
+  done
+
+  if [[ ${found_error} -eq 0 ]]; then
+    return 0
+  else
+    return 1
+  fi
+}
+
 run_test "harness-yaml-valid" test_harness_yaml_valid
 run_test "validation-loop-has-schema" test_validation_loop_schema
 run_test "no-hardcoded-schema-in-env" test_no_hardcoded_schema
 run_test "schema-files-exist-and-valid" test_schema_files_exist_and_valid
 run_test "negative-fixtures-fail" test_negative_fixtures
+run_test "positive-fixtures-pass" test_positive_fixtures
 
 if [[ ${FAILURES} -eq 0 ]]; then
   echo
