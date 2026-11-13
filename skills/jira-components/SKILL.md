@@ -18,6 +18,7 @@ ones to assign.
 ```bash
 ISSUE_KEY="${ISSUE_URL##*/browse/}"
 PROJECT_KEY="${ISSUE_KEY%-*}"
+echo "issue ${ISSUE_KEY}, project ${PROJECT_KEY}"
 ```
 
 ## Step 1: Discover available components
@@ -30,6 +31,8 @@ Bearer when it is empty.
 JIRA_EMAIL="${JIRA_USER_EMAIL:-}"; JIRA_EMAIL="${JIRA_EMAIL//[[:space:]]/}"
 JIRA_AUTH_FLAG=--oauth2-bearer; test -n "${JIRA_EMAIL}" && JIRA_AUTH_FLAG=--user
 JIRA_AUTH="${JIRA_EMAIL:+${JIRA_EMAIL}:}${JIRA_TOKEN}"
+ISSUE_KEY="${ISSUE_URL##*/browse/}"
+PROJECT_KEY="${ISSUE_KEY%-*}"
 curl --silent "${JIRA_AUTH_FLAG}" "${JIRA_AUTH}" \
   "${JIRA_API_URL:-${JIRA_BASE_URL}}/rest/api/3/project/${PROJECT_KEY}/components" \
   | jq '[.[] | {name, description}]'
@@ -44,6 +47,7 @@ emit `component_actions`.
 JIRA_EMAIL="${JIRA_USER_EMAIL:-}"; JIRA_EMAIL="${JIRA_EMAIL//[[:space:]]/}"
 JIRA_AUTH_FLAG=--oauth2-bearer; test -n "${JIRA_EMAIL}" && JIRA_AUTH_FLAG=--user
 JIRA_AUTH="${JIRA_EMAIL:+${JIRA_EMAIL}:}${JIRA_TOKEN}"
+ISSUE_KEY="${ISSUE_URL##*/browse/}"
 curl --silent "${JIRA_AUTH_FLAG}" "${JIRA_AUTH}" \
   "${JIRA_API_URL:-${JIRA_BASE_URL}}/rest/api/3/issue/${ISSUE_KEY}?fields=components" \
   | jq '[.fields.components[].name]'

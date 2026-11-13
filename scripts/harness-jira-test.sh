@@ -289,8 +289,8 @@ for skill_file in "${SKILL_FILES[@]}"; do
   else
     assert_pass "skill-${skill_name}-issue-key-expansion"
   fi
-  if grep -qE -- '--data-urlencode "jql=[^"]*\$' "${skill_file}"; then
-    assert_fail "skill-${skill_name}-jql-literal" "a shell variable inside --data-urlencode \"jql=...\" in ${skill_file}"
+  if grep -qE -- '--data-urlencode .*\$' "${skill_file}"; then
+    assert_fail "skill-${skill_name}-jql-literal" "a shell variable inside --data-urlencode in ${skill_file}"
   else
     assert_pass "skill-${skill_name}-jql-literal"
   fi

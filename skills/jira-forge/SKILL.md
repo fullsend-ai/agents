@@ -37,10 +37,13 @@ Extract the issue key and project key from the issue URL:
 ```bash
 ISSUE_KEY="${ISSUE_URL##*/browse/}"
 PROJECT_KEY="${ISSUE_KEY%-*}"
+echo "issue ${ISSUE_KEY}, project ${PROJECT_KEY}"
 ```
 
-In JQL, write the project key itself in place of `PROJ` in the examples
-below. The sandbox command check blocks a shell variable inside
+Shell variables do not carry over between commands either, so the blocks
+below derive `ISSUE_KEY` again where they use it. In JQL, replace
+`<PROJECT_KEY>` with the project key printed above (the issue key up to
+its last `-`). The sandbox command check blocks a shell variable inside
 `--data-urlencode`.
 
 Jira Cloud only (v1) — the issue host must be `*.atlassian.net`. Jira
@@ -52,6 +55,7 @@ Server/Data Center is not supported.
 JIRA_EMAIL="${JIRA_USER_EMAIL:-}"; JIRA_EMAIL="${JIRA_EMAIL//[[:space:]]/}"
 JIRA_AUTH_FLAG=--oauth2-bearer; test -n "${JIRA_EMAIL}" && JIRA_AUTH_FLAG=--user
 JIRA_AUTH="${JIRA_EMAIL:+${JIRA_EMAIL}:}${JIRA_TOKEN}"
+ISSUE_KEY="${ISSUE_URL##*/browse/}"
 
 # View an issue with full details
 curl --fail-with-body --silent "${JIRA_AUTH_FLAG}" "${JIRA_AUTH}" \
@@ -64,7 +68,7 @@ curl --fail-with-body --silent "${JIRA_AUTH_FLAG}" "${JIRA_AUTH}" \
 # List open issues in the project
 curl --fail-with-body --silent "${JIRA_AUTH_FLAG}" "${JIRA_AUTH}" \
   --header "Content-Type: application/json" \
-  --get --data-urlencode "jql=project = PROJ AND statusCategory != Done" \
+  --get --data-urlencode "jql=project = <PROJECT_KEY> AND statusCategory != Done" \
   --data-urlencode "fields=summary,status,labels" \
   "${JIRA_API_URL:-${JIRA_BASE_URL}}/rest/api/3/search/jql"
 ```
@@ -96,7 +100,7 @@ JIRA_AUTH="${JIRA_EMAIL:+${JIRA_EMAIL}:}${JIRA_TOKEN}"
 # Search issues by keyword (JQL text search)
 curl --fail-with-body --silent "${JIRA_AUTH_FLAG}" "${JIRA_AUTH}" \
   --header "Content-Type: application/json" \
-  --get --data-urlencode "jql=project = PROJ AND text ~ \"keyword\"" \
+  --get --data-urlencode "jql=project = <PROJECT_KEY> AND text ~ \"keyword\"" \
   --data-urlencode "fields=summary,status,labels" \
   "${JIRA_API_URL:-${JIRA_BASE_URL}}/rest/api/3/search/jql"
 
@@ -132,6 +136,7 @@ issue as a web link shows up as a remote link:
 JIRA_EMAIL="${JIRA_USER_EMAIL:-}"; JIRA_EMAIL="${JIRA_EMAIL//[[:space:]]/}"
 JIRA_AUTH_FLAG=--oauth2-bearer; test -n "${JIRA_EMAIL}" && JIRA_AUTH_FLAG=--user
 JIRA_AUTH="${JIRA_EMAIL:+${JIRA_EMAIL}:}${JIRA_TOKEN}"
+ISSUE_KEY="${ISSUE_URL##*/browse/}"
 
 # List remote links on an issue (may include manually linked PRs/MRs)
 curl --fail-with-body --silent "${JIRA_AUTH_FLAG}" "${JIRA_AUTH}" \
