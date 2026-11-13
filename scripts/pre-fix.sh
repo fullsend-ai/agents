@@ -10,7 +10,7 @@
 # Required environment variables (set by the workflow):
 #   PR_NUMBER          — must be a positive integer
 #   REPO_FULL_NAME     — must be owner/repo format
-#   TRIGGER_SOURCE     — forge username that triggered the fix (GitHub: [bot] suffix; GitLab: _bot suffix)
+#   TRIGGER_SOURCE     — forge username that triggered the fix (GitHub: [bot] suffix; GitLab: _bot suffix or service_account_ prefix)
 #   FULLSEND_FORGE     — "github" or "gitlab"
 #
 # Optional environment variables:
@@ -388,7 +388,11 @@ _forge_push_branch() {
     return 0
   fi
   git reset -q --soft "${tip}" || return 1
-  git branch -q --set-upstream-to="origin/${branch}" || return 1
+  # Set the upstream as `git push -u` does: --set-upstream-to refuses a
+  # remote-tracking ref outside the fetch refspec, as in a single-branch
+  # clone.
+  git config "branch.${branch}.remote" origin || return 1
+  git config "branch.${branch}.merge" "refs/heads/${branch}" || return 1
   echo "Branch ${branch} is at ${tip} on origin"
 }
 # END bundled: lib/github-signed-push.lib.sh
@@ -862,9 +866,13 @@ forge_append_path() {
     ;;
 esac
 
+# is_bot_user USERNAME — true if USERNAME is an automated forge identity.
+# GitLab: access-token bot users (project_<id>_bot) and service accounts
+# (service_account_..., e.g. the installer-created fullsend-analyst /
+# fullsend-coder accounts named service_account_project_<id>_<hash>).
 is_bot_user() {
   if [ "${FULLSEND_FORGE:-}" = "gitlab" ]; then
-    [[ "${1:-}" =~ _bot$ ]]
+    [[ "${1:-}" =~ _bot$ || "${1:-}" =~ ^service_account_ ]]
   else
     [[ "${1:-}" =~ \[bot\]$ ]]
   fi
@@ -1055,10 +1063,12 @@ if [[ "${errors}" -gt 0 ]]; then
 fi
 
 # ---------------------------------------------------------------------------
-# Human instruction length cap (defense against DoS via oversized input)
+# Human instruction length cap (defense against DoS via oversized input).
+# Applies whenever HUMAN_INSTRUCTION is set, regardless of trigger
+# classification: the harness forwards it into the sandbox either way.
 # ---------------------------------------------------------------------------
 MAX_INSTRUCTION_BYTES=10000
-if ! is_bot_user "${TRIGGER_SOURCE}" && [[ -n "${HUMAN_INSTRUCTION:-}" ]]; then
+if [[ -n "${HUMAN_INSTRUCTION:-}" ]]; then
   INSTRUCTION_LEN="${#HUMAN_INSTRUCTION}"
   if [[ "${INSTRUCTION_LEN}" -gt "${MAX_INSTRUCTION_BYTES}" ]]; then
     gha_echo error "HUMAN_INSTRUCTION is ${INSTRUCTION_LEN} bytes (max: ${MAX_INSTRUCTION_BYTES}). Truncate the instruction."

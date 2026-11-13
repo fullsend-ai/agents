@@ -163,7 +163,7 @@ for skill_file in "${JIRA_SKILL_FILES[@]}"; do
 
   # Basic auth (--user email:placeholder) with a non-blank trimmed email,
   # Bearer (--oauth2-bearer placeholder) without one (#1900).
-  if grep -qF -- 'JIRA_EMAIL="$(printf '"'%s'"' "${JIRA_USER_EMAIL:-}" | tr -d '"'[:space:]'"')"' "${skill_file}" \
+  if grep -qF -- 'JIRA_EMAIL="${JIRA_USER_EMAIL:-}"; JIRA_EMAIL="${JIRA_EMAIL//[[:space:]]/}"' "${skill_file}" \
     && grep -qF -- 'JIRA_AUTH_FLAG=--oauth2-bearer; test -n "${JIRA_EMAIL}" && JIRA_AUTH_FLAG=--user' "${skill_file}" \
     && grep -qF -- 'JIRA_AUTH="${JIRA_EMAIL:+${JIRA_EMAIL}:}${JIRA_TOKEN}"' "${skill_file}"; then
     assert_pass "${test_name}"
