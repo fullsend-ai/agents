@@ -159,12 +159,12 @@ and write the file as step 3 does first; a guessed `target_branch` can fail
 the run. Then add the explanation:
 
 ```bash
-no_pr_reason=$(cat <<'PRBODY'
+no_pr_reason=$(cat <<'REASON'
 <why no PR, then what would unblock it>
-PRBODY
+REASON
 )
 f="${FULLSEND_OUTPUT_DIR}/agent-result.json"
-jq --arg pb "$no_pr_reason" '. + {no_pr_reason: $pb}' "$f" > "$f.tmp" && mv "$f.tmp" "$f"
+jq --arg reason "$no_pr_reason" '. + {no_pr_reason: $reason}' "$f" > "$f.tmp" && mv "$f.tmp" "$f"
 fullsend-check-output "$f"
 ```
 
