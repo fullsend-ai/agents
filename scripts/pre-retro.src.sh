@@ -23,9 +23,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/retro-ops.lib.sh
 source "${SCRIPT_DIR}/lib/retro-ops.lib.sh"
 
-forge_mask_token
 forge_validate_originating_url
 forge_parse_originating_url
+forge_mask_token
 
 if [[ "${FULLSEND_TRACKER}" == "jira" ]]; then
   if [[ "${RETRO_MODE:-all}" != "summary_only" || "${JIRA_ORIGINATING:-false}" == "true" ]]; then

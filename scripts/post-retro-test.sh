@@ -2587,16 +2587,39 @@ else
 fi
 export RETRO_MODE="all"
 
-# 9. Retrospectives on Jira-originated items (no forge token required)
-GH_TOKEN="" ORIGINATING_URL="https://mock.atlassian.net/browse/PROJ-123" \
-  run_test_stdout "jira/originating-jira-item" \
-  "${FIXTURE_ONE_PROPOSAL}" \
-  "Posting summary comment on PROJ#PROJ-123"
+# 9. Retrospectives on Jira-originated items (no forge token required under GHA)
+(
+  unset GH_TOKEN GITLAB_TOKEN
+  GITHUB_ACTIONS="true" \
+  ORIGINATING_URL="https://mock.atlassian.net/browse/PROJ-123" \
+    run_test_stdout "jira/originating-jira-item" \
+    "${FIXTURE_ONE_PROPOSAL}" \
+    "Posting summary comment on PROJ#PROJ-123"
+)
 if grep -qF 'fullsend issues post-comment --tracker jira' "${FULLSEND_LOG}" 2>/dev/null \
   && grep -qF -- '--project PROJ --number 123' "${FULLSEND_LOG}" 2>/dev/null; then
   echo "PASS: jira/originating-jira-comment-posted"
 else
   echo "FAIL: jira/originating-jira-comment-posted — post-comment not called for Jira issue"
+  cat "${FULLSEND_LOG}" 2>/dev/null || true
+  FAILURES=$((FAILURES + 1))
+fi
+
+# 9b. Retrospectives on Jira-originated items with GitLab forge (no gitlab token required under GHA)
+(
+  unset GH_TOKEN GITLAB_TOKEN
+  FULLSEND_FORGE="gitlab" \
+  GITHUB_ACTIONS="true" \
+  ORIGINATING_URL="https://mock.atlassian.net/browse/PROJ-123" \
+    run_test_stdout "jira/originating-jira-item-gitlab-forge-no-token" \
+    "${FIXTURE_ONE_PROPOSAL}" \
+    "Posting summary comment on PROJ#PROJ-123"
+)
+if grep -qF 'fullsend issues post-comment --tracker jira' "${FULLSEND_LOG}" 2>/dev/null \
+  && grep -qF -- '--project PROJ --number 123' "${FULLSEND_LOG}" 2>/dev/null; then
+  echo "PASS: jira/originating-jira-comment-posted-gitlab-forge"
+else
+  echo "FAIL: jira/originating-jira-comment-posted-gitlab-forge — post-comment not called for Jira issue"
   cat "${FULLSEND_LOG}" 2>/dev/null || true
   FAILURES=$((FAILURES + 1))
 fi

@@ -79,7 +79,7 @@ forge_parse_originating_url() {
 # --- Token handling ---
 
 _forge_mask_token() {
-  if [[ -n "${GITHUB_ACTIONS:-}" ]]; then
+  if [[ -n "${GITHUB_ACTIONS:-}" && -n "${GH_TOKEN:-}" ]]; then
     echo "::add-mask::${GH_TOKEN}"
   fi
 }
@@ -293,7 +293,7 @@ forge_parse_originating_url() {
 
 _forge_mask_token() {
   # ::add-mask:: is GHA-only; on non-GHA runners the echo would leak the token.
-  if [[ -n "${GITHUB_ACTIONS:-}" ]]; then
+  if [[ -n "${GITHUB_ACTIONS:-}" && -n "${GITLAB_TOKEN:-}" ]]; then
     echo "::add-mask::${GITLAB_TOKEN}"
   fi
 }
@@ -926,7 +926,11 @@ forge_require_token() {
 }
 
 forge_mask_token() {
-  if declare -f _forge_mask_token >/dev/null 2>&1; then
+  local jira_origin="${JIRA_ORIGINATING:-false}"
+  if [[ "${jira_origin}" != "true" && "${ORIGINATING_URL:-}" =~ ^https://[a-zA-Z0-9.-]+/browse/[A-Z][A-Z0-9]*-[0-9]+$ ]]; then
+    jira_origin="true"
+  fi
+  if [[ "${jira_origin}" != "true" ]] && declare -f _forge_mask_token >/dev/null 2>&1; then
     _forge_mask_token
   fi
   if [[ -n "${GITHUB_ACTIONS:-}" && -n "${JIRA_TOKEN:-}" ]]; then
@@ -952,9 +956,9 @@ forge_get_comment_max_len() {
 esac
 # END bundled: lib/retro-ops.lib.sh
 
-forge_mask_token
 forge_validate_originating_url
 forge_parse_originating_url
+forge_mask_token
 
 if [[ "${FULLSEND_TRACKER}" == "jira" ]]; then
   if [[ "${RETRO_MODE:-all}" != "summary_only" || "${JIRA_ORIGINATING:-false}" == "true" ]]; then

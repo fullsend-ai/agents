@@ -65,6 +65,38 @@ run_test() {
   echo "PASS: ${test_name}"
 }
 
+run_test_unbound_forge_tokens() {
+  local test_name="$1" expected="$2" pattern="$3"
+  shift 3
+  : > "${FORGE_LOG}"
+  local rc=0
+  env -i \
+    PATH="${MOCK_BIN}:${PATH}" \
+    FULLSEND_FORGE="github" \
+    "$@" \
+    bash "${PRE_SCRIPT}" > "${OUT}" 2>&1 || rc=$?
+
+  if [[ "${rc}" -ne "${expected}" ]]; then
+    echo "FAIL: ${test_name} — exit code ${rc}, expected ${expected}"
+    cat "${OUT}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  if ! grep -qF -- "${pattern}" "${OUT}"; then
+    echo "FAIL: ${test_name} — expected output '${pattern}' not found"
+    cat "${OUT}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  if [[ -s "${FORGE_LOG}" ]]; then
+    echo "FAIL: ${test_name} — unexpected forge calls:"
+    cat "${FORGE_LOG}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  echo "PASS: ${test_name}"
+}
+
 # --- Required environment ---
 
 run_test "missing-originating-url-fails" 1 "ORIGINATING_URL is required"
@@ -161,6 +193,18 @@ run_test "jira-issue-url" 0 "Retro target: https://test.atlassian.net/browse/PRO
 
 run_test "jira-token-masked" 0 "::add-mask::secret-jira-token" \
   GITHUB_ACTIONS=true \
+  FULLSEND_TRACKER=jira FULLSEND_DIR="${TMPDIR}/dot-fullsend" JIRA_TOKEN="secret-jira-token" \
+  JIRA_BASE_URL="https://test.atlassian.net" RETRO_JIRA_PROJECT="PROJ" \
+  ORIGINATING_URL="https://test.atlassian.net/browse/PROJ-123"
+
+run_test_unbound_forge_tokens "jira-origin-gha-no-forge-token" 0 "::add-mask::secret-jira-token" \
+  GITHUB_ACTIONS=true \
+  FULLSEND_TRACKER=jira FULLSEND_DIR="${TMPDIR}/dot-fullsend" JIRA_TOKEN="secret-jira-token" \
+  JIRA_BASE_URL="https://test.atlassian.net" RETRO_JIRA_PROJECT="PROJ" \
+  ORIGINATING_URL="https://test.atlassian.net/browse/PROJ-123"
+
+run_test_unbound_forge_tokens "jira-origin-gha-gitlab-forge-no-token" 0 "::add-mask::secret-jira-token" \
+  GITHUB_ACTIONS=true FULLSEND_FORGE=gitlab \
   FULLSEND_TRACKER=jira FULLSEND_DIR="${TMPDIR}/dot-fullsend" JIRA_TOKEN="secret-jira-token" \
   JIRA_BASE_URL="https://test.atlassian.net" RETRO_JIRA_PROJECT="PROJ" \
   ORIGINATING_URL="https://test.atlassian.net/browse/PROJ-123"

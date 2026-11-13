@@ -452,7 +452,11 @@ forge_require_token() {
 }
 
 forge_mask_token() {
-  if declare -f _forge_mask_token >/dev/null 2>&1; then
+  local jira_origin="${JIRA_ORIGINATING:-false}"
+  if [[ "${jira_origin}" != "true" && "${ORIGINATING_URL:-}" =~ ^https://[a-zA-Z0-9.-]+/browse/[A-Z][A-Z0-9]*-[0-9]+$ ]]; then
+    jira_origin="true"
+  fi
+  if [[ "${jira_origin}" != "true" ]] && declare -f _forge_mask_token >/dev/null 2>&1; then
     _forge_mask_token
   fi
   if [[ -n "${GITHUB_ACTIONS:-}" && -n "${JIRA_TOKEN:-}" ]]; then
