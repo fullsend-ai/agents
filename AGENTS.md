@@ -61,7 +61,7 @@ This repository is versioned in lockstep with [fullsend](https://github.com/full
 
 Skills listed in harness `skills:` arrays resolve at runtime in priority order: repo-level (`.agents/skills/`), then upstream platform (`fullsend-ai/fullsend/skills/`). A skill reference is valid even if no matching directory exists in this repo. Do not treat missing local skill directories as bugs without first verifying the skill does not exist at platform level.
 
-To override an upstream skill, create a custom harness with `base:` composition pointing to the upstream harness and include the replacement skill in `skills:`. The override path's basename must match the upstream skill's basename so `mergeSkills` dedupes by basename and yours wins. For example:
+To override an upstream skill, create a custom harness with `base:` composition pointing to the upstream harness and include the replacement skill in `skills:`. `mergeSkills` dedupes by the skill name declared in the SKILL.md frontmatter (fullsend-ai/fullsend #5408), falling back to the path basename when no valid name is declared, so your replacement must declare the same `name:` as the upstream skill to take its place. For example:
 
 ```yaml
 # .fullsend/review.yaml
