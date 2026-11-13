@@ -88,10 +88,12 @@ if [[ "${errors}" -gt 0 ]]; then
 fi
 
 # ---------------------------------------------------------------------------
-# Human instruction length cap (defense against DoS via oversized input)
+# Human instruction length cap (defense against DoS via oversized input).
+# Applies whenever HUMAN_INSTRUCTION is set, regardless of trigger
+# classification: the harness forwards it into the sandbox either way.
 # ---------------------------------------------------------------------------
 MAX_INSTRUCTION_BYTES=10000
-if ! is_bot_user "${TRIGGER_SOURCE}" && [[ -n "${HUMAN_INSTRUCTION:-}" ]]; then
+if [[ -n "${HUMAN_INSTRUCTION:-}" ]]; then
   INSTRUCTION_LEN="${#HUMAN_INSTRUCTION}"
   if [[ "${INSTRUCTION_LEN}" -gt "${MAX_INSTRUCTION_BYTES}" ]]; then
     gha_echo error "HUMAN_INSTRUCTION is ${INSTRUCTION_LEN} bytes (max: ${MAX_INSTRUCTION_BYTES}). Truncate the instruction."

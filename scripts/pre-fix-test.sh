@@ -265,9 +265,11 @@ expect_out "HUMAN_INSTRUCTION is 10001 bytes (max: 10000)"
 expect_no_forge_calls
 finish
 
-# The length cap applies to human runs only; a bot run ignores the field.
-run_pre_fix "bot-oversized-instruction-ignored" 0 HUMAN_INSTRUCTION="${oversized}"
-expect_no_out "HUMAN_INSTRUCTION is"
+# The length cap applies whenever HUMAN_INSTRUCTION is set, including bot runs,
+# because the harness forwards the variable into the sandbox regardless.
+run_pre_fix "bot-oversized-instruction-fails" 1 HUMAN_INSTRUCTION="${oversized}"
+expect_out "HUMAN_INSTRUCTION is 10001 bytes (max: 10000)"
+expect_no_forge_calls
 finish
 
 # =====================================================================
@@ -531,6 +533,11 @@ finish
 run_pre_fix "gitlab-service-account-over-bot-cap-fails" 1 "${GL_ENV[@]}" \
   TRIGGER_SOURCE="${GL_SA_USER}" FIX_ITERATION=6
 expect_out "Fix iteration 6 exceeds bot cap of 5. Escalating to human."
+finish
+
+run_pre_fix "gitlab-service-account-oversized-instruction-fails" 1 "${GL_ENV[@]}" \
+  TRIGGER_SOURCE="${GL_SA_USER}" FIX_ITERATION=1 HUMAN_INSTRUCTION="${oversized}"
+expect_out "HUMAN_INSTRUCTION is 10001 bytes (max: 10000)"
 finish
 
 run_pre_fix "gitlab-human-uses-human-cap" 0 "${GL_ENV[@]}" \
