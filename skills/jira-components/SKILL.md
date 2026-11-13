@@ -27,7 +27,7 @@ mode as the `jira` skill describes: Basic when `JIRA_USER_EMAIL` is set,
 Bearer when it is empty.
 
 ```bash
-JIRA_EMAIL="$(printf '%s' "${JIRA_USER_EMAIL:-}" | tr -d '[:space:]')"
+JIRA_EMAIL="${JIRA_USER_EMAIL:-}"; JIRA_EMAIL="${JIRA_EMAIL//[[:space:]]/}"
 JIRA_AUTH_FLAG=--oauth2-bearer; test -n "${JIRA_EMAIL}" && JIRA_AUTH_FLAG=--user
 JIRA_AUTH="${JIRA_EMAIL:+${JIRA_EMAIL}:}${JIRA_TOKEN}"
 curl --silent "${JIRA_AUTH_FLAG}" "${JIRA_AUTH}" \
@@ -41,7 +41,7 @@ emit `component_actions`.
 ## Step 2: Check current components on the issue
 
 ```bash
-JIRA_EMAIL="$(printf '%s' "${JIRA_USER_EMAIL:-}" | tr -d '[:space:]')"
+JIRA_EMAIL="${JIRA_USER_EMAIL:-}"; JIRA_EMAIL="${JIRA_EMAIL//[[:space:]]/}"
 JIRA_AUTH_FLAG=--oauth2-bearer; test -n "${JIRA_EMAIL}" && JIRA_AUTH_FLAG=--user
 JIRA_AUTH="${JIRA_EMAIL:+${JIRA_EMAIL}:}${JIRA_TOKEN}"
 curl --silent "${JIRA_AUTH_FLAG}" "${JIRA_AUTH}" \

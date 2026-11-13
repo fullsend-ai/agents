@@ -259,7 +259,7 @@ for skill_file in "${SKILL_FILES[@]}"; do
   # Basic auth (--user email:token) only when the trimmed email is
   # non-empty, else Bearer (--oauth2-bearer token), so no curl sends Basic
   # auth with an empty or whitespace-only email.
-  if grep -qF -- 'JIRA_EMAIL="$(printf '"'%s'"' "${JIRA_USER_EMAIL:-}" | tr -d '"'[:space:]'"')"' "${skill_file}" \
+  if grep -qF -- 'JIRA_EMAIL="${JIRA_USER_EMAIL:-}"; JIRA_EMAIL="${JIRA_EMAIL//[[:space:]]/}"' "${skill_file}" \
     && grep -qF -- 'JIRA_AUTH_FLAG=--oauth2-bearer; test -n "${JIRA_EMAIL}" && JIRA_AUTH_FLAG=--user' "${skill_file}" \
     && grep -qF -- 'JIRA_AUTH="${JIRA_EMAIL:+${JIRA_EMAIL}:}${JIRA_TOKEN}"' "${skill_file}"; then
     assert_pass "${test_name}"
@@ -267,6 +267,16 @@ for skill_file in "${SKILL_FILES[@]}"; do
     assert_fail "${test_name}" "missing the Basic/Bearer selection lines in ${skill_file}"
   fi
 done
+
+# The sandbox command hook cannot analyse a command substitution in the
+# email trim and blocks the whole snippet (#1995). The trim must stay a
+# parameter expansion in every skill.
+if cmdsub_files="$(grep -rlF -- 'JIRA_EMAIL="$(' "${REPO_ROOT}/skills")"; then
+  assert_fail "skill-jira-email-no-command-substitution" \
+    "JIRA_EMAIL=\"\$( found in: ${cmdsub_files//$'\n'/ }"
+else
+  assert_pass "skill-jira-email-no-command-substitution"
+fi
 
 # Every Jira curl uses the selected auth, and none passes --user directly.
 for skill_file in "${SKILL_FILES[@]}"; do
