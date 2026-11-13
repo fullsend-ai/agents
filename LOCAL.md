@@ -131,13 +131,16 @@ runner, no override workaround needed:
 
 ```bash
 export FULLSEND_WORK_ITEM_URL="https://your-site.atlassian.net/browse/TESTPROJ-42"
-# Bot user: set the email (Basic auth). Service account: leave it unset
-# (Bearer auth). The post-scripts and the sandbox's jira-ro provider both
-# read these, and fullsend run sets JIRA_USER_EMAIL from
-# FULLSEND_JIRA_EMAIL (needs a fullsend release that includes
-# fullsend-ai/fullsend#9411).
+# Bot user: set the email (Basic auth). Service account: leave both email
+# variables unset (Bearer auth).
+# - Post-scripts read both FULLSEND_JIRA_* values.
+# - The sandbox jira-ro provider reads FULLSEND_JIRA_TOKEN (needs a fullsend
+#   release that includes fullsend-ai/fullsend#9411).
+# - fullsend run sets JIRA_USER_EMAIL only for a Jira event; for a local run,
+#   export it yourself for the sandbox skills (below).
 export FULLSEND_JIRA_TOKEN="your-jira-api-token"
 export FULLSEND_JIRA_EMAIL="you@example.com"
+export JIRA_USER_EMAIL="${FULLSEND_JIRA_EMAIL}"
 export JIRA_BASE_URL="https://your-site.atlassian.net"
 # The post-scripts require the .fullsend directory; nothing sets it for you.
 export FULLSEND_DIR="<path to the .fullsend directory>"
@@ -169,16 +172,18 @@ require `ISSUE_NUMBER`. It derives the work-item key from
 external key as a GitHub or GitLab issue number.
 
 ```bash
-# Jira-source env vars. FULLSEND_JIRA_TOKEN is read by the jira-ro
-# provider on the host and by the post-code Jira write; it never enters
-# the sandbox environment. fullsend run sets JIRA_USER_EMAIL from
-# FULLSEND_JIRA_EMAIL, and it enters the code sandbox with JIRA_BASE_URL
-# as non-secret config (needs a fullsend release that includes
-# fullsend-ai/fullsend#9411). For a service account, leave
-# FULLSEND_JIRA_EMAIL unset (Bearer auth).
+# Jira-source env vars.
+# - FULLSEND_JIRA_TOKEN: read on the host by the jira-ro provider (needs a
+#   fullsend release that includes fullsend-ai/fullsend#9411) and by the
+#   post-code Jira write. It never enters the sandbox environment.
+# - JIRA_USER_EMAIL: enters the code sandbox with JIRA_BASE_URL as
+#   non-secret config. fullsend run sets it from FULLSEND_JIRA_EMAIL only
+#   for a Jira event; for a local run, export it yourself (below).
+# - Service account: leave both email variables unset (Bearer auth).
 export FULLSEND_WORK_ITEM_URL="https://your-site.atlassian.net/browse/TESTPROJ-42"
 export FULLSEND_JIRA_TOKEN="your-jira-api-token"
 export FULLSEND_JIRA_EMAIL="you@example.com"
+export JIRA_USER_EMAIL="${FULLSEND_JIRA_EMAIL}"
 export JIRA_BASE_URL="https://your-site.atlassian.net"
 # The post-scripts require the .fullsend directory; nothing sets it for you.
 export FULLSEND_DIR="<path to the .fullsend directory>"

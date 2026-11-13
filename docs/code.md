@@ -333,7 +333,8 @@ vars. Key differences from single-forge setup:
   `env/jira/code.env` host file, so an unset value is empty instead of
   failing the run. `fullsend run` sets `JIRA_USER_EMAIL` from the
   optional `FULLSEND_JIRA_EMAIL` repository secret, and the `jira-ro`
-  provider reads the `FULLSEND_JIRA_TOKEN` repository secret. The Jira overlay
+  provider reads the `FULLSEND_JIRA_TOKEN` repository secret (both need
+  fullsend-ai/fullsend#9411, see below). The Jira overlay
   composes with the target-forge overlay (GitHub or GitLab) via
   merge-all-matching.
 - **External work-item identity** — when the source tracker differs from the
@@ -359,13 +360,18 @@ vars. Key differences from single-forge setup:
   gateway from `tracker.jira` in that directory's `config.yaml`. This needs
   a fullsend release that includes the config-backed Jira commands
   ([fullsend-ai/fullsend#9078](https://github.com/fullsend-ai/fullsend/pull/9078)).
-  The only Jira secrets to set are `FULLSEND_JIRA_TOKEN` and, for a bot
-  user, `FULLSEND_JIRA_EMAIL`. The sandbox `jira-ro` provider reads
-  `FULLSEND_JIRA_TOKEN` too, so no `JIRA_TOKEN` or `JIRA_USER_EMAIL`
-  secret is needed. This needs a fullsend release that includes
-  [fullsend-ai/fullsend#9411](https://github.com/fullsend-ai/fullsend/issues/9411),
-  which lets the provider expand `FULLSEND_JIRA_TOKEN` and sets
-  `JIRA_USER_EMAIL` from `FULLSEND_JIRA_EMAIL`.
+
+  Jira secrets:
+
+  - Set `FULLSEND_JIRA_TOKEN`, and `FULLSEND_JIRA_EMAIL` for a bot user.
+  - The post-script and the sandbox `jira-ro` provider both read
+    `FULLSEND_JIRA_TOKEN`. `fullsend run` sets `JIRA_USER_EMAIL` from
+    `FULLSEND_JIRA_EMAIL`.
+  - The legacy `JIRA_TOKEN` and `JIRA_USER_EMAIL` secrets are no longer read.
+  - The provider read and the `JIRA_USER_EMAIL` mapping need a fullsend
+    release that includes
+    [fullsend-ai/fullsend#9411](https://github.com/fullsend-ai/fullsend/issues/9411).
+
   The post-script takes the Jira credentials out of its environment before
   it runs any git command, so repo-controlled hooks, including the one that
   fires when it renames the agent branch, cannot read them from their

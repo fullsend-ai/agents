@@ -212,8 +212,9 @@ Scribe resolves `${JIRA_BASE_URL}`, `${FULLSEND_JIRA_TOKEN}`, `${FULLSEND_JIRA_E
 runner via `env.runner`. The token is never passed into the sandboxed agent
 container. The only Jira secrets to set are `FULLSEND_JIRA_TOKEN` and, for a
 bot user, `FULLSEND_JIRA_EMAIL`; no `JIRA_TOKEN` or `JIRA_USER_EMAIL` secret is
-needed. The triage and code agents use the same pair, which needs a
-fullsend release that includes
+needed. Scribe maps them in `env.runner`, which works with current fullsend
+releases. The triage and code agents read the same pair; for them this needs
+a fullsend release that includes
 [fullsend-ai/fullsend#9411](https://github.com/fullsend-ai/fullsend/issues/9411).
 Configure these credentials in your CI platform as follows:
 
@@ -243,6 +244,16 @@ Configure these credentials in your CI platform as follows:
     # ... other required inputs (SCRIBE_REPO, SCRIBE_SEARCH_QUERY, etc.)
   run: |
     fullsend run scribe --fullsend-dir . --target-repo "${GITHUB_WORKSPACE}"
+```
+
+Step `env` works for this direct `fullsend run` step. If you run scribe
+through the fullsend action instead, pass the secrets as action inputs; the
+action ignores `FULLSEND_JIRA_*` set in step `env`:
+
+```yaml
+  with:
+    jira-token: ${{ secrets.FULLSEND_JIRA_TOKEN }}
+    jira-email: ${{ secrets.FULLSEND_JIRA_EMAIL }}  # bot user only
 ```
 
 **GitLab CI/CD:**
