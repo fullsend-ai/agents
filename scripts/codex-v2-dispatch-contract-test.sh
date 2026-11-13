@@ -4,7 +4,9 @@
 # fullsend's runtime note carries the sentence below once fullsend admits
 # collaboration V2 parents (fullsend-ai/fullsend#9085). The review and retro
 # agents gate their V2 rules on it, so a wording change on either side must
-# change both.
+# change both. The same holds for fullsend's withheld notice (its
+# codexWithheldNotice), which the V2 rules treat as a final result with no
+# content.
 #
 # The test checks three things:
 # - both agents gate on the sentence;
@@ -27,6 +29,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 MARKER='`Dispatch follows collaboration V2.`'
+NOTICE='`RESULT WITHHELD BY FULLSEND`'
 FAILURES=0
 
 pass() { echo "PASS: $1"; }
@@ -55,6 +58,7 @@ has() {
 
 for f in agents/review.md agents/retro.md; do
   has "${f}" "$(join_lines <"${REPO_ROOT}/${f}")" "${MARKER}"
+  has "${f}" "$(join_lines <"${REPO_ROOT}/${f}")" "${NOTICE}"
 done
 
 # --- V2 rule bodies ---------------------------------------------------------
@@ -112,6 +116,7 @@ for rule in \
   'one call per child' \
   'a payload that is empty, is `Agent shut down.` or `Agent was not found.`' \
   '`Agent errored:` or `Agent interrupted by Guardian:`' \
+  "a payload that is exactly ${NOTICE} (the runtime sends it in place of a result it withheld)" \
   'still running 900 s after its spawn: interrupt it' \
   'it sends no result, unless the call reports it `completed`, when its result message is the result' \
   "Apply that sub-agent's failure fallback" \
@@ -159,6 +164,7 @@ for rule in \
   'run `date +%s` after each spawn and at each timed-out wait' \
   'a payload that is empty, is `Agent shut down.` or `Agent was not found.`' \
   '`Agent errored:` or `Agent interrupted by Guardian:`' \
+  "a payload that is exactly ${NOTICE} (the runtime sends it in place of a result it withheld)" \
   'a task still running 900 s after its spawn (interrupt it with `interrupt_agent`' \
   '`target` = the task name `spawn_agent` returned, `/root/<task_name>`; it sends no result' \
   'is final for that task' \

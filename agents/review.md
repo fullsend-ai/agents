@@ -46,10 +46,11 @@ final-state rule under Constraints:
   `wait_agent` never takes one.
 - **Final without a result:** a payload that is empty, is
   `Agent shut down.` or `Agent was not found.`, or starts with
-  `Agent errored:` or `Agent interrupted by Guardian:`; and a child
-  still running 900 s after its spawn: interrupt it (it sends no
-  result, unless the call reports it `completed`, when its result
-  message is the result).
+  `Agent errored:` or `Agent interrupted by Guardian:`; a payload that
+  is exactly `RESULT WITHHELD BY FULLSEND` (the runtime sends it in
+  place of a result it withheld); and a child still running 900 s
+  after its spawn: interrupt it (it sends no result, unless the call
+  reports it `completed`, when its result message is the result).
   Apply that sub-agent's failure fallback (3c-1 item 6, 3c-2, step 5,
   6d item 4); never retry the spawn or read the child's raw rollout.
 - **Step 3c-1:** `agent_type` `security-triage` when listed, else
