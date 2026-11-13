@@ -16,7 +16,7 @@ No additional setup is required beyond the standard fullsend configuration.
 
 ## Triggers
 
-The retro agent runs automatically when a PR is closed (merged or not).
+The retro agent runs automatically when a PR is closed (merged or not), including after a merge. On GitLab, the equivalent merge-request close event triggers it as well. The Jira integration below changes where the retro's proposals are filed; it does not change the trigger. For example, with `FULLSEND_TRACKER=jira`, closing a PR or MR starts the retrospective and its validated proposals are filed in the configured Jira project.
 
 It can also be triggered manually with the `/fs-retro` command.
 
@@ -77,7 +77,7 @@ Retro can deliver findings and improvement proposals to Jira Cloud instead of (o
 - **Traceability:** Created Jira issues preserve the originating GitHub/GitLab PR URL in the body footer, and the retro summary comment links back to all created Jira issues.
 - **Preflight validation:** Checks Jira create metadata (`createmeta`) before creating issues. Fails early with a clear diagnostic if the issue type is missing or requires fields retro does not provide.
 
-Set `FULLSEND_TRACKER=jira` and the Jira variables in the runner env by extending the harness with `base:` composition:
+To have retrospectives triggered by PR/MR close file their proposals in Jira, set `FULLSEND_TRACKER=jira` and the Jira variables in the runner env by extending the harness with `base:` composition. This configures the destination, not the event trigger; the standard retro dispatch must also be enabled for the repo. PR/MR close triggers retro whether merged or not, and `/fs-retro` remains available for manual runs.
 
 ```yaml
 # .fullsend/retro.yaml
