@@ -160,7 +160,7 @@ FOOTER = (
 )
 
 ATTRIBUTION = (
-    '\n<sub>Updated by <a href="https://github.com/fullsend-ai/fullsend">'
+    '\n\n<sub>Updated by <a href="https://github.com/fullsend-ai/fullsend">'
     "fullsend</a> fix agent</sub>"
 )
 

@@ -395,8 +395,18 @@ _signed_push_update_ref() {
 forge_push_branch() {
   local rc=0 _SIGNED_PUSH_DIR _SIGNED_PUSH_MAP _SIGNED_PUSH_BLOBS
   if [ "${GITHUB_SIGNED_COMMITS:-false}" != "true" ]; then
-    local branch="$1"
+    local branch="$1" lease
     shift
+    if [ "${1:-}" = "--force-with-lease" ]; then
+      # Lease on the tracking ref explicitly: a single-branch clone has no
+      # fetch refspec for BRANCH, so a bare --force-with-lease reports stale info.
+      lease="$(git rev-parse -q --verify "refs/remotes/origin/${branch}")" || {
+        echo "error: no remote-tracking ref origin/${branch} to lease on; refusing the non-fast-forward update" >&2
+        return 1
+      }
+      git push --force-with-lease="refs/heads/${branch}:${lease}" -u origin -- "${branch}"
+      return
+    fi
     git push "$@" -u origin -- "${branch}"
     return
   fi
@@ -1285,11 +1295,15 @@ gha_echo() {
 
 _redact_multiline_pem() {
   awk '
+    # OpenSSH/RSA/EC/DSA/PKCS8 PEM headers end in "...private key-----".
+    # OpenPGP'"'"'s ASCII-armor format instead ends in "...private key
+    # block-----" (issue #239) -- the optional "( block)?" covers both
+    # without requiring a separate pattern per key format.
     function is_pem_begin(line) {
-      return tolower(line) ~ /-----begin .*private key-----/
+      return tolower(line) ~ /-----begin .*private key( block)?-----/
     }
     function is_pem_end(line) {
-      return tolower(line) ~ /-----end .*private key-----/
+      return tolower(line) ~ /-----end .*private key( block)?-----/
     }
     is_pem_begin($0) {
       print "[REDACTED PRIVATE KEY]"

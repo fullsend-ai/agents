@@ -620,6 +620,17 @@ else
   pass "off-force-with-lease-replaces-remote-branch"
 fi
 
+# Without a remote-tracking ref there is nothing to lease on: refused.
+git -C "${repo}" update-ref -d "refs/remotes/origin/${BRANCH}"
+commit_file "${repo}" c.txt "c" "feat: c"
+push_off false "${repo}" "${BRANCH}" --force-with-lease
+if [ "${PUSH_RC}" -eq 0 ] || [ "$(remote_rev "${repo}" "refs/heads/${BRANCH}")" != "${local_tip}" ] \
+   || ! printf '%s' "${PUSH_OUT}" | grep -qF "no remote-tracking ref origin/${BRANCH} to lease on"; then
+  fail "off-force-with-lease-no-tracking-ref-refused" "exit ${PUSH_RC}" "${PUSH_OUT}"
+else
+  pass "off-force-with-lease-no-tracking-ref-refused"
+fi
+
 echo
 if [ "${FAILURES}" -gt 0 ]; then
   echo "${FAILURES} test(s) failed"

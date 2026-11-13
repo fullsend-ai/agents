@@ -367,11 +367,15 @@ gha_echo() {
 
 _redact_multiline_pem() {
   awk '
+    # OpenSSH/RSA/EC/DSA/PKCS8 PEM headers end in "...private key-----".
+    # OpenPGP'"'"'s ASCII-armor format instead ends in "...private key
+    # block-----" (issue #239) -- the optional "( block)?" covers both
+    # without requiring a separate pattern per key format.
     function is_pem_begin(line) {
-      return tolower(line) ~ /-----begin .*private key-----/
+      return tolower(line) ~ /-----begin .*private key( block)?-----/
     }
     function is_pem_end(line) {
-      return tolower(line) ~ /-----end .*private key-----/
+      return tolower(line) ~ /-----end .*private key( block)?-----/
     }
     is_pem_begin($0) {
       print "[REDACTED PRIVATE KEY]"
@@ -2064,8 +2068,18 @@ _signed_push_update_ref() {
 forge_push_branch() {
   local rc=0 _SIGNED_PUSH_DIR _SIGNED_PUSH_MAP _SIGNED_PUSH_BLOBS
   if [ "${GITHUB_SIGNED_COMMITS:-false}" != "true" ]; then
-    local branch="$1"
+    local branch="$1" lease
     shift
+    if [ "${1:-}" = "--force-with-lease" ]; then
+      # Lease on the tracking ref explicitly: a single-branch clone has no
+      # fetch refspec for BRANCH, so a bare --force-with-lease reports stale info.
+      lease="$(git rev-parse -q --verify "refs/remotes/origin/${branch}")" || {
+        echo "error: no remote-tracking ref origin/${branch} to lease on; refusing the non-fast-forward update" >&2
+        return 1
+      }
+      git push --force-with-lease="refs/heads/${branch}:${lease}" -u origin -- "${branch}"
+      return
+    fi
     git push "$@" -u origin -- "${branch}"
     return
   fi
@@ -2909,8 +2923,18 @@ forge_set_push_remote() {
 
 # forge_push_branch BRANCH [--force-with-lease] — plain git push.
 forge_push_branch() {
-  local branch="$1"
+  local branch="$1" lease
   shift
+  if [ "${1:-}" = "--force-with-lease" ]; then
+    # Lease on the tracking ref explicitly: a single-branch clone has no
+    # fetch refspec for BRANCH, so a bare --force-with-lease reports stale info.
+    lease="$(git rev-parse -q --verify "refs/remotes/origin/${branch}")" || {
+      echo "error: no remote-tracking ref origin/${branch} to lease on; refusing the non-fast-forward update" >&2
+      return 1
+    }
+    git push --force-with-lease="refs/heads/${branch}:${lease}" -u origin -- "${branch}"
+    return
+  fi
   git push "$@" -u origin -- "${branch}"
 }
 
@@ -4033,6 +4057,41 @@ fi
 # ---------------------------------------------------------------------------
 # 7b. Push, with --force-with-lease fallback for non-fast-forward errors.
 # ---------------------------------------------------------------------------
+
+# The code agent's git author name; harness/code.yaml sets it in the sandbox.
+CODE_AGENT_AUTHOR_NAME="fullsend-code"
+
+# refuse_unless_agent_commits — the forced retry drops every commit on the
+# fetched origin/BRANCH that HEAD lacks; fail unless the code agent wrote
+# each one, so a person's or the fix agent's work is never replaced (#342).
+refuse_unless_agent_commits() {
+  local bot_email dropped sha name email committer committer_email short pr_note=""
+  bot_email="$(signoff_bot_email)"
+  if [ -z "${bot_email}" ]; then
+    post_fail_to_issue push-rejected \
+      "Cannot tell whether the commits on '${BRANCH}' are the code agent's (no bot email set) — refusing to replace them."
+  fi
+  if ! dropped="$(git rev-list "refs/remotes/origin/${BRANCH}" --not HEAD)"; then
+    post_fail_to_issue push-rejected \
+      "Could not list the commits on '${BRANCH}' that a forced push would replace — refusing to push."
+  fi
+  for sha in ${dropped}; do
+    IFS=$'\t' read -r name email <<< "$(commit_author_identity "${sha}")"
+    IFS=$'\t' read -r committer committer_email <<< "$(git log -1 --format='%cn%x09%ce' "${sha}")"
+    # Amending an agent commit keeps its author, so the committer must match
+    # too. GitHub is the committer of API-signed commits.
+    if [ "${name}" != "${CODE_AGENT_AUTHOR_NAME}" ] || [ "${email}" != "${bot_email}" ] \
+       || { [ "${committer_email}" != "${bot_email}" ] && [ "${committer_email}" != "noreply@github.com" ]; }; then
+      short="$(git rev-parse --short "${sha}")"
+      if [ -n "${OPEN_PR:-}" ]; then
+        pr_note=" (open PR #${OPEN_PR})"
+      fi
+      post_fail_to_issue push-rejected \
+        "Branch '${BRANCH}'${pr_note} holds commit ${short} by ${name:-unknown} (committed by ${committer:-unknown}), which is not the code agent's own; refusing to replace it. Close the pull request and run the code agent again, or ask for changes on the existing pull request instead."
+    fi
+  done
+}
+
 echo "Pushing branch ${BRANCH}..."
 PUSH_OUTPUT="$(forge_push_branch "${BRANCH}" 2>&1)" && PUSH_RC=0 || PUSH_RC=$?
 print_sanitized_gha_log "${PUSH_OUTPUT}"
@@ -4040,6 +4099,28 @@ print_sanitized_gha_log "${PUSH_OUTPUT}"
 if [ "${PUSH_RC}" -ne 0 ]; then
   if echo "${PUSH_OUTPUT}" | grep -qi "non-fast-forward\|rejected\|fetch first\|not a fast forward"; then
     gha_echo warning "Plain push failed (non-fast-forward) — retrying with --force-with-lease"
+    # The lease and the commit check need the current remote tip (#409, #342).
+    # In a shallow clone a plain fetch pulls in old target-branch history,
+    # which the check would count as commits to replace; in a full clone
+    # --shallow-exclude would make the clone shallow.
+    SHALLOW_EXCLUDE_ARG=""
+    if [ "$(git rev-parse --is-shallow-repository)" = "true" ]; then
+      SHALLOW_EXCLUDE_ARG="--shallow-exclude=refs/heads/${TARGET_BRANCH}"
+    fi
+    echo "Fetching remote branch ${BRANCH} before the forced retry..."
+    BRANCH_FETCH_OUTPUT="$(git fetch ${SHALLOW_EXCLUDE_ARG:+"${SHALLOW_EXCLUDE_ARG}"} origin \
+      "+refs/heads/${BRANCH}:refs/remotes/origin/${BRANCH}" 2>&1)" && BRANCH_FETCH_RC=0 || BRANCH_FETCH_RC=$?
+    # The push remote URL carries PUSH_TOKEN.
+    BRANCH_FETCH_OUTPUT="$(_redact_literal_token "${BRANCH_FETCH_OUTPUT}" "${PUSH_TOKEN}")"
+    print_sanitized_gha_log "${BRANCH_FETCH_OUTPUT}"
+    if [ "${BRANCH_FETCH_RC}" -ne 0 ]; then
+      PUSH_CATEGORY="$(categorize_push_failure "${PUSH_OUTPUT}
+${BRANCH_FETCH_OUTPUT}")"
+      post_fail_to_issue "${PUSH_CATEGORY}" "${PUSH_OUTPUT}
+Could not fetch '${BRANCH}' before the forced retry:
+${BRANCH_FETCH_OUTPUT}"
+    fi
+    refuse_unless_agent_commits
     FORCE_PUSH_OUTPUT=""
     if ! FORCE_PUSH_OUTPUT="$(forge_push_branch "${BRANCH}" --force-with-lease 2>&1)"; then
       print_sanitized_gha_log "${FORCE_PUSH_OUTPUT}"

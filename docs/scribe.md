@@ -292,6 +292,71 @@ The agent produces JSON validated against `schemas/scribe-result.schema.json`:
 - `new_issues[]` — proposals for issues not yet in the backlog
 - `stats` — counts for observability
 
+### Notifications
+
+The post-script produces two independent outputs after each run:
+
+- a **step summary**, written whenever `GITHUB_STEP_SUMMARY` is available (i.e.
+  on any GitHub Actions run), regardless of whether a Slack webhook is set; and
+- a **Slack message**, sent only when `SCRIBE_SLACK_WEBHOOK_URL` is set, which
+  keeps the run-mode label (`LIVE` or `DRY RUN`) and a `View run` link.
+
+When the run processed one or more meeting documents, **both** outputs include a
+**`Meeting:`** line naming the processed document(s) — a single
+`Meeting: <title>` for one doc, or a `Meetings (N):` list for several — so
+operators can tell which meeting produced the results without opening the Actions
+run. The titles come from the Drive document names that `pre-scribe` records in a
+runner-only `scribe-titles.json` (`doc_names`), which — unlike `scribe-meta.json`
+— is **not** mounted into the agent sandbox, so untrusted titles never enter the
+agent's context. Document names are **untrusted input** and are
+sanitized before display: control characters, ANSI escapes, and dangerous
+Unicode (line/paragraph separators, bidi overrides, zero-width and tag
+characters) are stripped so a crafted title cannot inject extra lines or reorder
+text. Titles are then rendered inside an inline code span (backticks) in
+**both** the Slack message and the step summary. In the step summary this
+suppresses Markdown links, raw HTML, and bare-URL autolinking. In Slack,
+inline code is documented to suppress other mrkdwn formatting (`*bold*`,
+`_italic_`, `~strike~`), so an unescaped title cannot use emphasis to alter
+the notification's appearance; whether a bare URL remains clickable inside a
+Slack code span is not relied on alone — the Slack payload also sets
+`unfurl_links`/`unfurl_media` to `false`, independently preventing a
+link-preview card for a URL in an untrusted title. Slack's own mrkdwn/link
+metacharacters (`& < > |`) are also escaped beforehand as defense-in-depth.
+Each title is also run through a sensitive-content redactor: the same patterns
+that gate topics and new issues (emails, SSNs, keys/tokens, and similar), plus —
+because titles are raw, never-scrubbed Drive names — the phone-number,
+IPv4-address and card-number detection that `pre-scribe` applies to note bodies.
+Only the **matching substring** is replaced with `[redacted]` (e.g. `Call
+[redacted] re Q3`), so the rest of the title still identifies the meeting.
+Card-like digit runs are Luhn-validated before redaction so version numbers and
+meeting IDs (e.g. `OKR 1234567890123`) are not blanked; an IPv4-shaped version
+such as `4.18.0.1` still has that span redacted, since a pattern cannot tell it
+from an address. This redaction is **pattern-based only**: unlike topics and new
+issues, titles skip the agent's `public_safe` gate, so free-text PII that does
+not match one of these patterns — a person's name, for example — is published
+as-is (`1:1 with Jane Doe - performance review` is not redacted).
+
+The same stripping and redaction are applied to the document names `pre-scribe`
+writes to the **job log** (the "Found …" and "Downloading: …" lines), so a
+sensitive name is redacted there too — not shown in full on the same run page —
+and a newline in a name cannot forge an extra log line.
+
+If the metadata or
+`doc_names` field is absent, the meeting line is omitted and the outputs are
+otherwise unchanged.
+
+The concise **"No meeting notes found for today."** message replaces the usual
+activity counters only when **both** conditions hold: the runner-side
+`scribe-meta.json` reports `docs_downloaded: 0` (a successful search that matched
+no documents), **and** the agent produced nothing to act on (no topics and no
+new-issue proposals in its result). This keeps an empty run from being mistaken
+for one that processed notes but produced no topics, while still showing the
+activity report — including any skipped or failed items — if a zero-document
+search nonetheless returned proposals. A run that *found* notes but extracted
+zero topics has `docs_downloaded > 0` and keeps the normal report. Missing,
+malformed, or non-numeric metadata, and search or export failures, never produce
+the no-notes message. An unset webhook skips the notification entirely.
+
 ## Custom network policy
 
 If this agent needs to reach hosts beyond the defaults, see the

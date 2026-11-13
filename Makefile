@@ -100,6 +100,7 @@ script-test:
 	$(call run-timed,bash scripts/post-retro-test.sh)
 	$(call run-timed,bash scripts/pre-scribe-test.sh)
 	$(call run-timed,bash scripts/post-scribe-test.sh)
+	$(call run-timed,bash scripts/scribe-titles-trust-boundary-test.sh)
 	$(call run-timed,bash scripts/example-link-check-test.sh)
 	$(call run-timed,bash scripts/validate-output-schema-test.sh)
 	$(call run-timed,bash scripts/validate-code-output-test.sh)
@@ -120,7 +121,8 @@ script-test:
 	$(call run-timed,bash eval/scripts/aggregate-nightly-test.sh)
 	$(call run-timed,bash eval/run-functional-test.sh)
 	$(call run-timed,bash .github/scripts/check-rollup-result-test.sh)
-	$(call run-timed,bash .github/scripts/vouch-check-test.sh)
+	$(call run-timed,bash .github/scripts/vouch-sweep-test.sh)
+	$(call run-timed,bash .github/scripts/workflow-triggers-test.sh)
 	$(call run-timed,test "$(SCRIPT_TEST_TARGET)" = bundled || (cd harness/triggertest && GOWORK=off GOFLAGS= go test -count=1 ./...))
 	$(call run-timed,bash .github/scripts/check-dco-signoff-test.sh)
 

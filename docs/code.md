@@ -163,6 +163,17 @@ rejected PR body falls back to the normalized commit body only if that text
 passes the same scan. Raw text-scan diagnostics are not logged.
 Jira-source no-PR runs still emit only their existing generic notice.
 
+### Reruns on an open pull request
+
+When you run the code agent again and its branch already backs an open pull
+request, the new run replaces the code agent's earlier commits on that branch.
+The post-script refuses the push if the branch holds a commit by anyone else,
+and names that commit in a failure comment. That includes a commit by you or
+the fix agent, a code agent commit you amended, and the merge commit GitHub's
+**Update branch** button adds.
+To start over, close the pull request and run the code agent again, which
+deletes the old branch; to keep the existing work, ask for changes on the open
+pull request instead.
 
 ### Signed commits
 
