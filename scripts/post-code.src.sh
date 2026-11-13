@@ -945,6 +945,37 @@ fi
 # ---------------------------------------------------------------------------
 # 7b. Push, with --force-with-lease fallback for non-fast-forward errors.
 # ---------------------------------------------------------------------------
+
+# The code agent's git author name; harness/code.yaml sets it in the sandbox.
+CODE_AGENT_AUTHOR_NAME="fullsend-code"
+
+# refuse_unless_agent_commits — the forced retry drops every commit on the
+# fetched origin/BRANCH that HEAD lacks; fail unless the code agent wrote
+# each one, so a person's or the fix agent's work is never replaced (#342).
+refuse_unless_agent_commits() {
+  local bot_email dropped sha name email short pr_note=""
+  bot_email="$(signoff_bot_email)"
+  if [ -z "${bot_email}" ]; then
+    post_fail_to_issue push-rejected \
+      "Cannot tell whether the commits on '${BRANCH}' are the code agent's (no bot email set) — refusing to replace them."
+  fi
+  if ! dropped="$(git rev-list "refs/remotes/origin/${BRANCH}" --not HEAD)"; then
+    post_fail_to_issue push-rejected \
+      "Could not list the commits on '${BRANCH}' that a forced push would replace — refusing to push."
+  fi
+  for sha in ${dropped}; do
+    IFS=$'\t' read -r name email <<< "$(commit_author_identity "${sha}")"
+    if [ "${name}" != "${CODE_AGENT_AUTHOR_NAME}" ] || [ "${email}" != "${bot_email}" ]; then
+      short="$(git rev-parse --short "${sha}")"
+      if [ -n "${OPEN_PR:-}" ]; then
+        pr_note=" (open PR #${OPEN_PR})"
+      fi
+      post_fail_to_issue push-rejected \
+        "Branch '${BRANCH}'${pr_note} holds commit ${short} by ${name:-unknown}, which the code agent did not write; refusing to replace it. Close the pull request and run the code agent again, or ask for changes on the existing pull request instead."
+    fi
+  done
+}
+
 echo "Pushing branch ${BRANCH}..."
 PUSH_OUTPUT="$(forge_push_branch "${BRANCH}" 2>&1)" && PUSH_RC=0 || PUSH_RC=$?
 print_sanitized_gha_log "${PUSH_OUTPUT}"
@@ -952,6 +983,27 @@ print_sanitized_gha_log "${PUSH_OUTPUT}"
 if [ "${PUSH_RC}" -ne 0 ]; then
   if echo "${PUSH_OUTPUT}" | grep -qi "non-fast-forward\|rejected\|fetch first\|not a fast forward"; then
     gha_echo warning "Plain push failed (non-fast-forward) — retrying with --force-with-lease"
+    # The lease and the commit check need the current remote tip (#409, #342).
+    # In a shallow clone a plain fetch pulls in old target-branch history,
+    # which the check would count as commits to replace; in a full clone
+    # --shallow-exclude would make the clone shallow.
+    SHALLOW_EXCLUDE_ARG=""
+    if [ "$(git rev-parse --is-shallow-repository)" = "true" ]; then
+      SHALLOW_EXCLUDE_ARG="--shallow-exclude=refs/heads/${TARGET_BRANCH}"
+    fi
+    echo "Fetching remote branch ${BRANCH} before the forced retry..."
+    BRANCH_FETCH_OUTPUT="$(git fetch ${SHALLOW_EXCLUDE_ARG:+"${SHALLOW_EXCLUDE_ARG}"} origin \
+      "+refs/heads/${BRANCH}:refs/remotes/origin/${BRANCH}" 2>&1)" && BRANCH_FETCH_RC=0 || BRANCH_FETCH_RC=$?
+    # The push remote URL carries PUSH_TOKEN.
+    BRANCH_FETCH_OUTPUT="$(_redact_literal_token "${BRANCH_FETCH_OUTPUT}" "${PUSH_TOKEN}")"
+    print_sanitized_gha_log "${BRANCH_FETCH_OUTPUT}"
+    if [ "${BRANCH_FETCH_RC}" -ne 0 ]; then
+      PUSH_CATEGORY="$(categorize_push_failure "${PUSH_OUTPUT}
+${BRANCH_FETCH_OUTPUT}")"
+      post_fail_to_issue "${PUSH_CATEGORY}" "Could not fetch '${BRANCH}' before the forced retry:
+${BRANCH_FETCH_OUTPUT}"
+    fi
+    refuse_unless_agent_commits
     FORCE_PUSH_OUTPUT=""
     if ! FORCE_PUSH_OUTPUT="$(forge_push_branch "${BRANCH}" --force-with-lease 2>&1)"; then
       print_sanitized_gha_log "${FORCE_PUSH_OUTPUT}"

@@ -353,8 +353,18 @@ forge_set_push_remote() {
 
 # forge_push_branch BRANCH [--force-with-lease] — plain git push.
 forge_push_branch() {
-  local branch="$1"
+  local branch="$1" lease
   shift
+  if [ "${1:-}" = "--force-with-lease" ]; then
+    # Lease on the tracking ref explicitly: a single-branch clone has no
+    # fetch refspec for BRANCH, so a bare --force-with-lease reports stale info.
+    lease="$(git rev-parse -q --verify "refs/remotes/origin/${branch}")" || {
+      echo "error: no remote-tracking ref origin/${branch} to lease on; refusing the non-fast-forward update" >&2
+      return 1
+    }
+    git push --force-with-lease="refs/heads/${branch}:${lease}" -u origin -- "${branch}"
+    return
+  fi
   git push "$@" -u origin -- "${branch}"
 }
 
