@@ -160,9 +160,19 @@ run_test "jira-issue-url" 0 "Retro target: https://test.atlassian.net/browse/PRO
   ORIGINATING_URL="https://test.atlassian.net/browse/PROJ-123"
 
 run_test "jira-token-masked" 0 "::add-mask::secret-jira-token" \
+  GITHUB_ACTIONS=true \
   FULLSEND_TRACKER=jira FULLSEND_DIR="${TMPDIR}/dot-fullsend" JIRA_TOKEN="secret-jira-token" \
   JIRA_BASE_URL="https://test.atlassian.net" RETRO_JIRA_PROJECT="PROJ" \
   ORIGINATING_URL="https://test.atlassian.net/browse/PROJ-123"
+
+run_test "jira-token-not-masked-without-gha" 0 "Retro target: https://test.atlassian.net/browse/PROJ-123" \
+  FULLSEND_TRACKER=jira FULLSEND_DIR="${TMPDIR}/dot-fullsend" JIRA_TOKEN="secret-jira-token" \
+  JIRA_BASE_URL="https://test.atlassian.net" RETRO_JIRA_PROJECT="PROJ" \
+  ORIGINATING_URL="https://test.atlassian.net/browse/PROJ-123"
+if grep -qF "::add-mask::secret-jira-token" "${OUT}" 2>/dev/null; then
+  echo "FAIL: jira-token-not-masked-without-gha — token masked when GITHUB_ACTIONS is unset"
+  FAILURES=$((FAILURES + 1))
+fi
 
 run_test "jira-untrusted-host-fails" 1 "ORIGINATING_URL Jira host 'evil.example' is not in the allowed host list" \
   FULLSEND_TRACKER=jira FULLSEND_DIR="${TMPDIR}/dot-fullsend" JIRA_TOKEN="test-token" \

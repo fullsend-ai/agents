@@ -95,7 +95,7 @@ env:
     FULLSEND_DIR: ${FULLSEND_DIR}
 ```
 
-Cross-project issue creation in Jira can also be restricted via `tracker.jira.allowed_targets.projects` in `config.yaml`. The `tracker.jira` configuration in `config.yaml` (under `FULLSEND_DIR`) is required by the `fullsend` CLI for Jira issue operations; ensure the configured primary project or allowed targets match `RETRO_JIRA_PROJECT`.
+Cross-project issue creation in Jira can also be restricted via `tracker.jira.allowed_targets.projects` in `config.yaml`. The `tracker.jira` configuration in `config.yaml` (under `FULLSEND_DIR`) is required by the `fullsend` CLI for Jira issue operations; ensure the configured primary project or allowed targets match `RETRO_JIRA_PROJECT`. When `tracker.jira.allowed_targets.projects` is omitted, the allowlist check is advisory and permits issue creation into the operator-configured `RETRO_JIRA_PROJECT`. Setting an explicit empty list (`projects: []`) revokes all Jira issue creation.
 
 ### Issue filing allowlist
 

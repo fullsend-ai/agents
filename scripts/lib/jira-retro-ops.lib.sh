@@ -436,10 +436,14 @@ forge_post_comment() {
 }
 
 forge_require_token() {
-  if [[ "${RETRO_MODE}" != "summary_only" || "${JIRA_ORIGINATING:-false}" == "true" ]]; then
+  local jira_origin="${JIRA_ORIGINATING:-false}"
+  if [[ "${jira_origin}" != "true" && "${ORIGINATING_URL:-}" =~ ^https://[a-zA-Z0-9.-]+/browse/[A-Z][A-Z0-9]*-[0-9]+$ ]]; then
+    jira_origin="true"
+  fi
+  if [[ "${RETRO_MODE}" != "summary_only" || "${jira_origin}" == "true" ]]; then
     : "${JIRA_TOKEN:?JIRA_TOKEN must be set}"
   fi
-  if [[ "${JIRA_ORIGINATING:-false}" == "true" ]]; then
+  if [[ "${jira_origin}" == "true" ]]; then
     return 0
   fi
   if declare -f _forge_require_token >/dev/null 2>&1; then
@@ -451,7 +455,7 @@ forge_mask_token() {
   if declare -f _forge_mask_token >/dev/null 2>&1; then
     _forge_mask_token
   fi
-  if [[ -n "${JIRA_TOKEN:-}" ]]; then
+  if [[ -n "${GITHUB_ACTIONS:-}" && -n "${JIRA_TOKEN:-}" ]]; then
     printf '::add-mask::%s\n' "$(printf '%s' "${JIRA_TOKEN}" | tr -d '\n\r')"
   fi
 }

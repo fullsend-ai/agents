@@ -32,6 +32,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/retro-ops.lib.sh
 source "${SCRIPT_DIR}/lib/retro-ops.lib.sh"
 
+forge_validate_originating_url
+forge_parse_originating_url
+
 forge_require_token
 forge_mask_token
 
@@ -71,10 +74,6 @@ if ! jq empty "${RESULT_FILE}" 2>/dev/null; then
   echo "ERROR: ${RESULT_FILE} is not valid JSON" >&2
   exit 1
 fi
-
-# Extract repo and number from ORIGINATING_URL.
-forge_validate_originating_url
-forge_parse_originating_url
 
 echo "Originating: ${ORIGINATING_REPO}#${ORIGINATING_NUMBER}"
 
@@ -174,8 +173,31 @@ if command -v yq &>/dev/null; then
   ' <<<"${ALLOWED_TARGETS_JSON}" 2>/dev/null || true)
   if [[ "${TRACKER_PROVIDER}" == "jira" && "${JIRA_ALLOWLIST_STATE}" != "failed" ]]; then
     if [[ "${TRACKER_JSON}" != "null" && -n "${TRACKER_JSON}" ]]; then
-      if jq -e 'type == "object" and has("jira")' <<<"${TRACKER_JSON}" &>/dev/null; then
+      projects_status=$(jq -r '
+        if type != "object" or (has("jira") | not) or (.jira | type != "object") then
+          "unset"
+        elif (.jira | has("allowed_targets")) then
+          if (.jira.allowed_targets | type == "object") and (.jira.allowed_targets | has("projects")) then
+            if (.jira.allowed_targets.projects | type == "array") then
+              "configured"
+            else
+              "failed"
+            end
+          elif (.jira.allowed_targets == null) then
+            "unset"
+          elif (.jira.allowed_targets | type == "object") and ((.jira.allowed_targets | has("projects")) | not) then
+            "unset"
+          else
+            "failed"
+          end
+        else
+          "unset"
+        end
+      ' <<<"${TRACKER_JSON}" 2>/dev/null || echo "failed")
+      if [[ "${projects_status}" == "configured" ]]; then
         JIRA_ALLOWLIST_STATE="configured"
+      elif [[ "${projects_status}" == "failed" ]]; then
+        JIRA_ALLOWLIST_STATE="failed"
       fi
     fi
   fi
@@ -415,7 +437,8 @@ if [[ "${PROPOSAL_COUNT}" -gt 0 ]]; then
     fi
 
     if [[ ${CREATE_RC} -eq 2 ]]; then
-      echo "::warning::Issue created but failed to apply label in Jira for proposal[$i] (${SAFE_TITLE}): ${ISSUE_URL}"
+      SAFE_URL=$(_gha_sanitize "${ISSUE_URL}")
+      echo "::warning::Issue created but failed to apply label in Jira for proposal[$i] (${SAFE_TITLE}): ${SAFE_URL}"
     fi
 
     echo "Created: ${ISSUE_URL}"

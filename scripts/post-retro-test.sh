@@ -2587,8 +2587,8 @@ else
 fi
 export RETRO_MODE="all"
 
-# 9. Retrospectives on Jira-originated items
-ORIGINATING_URL="https://mock.atlassian.net/browse/PROJ-123" \
+# 9. Retrospectives on Jira-originated items (no forge token required)
+GH_TOKEN="" ORIGINATING_URL="https://mock.atlassian.net/browse/PROJ-123" \
   run_test_stdout "jira/originating-jira-item" \
   "${FIXTURE_ONE_PROPOSAL}" \
   "Posting summary comment on PROJ#PROJ-123"
@@ -2711,6 +2711,17 @@ rm -rf "${MOCK_NO_YQ_BIN}"
 # 15. Allowlist: unset config allows configured RETRO_JIRA_PROJECT
 rm -f "${JIRA_WORKSPACE}/config.yaml"
 run_test_stdout "jira/allowlist-unset-allows" \
+  "${FIXTURE_ONE_PROPOSAL}" \
+  "Created: https://mock.atlassian.net/browse/PROJ-100"
+
+# 15b. Allowlist: tracker.jira without allowed_targets allows configured RETRO_JIRA_PROJECT
+cat > "${JIRA_WORKSPACE}/config.yaml" <<CFGEOF
+version: "1"
+tracker:
+  jira:
+    site: https://mock.atlassian.net
+CFGEOF
+run_test_stdout "jira/allowlist-no-allowed-targets-allows" \
   "${FIXTURE_ONE_PROPOSAL}" \
   "Created: https://mock.atlassian.net/browse/PROJ-100"
 

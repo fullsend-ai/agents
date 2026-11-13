@@ -919,10 +919,14 @@ forge_post_comment() {
 }
 
 forge_require_token() {
-  if [[ "${RETRO_MODE}" != "summary_only" || "${JIRA_ORIGINATING:-false}" == "true" ]]; then
+  local jira_origin="${JIRA_ORIGINATING:-false}"
+  if [[ "${jira_origin}" != "true" && "${ORIGINATING_URL:-}" =~ ^https://[a-zA-Z0-9.-]+/browse/[A-Z][A-Z0-9]*-[0-9]+$ ]]; then
+    jira_origin="true"
+  fi
+  if [[ "${RETRO_MODE}" != "summary_only" || "${jira_origin}" == "true" ]]; then
     : "${JIRA_TOKEN:?JIRA_TOKEN must be set}"
   fi
-  if [[ "${JIRA_ORIGINATING:-false}" == "true" ]]; then
+  if [[ "${jira_origin}" == "true" ]]; then
     return 0
   fi
   if declare -f _forge_require_token >/dev/null 2>&1; then
@@ -934,7 +938,7 @@ forge_mask_token() {
   if declare -f _forge_mask_token >/dev/null 2>&1; then
     _forge_mask_token
   fi
-  if [[ -n "${JIRA_TOKEN:-}" ]]; then
+  if [[ -n "${GITHUB_ACTIONS:-}" && -n "${JIRA_TOKEN:-}" ]]; then
     printf '::add-mask::%s\n' "$(printf '%s' "${JIRA_TOKEN}" | tr -d '\n\r')"
   fi
 }
@@ -956,6 +960,9 @@ forge_get_comment_max_len() {
     ;;
 esac
 # END bundled: lib/retro-ops.lib.sh
+
+forge_validate_originating_url
+forge_parse_originating_url
 
 forge_require_token
 forge_mask_token
@@ -996,10 +1003,6 @@ if ! jq empty "${RESULT_FILE}" 2>/dev/null; then
   echo "ERROR: ${RESULT_FILE} is not valid JSON" >&2
   exit 1
 fi
-
-# Extract repo and number from ORIGINATING_URL.
-forge_validate_originating_url
-forge_parse_originating_url
 
 echo "Originating: ${ORIGINATING_REPO}#${ORIGINATING_NUMBER}"
 
@@ -1099,8 +1102,31 @@ if command -v yq &>/dev/null; then
   ' <<<"${ALLOWED_TARGETS_JSON}" 2>/dev/null || true)
   if [[ "${TRACKER_PROVIDER}" == "jira" && "${JIRA_ALLOWLIST_STATE}" != "failed" ]]; then
     if [[ "${TRACKER_JSON}" != "null" && -n "${TRACKER_JSON}" ]]; then
-      if jq -e 'type == "object" and has("jira")' <<<"${TRACKER_JSON}" &>/dev/null; then
+      projects_status=$(jq -r '
+        if type != "object" or (has("jira") | not) or (.jira | type != "object") then
+          "unset"
+        elif (.jira | has("allowed_targets")) then
+          if (.jira.allowed_targets | type == "object") and (.jira.allowed_targets | has("projects")) then
+            if (.jira.allowed_targets.projects | type == "array") then
+              "configured"
+            else
+              "failed"
+            end
+          elif (.jira.allowed_targets == null) then
+            "unset"
+          elif (.jira.allowed_targets | type == "object") and ((.jira.allowed_targets | has("projects")) | not) then
+            "unset"
+          else
+            "failed"
+          end
+        else
+          "unset"
+        end
+      ' <<<"${TRACKER_JSON}" 2>/dev/null || echo "failed")
+      if [[ "${projects_status}" == "configured" ]]; then
         JIRA_ALLOWLIST_STATE="configured"
+      elif [[ "${projects_status}" == "failed" ]]; then
+        JIRA_ALLOWLIST_STATE="failed"
       fi
     fi
   fi
@@ -1340,7 +1366,8 @@ if [[ "${PROPOSAL_COUNT}" -gt 0 ]]; then
     fi
 
     if [[ ${CREATE_RC} -eq 2 ]]; then
-      echo "::warning::Issue created but failed to apply label in Jira for proposal[$i] (${SAFE_TITLE}): ${ISSUE_URL}"
+      SAFE_URL=$(_gha_sanitize "${ISSUE_URL}")
+      echo "::warning::Issue created but failed to apply label in Jira for proposal[$i] (${SAFE_TITLE}): ${SAFE_URL}"
     fi
 
     echo "Created: ${ISSUE_URL}"
