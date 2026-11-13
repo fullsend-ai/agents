@@ -512,23 +512,44 @@ for _mc_i in $(seq 1 12); do
   ${MC_REAL_GIT} -C "${_mc_repo}" commit -q -am "fix(#42): padding commit ${_mc_i} ${_mc_pad}"
 done
 
-_mc_pipefail_line="$(grep -m1 -E "COMMIT_SUBJECT=.*sed -n '1p'" "${POST_SCRIPT}")"
-_mc_pipefail_exit=0
-_mc_pipefail_subject="$(
-  set -eo pipefail
-  cd "${_mc_repo}"
-  # shellcheck disable=SC2030,SC2034,SC2153
-  MERGE_BASE="${_mc_merge_base}"
-  PATH="$(dirname "${MC_REAL_GIT}"):${PATH}"
-  eval "${_mc_pipefail_line}" || exit $?
-  printf '%s' "${COMMIT_SUBJECT}"
-)" || _mc_pipefail_exit=$?
+_eval_commit_subject_pipefail() {
+  (
+    set -eo pipefail
+    cd "${_mc_repo}"
+    # shellcheck disable=SC2030,SC2034,SC2153
+    MERGE_BASE="${_mc_merge_base}"
+    PATH="$(dirname "${MC_REAL_GIT}"):${PATH}"
+    eval "$1" || exit $?
+    printf '%s' "${COMMIT_SUBJECT}"
+  )
+}
 
-if [ "${_mc_pipefail_exit}" -eq 0 ] && [ "${_mc_pipefail_subject}" = "feat(#42): add primary feature" ]; then
-  echo "PASS: multi-commit-git-integration-pipefail-safe"
-else
-  echo "FAIL: multi-commit-git-integration-pipefail-safe (exit=${_mc_pipefail_exit}, subject='${_mc_pipefail_subject}')"
+_mc_pipefail_line="$(grep -m1 -E "COMMIT_SUBJECT=.*sed -n '1p'" "${POST_SCRIPT}" || true)"
+if [ -z "${_mc_pipefail_line}" ]; then
+  echo "FAIL: multi-commit-git-integration-pipefail-safe (COMMIT_SUBJECT pipeline not found)"
   FAILURES=$((FAILURES + 1))
+else
+  _mc_pipefail_exit=0
+  _mc_pipefail_subject="$(_eval_commit_subject_pipefail "${_mc_pipefail_line}")" || _mc_pipefail_exit=$?
+
+  if [ "${_mc_pipefail_exit}" -eq 0 ] && [ "${_mc_pipefail_subject}" = "feat(#42): add primary feature" ]; then
+    echo "PASS: multi-commit-git-integration-pipefail-safe"
+  else
+    echo "FAIL: multi-commit-git-integration-pipefail-safe (exit=${_mc_pipefail_exit}, subject='${_mc_pipefail_subject}')"
+    FAILURES=$((FAILURES + 1))
+  fi
+
+  _mc_sed_pat="sed -n '1p'"
+  _mc_control_line="${_mc_pipefail_line//"${_mc_sed_pat}"/head -1}"
+  _mc_control_exit=0
+  _mc_control_subject="$(_eval_commit_subject_pipefail "${_mc_control_line}")" || _mc_control_exit=$?
+
+  if [ "${_mc_control_exit}" -eq 141 ]; then
+    echo "PASS: multi-commit-git-integration-control-head-sigpipe"
+  else
+    echo "FAIL: multi-commit-git-integration-control-head-sigpipe (expected exit=141, got exit=${_mc_control_exit}, subject='${_mc_control_subject}')"
+    FAILURES=$((FAILURES + 1))
+  fi
 fi
 
 # Single-commit case: rewind to initial feature commit and verify
