@@ -170,10 +170,24 @@ test_validation_loop_schema() {
     local top_level_script=""
     local has_top_level_validation_loop
     has_top_level_validation_loop="$(yq 'has("validation_loop")' "${harness}")" || {
-      has_top_level_validation_loop="false"
+      echo "${harness_name}: yq failed to check has validation_loop"
+      found_error=1
+      continue
     }
     if [[ "${has_top_level_validation_loop}" == "true" ]]; then
-      top_level_script="$(yq '.validation_loop.script' "${harness}" 2>/dev/null)" || true
+      local has_top_level_script
+      has_top_level_script="$(yq '.validation_loop | has("script")' "${harness}")" || {
+        echo "${harness_name}: yq failed to check top-level script"
+        found_error=1
+        continue
+      }
+      if [[ "${has_top_level_script}" == "true" ]]; then
+        top_level_script="$(yq '.validation_loop.script' "${harness}")" || {
+          echo "${harness_name}: yq failed to extract top-level script"
+          found_error=1
+          continue
+        }
+      fi
     fi
 
     # Check forge-specific validation_loops
@@ -401,7 +415,7 @@ check_schema_files_at_path() {
     return 1
   fi
 
-  if ! jq -s -e 'length == 1' "${full_schema_path}" 2>/dev/null; then
+  if ! jq -s -e 'length == 1' "${full_schema_path}"; then
     echo "${harness_name}: ${location} schema file is not valid JSON: ${schema_path}"
     return 1
   fi
