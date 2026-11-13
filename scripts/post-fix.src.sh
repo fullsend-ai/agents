@@ -39,7 +39,7 @@
 #   REPO_FULL_NAME    — owner/repo
 #   PR_NUMBER         — PR number
 #   REPO_DIR          — path to extracted repo (default: current directory)
-#   TRIGGER_SOURCE    — forge username that triggered the fix (GitHub: [bot] suffix; GitLab: _bot suffix)
+#   TRIGGER_SOURCE    — forge username that triggered the fix (GitHub: [bot] suffix; GitLab: _bot suffix or service_account_ prefix)
 #
 # Optional environment variables:
 #   FIX_ITERATION     — current iteration count

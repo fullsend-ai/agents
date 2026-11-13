@@ -10,7 +10,7 @@
 # Required environment variables (set by the workflow):
 #   PR_NUMBER          — must be a positive integer
 #   REPO_FULL_NAME     — must be owner/repo format
-#   TRIGGER_SOURCE     — forge username that triggered the fix (GitHub: [bot] suffix; GitLab: _bot suffix)
+#   TRIGGER_SOURCE     — forge username that triggered the fix (GitHub: [bot] suffix; GitLab: _bot suffix or service_account_ prefix)
 #   FULLSEND_FORGE     — "github" or "gitlab"
 #
 # Optional environment variables:
@@ -862,9 +862,13 @@ forge_append_path() {
     ;;
 esac
 
+# is_bot_user USERNAME — true if USERNAME is an automated forge identity.
+# GitLab: access-token bot users (project_<id>_bot) and service accounts
+# (service_account_..., e.g. the installer-created fullsend-analyst /
+# fullsend-coder accounts named service_account_project_<id>_<hash>).
 is_bot_user() {
   if [ "${FULLSEND_FORGE:-}" = "gitlab" ]; then
-    [[ "${1:-}" =~ _bot$ ]]
+    [[ "${1:-}" =~ _bot$ || "${1:-}" =~ ^service_account_ ]]
   else
     [[ "${1:-}" =~ \[bot\]$ ]]
   fi

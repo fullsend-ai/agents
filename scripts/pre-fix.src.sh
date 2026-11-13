@@ -9,7 +9,7 @@
 # Required environment variables (set by the workflow):
 #   PR_NUMBER          — must be a positive integer
 #   REPO_FULL_NAME     — must be owner/repo format
-#   TRIGGER_SOURCE     — forge username that triggered the fix (GitHub: [bot] suffix; GitLab: _bot suffix)
+#   TRIGGER_SOURCE     — forge username that triggered the fix (GitHub: [bot] suffix; GitLab: _bot suffix or service_account_ prefix)
 #   FULLSEND_FORGE     — "github" or "gitlab"
 #
 # Optional environment variables:

@@ -519,8 +519,37 @@ expect_no_log "${GH_LOG}" "gh"
 expect_log "${GITHUB_PATH_FILE}" "${HOME_DIR}/.local/bin"
 finish
 
+# Installer-created GitLab agents are service accounts, not _bot users
+# (issue #1989): their automatic runs must use the bot cap, not the human cap.
+GL_SA_USER="service_account_project_320403_94e2a668c72588514ec6c8d2b9b998c5"
+
+run_pre_fix "gitlab-service-account-at-bot-cap-passes" 0 "${GL_ENV[@]}" \
+  TRIGGER_SOURCE="${GL_SA_USER}" FIX_ITERATION=5
+expect_out "FIX_ITERATION=5 of 5"
+finish
+
+run_pre_fix "gitlab-service-account-over-bot-cap-fails" 1 "${GL_ENV[@]}" \
+  TRIGGER_SOURCE="${GL_SA_USER}" FIX_ITERATION=6
+expect_out "Fix iteration 6 exceeds bot cap of 5. Escalating to human."
+finish
+
+run_pre_fix "gitlab-human-uses-human-cap" 0 "${GL_ENV[@]}" \
+  TRIGGER_SOURCE=alice FIX_ITERATION=6
+expect_out "FIX_ITERATION=6 of 10"
+finish
+
+run_pre_fix "gitlab-bot-substring-is-human" 0 "${GL_ENV[@]}" \
+  TRIGGER_SOURCE=robot_alice FIX_ITERATION=6
+expect_out "FIX_ITERATION=6 of 10"
+finish
+
 printf '{"target_branch":"main","detailed_merge_status":"mergeable","labels":["fullsend-fix-budget/1"]}' > "${DATA}/mr.json"
 run_pre_fix "gitlab-budget-label-blocks-bot-run" 1 "${GL_ENV[@]}" FIX_ITERATION=2
+expect_out "per-PR automatic fix budget of 1 set by label fullsend-fix-budget/1"
+finish
+
+run_pre_fix "gitlab-budget-label-blocks-service-account-run" 1 "${GL_ENV[@]}" \
+  TRIGGER_SOURCE="${GL_SA_USER}" FIX_ITERATION=2
 expect_out "per-PR automatic fix budget of 1 set by label fullsend-fix-budget/1"
 finish
 
