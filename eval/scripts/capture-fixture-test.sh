@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
-# Tests for capture-fixture.sh's issue-fixture PR discovery: a failed or
-# malformed `gh pr list` must be recorded as pull_requests_fetch_failed
+# capture-fixture-test.sh — Tests for empty fixture responses and PR discovery.
+# Required issue and PR views must return JSON before capture writes state.
+# A failed or malformed `gh pr list` must be recorded as pull_requests_fetch_failed
 # (PR existence unknown), never as a successful empty pull_requests=[].
 # Also runs eval/code/eval.yaml's pr_created and expected_files judges
 # against each captured state. Fully offline: `gh` is a stub on PATH.
 #
-# Usage:
+# Run from the repo root:
 #   bash eval/scripts/capture-fixture-test.sh
 set -euo pipefail
 
@@ -38,8 +39,10 @@ cat > "$TMP/bin/gh" <<'STUB'
 case "$1 $2" in
   "issue view")
     if [[ " $* " == *" comments"* ]]; then
+      [[ "${GH_STUB_EMPTY_VIEW:-}" == "comments" ]] && exit 0
       echo '{"comments":[]}'
     else
+      [[ "${GH_STUB_EMPTY_VIEW:-}" == "issue" ]] && exit 0
       echo '{"state":"OPEN","labels":[],"assignees":[],"milestone":null,"title":"t"}'
     fi
     ;;
@@ -53,20 +56,29 @@ case "$1 $2" in
       object) echo '{"message":"unexpected"}' ;;
     esac
     ;;
-  "pr view") echo '["calc.py"]' ;;
+  "pr view")
+    [[ "${GH_STUB_EMPTY_VIEW:-}" == "pull_request" ]] && exit 0
+    if [[ " $* " == *" --json files "* ]]; then
+      echo '["calc.py"]'
+    else
+      echo '{"state":"OPEN","comments":[],"reviews":[],"files":[]}'
+    fi
+    ;;
   *) echo "unexpected gh call: $*" >&2; exit 1 ;;
 esac
 STUB
 chmod +x "$TMP/bin/gh"
 
-# run_capture <mode> — runs capture-fixture.sh for an issue fixture and
-# leaves fixture-state.json and stderr under $TMP/<mode>/.
+# run_capture <mode> [fixture_type] — run the capture hook with stubbed gh.
 run_capture() {
-  local mode="$1" ws="$TMP/$1"
+  local mode="$1" ws="$TMP/$1" fixture_type="${2:-issue}" url_path=issues
+  if [[ "$fixture_type" == pull_request ]]; then
+    url_path=pull
+  fi
   mkdir -p "$ws"
   PATH="$TMP/bin:$PATH" GH_STUB_PR_LIST="$mode" GH_TOKEN="ghp_stubtokenvalue" \
     CASE_WORKSPACE="$ws" EPHEMERAL_REPO="o/r" FIXTURE_NUMBER=1 \
-    FIXTURE_TYPE=issue FIXTURE_URL="https://github.com/o/r/issues/1" \
+    FIXTURE_TYPE="$fixture_type" FIXTURE_URL="https://github.com/o/r/$url_path/1" \
     bash "$CAPTURE" >/dev/null 2>"$ws/stderr"
 }
 
@@ -117,6 +129,7 @@ expect_judge one expected_files True "All expected files present" "$EXPECT_CALC"
 
 # 2. Successful empty lookup keeps the existing missing-PR behaviour.
 run_capture empty
+expect_state empty '.comments == []' "valid empty comments are captured"
 expect_state empty '.pull_requests_fetch_failed == false' "pull_requests_fetch_failed is false"
 expect_state empty '.pull_requests == []' "pull_requests is an empty list"
 expect_judge empty pr_created False "No pull requests found" "$EXPECT_CALC"
@@ -144,6 +157,35 @@ for mode in error blank malformed object; do
   # no expected_files (the flag check precedes the no-expectations early return).
   expect_judge "$mode" expected_files False "Infrastructure failure" "$EXPECT_NONE"
 done
+
+# A successful gh call with no output must not publish an empty snapshot.
+for view in issue comments pull_request; do
+  fixture_type=issue
+  if [[ "$view" == pull_request ]]; then
+    fixture_type=pull_request
+  fi
+  if GH_STUB_EMPTY_VIEW="$view" run_capture "blank-$view" "$fixture_type"; then
+    fail "empty $view response: capture unexpectedly succeeded"
+  elif [[ -e "$TMP/blank-$view/output/fixture-state.json" ]]; then
+    fail "empty $view response: failed capture left a snapshot"
+  else
+    pass "empty $view response: capture failed before publishing the snapshot"
+  fi
+done
+
+run_capture valid-pr pull_request
+expect_state valid-pr '.pr_fetch_failed == false and .comments == [] and .files == []' \
+  "a PR with empty comments and files is captured"
+
+state="$TMP/valid-pr/output/fixture-state.json"
+cp "$state" "$TMP/previous-state.json"
+if GH_STUB_EMPTY_VIEW=pull_request run_capture valid-pr pull_request; then
+  fail "recapture with empty PR data unexpectedly succeeded"
+elif cmp -s "$TMP/previous-state.json" "$state"; then
+  pass "failed recapture preserves the previous snapshot"
+else
+  fail "failed recapture replaced the previous snapshot"
+fi
 
 echo ""
 echo "=== $TESTS tests, $FAILURES failures ==="
