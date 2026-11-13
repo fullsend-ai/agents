@@ -1,0 +1,8 @@
+---
+validation_loop:
+  script: scripts/validate-output-schema.sh
+  schema: schemas/review-result.schema.json
+overlays:
+  - validation_loop:
+      script: scripts/validate-output-schema.sh
+      schema: harness-config-bad/invalid-json-schema.json.txt

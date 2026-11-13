@@ -584,6 +584,8 @@ test_negative_fixtures() {
     "forge-script-no-inherited-schema.yaml:test_validation_loop_schema:^forge-script-no-inherited-schema.yaml.*validation_loop has script but no schema.*no top-level schema"
     "overlay-script-no-inherited-schema.yaml:test_validation_loop_schema:^overlay-script-no-inherited-schema.yaml.*validation_loop has script but no schema.*no top-level schema"
     "missing-schema-file.yaml:test_schema_files_exist_and_valid:^missing-schema-file.yaml.*top-level schema file not found"
+    "forge-missing-schema-file.yaml:test_schema_files_exist_and_valid:^forge-missing-schema-file.yaml.*forge.github.*schema file not found"
+    "overlay-bad-json-schema.yaml:test_schema_files_exist_and_valid:^overlay-bad-json-schema.yaml.*overlays\[0\].*schema file is not valid JSON"
     "hardcoded-env-runner.yaml:test_no_hardcoded_schema:^hardcoded-env-runner.yaml: env.runner contains hardcoded FULLSEND_OUTPUT_SCHEMA"
     "hardcoded-forge-env-runner.yaml:test_no_hardcoded_schema:^hardcoded-forge-env-runner.yaml.*forge.*env.runner contains hardcoded"
     "hardcoded-forge-runner-env.yaml:test_no_hardcoded_schema:^hardcoded-forge-runner-env.yaml.*forge.*runner_env.*contains hardcoded"
