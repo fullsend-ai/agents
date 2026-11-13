@@ -65,6 +65,38 @@ run_test() {
   echo "PASS: ${test_name}"
 }
 
+run_test_unbound_forge_tokens() {
+  local test_name="$1" expected="$2" pattern="$3"
+  shift 3
+  : > "${FORGE_LOG}"
+  local rc=0
+  env -i \
+    PATH="${MOCK_BIN}:${PATH}" \
+    FULLSEND_FORGE="github" \
+    "$@" \
+    bash "${PRE_SCRIPT}" > "${OUT}" 2>&1 || rc=$?
+
+  if [[ "${rc}" -ne "${expected}" ]]; then
+    echo "FAIL: ${test_name} — exit code ${rc}, expected ${expected}"
+    cat "${OUT}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  if ! grep -qF -- "${pattern}" "${OUT}"; then
+    echo "FAIL: ${test_name} — expected output '${pattern}' not found"
+    cat "${OUT}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  if [[ -s "${FORGE_LOG}" ]]; then
+    echo "FAIL: ${test_name} — unexpected forge calls:"
+    cat "${FORGE_LOG}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  echo "PASS: ${test_name}"
+}
+
 # --- Required environment ---
 
 run_test "missing-originating-url-fails" 1 "ORIGINATING_URL is required"
@@ -141,6 +173,64 @@ run_test "gitlab-no-ci-server-host-fails-closed" 1 "CI_SERVER_HOST is not set" \
 run_test "gitlab-invalid-ci-server-host-fails" 1 "CI_SERVER_HOST contains invalid characters" \
   FULLSEND_FORGE=gitlab CI_SERVER_HOST="gitlab.example.com/evil" \
   ORIGINATING_URL="https://gitlab.example.com/group/project/-/issues/7"
+
+# --- Jira tracker ---
+
+run_test "jira-missing-fullsend-dir-fails" 1 "FULLSEND_DIR must be set when FULLSEND_TRACKER=jira" \
+  FULLSEND_TRACKER=jira JIRA_TOKEN="test-token" JIRA_BASE_URL="https://test.atlassian.net" \
+  RETRO_JIRA_PROJECT="PROJ" \
+  ORIGINATING_URL="https://github.com/test-org/test-repo/pull/42"
+
+run_test "jira-pr-url-with-fullsend-dir" 0 "Pre-retro validation complete." \
+  FULLSEND_TRACKER=jira FULLSEND_DIR="${TMPDIR}/dot-fullsend" JIRA_TOKEN="test-token" \
+  JIRA_BASE_URL="https://test.atlassian.net" RETRO_JIRA_PROJECT="PROJ" \
+  ORIGINATING_URL="https://github.com/test-org/test-repo/pull/42"
+
+run_test "jira-issue-url" 0 "Retro target: https://test.atlassian.net/browse/PROJ-123" \
+  FULLSEND_TRACKER=jira FULLSEND_DIR="${TMPDIR}/dot-fullsend" JIRA_TOKEN="test-token" \
+  JIRA_BASE_URL="https://test.atlassian.net" RETRO_JIRA_PROJECT="PROJ" \
+  ORIGINATING_URL="https://test.atlassian.net/browse/PROJ-123"
+
+run_test "jira-token-masked" 0 "::add-mask::secret-jira-token" \
+  GITHUB_ACTIONS=true \
+  FULLSEND_TRACKER=jira FULLSEND_DIR="${TMPDIR}/dot-fullsend" JIRA_TOKEN="secret-jira-token" \
+  JIRA_BASE_URL="https://test.atlassian.net" RETRO_JIRA_PROJECT="PROJ" \
+  ORIGINATING_URL="https://test.atlassian.net/browse/PROJ-123"
+
+run_test_unbound_forge_tokens "jira-origin-gha-no-forge-token" 0 "::add-mask::secret-jira-token" \
+  GITHUB_ACTIONS=true \
+  FULLSEND_TRACKER=jira FULLSEND_DIR="${TMPDIR}/dot-fullsend" JIRA_TOKEN="secret-jira-token" \
+  JIRA_BASE_URL="https://test.atlassian.net" RETRO_JIRA_PROJECT="PROJ" \
+  ORIGINATING_URL="https://test.atlassian.net/browse/PROJ-123"
+
+run_test_unbound_forge_tokens "jira-origin-gha-gitlab-forge-no-token" 0 "::add-mask::secret-jira-token" \
+  GITHUB_ACTIONS=true FULLSEND_FORGE=gitlab \
+  FULLSEND_TRACKER=jira FULLSEND_DIR="${TMPDIR}/dot-fullsend" JIRA_TOKEN="secret-jira-token" \
+  JIRA_BASE_URL="https://test.atlassian.net" RETRO_JIRA_PROJECT="PROJ" \
+  ORIGINATING_URL="https://test.atlassian.net/browse/PROJ-123"
+
+run_test "jira-token-not-masked-without-gha" 0 "Retro target: https://test.atlassian.net/browse/PROJ-123" \
+  FULLSEND_TRACKER=jira FULLSEND_DIR="${TMPDIR}/dot-fullsend" JIRA_TOKEN="secret-jira-token" \
+  JIRA_BASE_URL="https://test.atlassian.net" RETRO_JIRA_PROJECT="PROJ" \
+  ORIGINATING_URL="https://test.atlassian.net/browse/PROJ-123"
+if grep -qF "::add-mask::secret-jira-token" "${OUT}" 2>/dev/null; then
+  echo "FAIL: jira-token-not-masked-without-gha — token masked when GITHUB_ACTIONS is unset"
+  FAILURES=$((FAILURES + 1))
+fi
+
+run_test "jira-untrusted-host-fails" 1 "ORIGINATING_URL Jira host 'evil.example' is not in the allowed host list" \
+  FULLSEND_TRACKER=jira FULLSEND_DIR="${TMPDIR}/dot-fullsend" JIRA_TOKEN="test-token" \
+  JIRA_BASE_URL="https://test.atlassian.net" RETRO_JIRA_PROJECT="PROJ" \
+  ORIGINATING_URL="https://evil.example/browse/PROJ-123"
+
+run_test "jira-tenant-mismatch-fails" 1 "does not match JIRA_BASE_URL" \
+  FULLSEND_TRACKER=jira FULLSEND_DIR="${TMPDIR}/dot-fullsend" JIRA_TOKEN="test-token" \
+  JIRA_BASE_URL="https://test.atlassian.net" RETRO_JIRA_PROJECT="PROJ" \
+  ORIGINATING_URL="https://other.atlassian.net/browse/PROJ-123"
+
+run_test "jira-summary-only-forge-no-credentials" 0 "Pre-retro validation complete." \
+  FULLSEND_TRACKER=jira RETRO_MODE="summary_only" \
+  ORIGINATING_URL="https://github.com/test-org/test-repo/pull/42"
 
 # --- Summary ---
 
