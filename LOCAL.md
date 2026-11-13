@@ -143,13 +143,14 @@ export JIRA_BASE_URL="https://your-site.atlassian.net"
 # The post-scripts require the .fullsend directory; nothing sets it for you.
 export FULLSEND_DIR="<path to the .fullsend directory>"
 export FULLSEND_FORGE="jira"
-
-# Transition names for closing issues — set to match your Jira workflow.
-export JIRA_COMPLETED_TRANSITION="Closed"
-export JIRA_DUPLICATE_TRANSITION="Duplicate"
-export JIRA_NOT_PLANNED_TRANSITION="Won't Do"
-export JIRA_SPLIT_TRANSITION="Obsolete"
 ```
+
+The Jira harness (`harness/triage.yaml`) sets default transition names in `env.runner`
+(`JIRA_COMPLETED_TRANSITION="Closed"`, `JIRA_DUPLICATE_TRANSITION="Duplicate"`,
+`JIRA_NOT_PLANNED_TRANSITION="Won't Do"`, and `JIRA_SPLIT_TRANSITION="Obsolete"`).
+To test with different transition names for your Jira workflow, override them in
+a custom harness YAML overlay under `env.runner`, or export them when invoking
+`scripts/post-triage.sh` directly.
 
 Run `fullsend run triage` the same way as step 3 above — `--target-repo`
 should still point at a local checkout of the codebase the Jira issue
