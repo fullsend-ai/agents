@@ -22,3 +22,16 @@ case "${FULLSEND_FORGE:-}" in
     exit 1
     ;;
 esac
+
+FULLSEND_TRACKER="${FULLSEND_TRACKER:-${FULLSEND_FORGE}}"
+
+case "${FULLSEND_TRACKER}" in
+  "${FULLSEND_FORGE}") ;;
+  jira)
+    source "${SCRIPT_DIR}/lib/jira-retro-ops.lib.sh"
+    ;;
+  *)
+    echo "ERROR: invalid FULLSEND_TRACKER: '$(_gha_sanitize "${FULLSEND_TRACKER}")' — must be 'jira' or match FULLSEND_FORGE" >&2
+    exit 1
+    ;;
+esac

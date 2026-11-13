@@ -10,6 +10,8 @@
 #
 # Optional env vars:
 #   RETRO_COMMENT   — The /retro comment text (empty for automatic triggers)
+#   FULLSEND_TRACKER — "github", "gitlab", or "jira" (defaults to FULLSEND_FORGE)
+#   FULLSEND_DIR    — .fullsend directory (required when FULLSEND_TRACKER=jira)
 
 set -euo pipefail
 
@@ -20,6 +22,15 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/retro-ops.lib.sh
 source "${SCRIPT_DIR}/lib/retro-ops.lib.sh"
+
+if [[ "${FULLSEND_TRACKER}" == "jira" && -z "${FULLSEND_DIR:-}" ]]; then
+  echo "ERROR: FULLSEND_DIR must be set when FULLSEND_TRACKER=jira (the fullsend CLI reads tracker.jira from its config.yaml)" >&2
+  exit 1
+fi
+
+if [[ -n "${JIRA_TOKEN:-}" ]]; then
+  printf '::add-mask::%s\n' "$(printf '%s' "${JIRA_TOKEN}" | tr -d '\n\r')"
+fi
 
 forge_validate_originating_url
 

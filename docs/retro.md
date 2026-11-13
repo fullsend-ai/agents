@@ -54,6 +54,42 @@ See [Customizing with AGENTS.md](https://fullsend.sh/docs/guides/user/customizin
 | Variable | Description | Default | Valid values |
 |----------|-------------|---------|--------------|
 | `FULLSEND_FORGE` | Forge platform. Set automatically by the harness `forge.<platform>.env` section. | (set by harness) | `"github"`, `"gitlab"` |
+| `FULLSEND_TRACKER` | Target tracker for proposals. Defaults to `FULLSEND_FORGE`. | (matches `FULLSEND_FORGE`) | `"github"`, `"gitlab"`, `"jira"` |
+| `RETRO_MODE` | Output mode. `all` creates issues and posts summary; `summary_only` disables issue creation and lists proposals in the summary; `issues_only` files issues without posting a summary. | `"all"` | `"all"`, `"summary_only"`, `"issues_only"` |
+| `RETRO_JIRA_PROJECT` | Jira project key where proposal issues are filed when `FULLSEND_TRACKER=jira`. | none (required for Jira issue creation) | Jira project key (e.g. `"PROJ"`) |
+| `RETRO_JIRA_ISSUE_TYPE` | Issue type name for created Jira issues. | `"Task"` | e.g. `"Task"`, `"Improvement"` |
+| `RETRO_JIRA_LABELS` | Comma-separated allowlist of labels that retro may apply to created Jira issues. | `"ready-for-triage"` | Alphanumeric label names |
+
+### Jira integration
+
+Retro can deliver findings and improvement proposals to Jira Cloud instead of (or in addition to) GitHub/GitLab:
+
+- **Jira issue creation:** When `FULLSEND_TRACKER=jira`, retro files validated proposals into an operator-configured Jira Cloud project (`RETRO_JIRA_PROJECT`). Model proposals do not select arbitrary Jira projects.
+- **Retrospectives on Jira-originated work:** Retro can run against Jira issue URLs (`https://<site>.atlassian.net/browse/PROJ-123`) or against GitHub PRs / GitLab MRs associated with Jira work.
+- **Configurable output modes:** `RETRO_MODE` supports `all` (default: creates Jira issues and posts summary comment), `summary_only` (posts summary comment with proposals listed without creating issues), or `issues_only` (creates issues without posting summary).
+- **Idempotency & retry protection:** Before filing an issue in Jira, retro checks for an existing issue in `RETRO_JIRA_PROJECT` with the exact same summary. Rerunning retro on the same workflow will not create duplicate Jira issues.
+- **Traceability:** Created Jira issues preserve the originating GitHub/GitLab PR URL in the body footer, and the retro summary comment links back to all created Jira issues.
+- **Preflight validation:** Checks Jira create metadata (`createmeta`) before creating issues. Fails early with a clear diagnostic if the issue type is missing or requires fields retro does not provide.
+
+Set `FULLSEND_TRACKER=jira` and the Jira variables in the runner env by extending the harness with `base:` composition:
+
+```yaml
+# .fullsend/retro.yaml
+base: https://raw.githubusercontent.com/fullsend-ai/agents/<SHA>/harness/retro.yaml#sha256=<sha256sum>
+env:
+  runner:
+    FULLSEND_TRACKER: jira
+    RETRO_JIRA_PROJECT: PROJ
+    RETRO_JIRA_ISSUE_TYPE: Task
+    RETRO_MODE: all
+    JIRA_BASE_URL: ${JIRA_BASE_URL}
+    JIRA_TOKEN: ${JIRA_TOKEN}
+    # Bot user only. Omit for a service account token (Bearer auth).
+    JIRA_USER_EMAIL: ${JIRA_USER_EMAIL}
+    FULLSEND_DIR: ${FULLSEND_DIR}
+```
+
+Cross-project issue creation in Jira can also be restricted via `tracker.jira.allowed_targets.projects` in `config.yaml`.
 
 ### Issue filing allowlist
 

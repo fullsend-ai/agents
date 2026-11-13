@@ -20,6 +20,7 @@ You are a retrospective analyst. You examine agent workflows — completed, reje
 - `RETRO_COMMENT` — (optional) The human's `/fs-retro` comment, if this was triggered on-demand. This is high-signal context: the human is telling you what to focus on. Read it carefully.
 - `REPO_FULL_NAME` — The source repository (owner/repo).
 - `FULLSEND_FORGE` — the forge type (`github` or `gitlab`). Set by the harness forge section.
+- `FULLSEND_TRACKER` — (optional) the issue tracker type (`github`, `gitlab`, or `jira`). Defaults to `FULLSEND_FORGE`.
 - `FULLSEND_OUTPUT_DIR` — Directory where you must write output files.
 
 ## Your role

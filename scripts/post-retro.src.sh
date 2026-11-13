@@ -8,9 +8,16 @@
 #   ORIGINATING_URL — HTML URL of the originating PR or issue
 #   FULLSEND_FORGE  — "github" or "gitlab"
 #
+# Optional env vars:
+#   FULLSEND_TRACKER    — "github", "gitlab", or "jira" (defaults to FULLSEND_FORGE)
+#   RETRO_MODE          — "all" (default), "summary_only", or "issues_only"
+#   RETRO_JIRA_PROJECT  — Jira project key for created issues (when FULLSEND_TRACKER=jira)
+#   FULLSEND_DIR        — .fullsend directory (when FULLSEND_TRACKER=jira)
+#
 # Forge-specific token env vars:
 #   GH_TOKEN      — GitHub token (when FULLSEND_FORGE=github)
 #   GITLAB_TOKEN  — GitLab token (when FULLSEND_FORGE=gitlab)
+#   JIRA_TOKEN    — Jira token (when FULLSEND_TRACKER=jira)
 #
 # The agent writes its result to output/agent-result.json (relative to
 # the iteration directory). This script finds the most recent iteration's output.
@@ -71,6 +78,16 @@ forge_parse_originating_url
 
 echo "Originating: ${ORIGINATING_REPO}#${ORIGINATING_NUMBER}"
 
+RETRO_MODE="${RETRO_MODE:-all}"
+case "${RETRO_MODE}" in
+  all|summary_only|issues_only) ;;
+  *)
+    echo "ERROR: RETRO_MODE must be 'all', 'summary_only', or 'issues_only' (got: ${RETRO_MODE})" >&2
+    exit 1
+    ;;
+esac
+echo "Mode: ${RETRO_MODE}"
+
 # Read the allowlist from config.yaml. The config repo is checked out
 # at the forge-specific workspace directory by the reusable workflow.
 CONFIG_WORKSPACE="$(forge_get_config_workspace)"
@@ -85,12 +102,13 @@ fi
 # otherwise tracker is inherited from the base. A null or bare `tracker:` in
 # the overlay counts as unset (it inherits the base), matching that merge.
 BASE_CONFIG_FILE="$(dirname "${CONFIG_FILE}")/config.base.yaml"
-TRACKER_PROVIDER="${FULLSEND_FORGE}"
+FULLSEND_TRACKER="${FULLSEND_TRACKER:-${FULLSEND_FORGE}}"
+TRACKER_PROVIDER="${FULLSEND_TRACKER}"
 ALLOW_TARGETS_KEY="tracker.${TRACKER_PROVIDER}.allowed_targets"
 
 # ALLOWED_SCOPES holds GitHub orgs or GitLab groups (a scope admits every
 # repository under it, including GitLab subgroups); ALLOWED_REPOS holds
-# repositories allowed by exact path.
+# repositories allowed by exact path (or Jira project keys when FULLSEND_TRACKER=jira).
 ALLOWED_SCOPES=""
 ALLOWED_REPOS=""
 if [[ -f "${CONFIG_FILE}" || -f "${BASE_CONFIG_FILE}" ]] && ! command -v yq &>/dev/null; then
@@ -141,17 +159,29 @@ if command -v yq &>/dev/null; then
     | if type == "object" then . else {} end
   ' <<<"${TRACKER_JSON}" 2>/dev/null || echo '{}')
   ALLOWED_SCOPES=$(jq -r --arg provider "${TRACKER_PROVIDER}" '
-    (if $provider == "gitlab" then .groups else .orgs end)
+    (if $provider == "github" then .orgs elif $provider == "gitlab" then .groups else null end)
     | if type == "array" then .[] | strings else empty end
   ' <<<"${ALLOWED_TARGETS_JSON}" 2>/dev/null || true)
-  ALLOWED_REPOS=$(jq -r '.repos | if type == "array" then .[] | strings else empty end' \
-    <<<"${ALLOWED_TARGETS_JSON}" 2>/dev/null || true)
+  ALLOWED_REPOS=$(jq -r --arg provider "${TRACKER_PROVIDER}" '
+    (if $provider == "jira" then .projects else .repos end)
+    | if type == "array" then .[] | strings else empty end
+  ' <<<"${ALLOWED_TARGETS_JSON}" 2>/dev/null || true)
 fi
 
 # The originating repo is always implicitly allowed.
 is_target_allowed() {
   local target_repo="$1"
   local scope
+
+  if [[ "${FULLSEND_TRACKER}" == "jira" ]]; then
+    if [[ -z "${ALLOWED_REPOS}" ]]; then
+      return 0
+    fi
+    if echo "${ALLOWED_REPOS}" | grep -qFx "${target_repo}"; then
+      return 0
+    fi
+    return 1
+  fi
 
   # Source repo is always allowed.
   if [[ "${target_repo}" == "${ORIGINATING_REPO}" ]]; then
@@ -202,16 +232,27 @@ if [[ "${PROPOSAL_COUNT}" -gt 0 ]]; then
 fi
 echo "All ${PROPOSAL_COUNT} proposal(s) validated"
 
+# Jira: fail before any create call if the configured project/issue type
+# needs required fields retro does not set.
+if [[ "${FULLSEND_TRACKER}" == "jira" && "${PROPOSAL_COUNT}" -gt 0 && "${RETRO_MODE}" != "summary_only" ]]; then
+  if ! tracker_validate_create; then
+    echo "ERROR: Jira project validation failed — no issues created" >&2
+    exit 1
+  fi
+fi
+
 ISSUE_LINKS=""
 EVIDENCE_NOTES=""
 FILTERED_COUNT=0
 SKIPPED_TARGETS=""
 RECEIPT_SKIPPED=""
 FAILED_PROPOSALS=""
+SUMMARY_ONLY_PROPOSALS=""
 if [[ "${PROPOSAL_COUNT}" -gt 0 ]]; then
   for i in $(seq 0 $((PROPOSAL_COUNT - 1))); do
     TARGET_REPO=$(jq -r ".proposals[$i].target_repo" "${RESULT_FILE}")
     TITLE=$(jq -r ".proposals[$i].title" "${RESULT_FILE}")
+    SAFE_TITLE=$(_gha_sanitize "${TITLE}")
 
     # Deterministic gate: reject "Evidence for" proposals.
     # The retro-analysis skill instructs the agent not to file these, but the
@@ -221,7 +262,6 @@ if [[ "${PROPOSAL_COUNT}" -gt 0 ]]; then
     if [[ "${TITLE_LOWER}" =~ ^evidence[[:space:]]+(for|of)[[:space:]]+([\#!]) ]] || \
        [[ "${TITLE_LOWER}" =~ ^evidence: ]] || \
        [[ "${TITLE_LOWER}" =~ ^additional[[:space:]]+evidence ]]; then
-      SAFE_TITLE=$(_gha_sanitize "${TITLE}")
       echo "::warning::proposal[$i] rejected — title matches evidence-for pattern: ${SAFE_TITLE}. Folding into summary."
       EVIDENCE_NOTES="${EVIDENCE_NOTES}
 - **${TITLE}** (${TARGET_REPO}): $(jq -r ".proposals[$i].what_happened | split(\"\\n\")[0]" "${RESULT_FILE}")"
@@ -230,11 +270,20 @@ if [[ "${PROPOSAL_COUNT}" -gt 0 ]]; then
     fi
 
     # Allowlist gate: reject proposals targeting repos not in allowed_targets.
-    if ! is_target_allowed "${TARGET_REPO}"; then
-      echo "::warning::Skipping issue creation in '${TARGET_REPO}' — not in ${ALLOW_TARGETS_KEY}"
-      SKIPPED_TARGETS="${SKIPPED_TARGETS}
+    if [[ "${FULLSEND_TRACKER}" == "jira" ]]; then
+      if ! is_target_allowed "${RETRO_JIRA_PROJECT}"; then
+        echo "::warning::Skipping issue creation in Jira project '${RETRO_JIRA_PROJECT}' — not in ${ALLOW_TARGETS_KEY}"
+        SKIPPED_TARGETS="${SKIPPED_TARGETS}
+- **${TITLE}** (\`${RETRO_JIRA_PROJECT}\`)"
+        continue
+      fi
+    else
+      if ! is_target_allowed "${TARGET_REPO}"; then
+        echo "::warning::Skipping issue creation in '${TARGET_REPO}' — not in ${ALLOW_TARGETS_KEY}"
+        SKIPPED_TARGETS="${SKIPPED_TARGETS}
 - **${TITLE}** (\`${TARGET_REPO}\`)"
-      continue
+        continue
+      fi
     fi
 
     # Dedup-receipt gate: skip proposals without a well-formed duplicate-search
@@ -264,6 +313,13 @@ if [[ "${PROPOSAL_COUNT}" -gt 0 ]]; then
       continue
     fi
 
+    if [[ "${RETRO_MODE}" == "summary_only" ]]; then
+      echo "Mode is summary_only — skipping issue creation for proposal[$i] (${SAFE_TITLE})"
+      SUMMARY_ONLY_PROPOSALS="${SUMMARY_ONLY_PROPOSALS}
+- **${TITLE}** (\`${TARGET_REPO}\`): $(jq -r ".proposals[$i].what_happened | split(\"\\n\")[0]" "${RESULT_FILE}")"
+      continue
+    fi
+
     # Build the issue body from the four sections, plus the dedup receipt.
     BODY=$(jq -r --arg url "${ORIGINATING_URL}" "
       .proposals[$i] |
@@ -288,6 +344,22 @@ if [[ "${PROPOSAL_COUNT}" -gt 0 ]]; then
       echo "::warning::proposal[$i] targets a .fullsend repo (${TARGET_REPO}). Filing in .fullsend repos is discouraged until per-repo customization patterns are stable. Consider filing in the source repo or fullsend-ai/fullsend upstream instead."
     fi
 
+    # Jira rerun protection: skip if an issue with the same summary exists.
+    if [[ "${FULLSEND_TRACKER}" == "jira" ]]; then
+      if ! EXISTING_URL=$(tracker_find_existing_issue "${TITLE}"); then
+        echo "::warning::Jira duplicate check failed for proposal[$i] (${SAFE_TITLE}) — refusing to create issue"
+        FAILED_PROPOSALS="${FAILED_PROPOSALS}
+- **${TITLE}** (\`${RETRO_JIRA_PROJECT}\`)"
+        continue
+      fi
+      if [[ -n "${EXISTING_URL}" ]]; then
+        echo "Skipping proposal[$i] (${SAFE_TITLE}) — already exists in Jira: ${EXISTING_URL}"
+        ISSUE_LINKS="${ISSUE_LINKS}- [${TITLE}](${EXISTING_URL}) (in \`${RETRO_JIRA_PROJECT}\`)
+"
+        continue
+      fi
+    fi
+
     # Ensure the label exists in the target repo before applying it.
     # Follows the same pattern as post-review.sh for ready-for-merge.
     # --force / idempotent creation makes this safe to repeat.
@@ -295,20 +367,36 @@ if [[ "${PROPOSAL_COUNT}" -gt 0 ]]; then
       "Triggers triage agent dispatch" "0E8A16"
 
     SAFE_TITLE=$(_gha_sanitize "${TITLE}")
-    echo "Filing issue in ${TARGET_REPO}: ${SAFE_TITLE}"
+    if [[ "${FULLSEND_TRACKER}" == "jira" ]]; then
+      echo "Filing issue in Jira ${RETRO_JIRA_PROJECT}: ${SAFE_TITLE}"
+    else
+      echo "Filing issue in ${TARGET_REPO}: ${SAFE_TITLE}"
+    fi
+
     # A failed creation is non-fatal: record it, keep filing the remaining
     # proposals, and report it in the summary comment.
     if ! ISSUE_URL=$(forge_create_issue "${TARGET_REPO}" "${TITLE}" "${BODY}" "ready-for-triage"); then
       SAFE_OUTPUT=$(_gha_sanitize "${ISSUE_URL}")
-      echo "::warning::Failed to create issue in ${TARGET_REPO} for proposal[$i] (${SAFE_TITLE}): ${SAFE_OUTPUT}"
-      FAILED_PROPOSALS="${FAILED_PROPOSALS}
+      if [[ "${FULLSEND_TRACKER}" == "jira" ]]; then
+        echo "::warning::Failed to create Jira issue in ${RETRO_JIRA_PROJECT} for proposal[$i] (${SAFE_TITLE}): ${SAFE_OUTPUT}"
+        FAILED_PROPOSALS="${FAILED_PROPOSALS}
+- **${TITLE}** (\`${RETRO_JIRA_PROJECT}\`)"
+      else
+        echo "::warning::Failed to create issue in ${TARGET_REPO} for proposal[$i] (${SAFE_TITLE}): ${SAFE_OUTPUT}"
+        FAILED_PROPOSALS="${FAILED_PROPOSALS}
 - **${TITLE}** (\`${TARGET_REPO}\`)"
+      fi
       continue
     fi
 
     echo "Created: ${ISSUE_URL}"
-    ISSUE_LINKS="${ISSUE_LINKS}- [${TITLE}](${ISSUE_URL}) (in \`${TARGET_REPO}\`)
+    if [[ "${FULLSEND_TRACKER}" == "jira" ]]; then
+      ISSUE_LINKS="${ISSUE_LINKS}- [${TITLE}](${ISSUE_URL}) (in \`${RETRO_JIRA_PROJECT}\`)
 "
+    else
+      ISSUE_LINKS="${ISSUE_LINKS}- [${TITLE}](${ISSUE_URL}) (in \`${TARGET_REPO}\`)
+"
+    fi
   done
 fi
 
@@ -326,6 +414,9 @@ fi
 COMMENT="${SUMMARY}"
 if [[ -n "${ISSUE_LINKS}" ]]; then
   COMMENT=$(printf '%s\n\n### Proposals filed\n\n%s' "${COMMENT}" "${ISSUE_LINKS}")
+fi
+if [[ -n "${SUMMARY_ONLY_PROPOSALS}" ]]; then
+  COMMENT=$(printf '%s\n\n### Proposals (issue creation disabled)\n%s' "${COMMENT}" "${SUMMARY_ONLY_PROPOSALS}")
 fi
 if [[ -n "${FAILED_PROPOSALS}" ]]; then
   COMMENT=$(printf '%s\n\n### Proposals not filed (issue creation failed)\n\nFile manually; see the post-retro logs for the error:\n%s' "${COMMENT}" "${FAILED_PROPOSALS}")
@@ -345,6 +436,12 @@ MAX_COMMENT_LEN=$(forge_get_comment_max_len)
 if [[ ${#COMMENT} -gt ${MAX_COMMENT_LEN} ]]; then
   TRUNCATION_SUFFIX=$'\n\n...(truncated)'
   COMMENT="${COMMENT:0:$((MAX_COMMENT_LEN - ${#TRUNCATION_SUFFIX}))}"${TRUNCATION_SUFFIX}
+fi
+
+if [[ "${RETRO_MODE}" == "issues_only" ]]; then
+  echo "Mode is issues_only — skipping summary comment posting"
+  echo "Post-retro complete."
+  exit 0
 fi
 
 echo "Posting summary comment on ${ORIGINATING_REPO}#${ORIGINATING_NUMBER}"

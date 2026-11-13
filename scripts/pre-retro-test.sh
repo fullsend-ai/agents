@@ -142,6 +142,33 @@ run_test "gitlab-invalid-ci-server-host-fails" 1 "CI_SERVER_HOST contains invali
   FULLSEND_FORGE=gitlab CI_SERVER_HOST="gitlab.example.com/evil" \
   ORIGINATING_URL="https://gitlab.example.com/group/project/-/issues/7"
 
+# --- Jira tracker ---
+
+run_test "jira-missing-fullsend-dir-fails" 1 "FULLSEND_DIR must be set when FULLSEND_TRACKER=jira" \
+  FULLSEND_TRACKER=jira JIRA_TOKEN="test-token" JIRA_BASE_URL="https://test.atlassian.net" \
+  RETRO_JIRA_PROJECT="PROJ" \
+  ORIGINATING_URL="https://github.com/test-org/test-repo/pull/42"
+
+run_test "jira-pr-url-with-fullsend-dir" 0 "Pre-retro validation complete." \
+  FULLSEND_TRACKER=jira FULLSEND_DIR="${TMPDIR}/dot-fullsend" JIRA_TOKEN="test-token" \
+  JIRA_BASE_URL="https://test.atlassian.net" RETRO_JIRA_PROJECT="PROJ" \
+  ORIGINATING_URL="https://github.com/test-org/test-repo/pull/42"
+
+run_test "jira-issue-url" 0 "Retro target: https://test.atlassian.net/browse/PROJ-123" \
+  FULLSEND_TRACKER=jira FULLSEND_DIR="${TMPDIR}/dot-fullsend" JIRA_TOKEN="test-token" \
+  JIRA_BASE_URL="https://test.atlassian.net" RETRO_JIRA_PROJECT="PROJ" \
+  ORIGINATING_URL="https://test.atlassian.net/browse/PROJ-123"
+
+run_test "jira-token-masked" 0 "::add-mask::secret-jira-token" \
+  FULLSEND_TRACKER=jira FULLSEND_DIR="${TMPDIR}/dot-fullsend" JIRA_TOKEN="secret-jira-token" \
+  JIRA_BASE_URL="https://test.atlassian.net" RETRO_JIRA_PROJECT="PROJ" \
+  ORIGINATING_URL="https://test.atlassian.net/browse/PROJ-123"
+
+run_test "jira-untrusted-host-fails" 1 "ORIGINATING_URL Jira host 'evil.example' is not in the allowed host list" \
+  FULLSEND_TRACKER=jira FULLSEND_DIR="${TMPDIR}/dot-fullsend" JIRA_TOKEN="test-token" \
+  JIRA_BASE_URL="https://test.atlassian.net" RETRO_JIRA_PROJECT="PROJ" \
+  ORIGINATING_URL="https://evil.example/browse/PROJ-123"
+
 # --- Summary ---
 
 echo ""

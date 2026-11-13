@@ -102,7 +102,36 @@ exit 0
 MOCKEOF
 chmod +x "${MOCK_BIN}/gh"
 
-# --- Mock curl (for GitLab tests) ---
+# --- Mock fullsend CLI (for Jira tests) ---
+FULLSEND_LOG="${TMPDIR}/fullsend-calls.log"
+FULLSEND_ENV_LOG="${TMPDIR}/fullsend-env.log"
+cat > "${MOCK_BIN}/fullsend" <<'MOCKEOF'
+#!/usr/bin/env bash
+echo "fullsend $*" >> "${FULLSEND_LOG}"
+echo "token=${FULLSEND_JIRA_TOKEN-unset} email=${FULLSEND_JIRA_EMAIL-unset}" >> "${FULLSEND_ENV_LOG}"
+if [[ "$1" == "issues" ]] && [[ "$2" == "create" ]]; then
+  if [[ "$3" == "--help" ]]; then
+    echo "Usage: fullsend issues create [flags]"
+    exit 0
+  fi
+  if [[ -n "${FULLSEND_MOCK_FAIL_TITLE:-}" ]] && [[ "$*" == *"--title ${FULLSEND_MOCK_FAIL_TITLE}"* ]]; then
+    echo "ERROR: mocked creation failure for ${FULLSEND_MOCK_FAIL_TITLE}" >&2
+    exit 1
+  fi
+  cat > /dev/null
+  echo '{"number":100,"key":"PROJ-100","title":"mock title","url":"https://mock.atlassian.net/browse/PROJ-100"}'
+  exit 0
+fi
+if [[ "$1" == "issues" ]] && [[ "$2" == "post-comment" ]]; then
+  cat > /dev/null
+  echo '{"id":10,"url":"https://mock.atlassian.net/browse/PROJ-10#comment-1"}'
+  exit 0
+fi
+exit 0
+MOCKEOF
+chmod +x "${MOCK_BIN}/fullsend"
+
+# --- Mock curl (for GitLab and Jira tests) ---
 # CURL_MOCK_COMMENT_FAIL controls how the mock responds to note-posting calls.
 CURL_LOG="${TMPDIR}/curl-calls.log"
 cat > "${MOCK_BIN}/curl" <<'MOCKEOF'
@@ -116,6 +145,42 @@ for arg in "$@"; do
     URL="${arg}"
   fi
 done
+
+# Jira Cloud REST API
+if [[ "${URL}" == *"atlassian.net/rest/api/3"* ]]; then
+  case "${URL}" in
+    */issue/createmeta/PROJ/issuetypes\?*)
+      echo '{"issueTypes":[{"id":"10001","name":"Task"}]}'
+      ;;
+    */issue/createmeta/PROJ/issuetypes/10001\?*)
+      if [[ "${JIRA_MOCK_REQUIRED_FIELD:-}" == "1" ]]; then
+        echo '{"fields":[{"fieldId":"summary","required":true,"hasDefaultValue":false},{"fieldId":"customfield_10050","required":true,"hasDefaultValue":false}]}'
+      elif [[ "${JIRA_MOCK_NO_DESCRIPTION:-}" == "1" ]]; then
+        echo '{"fields":[{"fieldId":"summary","required":true,"hasDefaultValue":false},{"fieldId":"labels","required":false,"hasDefaultValue":false}]}'
+      elif [[ "${JIRA_MOCK_NO_LABELS:-}" == "1" ]]; then
+        echo '{"fields":[{"fieldId":"summary","required":true,"hasDefaultValue":false},{"fieldId":"description","required":false,"hasDefaultValue":false}]}'
+      else
+        echo '{"fields":[{"fieldId":"summary","required":true,"hasDefaultValue":false},{"fieldId":"description","required":false,"hasDefaultValue":false},{"fieldId":"labels","required":false,"hasDefaultValue":false},{"fieldId":"reporter","required":true,"hasDefaultValue":true}]}'
+      fi
+      ;;
+    */search/jql)
+      if [[ "${JIRA_MOCK_BAD_SEARCH:-}" == "html" ]]; then
+        echo '<html>maintenance</html>'
+      elif [[ "${JIRA_MOCK_DUP:-}" == "1" ]]; then
+        echo '{"issues":[{"key":"PROJ-7","fields":{"summary":"Improve error handling in widget service"}}],"isLast":true}'
+      else
+        echo '{"issues":[],"isLast":true}'
+      fi
+      ;;
+    */issue/PROJ-*)
+      printf '\n204'
+      ;;
+    *)
+      exit 22
+      ;;
+  esac
+  exit 0
+fi
 
 # Label creation — succeed silently
 if [[ "${URL}" == *"/labels" ]] && [[ " $* " == *" POST "* || " $* " == *" -X POST "* ]]; then
@@ -193,6 +258,8 @@ CURL_BODY_LOG="${TMPDIR}/curl-body.log"
 export PATH="${MOCK_BIN}:${PATH}"
 export GH_LOG="${GH_LOG}"
 export CURL_LOG="${CURL_LOG}"
+export FULLSEND_LOG="${FULLSEND_LOG}"
+export FULLSEND_ENV_LOG="${FULLSEND_ENV_LOG}"
 export GH_STDIN_LOG="${GH_STDIN_LOG}"
 export CURL_BODY_LOG="${CURL_BODY_LOG}"
 export ORIGINATING_URL="https://github.com/test-org/test-repo/pull/10"
@@ -757,6 +824,8 @@ run_test() {
   : > "${GH_LOG}"
   : > "${GH_STDIN_LOG}"
   : > "${CURL_LOG}"
+  : > "${FULLSEND_LOG}"
+  : > "${FULLSEND_ENV_LOG}"
   # shellcheck disable=SC2031 # GH_MOCK_COMMENT_FAIL exported for subshell test run
   export GH_MOCK_COMMENT_FAIL="${comment_fail}"
 
@@ -805,6 +874,8 @@ run_test_stdout() {
   : > "${GH_LOG}"
   : > "${GH_STDIN_LOG}"
   : > "${CURL_LOG}"
+  : > "${FULLSEND_LOG}"
+  : > "${FULLSEND_ENV_LOG}"
   # shellcheck disable=SC2031 # GH_MOCK_COMMENT_FAIL exported for subshell test run
   export GH_MOCK_COMMENT_FAIL="${comment_fail}"
 
@@ -2340,6 +2411,204 @@ elif [[ -s "${GH_LOG}" ]]; then
 else
   echo "PASS: gl-validated-dir (FULLSEND_VALIDATED_ITERATION_DIR works under GitLab)"
 fi
+
+# ---------------------------------------------------------------------------
+# Jira tracker test cases (FULLSEND_FORGE=github, FULLSEND_TRACKER=jira)
+# ---------------------------------------------------------------------------
+
+export FULLSEND_FORGE="github"
+export GH_TOKEN="fake-token"
+export ORIGINATING_URL="https://github.com/test-org/test-repo/pull/10"
+export FULLSEND_TRACKER="jira"
+export JIRA_BASE_URL="https://mock.atlassian.net"
+export JIRA_USER_EMAIL="bot@mock.example"
+export JIRA_TOKEN="fake-jira-token"
+export FULLSEND_DIR="${TMPDIR}/dot-fullsend"
+export RETRO_JIRA_PROJECT="PROJ"
+export RETRO_MODE="all"
+
+# 1. Live creates issue in Jira
+run_test_stdout "jira/live-creates-issue" \
+  "${FIXTURE_ONE_PROPOSAL}" \
+  "Created: https://mock.atlassian.net/browse/PROJ-100"
+
+if grep -qF 'fullsend issues create --tracker jira' "${FULLSEND_LOG}" 2>/dev/null \
+  && grep -qF -- '--project PROJ' "${FULLSEND_LOG}" 2>/dev/null; then
+  echo "PASS: jira/live-create-scoped-to-project"
+else
+  echo "FAIL: jira/live-create-scoped-to-project — fullsend issues create not called with --project PROJ"
+  cat "${FULLSEND_LOG}" 2>/dev/null || true
+  FAILURES=$((FAILURES + 1))
+fi
+
+if grep -F 'fullsend issues create' "${FULLSEND_LOG}" 2>/dev/null | grep -qF -- '--token'; then
+  echo "FAIL: jira/live-create-no-token-arg — token exposed in command line arguments"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: jira/live-create-no-token-arg"
+fi
+
+if grep -qF "token=fake-jira-token email=bot@mock.example" "${FULLSEND_ENV_LOG}" 2>/dev/null \
+  && grep -qF -- '--user bot@mock.example:fake-jira-token' "${CURL_LOG}"; then
+  echo "PASS: jira/live-basic-auth-with-email"
+else
+  echo "FAIL: jira/live-basic-auth-with-email — expected Basic auth with email"
+  cat "${FULLSEND_ENV_LOG}" "${CURL_LOG}" 2>/dev/null || true
+  FAILURES=$((FAILURES + 1))
+fi
+
+# Summary comment links Jira issue
+if grep -qF -- "- [Improve error handling in widget service](https://mock.atlassian.net/browse/PROJ-100) (in \`PROJ\`)" "${GH_STDIN_LOG}" 2>/dev/null; then
+  echo "PASS: jira/summary-links-jira-issue"
+else
+  echo "FAIL: jira/summary-links-jira-issue — Jira issue link missing from summary comment"
+  cat "${GH_STDIN_LOG}" 2>/dev/null || true
+  FAILURES=$((FAILURES + 1))
+fi
+
+# 2. Service account Bearer auth (when email unset/empty)
+unset JIRA_USER_EMAIL
+run_test_stdout "jira/live-bearer-auth" \
+  "${FIXTURE_ONE_PROPOSAL}" \
+  "Created: https://mock.atlassian.net/browse/PROJ-100"
+if grep -qF -- '--oauth2-bearer fake-jira-token' "${CURL_LOG}" \
+  && ! grep -qF -- '--user' "${CURL_LOG}"; then
+  echo "PASS: jira/live-bearer-auth-no-basic"
+else
+  echo "FAIL: jira/live-bearer-auth-no-basic — expected Bearer auth"
+  cat "${CURL_LOG}" 2>/dev/null || true
+  FAILURES=$((FAILURES + 1))
+fi
+export JIRA_USER_EMAIL="bot@mock.example"
+
+# 3. Duplicate issue check (idempotency): skips creation and links existing issue
+export JIRA_MOCK_DUP="1"
+run_test_stdout "jira/duplicate-skipped-and-linked" \
+  "${FIXTURE_ONE_PROPOSAL}" \
+  "already exists in Jira: https://mock.atlassian.net/browse/PROJ-7"
+if grep -F 'fullsend issues create' "${FULLSEND_LOG}" 2>/dev/null | grep -qvF -- '--help'; then
+  echo "FAIL: jira/duplicate-no-creates — fullsend issues create called when duplicate exists"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: jira/duplicate-no-creates"
+fi
+if grep -qF -- "- [Improve error handling in widget service](https://mock.atlassian.net/browse/PROJ-7) (in \`PROJ\`)" "${GH_STDIN_LOG}" 2>/dev/null; then
+  echo "PASS: jira/duplicate-linked-in-summary"
+else
+  echo "FAIL: jira/duplicate-linked-in-summary — existing issue link missing from summary"
+  cat "${GH_STDIN_LOG}" 2>/dev/null || true
+  FAILURES=$((FAILURES + 1))
+fi
+unset JIRA_MOCK_DUP
+
+# 4. Duplicate search failure: refuses to create blindly
+export JIRA_MOCK_BAD_SEARCH="html"
+run_test_stdout "jira/duplicate-check-fail-refuses-create" \
+  "${FIXTURE_ONE_PROPOSAL}" \
+  "Jira duplicate check failed"
+if grep -F 'fullsend issues create' "${FULLSEND_LOG}" 2>/dev/null | grep -qvF -- '--help'; then
+  echo "FAIL: jira/duplicate-fail-no-creates — create called after duplicate search failure"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: jira/duplicate-fail-no-creates"
+fi
+if grep -qF "### Proposals not filed (issue creation failed)" "${GH_STDIN_LOG}" 2>/dev/null; then
+  echo "PASS: jira/duplicate-fail-reported-not-filed"
+else
+  echo "FAIL: jira/duplicate-fail-reported-not-filed — proposal not listed under not filed"
+  cat "${GH_STDIN_LOG}" 2>/dev/null || true
+  FAILURES=$((FAILURES + 1))
+fi
+unset JIRA_MOCK_BAD_SEARCH
+
+# 5. Createmeta preflight check failure: required field missing
+export JIRA_MOCK_REQUIRED_FIELD="1"
+run_test_stdout "jira/createmeta-required-field-fails-early" \
+  "${FIXTURE_ONE_PROPOSAL}" \
+  "Jira project validation failed" \
+  "true"
+unset JIRA_MOCK_REQUIRED_FIELD
+
+# 6. Createmeta preflight check failure: Description field missing
+export JIRA_MOCK_NO_DESCRIPTION="1"
+run_test_stdout "jira/createmeta-no-description-fails-early" \
+  "${FIXTURE_ONE_PROPOSAL}" \
+  "has no Description field on its create screen" \
+  "true"
+unset JIRA_MOCK_NO_DESCRIPTION
+
+# 7. Output mode: summary_only disables issue creation
+export RETRO_MODE="summary_only"
+run_test_stdout "jira/summary-only-mode" \
+  "${FIXTURE_ONE_PROPOSAL}" \
+  "Mode is summary_only — skipping issue creation"
+if grep -F 'fullsend issues create' "${FULLSEND_LOG}" 2>/dev/null | grep -qvF -- '--help'; then
+  echo "FAIL: jira/summary-only-no-creates — create called in summary_only mode"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: jira/summary-only-no-creates"
+fi
+if grep -qF "### Proposals (issue creation disabled)" "${GH_STDIN_LOG}" 2>/dev/null; then
+  echo "PASS: jira/summary-only-proposals-in-summary"
+else
+  echo "FAIL: jira/summary-only-proposals-in-summary — proposals not listed in summary"
+  cat "${GH_STDIN_LOG}" 2>/dev/null || true
+  FAILURES=$((FAILURES + 1))
+fi
+export RETRO_MODE="all"
+
+# 8. Output mode: issues_only skips posting summary comment
+export RETRO_MODE="issues_only"
+run_test_stdout "jira/issues-only-mode" \
+  "${FIXTURE_ONE_PROPOSAL}" \
+  "Mode is issues_only — skipping summary comment posting"
+if grep -q "/comments" "${GH_LOG}" 2>/dev/null; then
+  echo "FAIL: jira/issues-only-no-summary-post — summary comment was posted"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: jira/issues-only-no-summary-post"
+fi
+export RETRO_MODE="all"
+
+# 9. Retrospectives on Jira-originated items
+ORIGINATING_URL="https://mock.atlassian.net/browse/PROJ-123" \
+  run_test_stdout "jira/originating-jira-item" \
+  "${FIXTURE_ONE_PROPOSAL}" \
+  "Posting summary comment on PROJ#PROJ-123"
+if grep -qF 'fullsend issues post-comment --tracker jira' "${FULLSEND_LOG}" 2>/dev/null \
+  && grep -qF -- '--project PROJ --number 123' "${FULLSEND_LOG}" 2>/dev/null; then
+  echo "PASS: jira/originating-jira-comment-posted"
+else
+  echo "FAIL: jira/originating-jira-comment-posted — post-comment not called for Jira issue"
+  cat "${FULLSEND_LOG}" 2>/dev/null || true
+  FAILURES=$((FAILURES + 1))
+fi
+
+# 10. GitLab forge + Jira tracker: creates Jira issue and posts note to GitLab MR
+ORIGINATING_URL="https://gitlab.com/test-group/test-project/-/merge_requests/10" \
+FULLSEND_FORGE="gitlab" \
+CI_SERVER_HOST="gitlab.com" \
+GITLAB_TOKEN="fake-gitlab-token" \
+  run_test_stdout "jira/gitlab-mr-originating" \
+  "${GL_FIXTURE_ONE_PROPOSAL}" \
+  "Posting summary comment on test-group/test-project#10"
+if grep -qF 'fullsend issues create --tracker jira' "${FULLSEND_LOG}" 2>/dev/null \
+  && grep -qF -- '--project PROJ' "${FULLSEND_LOG}" 2>/dev/null; then
+  echo "PASS: jira/gitlab-mr-created-jira-issue"
+else
+  echo "FAIL: jira/gitlab-mr-created-jira-issue — fullsend issues create not called with --project PROJ"
+  cat "${FULLSEND_LOG}" 2>/dev/null || true
+  FAILURES=$((FAILURES + 1))
+fi
+if grep -q "/merge_requests/10/notes" "${CURL_LOG}" 2>/dev/null; then
+  echo "PASS: jira/gitlab-mr-comment-posted"
+else
+  echo "FAIL: jira/gitlab-mr-comment-posted — notes endpoint not called for GitLab MR"
+  cat "${CURL_LOG}" 2>/dev/null || true
+  FAILURES=$((FAILURES + 1))
+fi
+
+unset FULLSEND_TRACKER JIRA_BASE_URL JIRA_USER_EMAIL JIRA_TOKEN FULLSEND_DIR RETRO_JIRA_PROJECT RETRO_MODE
 
 # --- Results ---
 
