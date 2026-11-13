@@ -15,7 +15,7 @@ Given the originating PR or issue, reconstruct what agents ran and in what order
 ### Setup
 
 ```bash
-ORG=$(echo "$REPO_FULL_NAME" | cut -d/ -f1)
+ORG="${REPO_FULL_NAME%%/*}"
 DISPATCH_REPO="${ORG}/.fullsend"
 ```
 

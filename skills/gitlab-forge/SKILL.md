@@ -18,10 +18,10 @@ It extracts the host, project path, and issue IID from the issue URL and
 prints them:
 
 ```bash
-GITLAB_HOST=$(echo "${ISSUE_URL}" | sed -nE 's|^https://([^/]+)/.*|\1|p')
-REPO=$(echo "${ISSUE_URL}" | sed -E 's|^https://[^/]+/(.+)/-/issues/[0-9]+$|\1|')
-REPO_ENCODED=$(printf '%s' "${REPO}" | jq -sRr @uri)
-ISSUE_NUMBER=$(basename "${ISSUE_URL}")
+GITLAB_HOST=$(printf '%s\n' "$ISSUE_URL" | sed -nE 's|^https://([^/]+)/.*|\1|p')
+REPO=$(printf '%s\n' "$ISSUE_URL" | sed -E 's|^https://[^/]+/(.+)/-/issues/[0-9]+$|\1|')
+REPO_ENCODED=$(printf '%s' "$REPO" | jq -sRr @uri)
+ISSUE_NUMBER="${ISSUE_URL##*/}"
 test -n "${GITLAB_HOST}" || echo "GITLAB_HOST is empty: ISSUE_URL is unset or not an https URL" >&2
 if printf '%s' "${GITLAB_HOST}" | grep -Eqz '^[A-Za-z0-9.-]+$' && printf '%s' "${ISSUE_NUMBER}" | grep -Eqz '^[0-9]+$'; then
   printf 'GITLAB_HOST=%s\nREPO_ENCODED=%s\nISSUE_NUMBER=%s\n' "${GITLAB_HOST}" "${REPO_ENCODED}" "${ISSUE_NUMBER}"

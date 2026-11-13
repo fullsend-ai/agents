@@ -1118,15 +1118,11 @@ and why. Place cross-repo references in a secondary "Context" or
 the first line to orient themselves; leading with an external repo
 reference can mislead them about which repository the PR targets.
 
-Use a quoted heredoc to capture `pr_body` content without shell
-expansion, then pass it to `jq --arg`:
+Write `pr_body` to `/tmp/pr-body.md` with `Write` (the command
+scanner blocks heredocs), then add it with `jq --rawfile`:
 
 ```bash
-pr_body=$(cat <<'PRBODY'
-<pr_body content>
-PRBODY
-)
-jq --arg pb "$pr_body" '. + {pr_body: $pb}' \
+jq --rawfile pb /tmp/pr-body.md '. + {pr_body: ($pb | sub("\n+$"; ""))}' \
   "${FULLSEND_OUTPUT_DIR}/agent-result.json" > "${FULLSEND_OUTPUT_DIR}/agent-result.json.tmp" \
   && mv "${FULLSEND_OUTPUT_DIR}/agent-result.json.tmp" "${FULLSEND_OUTPUT_DIR}/agent-result.json"
 ```

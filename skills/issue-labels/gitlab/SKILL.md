@@ -23,10 +23,10 @@ control labels -- just recommend what fits and the pipeline will filter.
 
 ```bash
 # Extract host, project path, and issue IID from the ISSUE_URL env var.
-GITLAB_HOST=$(echo "${ISSUE_URL}" | sed -E 's|^https://([^/]+)/.*|\1|')
-REPO=$(echo "${ISSUE_URL}" | sed -E 's|^https://[^/]+/(.+)/-/issues/[0-9]+$|\1|')
-REPO_ENCODED=$(printf '%s' "${REPO}" | jq -sRr @uri)
-ISSUE_NUMBER=$(basename "${ISSUE_URL}")
+GITLAB_HOST=$(printf '%s\n' "$ISSUE_URL" | sed -E 's|^https://([^/]+)/.*|\1|')
+REPO=$(printf '%s\n' "$ISSUE_URL" | sed -E 's|^https://[^/]+/(.+)/-/issues/[0-9]+$|\1|')
+REPO_ENCODED=$(printf '%s' "$REPO" | jq -sRr @uri)
+ISSUE_NUMBER="${ISSUE_URL##*/}"
 ```
 
 The sandbox's command scanner blocks a `--header "PRIVATE-TOKEN: …"` argument.

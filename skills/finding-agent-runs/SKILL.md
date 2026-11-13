@@ -14,7 +14,8 @@ forge-specific finding-agent-runs skill for CLI recipes (GitHub or GitLab).
 ## Setup
 
 ```bash
-ORG=$(echo "${REPO_FULL_NAME:-}" | cut -d/ -f1)
+ORG="${REPO_FULL_NAME:-}"
+ORG="${ORG%%/*}"
 DISPATCH_REPO="${ORG}/.fullsend"
 ```
 
