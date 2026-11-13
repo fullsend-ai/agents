@@ -156,8 +156,10 @@ check_validation_loop_at_path() {
 # Test 1: Every validation_loop with script must have schema
 test_validation_loop_schema() {
   local found_error=0
+  local file_count=0
   for harness in "${HARNESS_DIR}"/*.yaml "${REPO_ROOT}"/examples/*/harness/*.yaml "${REPO_ROOT}"/eval/harness/*.yaml; do
     [[ -f "${harness}" ]] || continue
+    file_count=$((file_count + 1))
     local harness_name
     harness_name="$(basename "${harness}")"
 
@@ -208,6 +210,10 @@ test_validation_loop_schema() {
       done
     fi
   done
+  if [[ ${file_count} -eq 0 ]]; then
+    echo "no harness files found in ${HARNESS_DIR}, examples, or eval/harness"
+    return 1
+  fi
   if [[ ${found_error} -eq 0 ]]; then
     return 0
   else
@@ -264,7 +270,7 @@ test_no_hardcoded_schema() {
         has_forge_schema="$(yq ".forge.${platform}.env.runner | has(\"FULLSEND_OUTPUT_SCHEMA\")" "${harness}")" || {
           echo "${harness_name}: yq failed to check forge.${platform}.env.runner"
           found_hardcoded=1
-          continue 2
+          continue
         }
         if [[ "${has_forge_schema}" == "true" ]]; then
           echo "${harness_name}: forge.${platform}.env.runner contains hardcoded FULLSEND_OUTPUT_SCHEMA"
@@ -275,7 +281,7 @@ test_no_hardcoded_schema() {
         has_forge_runner_env="$(yq ".forge.${platform}.runner_env | has(\"FULLSEND_OUTPUT_SCHEMA\")" "${harness}")" || {
           echo "${harness_name}: yq failed to check forge.${platform}.runner_env"
           found_hardcoded=1
-          continue 2
+          continue
         }
         if [[ "${has_forge_runner_env}" == "true" ]]; then
           echo "${harness_name}: forge.${platform}.runner_env (deprecated) contains hardcoded FULLSEND_OUTPUT_SCHEMA"
@@ -297,7 +303,7 @@ test_no_hardcoded_schema() {
         has_overlay_env_runner="$(yq ".overlays[${i}].env.runner | has(\"FULLSEND_OUTPUT_SCHEMA\")" "${harness}")" || {
           echo "${harness_name}: yq failed to check overlays[${i}].env.runner"
           found_hardcoded=1
-          continue 2
+          continue
         }
         if [[ "${has_overlay_env_runner}" == "true" ]]; then
           echo "${harness_name}: overlays[${i}].env.runner contains hardcoded FULLSEND_OUTPUT_SCHEMA"
@@ -308,7 +314,7 @@ test_no_hardcoded_schema() {
         has_overlay_runner_env="$(yq ".overlays[${i}].runner_env | has(\"FULLSEND_OUTPUT_SCHEMA\")" "${harness}")" || {
           echo "${harness_name}: yq failed to check overlays[${i}].runner_env"
           found_hardcoded=1
-          continue 2
+          continue
         }
         if [[ "${has_overlay_runner_env}" == "true" ]]; then
           echo "${harness_name}: overlays[${i}].runner_env (deprecated) contains hardcoded FULLSEND_OUTPUT_SCHEMA"
@@ -326,10 +332,12 @@ test_no_hardcoded_schema() {
 }
 
 # Helper: check schema file existence at a given validation_loop path
+# Resolves schema paths relative to the provided resolve_root (matching engine's ResolveRelativeTo)
 check_schema_files_at_path() {
   local harness="$1"
   local path="$2"
   local location="${3:-.}"
+  local resolve_root="$4"
   local harness_name
   harness_name="$(basename "${harness}")"
 
@@ -379,10 +387,14 @@ check_schema_files_at_path() {
     return 0
   fi
 
-  local harness_dir
-  harness_dir="$(dirname "$(dirname "${harness}")")"
+  # Resolve relative to the provided root (matching engine's ResolveRelativeTo)
+  # If no root provided, fall back to dirname(dirname(harness)) for backwards compatibility
+  local resolve_dir="${resolve_root}"
+  if [[ -z "${resolve_dir}" ]]; then
+    resolve_dir="$(dirname "$(dirname "${harness}")")"
+  fi
   local full_schema_path
-  full_schema_path="${harness_dir}/${schema_path}"
+  full_schema_path="${resolve_dir}/${schema_path}"
 
   if [[ ! -f "${full_schema_path}" ]]; then
     echo "${harness_name}: ${location} schema file not found: ${schema_path}"
@@ -400,47 +412,62 @@ check_schema_files_at_path() {
 # Test 3: All referenced schemas exist and are valid JSON
 test_schema_files_exist_and_valid() {
   local found_error=0
-  for harness in "${HARNESS_DIR}"/*.yaml "${REPO_ROOT}"/examples/*/harness/*.yaml "${REPO_ROOT}"/eval/harness/*.yaml; do
-    [[ -f "${harness}" ]] || continue
-    local harness_name
-    harness_name="$(basename "${harness}")"
+  # Process each glob with its appropriate resolution root to match engine's ResolveRelativeTo
+  local harnesses_and_roots=(
+    "${HARNESS_DIR}/*.yaml:${REPO_ROOT}"
+    "${REPO_ROOT}/examples/*/harness/*.yaml:${REPO_ROOT}/examples/*"
+    "${REPO_ROOT}/eval/harness/*.yaml:${REPO_ROOT}"
+  )
+  for harness_spec in "${harnesses_and_roots[@]}"; do
+    local pattern="${harness_spec%%:*}"
+    local resolve_root="${harness_spec#*:}"
+    for harness in ${pattern}; do
+      [[ -f "${harness}" ]] || continue
+      local harness_name
+      harness_name="$(basename "${harness}")"
 
-    # Check top-level schema
-    check_schema_files_at_path "${harness}" "." "top-level" || found_error=1
+      # For examples/*/harness/*.yaml, resolve_root needs to be the example root, not examples/*
+      if [[ "${harness}" == */examples/*/harness/*.yaml ]]; then
+        resolve_root="$(dirname "$(dirname "${harness}")")"
+      fi
 
-    # Check forge-specific schemas
-    local has_forge
-    has_forge="$(yq 'has("forge")' "${harness}")" || {
-      echo "${harness_name}: yq failed to check forge"
-      found_error=1
-      continue
-    }
-    if [[ "${has_forge}" == "true" ]]; then
-      local platforms
-      platforms="$(yq '.forge | keys | .[]' "${harness}")" || {
-        echo "${harness_name}: yq failed to get forge keys"
+      # Check top-level schema
+      check_schema_files_at_path "${harness}" "." "top-level" "${resolve_root}" || found_error=1
+
+      # Check forge-specific schemas
+      local has_forge
+      has_forge="$(yq 'has("forge")' "${harness}")" || {
+        echo "${harness_name}: yq failed to check forge"
         found_error=1
         continue
       }
-      while IFS= read -r platform; do
-        [[ -z "${platform}" ]] && continue
-        check_schema_files_at_path "${harness}" ".forge.${platform}" "forge.${platform}" || found_error=1
-      done <<< "${platforms}"
-    fi
+      if [[ "${has_forge}" == "true" ]]; then
+        local platforms
+        platforms="$(yq '.forge | keys | .[]' "${harness}")" || {
+          echo "${harness_name}: yq failed to get forge keys"
+          found_error=1
+          continue
+        }
+        while IFS= read -r platform; do
+          [[ -z "${platform}" ]] && continue
+          check_schema_files_at_path "${harness}" ".forge.${platform}" "forge.${platform}" "${resolve_root}" || found_error=1
+        done <<< "${platforms}"
+      fi
 
-    # Check overlay schemas
-    local overlay_count
-    overlay_count="$(yq '.overlays | length' "${harness}")" || {
-      echo "${harness_name}: yq failed to get overlay count"
-      found_error=1
-      continue
-    }
-    if [[ ${overlay_count} -gt 0 ]]; then
-      local i
-      for ((i=0; i<overlay_count; i++)); do
-        check_schema_files_at_path "${harness}" ".overlays[${i}]" "overlays[${i}]" || found_error=1
-      done
-    fi
+      # Check overlay schemas
+      local overlay_count
+      overlay_count="$(yq '.overlays | length' "${harness}")" || {
+        echo "${harness_name}: yq failed to get overlay count"
+        found_error=1
+        continue
+      }
+      if [[ ${overlay_count} -gt 0 ]]; then
+        local i
+        for ((i=0; i<overlay_count; i++)); do
+          check_schema_files_at_path "${harness}" ".overlays[${i}]" "overlays[${i}]" "${resolve_root}" || found_error=1
+        done
+      fi
+    done
   done
 
   if [[ ${found_error} -eq 0 ]]; then
@@ -497,9 +524,9 @@ test_negative_fixtures() {
 
   for fixture_spec in "${expected_failures[@]}"; do
     local fixture_name="${fixture_spec%%:*}"
-    local test_func="${fixture_spec#*:}"
-    test_func="${test_func%%:*}"
-    local expected_message="${fixture_spec##*:}"
+    local rest="${fixture_spec#*:}"
+    local test_func="${rest%%:*}"
+    local expected_message="${rest#*:}"
     local fixture_file="${fixtures_dir}/${fixture_name}"
 
     if [[ ! -f "${fixture_file}" ]]; then
@@ -510,7 +537,8 @@ test_negative_fixtures() {
 
     local output
     local exit_code=0
-    output="$(HARNESS_DIR="${fixtures_dir}" ${test_func} 2>&1)" || exit_code=$?
+    # Run each test with HARNESS_DIR set to fixtures, and export REPO_ROOT so schema paths resolve correctly
+    output="$(HARNESS_DIR="${fixtures_dir}" REPO_ROOT="${SCRIPT_DIR}"/test-fixtures ${test_func} 2>&1)" || exit_code=$?
 
     if [[ ${exit_code} -ne 0 ]] && echo "${output}" | grep -qE "${expected_message}"; then
       continue
