@@ -19,15 +19,30 @@ Control labels are managed by each agent's post-script and will be refused
 server-side if recommended. You do not need to track which labels are
 control labels -- just recommend what fits and the pipeline will filter.
 
-## Step 0: Derive project variables from ISSUE_URL
+## Step 0: Request values
+
+Run this first, in its own Bash tool call, before any other GitLab command.
+It derives the host, project path, and issue IID from `ISSUE_URL` and prints
+them:
 
 ```bash
-# Extract host, project path, and issue IID from the ISSUE_URL env var.
-GITLAB_HOST=$(printf '%s\n' "$ISSUE_URL" | sed -E 's|^https://([^/]+)/.*|\1|')
+GITLAB_HOST=$(printf '%s\n' "$ISSUE_URL" | sed -nE 's|^https://([^/]+)/.*|\1|p')
 REPO=$(printf '%s\n' "$ISSUE_URL" | sed -E 's|^https://[^/]+/(.+)/-/issues/[0-9]+$|\1|')
 REPO_ENCODED=$(printf '%s' "$REPO" | jq -sRr @uri)
 ISSUE_NUMBER="${ISSUE_URL##*/}"
+test -n "${GITLAB_HOST}" || echo "GITLAB_HOST is empty: ISSUE_URL is unset or not an https URL" >&2
+if printf '%s' "${GITLAB_HOST}" | grep -Eqz '^[A-Za-z0-9.-]+$' && printf '%s' "${ISSUE_NUMBER}" | grep -Eqz '^[0-9]+$'; then
+  printf 'GITLAB_HOST=%s\nREPO_ENCODED=%s\nISSUE_NUMBER=%s\n' "${GITLAB_HOST}" "${REPO_ENCODED}" "${ISSUE_NUMBER}"
+else
+  echo "GITLAB_HOST is not a plain hostname or ISSUE_NUMBER is not numeric" >&2
+fi
 ```
+
+If it printed no values, make no request and skip labeling. Otherwise, write
+the printed values literally into every request URL below in place of
+`<GITLAB_HOST>` and `<REPO_ENCODED>`. Never write `${GITLAB_HOST}` in a request
+URL: the sandbox's SSRF check reads the URL before shell expansion and blocks
+it (see the `gitlab` forge skill).
 
 The sandbox's command scanner blocks a `--header "PRIVATE-TOKEN: …"` argument.
 Requests read the token from a curl config file instead. This is the same file
@@ -40,16 +55,15 @@ setup with a request.
 (umask 077; set -C; rm -f /tmp/gitlab-api.curlrc; printf 'header = "PRIVATE-TOKEN: %s"\nsilent\n' "$GITLAB_TOKEN" > /tmp/gitlab-api.curlrc)
 ```
 
-Make the requests in later Bash tool calls, never in the setup call. Requests
-in the same block below may share one call. Shell variables do not carry over
-between calls, so start each request call with the derivation lines from
-Step 0.
+Make the requests in later Bash tool calls, never in the token setup call,
+with the printed request values pasted in. Requests in the same block below
+may share one call.
 
 ## Step 1: Discover available labels
 
 ```bash
 curl -K /tmp/gitlab-api.curlrc \
-  "https://${GITLAB_HOST}/api/v4/projects/${REPO_ENCODED}/labels?per_page=100" \
+  "https://<GITLAB_HOST>/api/v4/projects/<REPO_ENCODED>/labels?per_page=100" \
   | jq '[.[] | {name, description}]'
 ```
 
@@ -59,12 +73,13 @@ entirely -- do not emit `label_actions`.
 ## Step 2: Research labeling conventions
 
 Spawn a sub-agent to investigate how labels have been applied to recent issues.
-The sub-agent should:
+Put the printed `GITLAB_HOST` and `REPO_ENCODED` values literally in its
+prompt. The sub-agent should:
 
 1. Query recent closed and open issues:
    ```bash
    curl -K /tmp/gitlab-api.curlrc \
-     "https://${GITLAB_HOST}/api/v4/projects/${REPO_ENCODED}/issues?per_page=50&order_by=updated_at&sort=desc" \
+     "https://<GITLAB_HOST>/api/v4/projects/<REPO_ENCODED>/issues?per_page=50&order_by=updated_at&sort=desc" \
      | jq '[.[] | {iid, title, labels}]'
    ```
 2. Analyze which labels appear together and in what contexts.
@@ -76,7 +91,7 @@ Do not dump raw issue data into the parent context. Only use the sub-agent's
 summary to inform your recommendations.
 
 After the sub-agent returns, scrub the token in its own Bash call:
-`: > /tmp/gitlab-api.curlrc`. Run the Step 0 setup command again before any
+`: > /tmp/gitlab-api.curlrc`. Run the token setup command again before any
 later GitLab request.
 
 ## Step 3: Recommend labels

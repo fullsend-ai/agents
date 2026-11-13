@@ -11,12 +11,28 @@ description: >-
 Use `curl` with the GitLab REST API to fetch MR data for the fix agent.
 The environment provides `GITLAB_TOKEN` for authentication.
 
-Derive the API host and project path from the environment:
+## Request values
+
+Run this first, in its own Bash tool call, before any other GitLab command.
+It derives the host, project path, and MR IID and prints them:
 
 ```bash
-GITLAB_HOST=$(printf '%s\n' "$PR_URL" | sed -E 's|^https://([^/]+)/.*|\1|')
+GITLAB_HOST=$(printf '%s\n' "$PR_URL" | sed -nE 's|^https://([^/]+)/.*|\1|p')
 REPO_ENCODED=$(printf '%s' "$REPO_FULL_NAME" | jq -sRr @uri)
+test -n "${GITLAB_HOST}" || echo "GITLAB_HOST is empty: PR_URL is unset or not an https URL" >&2
+if test -n "${REPO_ENCODED}" && printf '%s' "${GITLAB_HOST}" | grep -Eqz '^[A-Za-z0-9.-]+$' && printf '%s' "${PR_NUMBER}" | grep -Eqz '^[0-9]+$'; then
+  printf 'GITLAB_HOST=%s\nREPO_ENCODED=%s\nPR_NUMBER=%s\n' "${GITLAB_HOST}" "${REPO_ENCODED}" "${PR_NUMBER}"
+else
+  echo "REPO_FULL_NAME is empty, GITLAB_HOST is not a plain hostname, or PR_NUMBER is not numeric" >&2
+fi
 ```
+
+If it printed no values, make no request and report that the GitLab request
+values could not be derived. Otherwise, write the printed values literally into
+every request URL below in place of `<GITLAB_HOST>`, `<REPO_ENCODED>`, and
+`<PR_NUMBER>`. Never write `${GITLAB_HOST}` in a request URL: the sandbox's
+SSRF check reads the URL before shell expansion and blocks it (see the `gitlab`
+forge skill).
 
 The sandbox's command scanner blocks a `--header "PRIVATE-TOKEN: …"` argument.
 Requests read the token from a curl config file instead. This is the same file
@@ -29,27 +45,26 @@ setup with a request.
 (umask 077; set -C; rm -f /tmp/gitlab-api.curlrc; printf 'header = "PRIVATE-TOKEN: %s"\nsilent\n' "$GITLAB_TOKEN" > /tmp/gitlab-api.curlrc)
 ```
 
-Make the requests in later Bash tool calls, never in the setup call. Requests
-in the same block below may share one call. Shell variables do not carry over
-between calls, so start each request call with the two derivation lines above
-(`GITLAB_HOST` and `REPO_ENCODED`). When you have made your last GitLab
-request, scrub the token in its own Bash call: `: > /tmp/gitlab-api.curlrc`.
-Run the setup command again before any later GitLab request, or if the file
-may already have been scrubbed.
+Make the requests in later Bash tool calls, never in the token setup call,
+with the printed request values pasted in. Requests in the same block below
+may share one call. When you have made your last GitLab request, scrub the
+token in its own Bash call: `: > /tmp/gitlab-api.curlrc`. Run the token setup
+command again before any later GitLab request, or if the file may already have
+been scrubbed.
 
 ## MR Metadata
 
 ```bash
 # View MR with full details
 curl --silent -K /tmp/gitlab-api.curlrc \
-  "https://${GITLAB_HOST}/api/v4/projects/${REPO_ENCODED}/merge_requests/${PR_NUMBER}"
+  "https://<GITLAB_HOST>/api/v4/projects/<REPO_ENCODED>/merge_requests/<PR_NUMBER>"
 
 # Mergeability — only detailed_merge_status=conflict is a merge conflict.
 # not_approved, ci_must_pass, need_rebase, checking, unchecked, and unknown
 # are not. Fall back to has_conflicts=true only when detailed_merge_status
 # is absent and merge_status is cannot_be_merged.
 curl --silent -K /tmp/gitlab-api.curlrc \
-  "https://${GITLAB_HOST}/api/v4/projects/${REPO_ENCODED}/merge_requests/${PR_NUMBER}" \
+  "https://<GITLAB_HOST>/api/v4/projects/<REPO_ENCODED>/merge_requests/<PR_NUMBER>" \
   | jq '{detailed_merge_status, has_conflicts, merge_status, target_branch}'
 ```
 
@@ -58,7 +73,7 @@ curl --silent -K /tmp/gitlab-api.curlrc \
 ```bash
 # Fetch the current diff (changes)
 curl --silent -K /tmp/gitlab-api.curlrc \
-  "https://${GITLAB_HOST}/api/v4/projects/${REPO_ENCODED}/merge_requests/${PR_NUMBER}/changes" \
+  "https://<GITLAB_HOST>/api/v4/projects/<REPO_ENCODED>/merge_requests/<PR_NUMBER>/changes" \
   | jq -r '.changes[] | "--- a/\(.old_path)\n+++ b/\(.new_path)\n\(.diff)"'
 ```
 
@@ -75,17 +90,16 @@ re-fetch MR discussions as a substitute.
 ```bash
 # List MR notes (comments, for context on prior iterations)
 curl --silent -K /tmp/gitlab-api.curlrc \
-  "https://${GITLAB_HOST}/api/v4/projects/${REPO_ENCODED}/merge_requests/${PR_NUMBER}/notes?per_page=100&sort=asc"
+  "https://<GITLAB_HOST>/api/v4/projects/<REPO_ENCODED>/merge_requests/<PR_NUMBER>/notes?per_page=100&sort=asc"
 ```
 
 ## Project CI
 
 Inspect project CI during context gathering. Follow the
 `fix-ci-inspection` skill for classification, authorization,
-untrusted-log handling, and `ci_inspections` recording. Start the
-call with the `GITLAB_HOST` and `REPO_ENCODED` derivation lines from
-above, and run the block below in one call so `PIPELINE_ID` carries
-through.
+untrusted-log handling, and `ci_inspections` recording. Run the block
+below in one call, with the printed request values pasted in, so
+`MR_SHA` and `PIPELINE_ID` carry through.
 
 ```bash
 # Current MR metadata: top-level SHA (source-branch HEAD) and head pipeline
@@ -93,7 +107,7 @@ through.
 # commit for merged-results/merge-train projects, per this repo's own
 # scripts/lib/gitlab-code-ops.lib.sh and scripts/pre-code.sh)
 curl --silent -K /tmp/gitlab-api.curlrc \
-  "https://${GITLAB_HOST}/api/v4/projects/${REPO_ENCODED}/merge_requests/${PR_NUMBER}" \
+  "https://<GITLAB_HOST>/api/v4/projects/<REPO_ENCODED>/merge_requests/<PR_NUMBER>" \
   > /sandbox/workspace/mr-data.json
 MR_SHA=$(jq -r '.sha' /sandbox/workspace/mr-data.json)
 HEAD_PIPELINE_ID=$(jq -r '.head_pipeline.id // empty' /sandbox/workspace/mr-data.json)
@@ -110,7 +124,7 @@ if test -n "${HEAD_PIPELINE_ID}"; then
   PIPELINE_ID="${HEAD_PIPELINE_ID}"
 else
   curl --silent -K /tmp/gitlab-api.curlrc \
-    "https://${GITLAB_HOST}/api/v4/projects/${REPO_ENCODED}/merge_requests/${PR_NUMBER}/pipelines?per_page=100" \
+    "https://<GITLAB_HOST>/api/v4/projects/<REPO_ENCODED>/merge_requests/<PR_NUMBER>/pipelines?per_page=100" \
     > /sandbox/workspace/mr-pipelines.json
   PIPELINE_ID=$(jq -r --arg sha "$MR_SHA" --arg hsha "$HEAD_PIPELINE_SHA" \
     '[.[] | select(.sha == $sha or ($hsha != "" and .sha == $hsha))] | (.[0].id // empty)' \
@@ -119,7 +133,7 @@ fi
 
 # Jobs in a pipeline
 curl --silent -K /tmp/gitlab-api.curlrc \
-  "https://${GITLAB_HOST}/api/v4/projects/${REPO_ENCODED}/pipelines/${PIPELINE_ID}/jobs?per_page=100"
+  "https://<GITLAB_HOST>/api/v4/projects/<REPO_ENCODED>/pipelines/${PIPELINE_ID}/jobs?per_page=100"
 ```
 
 **Exclude Fullsend agent/dispatch jobs** before diagnosing failures. Drop a
@@ -131,12 +145,12 @@ name starts with `dispatch-`. Do not add excluded jobs to `ci_inspections`.
 ```bash
 # Job log (trace). Read the failure; do not dump an entire successful log.
 curl --silent -K /tmp/gitlab-api.curlrc \
-  "https://${GITLAB_HOST}/api/v4/projects/${REPO_ENCODED}/jobs/${JOB_ID}/trace"
+  "https://<GITLAB_HOST>/api/v4/projects/<REPO_ENCODED>/jobs/${JOB_ID}/trace"
 
 # Artifacts (skip when the job published none)
 curl --silent --fail -K /tmp/gitlab-api.curlrc \
   -o "/tmp/ci-artifacts-${JOB_ID}.zip" \
-  "https://${GITLAB_HOST}/api/v4/projects/${REPO_ENCODED}/jobs/${JOB_ID}/artifacts"
+  "https://<GITLAB_HOST>/api/v4/projects/<REPO_ENCODED>/jobs/${JOB_ID}/artifacts"
 ```
 
 If a log or artifact cannot be fetched, record that in the diagnosis and

@@ -8,15 +8,33 @@ description: >
 
 # Retro Analysis — GitLab CLI Recipes
 
-## Environment setup
+## Request values
+
+Run this first, in its own Bash tool call, before any other GitLab command.
+It derives the host and the encoded source and dispatch project paths and
+prints them:
 
 ```bash
-GITLAB_HOST=$(printf '%s\n' "$ORIGINATING_URL" | sed -E 's|^https://([^/]+)/.*|\1|')
+GITLAB_HOST=$(printf '%s\n' "$ORIGINATING_URL" | sed -nE 's|^https://([^/]+)/.*|\1|p')
 REPO_ENCODED=$(printf '%s' "$REPO_FULL_NAME" | jq -sRr @uri)
 ORG="${REPO_FULL_NAME%%/*}"
 DISPATCH_REPO="${ORG}/.fullsend"
 DISPATCH_REPO_ENCODED=$(printf '%s' "$DISPATCH_REPO" | jq -sRr @uri)
+test -n "${GITLAB_HOST}" || echo "GITLAB_HOST is empty: ORIGINATING_URL is unset or not an https URL" >&2
+if test -n "${ORG}" && printf '%s' "${GITLAB_HOST}" | grep -Eqz '^[A-Za-z0-9.-]+$'; then
+  printf 'GITLAB_HOST=%s\nREPO_ENCODED=%s\nDISPATCH_REPO_ENCODED=%s\n' "${GITLAB_HOST}" "${REPO_ENCODED}" "${DISPATCH_REPO_ENCODED}"
+else
+  echo "REPO_FULL_NAME is empty or GITLAB_HOST is not a plain hostname" >&2
+fi
 ```
+
+If it printed no values, make no request and report that the GitLab request
+values could not be derived. Otherwise, write the printed values literally into
+every request URL below in place of `<GITLAB_HOST>` and
+`<DISPATCH_REPO_ENCODED>`; `REPO_ENCODED` is the source project for
+`<layer-project-encoded>`. Never write `${GITLAB_HOST}` in a request URL: the
+sandbox's SSRF check reads the URL before shell expansion and blocks it (see
+the `gitlab` forge skill).
 
 The sandbox's command scanner blocks a `--header "PRIVATE-TOKEN: …"` argument.
 Requests read the token from a curl config file instead. This is the same file
@@ -29,20 +47,19 @@ setup with a request.
 (umask 077; set -C; rm -f /tmp/gitlab-api.curlrc; printf 'header = "PRIVATE-TOKEN: %s"\nsilent\n' "$GITLAB_TOKEN" > /tmp/gitlab-api.curlrc)
 ```
 
-Make the requests in later Bash tool calls, never in the setup call. Requests
-in the same block below may share one call. Shell variables do not carry over
-between calls, so start each request call with the derivation lines from
-"Environment setup". When you have made your last GitLab request, scrub the
-token in its own Bash call: `: > /tmp/gitlab-api.curlrc`. Run the setup command
-again before any later GitLab request, or if the file may already have been
-scrubbed.
+Make the requests in later Bash tool calls, never in the token setup call,
+with the printed request values pasted in. Requests in the same block below
+may share one call. When you have made your last GitLab request, scrub the
+token in its own Bash call: `: > /tmp/gitlab-api.curlrc`. Run the token setup
+command again before any later GitLab request, or if the file may already have
+been scrubbed.
 
 All API calls use:
 ```bash
 curl --fail --silent --show-error \
   --connect-timeout 10 --max-time 30 \
   -K /tmp/gitlab-api.curlrc \
-  "https://${GITLAB_HOST}/api/v4${ENDPOINT}"
+  "https://<GITLAB_HOST>/api/v4${ENDPOINT}"
 ```
 
 ## Pipeline tracing
@@ -55,7 +72,7 @@ source project.
 ```bash
 curl --fail --silent --show-error \
   -K /tmp/gitlab-api.curlrc \
-  "https://${GITLAB_HOST}/api/v4/projects/${DISPATCH_REPO_ENCODED}/pipelines?per_page=20" \
+  "https://<GITLAB_HOST>/api/v4/projects/<DISPATCH_REPO_ENCODED>/pipelines?per_page=20" \
   | jq '.[] | {id: .id, status: .status, ref: .ref, created_at: .created_at}'
 ```
 
@@ -64,7 +81,7 @@ curl --fail --silent --show-error \
 ```bash
 curl --fail --silent --show-error \
   -K /tmp/gitlab-api.curlrc \
-  "https://${GITLAB_HOST}/api/v4/projects/${DISPATCH_REPO_ENCODED}/pipelines/<PIPELINE_ID>/jobs" \
+  "https://<GITLAB_HOST>/api/v4/projects/<DISPATCH_REPO_ENCODED>/pipelines/<PIPELINE_ID>/jobs" \
   | jq '.[] | {id: .id, name: .name, status: .status, stage: .stage}'
 ```
 
@@ -73,7 +90,7 @@ curl --fail --silent --show-error \
 ```bash
 curl --fail --silent --show-error \
   -K /tmp/gitlab-api.curlrc \
-  "https://${GITLAB_HOST}/api/v4/projects/${DISPATCH_REPO_ENCODED}/jobs/<JOB_ID>/trace" \
+  "https://<GITLAB_HOST>/api/v4/projects/<DISPATCH_REPO_ENCODED>/jobs/<JOB_ID>/trace" \
   | grep -i "error\|fail\|exit code"
 ```
 
@@ -83,7 +100,7 @@ curl --fail --silent --show-error \
 curl --fail --silent --show-error \
   -K /tmp/gitlab-api.curlrc \
   --output artifacts.zip \
-  "https://${GITLAB_HOST}/api/v4/projects/${DISPATCH_REPO_ENCODED}/jobs/<JOB_ID>/artifacts"
+  "https://<GITLAB_HOST>/api/v4/projects/<DISPATCH_REPO_ENCODED>/jobs/<JOB_ID>/artifacts"
 ```
 
 ## Duplicate search
@@ -103,7 +120,7 @@ TARGET_ENCODED=$(printf '%s' "<target_repo>" | jq -sRr @uri)
 # Fix-keyed: keywords drawn from the proposed change, open issues
 curl --fail --silent --show-error \
   -K /tmp/gitlab-api.curlrc \
-  "https://${GITLAB_HOST}/api/v4/projects/${TARGET_ENCODED}/issues?search=<fix+keywords>&state=opened&per_page=20" \
+  "https://<GITLAB_HOST>/api/v4/projects/${TARGET_ENCODED}/issues?search=<fix+keywords>&state=opened&per_page=20" \
   | jq '.[] | {iid: .iid, title: .title, state: .state, web_url: .web_url, description: .description}'
 
 # Root-cause-keyed: run once per layer project (platform, agents, source),
@@ -113,7 +130,7 @@ curl --fail --silent --show-error \
 # (GitLab has no close-reason API; see the close-reason note below).
 curl --fail --silent --show-error \
   -K /tmp/gitlab-api.curlrc \
-  "https://${GITLAB_HOST}/api/v4/projects/<layer-project-encoded>/issues?search=<subsystem+or+root-cause+keywords>&per_page=20" \
+  "https://<GITLAB_HOST>/api/v4/projects/<layer-project-encoded>/issues?search=<subsystem+or+root-cause+keywords>&per_page=20" \
   | jq '.[] | {iid: .iid, title: .title, state: .state, closed_at: .closed_at, labels: .labels, closed_as_duplicate_of: ._links.closed_as_duplicate_of, web_url: .web_url, description: .description}'
 
 # Include closed issues to apply the close-reason rules. GitLab has NO
@@ -126,7 +143,7 @@ curl --fail --silent --show-error \
 #     than guessed. closed_at is still available for the 30-day window.
 curl --fail --silent --show-error \
   -K /tmp/gitlab-api.curlrc \
-  "https://${GITLAB_HOST}/api/v4/projects/${TARGET_ENCODED}/issues?search=<keywords>&per_page=20" \
+  "https://<GITLAB_HOST>/api/v4/projects/${TARGET_ENCODED}/issues?search=<keywords>&per_page=20" \
   | jq '.[] | {iid: .iid, title: .title, state: .state, closed_at: .closed_at, labels: .labels, closed_as_duplicate_of: ._links.closed_as_duplicate_of, web_url: .web_url, description: .description}'
 
 # Follow a duplicate chain to its canonical. Prefer the structured link
@@ -137,11 +154,11 @@ curl --fail --silent --show-error \
 # does not find its canonical.)
 curl --fail --silent --show-error \
   -K /tmp/gitlab-api.curlrc \
-  "https://${GITLAB_HOST}/api/v4/projects/${TARGET_ENCODED}/issues/<candidate-iid>" \
+  "https://<GITLAB_HOST>/api/v4/projects/${TARGET_ENCODED}/issues/<candidate-iid>" \
   | jq '{iid: .iid, title: .title, state: .state, description: .description, closed_as_duplicate_of: ._links.closed_as_duplicate_of}'
 curl --fail --silent --show-error \
   -K /tmp/gitlab-api.curlrc \
-  "https://${GITLAB_HOST}/api/v4/projects/${TARGET_ENCODED}/issues/<candidate-iid>/notes?per_page=50" \
+  "https://<GITLAB_HOST>/api/v4/projects/${TARGET_ENCODED}/issues/<candidate-iid>/notes?per_page=50" \
   | jq '.[] | {body: .body}'
 # Then fetch the referenced canonical directly (follow further links if it is
 # itself a duplicate). Note its project: the canonical may live in another layer.
