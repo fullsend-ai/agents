@@ -2743,10 +2743,11 @@ run_code_push_retry_test "push-unexpected-error" \
 # ---------------------------------------------------------------------------
 _rerun_commit() {
   local dir="$1" file="$2" name="$3" email="$4" msg="$5"
+  local cname="${6:-$3}" cemail="${7:-$4}"
   echo "${msg}" > "${dir}/${file}"
   sec_fixture_git -C "${dir}" add "${file}"
   GIT_AUTHOR_NAME="${name}" GIT_AUTHOR_EMAIL="${email}" \
-    GIT_COMMITTER_NAME="${name}" GIT_COMMITTER_EMAIL="${email}" \
+    GIT_COMMITTER_NAME="${cname}" GIT_COMMITTER_EMAIL="${cemail}" \
     sec_fixture_git -C "${dir}" commit -q -m "${msg}"
 }
 
@@ -2775,6 +2776,14 @@ seed_rerun_repo() {
     code)  _rerun_commit "${seed}" more.txt fullsend-code "${bot}" "fix: follow-up run" ;;
     fix)   _rerun_commit "${seed}" more.txt fullsend-fix "${bot}" "fix: address review" ;;
     human) _rerun_commit "${seed}" more.txt "Human Dev" human@example.com "fix: human change" ;;
+    amended)
+      _rerun_commit "${seed}" more.txt fullsend-code "${bot}" "fix: follow-up run" \
+        "Human Dev" human@example.com ;;
+    signed)
+      _rerun_commit "${seed}" more.txt "fullsend-ai-coder[bot]" "${bot}" \
+        "fix: follow-up run
+
+Authored-by: fullsend-code <${bot}>" GitHub noreply@github.com ;;
   esac
   sec_fixture_git -C "${seed}" push -q origin "${branch}"
   RERUN_BEFORE="$(sec_fixture_git -C "${bare}" rev-parse "refs/heads/${branch}")"
@@ -2880,7 +2889,8 @@ run_code_rerun_test "rerun-full-clone-stale-tracking-ref" full code false publis
 run_code_rerun_test "rerun-shallow-agent-commits-replaced" shallow code false publish
 run_code_rerun_test "rerun-shallow-human-commit-refused" shallow human false refuse
 run_code_rerun_test "rerun-shallow-fix-agent-commit-refused" shallow fix false refuse
-run_code_rerun_test "rerun-shallow-signed-agent-commits-replaced" checkout code true publish \
+run_code_rerun_test "rerun-shallow-amended-agent-commit-refused" shallow amended false refuse
+run_code_rerun_test "rerun-shallow-signed-agent-commits-replaced" checkout signed true publish \
   "fullsend-ai-coder[bot]"
 
 rm -rf "${SEC_CODE_TMPDIR}"

@@ -953,7 +953,7 @@ CODE_AGENT_AUTHOR_NAME="fullsend-code"
 # fetched origin/BRANCH that HEAD lacks; fail unless the code agent wrote
 # each one, so a person's or the fix agent's work is never replaced (#342).
 refuse_unless_agent_commits() {
-  local bot_email dropped sha name email short pr_note=""
+  local bot_email dropped sha name email committer committer_email short pr_note=""
   bot_email="$(signoff_bot_email)"
   if [ -z "${bot_email}" ]; then
     post_fail_to_issue push-rejected \
@@ -965,13 +965,17 @@ refuse_unless_agent_commits() {
   fi
   for sha in ${dropped}; do
     IFS=$'\t' read -r name email <<< "$(commit_author_identity "${sha}")"
-    if [ "${name}" != "${CODE_AGENT_AUTHOR_NAME}" ] || [ "${email}" != "${bot_email}" ]; then
+    IFS=$'\t' read -r committer committer_email <<< "$(git log -1 --format='%cn%x09%ce' "${sha}")"
+    # Amending an agent commit keeps its author, so the committer must match
+    # too. GitHub is the committer of API-signed commits.
+    if [ "${name}" != "${CODE_AGENT_AUTHOR_NAME}" ] || [ "${email}" != "${bot_email}" ] \
+       || { [ "${committer_email}" != "${bot_email}" ] && [ "${committer_email}" != "noreply@github.com" ]; }; then
       short="$(git rev-parse --short "${sha}")"
       if [ -n "${OPEN_PR:-}" ]; then
         pr_note=" (open PR #${OPEN_PR})"
       fi
       post_fail_to_issue push-rejected \
-        "Branch '${BRANCH}'${pr_note} holds commit ${short} by ${name:-unknown}, which the code agent did not write; refusing to replace it. Close the pull request and run the code agent again, or ask for changes on the existing pull request instead."
+        "Branch '${BRANCH}'${pr_note} holds commit ${short} by ${name:-unknown} (committed by ${committer:-unknown}), which is not the code agent's own; refusing to replace it. Close the pull request and run the code agent again, or ask for changes on the existing pull request instead."
     fi
   done
 }
@@ -1000,7 +1004,8 @@ if [ "${PUSH_RC}" -ne 0 ]; then
     if [ "${BRANCH_FETCH_RC}" -ne 0 ]; then
       PUSH_CATEGORY="$(categorize_push_failure "${PUSH_OUTPUT}
 ${BRANCH_FETCH_OUTPUT}")"
-      post_fail_to_issue "${PUSH_CATEGORY}" "Could not fetch '${BRANCH}' before the forced retry:
+      post_fail_to_issue "${PUSH_CATEGORY}" "${PUSH_OUTPUT}
+Could not fetch '${BRANCH}' before the forced retry:
 ${BRANCH_FETCH_OUTPUT}"
     fi
     refuse_unless_agent_commits

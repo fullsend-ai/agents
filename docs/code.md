@@ -107,7 +107,9 @@ Jira-source no-PR runs still emit only their existing generic notice.
 When you run the code agent again and its branch already backs an open pull
 request, the new run replaces the code agent's earlier commits on that branch.
 The post-script refuses the push if the branch holds a commit by anyone else,
-including you or the fix agent, and names that commit in a failure comment.
+and names that commit in a failure comment. That includes a commit by you or
+the fix agent, a code agent commit you amended, and the merge commit GitHub's
+**Update branch** button adds.
 To start over, close the pull request and run the code agent again, which
 deletes the old branch; to keep the existing work, ask for changes on the open
 pull request instead.
