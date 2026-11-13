@@ -2259,10 +2259,12 @@ fi
 
 # Return status for the issue (used by idempotency check).
 if [[ "${URL}" =~ /issue/[A-Z]+-[0-9]+\?fields=status ]] && [[ "${METHOD}" == "GET" ]]; then
-  if [[ -n "${MOCK_JIRA_STATUS_DONE:-}" ]]; then
-    echo '{"fields":{"status":{"statusCategory":{"key":"done","name":"Done"}}}}'
+  if [[ -n "${MOCK_JIRA_STATUS_REJECTED:-}" ]]; then
+    echo '{"fields":{"status":{"name":"Won'\''t Do","statusCategory":{"key":"done","name":"Done"}}}}'
+  elif [[ -n "${MOCK_JIRA_STATUS_DONE:-}" ]]; then
+    echo '{"fields":{"status":{"name":"Done","statusCategory":{"key":"done","name":"Done"}}}}'
   else
-    echo '{"fields":{"status":{"statusCategory":{"key":"indeterminate","name":"In Progress"}}}}'
+    echo '{"fields":{"status":{"name":"In Progress","statusCategory":{"key":"indeterminate","name":"In Progress"}}}}'
   fi
   exit 0
 fi
@@ -2424,11 +2426,32 @@ run_jira_test_stdout "jira-completed-fallback-done" \
   '{"action":"completed","reasoning":"all child issues are closed","comment":"All tracked work is done."}' \
   "falling back to 'Done'"
 
-# Jira completed action skips transition if issue is already in Done category (idempotent).
+# Jira completed action refuses rejection-only Done transitions during fallback.
+MOCK_JIRA_TRANSITIONS='{"transitions":[{"id":"31","name":"Duplicate","to":{"statusCategory":{"key":"done"}}},{"id":"41","name":"Not Planned","to":{"statusCategory":{"key":"done"}}}]}' \
+JIRA_COMPLETED_TRANSITION="NonExistent" \
+run_jira_test "jira-completed-fallback-refuses-rejection-only" \
+  '{"action":"completed","reasoning":"all child issues are closed","comment":"All tracked work is done."}' \
+  "" true
+
+# Jira completed action falls back to JIRA_SPLIT_TRANSITION when JIRA_COMPLETED_TRANSITION is unset.
+(
+  unset JIRA_COMPLETED_TRANSITION
+  run_jira_test_stdout "jira-completed-fallback-to-split-var" \
+    '{"action":"completed","reasoning":"all child issues are closed","comment":"All tracked work is done."}' \
+    "falling back to JIRA_SPLIT_TRANSITION"
+)
+
+# Jira completed action skips transition if issue is already in positive Done category (idempotent).
 MOCK_JIRA_STATUS_DONE=1 \
 run_jira_test_stdout "jira-completed-idempotent-done" \
   '{"action":"completed","reasoning":"all child issues are closed","comment":"All tracked work is done."}' \
-  "is already in status category 'done'"
+  "is already in status 'Done' (done); skipping transition"
+
+# Jira completed action does not skip if issue is currently in a rejection status (e.g. Won't Do).
+MOCK_JIRA_STATUS_REJECTED=1 \
+run_jira_test "jira-completed-rejection-status-transitions" \
+  '{"action":"completed","reasoning":"re-completing previously rejected issue","comment":"All tracked work is done."}' \
+  '{"transition":{"id":"61"}}'
 
 # Jira split action closes the original issue via JIRA_SPLIT_TRANSITION
 # after creating both sub-issues (defaulting to the source project).

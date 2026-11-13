@@ -145,10 +145,10 @@ export FULLSEND_DIR="<path to the .fullsend directory>"
 export FULLSEND_FORGE="jira"
 
 # Transition names for closing issues — set to match your Jira workflow.
-export JIRA_COMPLETED_TRANSITION="Done"
+export JIRA_COMPLETED_TRANSITION="Closed"
 export JIRA_DUPLICATE_TRANSITION="Duplicate"
 export JIRA_NOT_PLANNED_TRANSITION="Won't Do"
-export JIRA_SPLIT_TRANSITION="Done"
+export JIRA_SPLIT_TRANSITION="Obsolete"
 ```
 
 Run `fullsend run triage` the same way as step 3 above — `--target-repo`

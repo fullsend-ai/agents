@@ -1740,11 +1740,12 @@ if [[ -n "${JIRA_TOKEN:-}" ]]; then
 # the raw REST calls in this file and the `fullsend` shell-outs below.
 #
 # Optional env vars:
+#   JIRA_COMPLETED_TRANSITION   — transition name for the "completed" action
+#                                 (default: "Closed"; falls back to
+#                                 JIRA_SPLIT_TRANSITION when unset)
 #   JIRA_DUPLICATE_TRANSITION   — transition name for the "duplicate" action
 #   JIRA_NOT_PLANNED_TRANSITION — transition name for the "not planned" action
-#   JIRA_SPLIT_TRANSITION       — transition name for the "split" and
-#                                 "completed" actions (both close with
-#                                 GitHub reason "completed")
+#   JIRA_SPLIT_TRANSITION       — transition name for the "split" action
 #   JIRA_CREATE_ISSUE_TYPE      — issue type name for cross-project issue
 #                                 creation (default: "Task")
 
@@ -2148,20 +2149,47 @@ tracker_close_issue() {
   esac
 
   local transition_name="${!transition_var:-}"
+  if [[ -z "${transition_name}" && "${reason}" == "completed" && -n "${JIRA_SPLIT_TRANSITION:-}" ]]; then
+    transition_var="JIRA_SPLIT_TRANSITION"
+    transition_name="${JIRA_SPLIT_TRANSITION}"
+    echo "NOTICE: JIRA_COMPLETED_TRANSITION is not set; falling back to JIRA_SPLIT_TRANSITION ('${transition_name}')"
+  fi
+
   if [[ -z "${transition_name}" ]]; then
     echo "ERROR: ${transition_var} is not set — cannot close issue ${ISSUE_NUMBER} via Jira transition for reason '${reason}'" >&2
     return 1
   fi
 
-  # Idempotency pre-flight: check if the issue is already in a Done status category.
+  # Idempotency pre-flight: check if the issue is already in the matching terminal status.
   local current_status_json
   current_status_json=$(_jira_api GET "/issue/${ISSUE_NUMBER}?fields=status" 2>/dev/null) || true
   if [[ -n "${current_status_json}" ]]; then
-    local current_category
+    local current_category current_status_name
     current_category=$(echo "${current_status_json}" | jq -r '.fields.status.statusCategory.key // empty')
+    current_status_name=$(echo "${current_status_json}" | jq -r '.fields.status.name // empty')
     if [[ "${current_category}" == "done" ]]; then
-      echo "Issue ${ISSUE_NUMBER} is already in status category 'done'; skipping transition for reason '${reason}'"
-      return 0
+      local is_rejection_status=0
+      local dup_name="${JIRA_DUPLICATE_TRANSITION:-}"
+      local not_planned_name="${JIRA_NOT_PLANNED_TRANSITION:-}"
+      if echo "${current_status_name}" | grep -qiE "won.?t do|not.?planned|duplicate|obsolete|reject|cancel|invalid|cannot reproduce|abandon"; then
+        is_rejection_status=1
+      elif [[ -n "${dup_name}" ]] && echo "${current_status_name}" | grep -qiF "${dup_name}"; then
+        is_rejection_status=1
+      elif [[ -n "${not_planned_name}" ]] && echo "${current_status_name}" | grep -qiF "${not_planned_name}"; then
+        is_rejection_status=1
+      fi
+
+      if [[ "${reason}" == "completed" || "${reason}" == "split" ]]; then
+        if [[ ${is_rejection_status} -eq 0 ]]; then
+          echo "Issue ${ISSUE_NUMBER} is already in status '${current_status_name}' (done); skipping transition for reason '${reason}'"
+          return 0
+        fi
+      elif [[ "${reason}" == "duplicate" || "${reason}" == "not planned" ]]; then
+        if [[ ${is_rejection_status} -eq 1 ]]; then
+          echo "Issue ${ISSUE_NUMBER} is already in status '${current_status_name}' (rejected); skipping transition for reason '${reason}'"
+          return 0
+        fi
+      fi
     fi
   fi
 
@@ -2177,12 +2205,21 @@ tracker_close_issue() {
   # Fallback resolution when configured transition name is not directly available
   if [[ -z "${transition_id}" ]]; then
     if [[ "${reason}" == "completed" || "${reason}" == "split" ]]; then
-      transition_id=$(echo "${transitions}" | jq -r '
+      local dup_name="${JIRA_DUPLICATE_TRANSITION:-}"
+      local not_planned_name="${JIRA_NOT_PLANNED_TRANSITION:-}"
+      transition_id=$(echo "${transitions}" | jq -r \
+        --arg dup "${dup_name}" \
+        --arg not_planned "${not_planned_name}" '
         [ .transitions[]
           | select((.to.statusCategory.key // "") == "done")
-          | select(.name | test("(?i)won.?t do|duplicate|obsolete|reject|cancel") | not)
+          | select(
+              ($dup != "" and (.name | ascii_downcase) == ($dup | ascii_downcase)) or
+              ($not_planned != "" and (.name | ascii_downcase) == ($not_planned | ascii_downcase)) or
+              (.name | test("(?i)won.?t do|not.?planned|duplicate|obsolete|reject|cancel|invalid|cannot reproduce|abandon"))
+              | not
+            )
         ] as $done_transitions
-        | ([$done_transitions[] | select(.name | test("(?i)^(done|closed|resolved)$"))][0].id // $done_transitions[0].id // empty)
+        | ([$done_transitions[] | select(.name | test("(?i)^(done|closed|resolved|complete(d)?)$"))][0].id // empty)
       ')
       if [[ -n "${transition_id}" ]]; then
         local fallback_name
