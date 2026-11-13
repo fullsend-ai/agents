@@ -88,6 +88,18 @@ workflow-approval prompt (the "Approve and run workflows" button). Approving
 that prompt lets `pull_request`-triggered workflows start, but a fork PR's
 functional tests still need `/ok-to-test <sha>`.
 
+### Re-running CI after a workflow-file fix
+
+GitHub Actions re-runs pin the workflow file to the run's original trigger
+commit — including merge-queue (`merge_group`) runs. They do not pick up
+workflow-file changes that have since landed on `main`.
+
+When a CI infrastructure fix merges to `main` while your PR still has a
+failing (or queued) run from before that fix, do not use "Re-run failed
+jobs" expecting the new workflow. Push a fresh commit instead — rebase onto
+`main` or create an empty commit — so GitHub starts a new run against the
+updated workflow file.
+
 ### Merging
 
 - PRs require approval from a maintainer before merging.
