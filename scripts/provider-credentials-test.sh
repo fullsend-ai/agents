@@ -100,10 +100,13 @@ check_profile_credentials "profiles/fullsend-gitlab-rw.yaml" "GITLAB_TOKEN" "Git
 check_profile_credentials "profiles/fullsend-gitlab-code.yaml" "GITLAB_TOKEN" "GitLab token"
 check_profile_credentials "profiles/fullsend-jira-ro.yaml" "JIRA_TOKEN" "Jira API token"
 
-# Token-bearing providers still pass the real env var through.
+# Token-bearing providers still pass the real env var through. The optional
+# third argument names the host variable the credential reads, when it
+# differs from the credential key.
 check_provider_passes_token() {
   local rel="$1"
   local env_var="$2"
+  local source_var="${3:-$2}"
   local file="${REPO_ROOT}/${rel}"
   local test_name
 
@@ -118,8 +121,8 @@ check_provider_passes_token() {
     return
   fi
 
-  if ! grep -qF "${env_var}: \"\${${env_var}}\"" "${file}"; then
-    assert_fail "${test_name}" "missing ${env_var}: \"\${${env_var}}\""
+  if ! grep -qF "${env_var}: \"\${${source_var}}\"" "${file}"; then
+    assert_fail "${test_name}" "missing ${env_var}: \"\${${source_var}}\""
     return
   fi
 
@@ -130,7 +133,9 @@ check_provider_passes_token "providers/github-code.yaml" "GH_TOKEN"
 check_provider_passes_token "providers/gitlab-ro.yaml" "GITLAB_TOKEN"
 check_provider_passes_token "providers/gitlab-rw.yaml" "GITLAB_TOKEN"
 check_provider_passes_token "providers/gitlab-code.yaml" "GITLAB_TOKEN"
-check_provider_passes_token "providers/jira-ro.yaml" "JIRA_TOKEN"
+# The jira-ro credential keeps the JIRA_TOKEN placeholder name but reads
+# the FULLSEND_JIRA_TOKEN repository secret (fullsend-ai/fullsend#9411).
+check_provider_passes_token "providers/jira-ro.yaml" "JIRA_TOKEN" "FULLSEND_JIRA_TOKEN"
 
 # ---------------------------------------------------------------------------
 # Summary

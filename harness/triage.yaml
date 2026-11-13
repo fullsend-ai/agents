@@ -133,8 +133,12 @@ overlays:
       - skills/jira-components
     # triage.env also carries JIRA_API_URL and JIRA_USER_EMAIL: a host file
     # expands an unset variable to empty, where env.sandbox would fail the
-    # run when it is unset. An empty JIRA_USER_EMAIL selects Bearer auth
-    # (service account) in the Jira skills.
+    # run when it is unset. fullsend run sets JIRA_USER_EMAIL from the
+    # optional FULLSEND_JIRA_EMAIL repository secret
+    # (fullsend-ai/fullsend#9411); there is no JIRA_USER_EMAIL secret. An
+    # empty JIRA_USER_EMAIL selects Bearer auth (service account) in the
+    # Jira skills. The jira-ro provider reads FULLSEND_JIRA_TOKEN; there is
+    # no JIRA_TOKEN secret.
     host_files:
       - src: env/jira/triage.env
         dest: /sandbox/workspace/.env.d/triage.env

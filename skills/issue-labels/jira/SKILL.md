@@ -20,8 +20,9 @@ control labels -- just recommend what fits and the pipeline will filter.
 ## Step 0: Derive variables from ISSUE_URL
 
 ```bash
-ISSUE_KEY=$(echo "${ISSUE_URL}" | sed -E 's|.*/browse/||')
+ISSUE_KEY="${ISSUE_URL##*/browse/}"
 PROJECT_KEY="${ISSUE_KEY%-*}"
+echo "issue ${ISSUE_KEY}, project ${PROJECT_KEY}"
 ```
 
 ## Step 1: Discover labels already in use
@@ -36,7 +37,7 @@ Pick the auth mode as the `jira` skill describes: Basic when
 `JIRA_USER_EMAIL` is set, Bearer when it is empty.
 
 ```bash
-JIRA_EMAIL="$(printf '%s' "${JIRA_USER_EMAIL:-}" | tr -d '[:space:]')"
+JIRA_EMAIL="${JIRA_USER_EMAIL:-}"; JIRA_EMAIL="${JIRA_EMAIL//[[:space:]]/}"
 JIRA_AUTH_FLAG=--oauth2-bearer; test -n "${JIRA_EMAIL}" && JIRA_AUTH_FLAG=--user
 JIRA_AUTH="${JIRA_EMAIL:+${JIRA_EMAIL}:}${JIRA_TOKEN}"
 curl --silent "${JIRA_AUTH_FLAG}" "${JIRA_AUTH}" \
@@ -52,14 +53,17 @@ labeling entirely -- do not emit `label_actions`.
 Spawn a sub-agent to investigate how labels have been applied to recent
 issues in the project. The sub-agent should:
 
-1. Query recent issues via JQL:
+1. Query recent issues via JQL. Replace `<PROJECT_KEY>` with the project
+   key printed in Step 0, and pass that key in the sub-agent's prompt:
+   the sandbox command check blocks a shell variable inside
+   `--data-urlencode`.
    ```bash
-   JIRA_EMAIL="$(printf '%s' "${JIRA_USER_EMAIL:-}" | tr -d '[:space:]')"
+   JIRA_EMAIL="${JIRA_USER_EMAIL:-}"; JIRA_EMAIL="${JIRA_EMAIL//[[:space:]]/}"
    JIRA_AUTH_FLAG=--oauth2-bearer; test -n "${JIRA_EMAIL}" && JIRA_AUTH_FLAG=--user
    JIRA_AUTH="${JIRA_EMAIL:+${JIRA_EMAIL}:}${JIRA_TOKEN}"
    curl --fail-with-body --silent "${JIRA_AUTH_FLAG}" "${JIRA_AUTH}" \
      --header "Content-Type: application/json" \
-     --get --data-urlencode "jql=project = ${PROJECT_KEY} ORDER BY updated DESC" \
+     --get --data-urlencode "jql=project = <PROJECT_KEY> ORDER BY updated DESC" \
      --data-urlencode "maxResults=50" \
      --data-urlencode "fields=summary,labels" \
      "${JIRA_API_URL:-${JIRA_BASE_URL}}/rest/api/3/search/jql"
