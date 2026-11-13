@@ -103,6 +103,7 @@ script-test:
 	$(call run-timed,bash scripts/example-link-check-test.sh)
 	$(call run-timed,bash scripts/validate-output-schema-test.sh)
 	$(call run-timed,bash scripts/validate-code-output-test.sh)
+	$(call run-timed,bash scripts/harness-config-lint-test.sh)
 	$(call run-timed,bash scripts/gitlint-forbidden-type-scope-test.sh)
 	$(call run-timed,bash hack/lint-agent-docs-test.sh)
 	$(call run-timed,bash eval/lint-measurements-test.sh)
