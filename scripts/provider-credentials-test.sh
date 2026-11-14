@@ -98,7 +98,6 @@ check_profile_credentials "profiles/fullsend-github-code.yaml" "GH_TOKEN" "GitHu
 check_profile_credentials "profiles/fullsend-gitlab-ro.yaml" "GITLAB_TOKEN" "GitLab token"
 check_profile_credentials "profiles/fullsend-gitlab-rw.yaml" "GITLAB_TOKEN" "GitLab token"
 check_profile_credentials "profiles/fullsend-gitlab-code.yaml" "GITLAB_TOKEN" "GitLab token"
-check_profile_credentials "profiles/fullsend-jira-ro.yaml" "JIRA_TOKEN" "Jira API token"
 
 # Token-bearing providers still pass the real env var through. The optional
 # third argument names the host variable the credential reads, when it
@@ -133,9 +132,6 @@ check_provider_passes_token "providers/github-code.yaml" "GH_TOKEN"
 check_provider_passes_token "providers/gitlab-ro.yaml" "GITLAB_TOKEN"
 check_provider_passes_token "providers/gitlab-rw.yaml" "GITLAB_TOKEN"
 check_provider_passes_token "providers/gitlab-code.yaml" "GITLAB_TOKEN"
-# The jira-ro credential keeps the JIRA_TOKEN placeholder name but reads
-# the FULLSEND_JIRA_TOKEN repository secret (fullsend-ai/fullsend#9411).
-check_provider_passes_token "providers/jira-ro.yaml" "JIRA_TOKEN" "FULLSEND_JIRA_TOKEN"
 
 # ---------------------------------------------------------------------------
 # Summary

@@ -134,8 +134,12 @@ export FULLSEND_WORK_ITEM_URL="https://your-site.atlassian.net/browse/TESTPROJ-4
 # Bot user: set the email (Basic auth). Service account: leave both email
 # variables unset (Bearer auth).
 # - Post-scripts read both FULLSEND_JIRA_* values.
-# - The sandbox jira-ro provider reads FULLSEND_JIRA_TOKEN (needs a fullsend
-#   release that includes fullsend-ai/fullsend#9411).
+# - The sandbox's builtin jira provider reads FULLSEND_JIRA_TOKEN (needs a
+#   fullsend release that includes fullsend-ai/fullsend#9233).
+# - OAuth 2.0 client credentials instead of a token: export
+#   FULLSEND_JIRA_CLIENT_ID, FULLSEND_JIRA_CLIENT_SECRET and JIRA_API_URL
+#   (the https://api.atlassian.com/ex/jira/<cloudId> gateway), and leave
+#   FULLSEND_JIRA_TOKEN unset. Setting both modes fails the run.
 # - fullsend run sets JIRA_USER_EMAIL only for a Jira event; for a local run,
 #   export it yourself for the sandbox skills (below).
 export FULLSEND_JIRA_TOKEN="your-jira-api-token"
@@ -173,9 +177,13 @@ external key as a GitHub or GitLab issue number.
 
 ```bash
 # Jira-source env vars.
-# - FULLSEND_JIRA_TOKEN: read on the host by the jira-ro provider (needs a
-#   fullsend release that includes fullsend-ai/fullsend#9411) and by the
-#   post-code Jira write. It never enters the sandbox environment.
+# - FULLSEND_JIRA_TOKEN: read on the host by the builtin jira provider
+#   (needs a fullsend release that includes fullsend-ai/fullsend#9233) and
+#   by the post-code Jira write. It never enters the sandbox environment.
+# - Or OAuth 2.0 client credentials: FULLSEND_JIRA_CLIENT_ID,
+#   FULLSEND_JIRA_CLIENT_SECRET and JIRA_API_URL (the gateway), with
+#   FULLSEND_JIRA_TOKEN unset. fullsend mints the sandbox token; the
+#   secret stays on the host. Setting both modes fails the run.
 # - JIRA_USER_EMAIL: enters the code sandbox with JIRA_BASE_URL as
 #   non-secret config. fullsend run sets it from FULLSEND_JIRA_EMAIL only
 #   for a Jira event; for a local run, export it yourself (below).
@@ -197,8 +205,8 @@ Run `fullsend run code` the same way as step 3 above. `--target-repo`
 should point at a local checkout of the repo where the PR will be
 created. The Jira pre-script validates the issue URL and installs
 pre-commit tool dependencies. The sandbox reads the Jira work item
-directly through provider-backed API access (the `jira-ro` provider
-handles credential injection at the network layer).
+directly through provider-backed API access (fullsend's builtin `jira`
+provider handles credential injection at the network layer).
 
 ## Testing a new configuration option
 

@@ -261,11 +261,12 @@ GitHub/GitLab auth vars:
 | Variable | Description |
 |----------|-------------|
 | `FULLSEND_WORK_ITEM_URL` | The `https://<site>.atlassian.net/browse/<KEY>-<n>` URL of the issue to triage. |
-| `FULLSEND_JIRA_TOKEN` | Jira API token, set as a repository secret. The harness maps it to `JIRA_TOKEN` in `env.runner` for post-script mutations, and the `jira-ro` provider reads it for sandbox reads; the sandbox receives the provider's opaque placeholder as `JIRA_TOKEN` instead of the real token. The legacy `JIRA_TOKEN` secret is no longer read. |
+| `FULLSEND_JIRA_TOKEN` | Jira API token, set as a repository secret (static-token mode). The harness maps it to `JIRA_TOKEN` in `env.runner` for post-script mutations, and the builtin `jira` provider reads it for sandbox reads; the sandbox receives the provider's opaque placeholder instead of the real token. The legacy `JIRA_TOKEN` secret is no longer read. Leave it unset when using client credentials. |
+| `FULLSEND_JIRA_CLIENT_ID`, `FULLSEND_JIRA_CLIENT_SECRET` | OAuth 2.0 client credentials of an Atlassian service account, set as repository secrets instead of `FULLSEND_JIRA_TOKEN`. The harness maps both to `env.runner` only: the pre- and post-scripts mint a short-lived token for their REST calls (sent to `JIRA_API_URL`, which is then required) and pass the client variables to `fullsend issues`, and `fullsend run` mints and refreshes the sandbox token for the `jira` provider. The secret never reaches the sandbox. Setting them together with `FULLSEND_JIRA_TOKEN`, or setting only one of them, fails the run. |
 | `FULLSEND_JIRA_EMAIL` | Optional repository secret. Email of a bot-user account. When set, requests use Basic auth with email and token; when unset or empty (a service account), Bearer auth with the token. The harness maps it to `JIRA_USER_EMAIL` in `env.runner`, and `fullsend run` sets `JIRA_USER_EMAIL` from it so the sandbox gets it through `env/jira/triage.env`. The legacy `JIRA_USER_EMAIL` secret is no longer read. |
 | `FULLSEND_DIR` | The `.fullsend` directory. The post-script passes it to `fullsend issues post-comment --fullsend-dir`, which reads the Jira site and API gateway from `tracker.jira` in its `config.yaml`. The harness passes `${FULLSEND_DIR}` through to `env.runner` from the host environment, so the operator must set it. |
 | `JIRA_BASE_URL` | Base URL of the Jira Cloud site (e.g. `https://<site>.atlassian.net`). Used for browse links. |
-| `JIRA_API_URL` | Optional. Where the post-script curl helpers and the sandboxed skills send REST calls; `fullsend run` sets it to the Atlassian API gateway for the site (`https://api.atlassian.com/ex/jira/<cloudId>`), which accepts both bot-account and service-account tokens. Falls back to `JIRA_BASE_URL` when unset. |
+| `JIRA_API_URL` | Optional. Where the post-script curl helpers and the sandboxed skills send REST calls; `fullsend run` sets it to the Atlassian API gateway for the site (`https://api.atlassian.com/ex/jira/<cloudId>`), which accepts both bot-account and service-account tokens. Falls back to `JIRA_BASE_URL` when unset, except with client credentials, where it is required because the site URL rejects minted tokens. |
 
 Jira triage requires a fullsend release that includes the config-backed Jira
 commands
@@ -275,9 +276,11 @@ so that `fullsend issues post-comment --tracker jira --fullsend-dir` can read
 
 **Upgrade requirement:** Jira triage also needs a fullsend release that
 includes [fullsend-ai/fullsend#9411](https://github.com/fullsend-ai/fullsend/issues/9411).
-With it, the `jira-ro` provider reads `FULLSEND_JIRA_TOKEN` and `fullsend run`
-sets `JIRA_USER_EMAIL` from `FULLSEND_JIRA_EMAIL`. The legacy `JIRA_TOKEN` and
-`JIRA_USER_EMAIL` secrets are no longer read.
+With it, `fullsend run` sets `JIRA_USER_EMAIL` from `FULLSEND_JIRA_EMAIL`. The
+legacy `JIRA_TOKEN` and `JIRA_USER_EMAIL` secrets are no longer read. The
+sandbox's builtin `jira` provider, in either credential mode, needs a fullsend
+release that includes
+[fullsend-ai/fullsend#9233](https://github.com/fullsend-ai/fullsend/pull/9233).
 
 Closing an issue (`duplicate`, `not-planned`, `completed`, `split` actions) performs a
 Jira workflow transition rather than a status field write, since Jira has no
@@ -369,15 +372,18 @@ If you use `base:` composition to override `harness/triage.yaml`:
   `prerequisites.existing[].url`) are interpolated verbatim and are
   schema-constrained only. The prompt includes examples of the relevant URL
   shape to guide the agent toward the correct format.
-- **Jira credentials use provider-backed delivery**: The `jira-ro`
-  provider and `fullsend-jira-ro` OpenShell profile handle Jira API
-  token injection at the network layer. Sandbox curl commands use
-  `--user "${JIRA_USER_EMAIL}:${JIRA_TOKEN}"` (Basic auth) when
-  `JIRA_USER_EMAIL` is set and `--oauth2-bearer "${JIRA_TOKEN}"`
-  (Bearer auth, for a service account) when it is empty, but
-  `JIRA_TOKEN` inside the sandbox is the provider's opaque placeholder
-  — the real API token is never expanded into sandbox config or env
-  files. OpenShell replaces the placeholder in the Authorization
+- **Jira credentials use provider-backed delivery**: fullsend's builtin
+  `jira` provider (profile `fullsend-jira`) handles Jira API token
+  injection at the network layer. Sandbox curl commands read the token
+  on every call from `/sandbox/fullsend-jira/token`, falling back to
+  `JIRA_TOKEN` when the file is absent or empty, and send it with
+  `--user` (Basic auth, with `JIRA_USER_EMAIL`) when `JIRA_USER_EMAIL`
+  is set and `--oauth2-bearer` (Bearer auth, for a service account)
+  when it is empty. That token is the provider's opaque placeholder —
+  the real credential is never expanded into sandbox config or env
+  files. With OAuth 2.0 client credentials, `fullsend run` mints the
+  access token, refreshes it during the run and rewrites the
+  placeholder file, so the skills never cache it. OpenShell replaces the placeholder in the Authorization
   header at the proxy boundary. `JIRA_BASE_URL` remains in
   `env.sandbox` as non-secret configuration; `JIRA_USER_EMAIL` and
   `JIRA_API_URL` reach the sandbox through `env/jira/triage.env`, so an

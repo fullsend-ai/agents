@@ -65,7 +65,7 @@ chmod +x "${MOCK_BIN}/gh"
 cat > "${MOCK_BIN}/fullsend" <<MOCKEOF
 #!/usr/bin/env bash
 # Record the Jira credentials the CLI reads from its environment.
-echo "token=\${FULLSEND_JIRA_TOKEN-unset} email=\${FULLSEND_JIRA_EMAIL-unset}" >> "${FULLSEND_ENV_LOG}"
+echo "token=\${FULLSEND_JIRA_TOKEN-unset} email=\${FULLSEND_JIRA_EMAIL-unset} client-id=\${FULLSEND_JIRA_CLIENT_ID-unset} client-secret=\${FULLSEND_JIRA_CLIENT_SECRET:+set}" >> "${FULLSEND_ENV_LOG}"
 BODY=""
 PREV=""
 for arg in "\$@"; do
@@ -2829,6 +2829,68 @@ for email_case in unset empty blank; do
 done
 export JIRA_USER_EMAIL="triage@example.com"
 
+# --- OAuth 2.0 client credentials (#1926) ---
+# With only the client credentials, REST calls send a minted Bearer token to
+# JIRA_API_URL, the CLI gets the client variables and no token or email,
+# and the secret reaches no command line and no output. The curl mock is
+# wrapped to answer the Atlassian token endpoint (body on stdin).
+JIRA_CLIENT_SECRET_VALUE="client-secret-DO-NOT-LEAK"
+mv "${MOCK_BIN}/curl" "${TMPDIR}/curl-before-client"
+cat > "${MOCK_BIN}/curl" <<CURLMOCK
+#!/usr/bin/env bash
+for arg in "\$@"; do
+  if [[ "\${arg}" == "https://auth.atlassian.com/oauth/token" ]]; then
+    echo "curl \$*" >> "${JIRA_CURL_LOG}"
+    cat > /dev/null
+    printf '{"access_token":"minted-access-token","expires_in":3600}\n200'
+    exit 0
+  fi
+done
+exec "${TMPDIR}/curl-before-client" "\$@"
+CURLMOCK
+chmod +x "${MOCK_BIN}/curl"
+export JIRA_TOKEN=""
+export FULLSEND_JIRA_CLIENT_ID="client-id-1"
+export FULLSEND_JIRA_CLIENT_SECRET="${JIRA_CLIENT_SECRET_VALUE}"
+export JIRA_API_URL="https://api.atlassian.com/ex/jira/cloud-1"
+: > "${FULLSEND_ENV_LOG}"
+run_jira_test "jira-client-credentials-uses-minted-token" \
+  '{"action":"insufficient","reasoning":"missing repro","clarity_scores":{"symptom":0.6,"cause":0.3,"reproduction":0.1,"impact":0.5,"overall":0.39},"comment":"Could you share the exact steps to reproduce this?"}' \
+  "--oauth2-bearer minted-access-token"
+if grep -qF "token=unset email=unset client-id=client-id-1 client-secret=set" "${FULLSEND_ENV_LOG}" \
+  && grep -F -- "--oauth2-bearer minted-access-token" "${JIRA_CURL_LOG}" | grep -qF "${JIRA_API_URL}/rest/api/3/" \
+  && ! grep -qF -- "--user" "${JIRA_CURL_LOG}" \
+  && grep -qx "::add-mask::minted-access-token" "${TMPDIR}/stdout.log" \
+  && ! grep -qF "${JIRA_CLIENT_SECRET_VALUE}" "${JIRA_CURL_LOG}" "${GH_LOG}" "${TMPDIR}/stdout.log"; then
+  echo "PASS: jira-client-credentials-cli-env-and-secret-hidden"
+else
+  echo "FAIL: jira-client-credentials-cli-env-and-secret-hidden — expected client vars for the CLI, a masked Bearer token to JIRA_API_URL, and no secret in argv or output"
+  cat "${FULLSEND_ENV_LOG}" "${JIRA_CURL_LOG}" "${TMPDIR}/stdout.log"
+  FAILURES=$((FAILURES + 1))
+fi
+# No JIRA_API_URL: no fallback to JIRA_BASE_URL.
+unset JIRA_API_URL
+run_jira_test "jira-client-credentials-without-api-url-fails" \
+  '{"action":"insufficient","reasoning":"missing repro","clarity_scores":{"symptom":0.6,"cause":0.3,"reproduction":0.1,"impact":0.5,"overall":0.39},"comment":"Could you share the exact steps to reproduce this?"}' \
+  "" \
+  "true"
+# A token next to client credentials fails.
+export JIRA_API_URL="https://api.atlassian.com/ex/jira/cloud-1"
+export JIRA_TOKEN="fake-jira-token"
+run_jira_test "jira-token-and-client-credentials-fail" \
+  '{"action":"insufficient","reasoning":"missing repro","clarity_scores":{"symptom":0.6,"cause":0.3,"reproduction":0.1,"impact":0.5,"overall":0.39},"comment":"Could you share the exact steps to reproduce this?"}' \
+  "" \
+  "true"
+if grep -qF "not both" "${TMPDIR}/stdout.log" && ! grep -qF "${JIRA_CLIENT_SECRET_VALUE}" "${TMPDIR}/stdout.log"; then
+  echo "PASS: jira-token-and-client-credentials-error-names-variables"
+else
+  echo "FAIL: jira-token-and-client-credentials-error-names-variables"
+  cat "${TMPDIR}/stdout.log"
+  FAILURES=$((FAILURES + 1))
+fi
+unset FULLSEND_JIRA_CLIENT_ID FULLSEND_JIRA_CLIENT_SECRET JIRA_API_URL
+mv "${TMPDIR}/curl-before-client" "${MOCK_BIN}/curl"
+
 # The config-backed CLI needs FULLSEND_DIR for tracker.jira.
 unset FULLSEND_DIR
 run_jira_test "jira-missing-fullsend-dir-fails" \
@@ -2880,7 +2942,7 @@ chmod +x "${MOCK_BIN}/curl"
 cat > "${MOCK_BIN}/fullsend" <<MOCKEOF
 #!/usr/bin/env bash
 # Record the Jira credentials the CLI reads from its environment.
-echo "token=\${FULLSEND_JIRA_TOKEN-unset} email=\${FULLSEND_JIRA_EMAIL-unset}" >> "${FULLSEND_ENV_LOG}"
+echo "token=\${FULLSEND_JIRA_TOKEN-unset} email=\${FULLSEND_JIRA_EMAIL-unset} client-id=\${FULLSEND_JIRA_CLIENT_ID-unset} client-secret=\${FULLSEND_JIRA_CLIENT_SECRET:+set}" >> "${FULLSEND_ENV_LOG}"
 BODY=""
 PREV=""
 for arg in "\$@"; do

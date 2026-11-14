@@ -17,6 +17,8 @@
 # SCRIBE_JIRA_PROJECT; comments are not supported. See
 # lib/jira-scribe-ops.lib.sh for the JIRA_* variables and FULLSEND_DIR.
 # JIRA_USER_EMAIL is optional: unset or empty selects Bearer auth.
+# FULLSEND_JIRA_CLIENT_ID and FULLSEND_JIRA_CLIENT_SECRET can replace
+# JIRA_TOKEN; they need JIRA_API_URL.
 #
 # Optional env vars:
 #   SCRIBE_MODE              — "all" (default), "comments_only", "new_issues_only"
@@ -40,6 +42,10 @@ fi
 if [[ -n "${GITLAB_TOKEN:-}" ]]; then
   echo "::add-mask::${GITLAB_TOKEN}"
 fi
+# With FULLSEND_JIRA_CLIENT_ID and FULLSEND_JIRA_CLIENT_SECRET there is no
+# token to mask here: jira-auth.lib.sh masks the access token it mints, the
+# client secret is never printed, and a missing JIRA_API_URL has already
+# failed the load of jira-scribe-ops.lib.sh.
 if [[ -n "${JIRA_TOKEN:-}" ]]; then
   # Sanitize workflow-command delimiters before interpolating into ::add-mask::
   # so a crafted token cannot inject additional workflow commands.

@@ -21,6 +21,7 @@ trap 'rm -rf "${TMPDIR}"' EXIT
 
 PRESCRIPT_OUT="${TMPDIR}/prescript.out"
 FULLSEND_CALLS="${TMPDIR}/fullsend-calls.log"
+CURL_ARGV_LOG="${TMPDIR}/curl-argv.log"
 PAYLOAD_DIR="${TMPDIR}/fullsend-dir/dispatch"
 
 # --- Helpers ---
@@ -46,6 +47,7 @@ GHEOF
   # Mock curl: Jira JQL search and GitLab MR listing.
   cat > "${mock_bin}/curl" <<'CURLEOF'
 #!/usr/bin/env bash
+printf '%s\n' "$*" >> "${CURL_ARGV_LOG}"
 data=""
 prev=""
 for arg in "$@"; do
@@ -54,8 +56,18 @@ for arg in "$@"; do
 done
 for arg in "$@"; do
   case "${arg}" in
+    https://auth.atlassian.com/oauth/token)
+      # OAuth 2.0 client-credentials token request: the body comes on stdin.
+      cat > /dev/null
+      printf '{"access_token":"minted-access-token","expires_in":3600}\n200'
+      exit 0
+      ;;
     */rest/api/3/search/jql)
       [[ "${MOCK_JIRA_CHILD_FAIL:-}" == "1" ]] && exit 22
+      # MOCK_JIRA_EXPECT_API_URL: fail unless the call goes to that base.
+      if [[ -n "${MOCK_JIRA_EXPECT_API_URL:-}" && "${arg}" != "${MOCK_JIRA_EXPECT_API_URL}/rest/api/3/search/jql" ]]; then
+        exit 22
+      fi
       # MOCK_JIRA_EXPECT_BEARER=1: fail unless service-account Bearer auth
       # was used.
       if [[ "${MOCK_JIRA_EXPECT_BEARER:-}" == "1" && " $* " != *" --oauth2-bearer "* ]]; then
@@ -89,6 +101,7 @@ CURLEOF
 #!/usr/bin/env bash
 {
   echo "ARGS: $*"
+  echo "ENV: token=${FULLSEND_JIRA_TOKEN-unset} id=${FULLSEND_JIRA_CLIENT_ID-unset} secret=${FULLSEND_JIRA_CLIENT_SECRET:+set}"
   echo "BODY:"
   cat
 } >> "${FULLSEND_CALLS}"
@@ -130,6 +143,7 @@ base_env() {
   echo "FULLSEND_DIR=${TMPDIR}/fullsend-dir"
   echo "FULLSEND_PRESCRIPT_OUTPUT=${PRESCRIPT_OUT}"
   echo "FULLSEND_CALLS=${FULLSEND_CALLS}"
+  echo "CURL_ARGV_LOG=${CURL_ARGV_LOG}"
   echo "COMMENT_BODY="
   echo "CODE_FORCE="
 }
@@ -140,7 +154,7 @@ run_script() {
 
   local mock_bin
   mock_bin="$(build_mock)"
-  rm -f "${PRESCRIPT_OUT}" "${FULLSEND_CALLS}"
+  rm -f "${PRESCRIPT_OUT}" "${FULLSEND_CALLS}" "${CURL_ARGV_LOG}"
 
   local env_cmd=(env)
 
@@ -488,6 +502,57 @@ JIRA_TOKEN="
 run_skip_test "no-children-does-not-skip" \
   false \
   "No child issues found"
+
+# --- Test cases: OAuth 2.0 client credentials (#1926) ---
+
+CLIENT_SECRET_VALUE="client-secret-DO-NOT-LEAK"
+GATEWAY_URL="https://api.atlassian.com/ex/jira/cloud-1"
+
+# Client credentials only: the child check sends a minted Bearer token to
+# JIRA_API_URL, and the skip comment's CLI call gets the client variables.
+run_skip_test "client-credentials-runs-child-check" \
+  true \
+  "reason=PROJ-42 has child issue(s)" \
+  "MOCK_JIRA_CHILDREN=${HAS_CHILDREN}
+MOCK_JIRA_EXPECT_BEARER=1
+MOCK_JIRA_EXPECT_API_URL=${GATEWAY_URL}
+JIRA_TOKEN=
+JIRA_USER_EMAIL=
+JIRA_API_URL=${GATEWAY_URL}
+FULLSEND_JIRA_CLIENT_ID=client-id-1
+FULLSEND_JIRA_CLIENT_SECRET=${CLIENT_SECRET_VALUE}"
+if grep -F -- "--oauth2-bearer minted-access-token " "${CURL_ARGV_LOG}" \
+     | grep -qF " ${GATEWAY_URL}/rest/api/3/search/jql " \
+   && grep -qx "::add-mask::minted-access-token" "${TMPDIR}/stdout.log" \
+   && grep -qx "ENV: token=unset id=client-id-1 secret=set" "${FULLSEND_CALLS}" \
+   && ! grep -qF "${CLIENT_SECRET_VALUE}" "${CURL_ARGV_LOG}" "${FULLSEND_CALLS}" "${TMPDIR}/stdout.log"; then
+  echo "PASS: client-credentials-minted-token-and-cli-env"
+else
+  echo "FAIL: client-credentials-minted-token-and-cli-env — expected minted Bearer to JIRA_API_URL, a mask, client vars for the CLI, and no secret in argv or output"
+  cat "${CURL_ARGV_LOG}" "${FULLSEND_CALLS}" "${TMPDIR}/stdout.log" 2>/dev/null || true
+  FAILURES=$((FAILURES + 1))
+fi
+
+run_test "client-credentials-without-api-url-fails" \
+  1 \
+  "JIRA_API_URL (the Atlassian API gateway URL) must be set" \
+  "JIRA_TOKEN=
+FULLSEND_JIRA_CLIENT_ID=client-id-1
+FULLSEND_JIRA_CLIENT_SECRET=${CLIENT_SECRET_VALUE}"
+
+run_test "token-and-client-credentials-fail" \
+  1 \
+  "not both" \
+  "JIRA_API_URL=${GATEWAY_URL}
+FULLSEND_JIRA_CLIENT_ID=client-id-1
+FULLSEND_JIRA_CLIENT_SECRET=${CLIENT_SECRET_VALUE}"
+
+run_test "one-client-variable-fails" \
+  1 \
+  "must be set together" \
+  "JIRA_TOKEN=
+JIRA_API_URL=${GATEWAY_URL}
+FULLSEND_JIRA_CLIENT_ID=client-id-1"
 
 # --- Summary ---
 

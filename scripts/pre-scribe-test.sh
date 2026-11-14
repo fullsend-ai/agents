@@ -1553,6 +1553,92 @@ MOCKEOF
   echo "PASS: ${test_name}"
 }
 
+# OAuth 2.0 client credentials (#1926). Scribe runs are not Jira-sourced, so
+# `fullsend run` does not set JIRA_API_URL: without it pre-scribe.sh fails
+# before any network call. With it, backlog reads send a minted Bearer
+# token to the gateway, and the secret reaches no argv and no output.
+test_jira_client_credentials() {
+  local test_name="jira/client-credentials"
+  local runner_temp="${TMPDIR}/runner-jira-client"
+  local jira_bin="${TMPDIR}/jira-bin-client"
+  local call_log="${TMPDIR}/jira-client-calls.log"
+  local secret="client-secret-DO-NOT-LEAK"
+  local gateway="https://api.atlassian.com/ex/jira/cloud-1"
+  mkdir -p "${runner_temp}" "${jira_bin}"
+  : > "${call_log}"
+
+  cat > "${jira_bin}/curl" <<MOCKEOF
+#!/usr/bin/env bash
+echo "curl \$*" >> "${call_log}"
+for arg in "\$@"; do
+  if [[ "\${arg}" == "https://auth.atlassian.com/oauth/token" ]]; then
+    cat > /dev/null
+    printf '{"access_token":"minted-access-token","expires_in":3600}\n200'
+    exit 0
+  fi
+done
+echo '{"issues":[],"isLast":true}'
+MOCKEOF
+  cat > "${jira_bin}/gh" <<MOCKEOF
+#!/usr/bin/env bash
+echo "gh \$*" >> "${call_log}"
+exit 0
+MOCKEOF
+  chmod +x "${jira_bin}/curl" "${jira_bin}/gh"
+
+  local out rc=0
+  out=$(
+    PATH="${jira_bin}:${PATH}" \
+    RUNNER_TEMP="${runner_temp}" \
+    FULLSEND_FORGE="github" \
+    FULLSEND_TRACKER="jira" \
+    SCRIBE_REPO="mock-org/mock-repo" \
+    SCRIBE_SEARCH_QUERY="test query" \
+    GOOGLE_APPLICATION_CREDENTIALS="${TMPDIR}/missing-sa-key.json" \
+    GH_TOKEN="fake-gh-token" \
+    JIRA_BASE_URL="https://mock.atlassian.net" \
+    JIRA_TOKEN="" \
+    FULLSEND_JIRA_CLIENT_ID="client-id-1" \
+    FULLSEND_JIRA_CLIENT_SECRET="${secret}" \
+    JIRA_API_URL="" \
+    SCRIBE_JIRA_PROJECT="PROJ" \
+    FULLSEND_DIR="${TMPDIR}/dot-fullsend" \
+    bash "${PRE_SCRIPT}" 2>&1
+  ) || rc=$?
+  if [[ ${rc} -eq 0 || "${out}" != *"JIRA_API_URL (the Atlassian API gateway URL) must be set"* ]]; then
+    echo "FAIL: ${test_name} — expected a JIRA_API_URL error without it, got rc=${rc}: ${out}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  if ! assert_eq "${test_name}: no network calls without JIRA_API_URL" "" "$(cat "${call_log}")"; then return; fi
+
+  if ! out=$(
+    PATH="${jira_bin}:${PATH}" \
+    JIRA_BASE_URL="https://mock.atlassian.net" JIRA_API_URL="${gateway}" JIRA_TOKEN="" \
+    FULLSEND_JIRA_CLIENT_ID="client-id-1" FULLSEND_JIRA_CLIENT_SECRET="${secret}" \
+    SCRIBE_JIRA_PROJECT="PROJ" bash -c '
+      set -euo pipefail
+      _gha_sanitize() { printf "%s" "$1"; }
+      source "$1/lib/jira-scribe-ops.lib.sh"
+      forge_fetch_open_issues_raw "unused" "$2"
+    ' _ "${SCRIPT_DIR}" "${TMPDIR}/jira-client-raw.json" 2>&1
+  ); then
+    echo "FAIL: ${test_name} — fetch with client credentials failed: ${out}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  if [[ "${out}" != *"::add-mask::minted-access-token"* ]] \
+    || ! grep -F -- "--oauth2-bearer minted-access-token" "${call_log}" | grep -qF "${gateway}/rest/api/3/search/jql" \
+    || grep -qF "${secret}" "${call_log}" || [[ "${out}" == *"${secret}"* ]]; then
+    echo "FAIL: ${test_name} — expected a masked minted Bearer token to JIRA_API_URL and no secret in argv or output"
+    cat "${call_log}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
 # --- Run tests ---
 
 # GitHub tests
@@ -1579,6 +1665,7 @@ test_jira_closed_issues
 test_jira_closed_issues_failure_fallback
 test_jira_api_url_routing
 test_jira_missing_fullsend_dir_fails_preflight
+test_jira_client_credentials
 test_stale_meta_cleared_on_failed_search
 test_meeting_doc_names_persisted
 test_log_doc_names_sanitized

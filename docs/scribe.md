@@ -145,10 +145,33 @@ fullsend agent add .fullsend/scribe.yaml --name scribe --fullsend-dir .
 | `SCRIBE_JIRA_ISSUE_TYPE` | no | Issue type for new issues (default: `Task`) |
 | `SCRIBE_JIRA_LABELS` | no | Comma-separated allowlist of labels scribe may apply to Jira issues (default: `meeting-notes`) |
 | `JIRA_BASE_URL` | yes (Jira) | `https://<site>.atlassian.net` (Jira Cloud only); used for links |
-| `JIRA_API_URL` | no | Where REST calls go; `fullsend run` sets it to the Atlassian API gateway for the site and exports it to the scripts. Falls back to `JIRA_BASE_URL` |
+| `JIRA_API_URL` | no | Where REST calls go; `fullsend run` sets it to the Atlassian API gateway for the site and exports it to the scripts. Falls back to `JIRA_BASE_URL`, except with client credentials, which require it |
 | `FULLSEND_JIRA_TOKEN` | yes (Jira) | Jira API token, set as a repository secret. The harness above maps it to `JIRA_TOKEN` for the scripts |
 | `FULLSEND_JIRA_EMAIL` | no | Bot-user email, set as a repository secret. When set, requests use Basic auth with email and token; when unset or empty (a service account), Bearer auth with the token. The harness above maps it to `JIRA_USER_EMAIL` for the scripts |
+| `FULLSEND_JIRA_CLIENT_ID`, `FULLSEND_JIRA_CLIENT_SECRET` | no | A service account's OAuth 2.0 client credentials, set as repository secrets, instead of `FULLSEND_JIRA_TOKEN`. See [OAuth 2.0 client credentials](#oauth-20-client-credentials) |
 | `FULLSEND_DIR` | yes (Jira) | The `.fullsend` directory. `fullsend issues create` reads the Jira site and API gateway from `tracker.jira` in its `config.yaml` |
+
+#### OAuth 2.0 client credentials
+
+A service account can authenticate with its OAuth 2.0 client credentials
+instead of a token. Map them in `env.runner` in place of `JIRA_TOKEN`:
+
+```yaml
+    FULLSEND_JIRA_CLIENT_ID: ${FULLSEND_JIRA_CLIENT_ID}
+    FULLSEND_JIRA_CLIENT_SECRET: ${FULLSEND_JIRA_CLIENT_SECRET}
+    JIRA_API_URL: https://api.atlassian.com/ex/jira/<cloudId>
+```
+
+- The scripts mint a short-lived access token on the runner for their REST
+  calls, and `fullsend issues create` mints its own from the client
+  credentials. The client secret is never printed or passed on a command line.
+- `JIRA_API_URL` is required in this mode. The access token works only
+  through the Atlassian API gateway, and scribe runs are not Jira-sourced,
+  so `fullsend run` does not set `JIRA_API_URL` for them. Without it,
+  `pre-scribe.sh` and `post-scribe.sh` fail with an error naming
+  `JIRA_API_URL` instead of falling back to `JIRA_BASE_URL`.
+- Setting `JIRA_TOKEN` together with the client credentials, or only one of
+  the two client variables, fails the run.
 
 Behavior:
 
