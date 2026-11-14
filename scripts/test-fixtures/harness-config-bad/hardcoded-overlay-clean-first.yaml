@@ -1,0 +1,9 @@
+---
+validation_loop:
+  script: scripts/validate-output-schema.sh
+  schema: schemas/review-result.schema.json
+overlays:
+  - env:
+      VAR1: value1
+  - runner_env:
+      FULLSEND_OUTPUT_SCHEMA: hardcoded

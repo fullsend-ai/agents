@@ -1,0 +1,4 @@
+---
+validation_loop:
+  script: scripts/validate-output-schema.sh
+  schema: harness-config-bad/empty-json-schema.json

@@ -91,6 +91,39 @@ check_validation_loop_at_path() {
       return 1
     }
   fi
+  # For per-location blocks, validate explicit schema overrides even without script
+  if [[ "${path}" != "." ]]; then
+    # Check if per-location has explicit schema override
+    local per_location_schema_selector
+    per_location_schema_selector="${path}.validation_loop | has(\"schema\")"
+    local has_per_location_schema
+    has_per_location_schema="$(yq "${per_location_schema_selector}" "${harness}")" || {
+      echo "${harness_name}: yq failed to check schema at ${location}"
+      return 1
+    }
+
+    # If per-location has explicit schema, validate it even without a local script
+    if [[ "${has_per_location_schema}" == "true" ]]; then
+      local per_location_schema
+      per_location_schema="$(yq "${path}.validation_loop.schema" "${harness}")" || {
+        echo "${harness_name}: yq failed to extract schema at ${location}"
+        return 1
+      }
+      local per_location_type_selector
+      per_location_type_selector="${path}.validation_loop.schema | type"
+      local per_location_type
+      per_location_type="$(yq "${per_location_type_selector}" "${harness}")" || {
+        echo "${harness_name}: yq failed to check schema type at ${location}"
+        return 1
+      }
+      # If schema is explicit string and empty, and there's an inherited script, reject it
+      if [[ "${per_location_type}" == *"str"* && -z "${per_location_schema}" && -n "${top_level_script}" ]]; then
+        echo "${harness_name}: ${location} validation_loop.schema is empty"
+        return 1
+      fi
+    fi
+  fi
+
   if [[ "${has_script}" != "true" ]]; then
     return 0
   fi
@@ -168,11 +201,6 @@ check_validation_loop_at_path() {
       # If schema is YAML null (but not string "null"), still allow inheritance
       if [[ "${per_location_type}" == *"null"* && "${per_location_type}" != *"str"* ]]; then
         return 0
-      fi
-      # Otherwise require explicit non-empty schema
-      if [[ -z "${per_location_schema}" ]]; then
-        echo "${harness_name}: ${location} validation_loop has script but schema is empty"
-        return 1
       fi
       return 0
     fi
@@ -361,8 +389,10 @@ test_validation_loop_schema() {
 # Test 2: No env.runner or runner_env contains FULLSEND_OUTPUT_SCHEMA
 test_no_hardcoded_schema() {
   local found_hardcoded=0
+  local file_count=0
   for harness in "${HARNESS_DIR}"/*.yaml "${REPO_ROOT}"/examples/*/harness/*.yaml "${REPO_ROOT}"/eval/harness/*.yaml; do
     [[ -f "${harness}" ]] || continue
+    file_count=$((file_count + 1))
     local harness_name
     harness_name="$(basename "${harness}")"
 
@@ -416,6 +446,11 @@ test_no_hardcoded_schema() {
     }
     for_each_forge_and_overlay_location "${harness}" _check_hardcoded_callback || found_hardcoded=1
   done
+
+  if [[ ${file_count} -eq 0 ]]; then
+    echo "no harness files found in ${HARNESS_DIR}, examples, or eval/harness"
+    return 1
+  fi
 
   if [[ ${found_hardcoded} -eq 0 ]]; then
     return 0
@@ -593,8 +628,10 @@ test_schema_files_exist_and_valid() {
 # Test 4: All harness files are valid YAML
 test_harness_yaml_valid() {
   local found_error=0
+  local file_count=0
   for harness in "${HARNESS_DIR}"/*.yaml "${REPO_ROOT}"/examples/*/harness/*.yaml "${REPO_ROOT}"/eval/harness/*.yaml; do
     [[ -f "${harness}" ]] || continue
+    file_count=$((file_count + 1))
     local harness_name
     harness_name="$(basename "${harness}")"
 
@@ -603,6 +640,11 @@ test_harness_yaml_valid() {
       found_error=1
     fi
   done
+
+  if [[ ${file_count} -eq 0 ]]; then
+    echo "no harness files found in ${HARNESS_DIR}, examples, or eval/harness"
+    return 1
+  fi
 
   if [[ ${found_error} -eq 0 ]]; then
     return 0
@@ -643,6 +685,16 @@ test_negative_fixtures() {
     "forge-literal-null-schema.yaml:test_schema_files_exist_and_valid:^forge-literal-null-schema.yaml.*forge.github.*schema file not found: null"
     "absolute-schema-path.yaml:test_schema_files_exist_and_valid:^absolute-schema-path.yaml.*top-level schema file not found: /nonexistent"
     "forge-same-script-empty-schema.yaml:test_validation_loop_schema:^forge-same-script-empty-schema.yaml.*forge.github.*validation_loop.schema is empty"
+    "hardcoded-overlay-null-schema.yaml:test_no_hardcoded_schema:^hardcoded-overlay-null-schema.yaml.*overlays\[0\].runner_env.*contains hardcoded"
+    "hardcoded-overlay-empty-schema.yaml:test_no_hardcoded_schema:^hardcoded-overlay-empty-schema.yaml.*overlays\[0\].runner_env.*contains hardcoded"
+    "hardcoded-overlay-clean-first.yaml:test_no_hardcoded_schema:^hardcoded-overlay-clean-first.yaml.*overlays\[1\].runner_env.*contains hardcoded"
+    "hardcoded-forge-clean-first.yaml:test_no_hardcoded_schema:^hardcoded-forge-clean-first.yaml.*forge.gitlab.*runner_env.*contains hardcoded"
+    "forge-schema-only-empty-override.yaml:test_validation_loop_schema:^forge-schema-only-empty-override.yaml.*forge.github.*validation_loop.schema is empty"
+    "overlay-schema-only-empty-override.yaml:test_validation_loop_schema:^overlay-schema-only-empty-override.yaml.*overlays\[0\].*validation_loop.schema is empty"
+    "script-with-null-schema.yaml:test_validation_loop_schema:^script-with-null-schema.yaml.*top-level validation_loop.schema is null"
+    "empty-json-schema.yaml:test_schema_files_exist_and_valid:^empty-json-schema.yaml.*schema file is not valid JSON"
+    "multiple-json-values.yaml:test_schema_files_exist_and_valid:^multiple-json-values.yaml.*schema file is not valid JSON"
+    "overlay-schema-only-empty-with-inherited-script.yaml:test_validation_loop_schema:^overlay-schema-only-empty-with-inherited-script.yaml.*overlays\[0\].*validation_loop.schema is empty"
   )
 
   for fixture_spec in "${expected_failures[@]}"; do
@@ -690,6 +742,7 @@ test_positive_fixtures() {
 
   local expected_passes=(
     "null-schema-inheritance.yaml"
+    "overlay-valid-inheritance.yaml"
   )
 
   # Test absolute-schema-path-valid: create a temporary fixture with an absolute path

@@ -1,0 +1,12 @@
+---
+validation_loop:
+  script: scripts/validate-output-schema.sh
+  schema: schemas/review-result.schema.json
+forge:
+  github:
+    validation_loop:
+      script: scripts/validate-output-schema.sh
+      schema: schemas/review-result.schema.json
+  gitlab:
+    runner_env:
+      FULLSEND_OUTPUT_SCHEMA: hardcoded
