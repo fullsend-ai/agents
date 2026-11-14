@@ -1,0 +1,9 @@
+---
+validation_loop:
+  script: scripts/validate-output-schema.sh
+  schema: schemas/review-result.schema.json
+forge:
+  github:
+    validation_loop:
+      script: scripts/validate-output-schema.sh
+      schema: "null"

@@ -416,8 +416,29 @@ check_schema_files_at_path() {
     echo "${harness_name}: yq failed to extract schema path at ${location}"
     return 1
   }
-  # Skip if schema is empty or null (inherited schema will be checked separately)
-  if [[ -z "${schema_path}" || "${schema_path}" == "null" ]]; then
+
+  # Check YAML type to distinguish YAML null from literal string "null"
+  local type_selector
+  if [[ "${path}" == "." ]]; then
+    type_selector=".validation_loop.schema | type"
+  else
+    type_selector="${path}.validation_loop.schema | type"
+  fi
+  local schema_type
+  schema_type="$(yq "${type_selector}" "${harness}")" || {
+    echo "${harness_name}: yq failed to check schema type at ${location}"
+    return 1
+  }
+
+  # Skip if schema is YAML null (inherited schema will be checked separately)
+  # Type output may contain tags like "!!null", so check for null substring
+  # But don't skip literal string "null" (which has type "!!str") - it's a file path
+  if [[ "${schema_type}" == *"null"* && "${schema_type}" != *"str"* ]]; then
+    return 0
+  fi
+
+  # Also skip empty string (inherited schema will be checked separately)
+  if [[ -z "${schema_path}" ]]; then
     return 0
   fi
 
@@ -428,7 +449,12 @@ check_schema_files_at_path() {
     resolve_dir="$(dirname "$(dirname "${harness}")")"
   fi
   local full_schema_path
-  full_schema_path="${resolve_dir}/${schema_path}"
+  # Only prepend resolve_dir for relative paths; preserve absolute paths
+  if [[ "${schema_path}" == /* ]]; then
+    full_schema_path="${schema_path}"
+  else
+    full_schema_path="${resolve_dir}/${schema_path}"
+  fi
 
   if [[ ! -f "${full_schema_path}" ]]; then
     echo "${harness_name}: ${location} schema file not found: ${schema_path}"
@@ -553,6 +579,8 @@ test_negative_fixtures() {
     "bad-json-schema.yaml:test_schema_files_exist_and_valid:^bad-json-schema.yaml.*schema file is not valid JSON"
     "invalid-yaml.yaml:test_harness_yaml_valid:invalid YAML syntax"
     "multi-document.yaml:test_validation_loop_schema:^multi-document.yaml.*harness must contain exactly one YAML document"
+    "forge-literal-null-schema.yaml:test_schema_files_exist_and_valid:^forge-literal-null-schema.yaml.*forge.github.*schema file not found: null"
+    "absolute-schema-path.yaml:test_schema_files_exist_and_valid:^absolute-schema-path.yaml.*top-level schema file not found: /nonexistent"
   )
 
   for fixture_spec in "${expected_failures[@]}"; do
@@ -599,6 +627,7 @@ test_positive_fixtures() {
 
   local expected_passes=(
     "null-schema-inheritance.yaml"
+    "absolute-schema-path-valid.yaml"
   )
 
   for fixture_name in "${expected_passes[@]}"; do
