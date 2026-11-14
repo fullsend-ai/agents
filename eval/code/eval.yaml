@@ -24,33 +24,21 @@ execution:
   # `fullsend run` + metrics copy). Deliberately NOT sized to the code
   # agent's real production budget — see EVAL_TIMEOUT below for why that
   # budget (up to ~7200s across validation_loop's 2 iterations) cannot fit
-  # inside this CI job's 45-minute cap
-  # (.github/workflows/functional-tests.yml) alongside before_each (120s),
-  # after_each (180s), and the job's own setup overhead (checkout, python/uv,
-  # harness install, fullsend download, OpenShell + podman install). Measured
-  # setup from run 33968109425: job start to "Run functional tests" is ~96s
-  # total (podman install+configure+start is ~13s of it, not the ~190s an
-  # earlier revision of this comment assumed).
+  # inside this CI job's 60-minute cap (timeout-minutes: 60 on the
+  # functional-tests job in .github/workflows/functional-tests.yml).
   #
-  # Sized for the JOB, not one case: this value is applied per case, and
-  # parallelism: 1 runs the suite's cases back to back inside one matrix
-  # leg capped at timeout-minutes: 45 (2700s). Derived for THREE cases,
-  # because a third is already in flight (#1058 adds
-  # 002-needs-input-uninterpretable to this same leg) and whichever of the
-  # two PRs merges second would otherwise land a budget that no longer
-  # holds: 3 x (120 + 500 + 180 + 30) = 2490s, leaving 210s for job setup
-  # — a deliberate margin over the ~96s measured above, not an exact fit:
-  # the setup steps (checkout, python/uv, harness install, fullsend
-  # download, podman) vary, so the allowance must absorb a bad day without
-  # handing the whole leg to the GitHub Actions hard timeout, which
-  # produces no artifacts for any case. Two cases at this value are 1660s,
-  # so merging before #1058 is safe too. The setup margin is what fixes the
-  # ceiling, not the case count: 500 is the largest per-case value that
-  # still leaves that margin for three cases (T <= (2700 - 150)/3 - 330 =
-  # ~520), and a fourth case does not fit at any useful per-case value —
-  # those cases would need their own matrix legs. 003 still has no observed
-  # CI runtime; size from its first real run if it needs more than 500.
-  timeout: 500
+  # Sized for the matrix leg, not one case: this value applies per case, and
+  # parallelism: 1 runs the suite's two cases (001-fix-add,
+  # 003-dead-config-field) back to back in one 3600s leg. Per case the worst
+  # case is before_each 120 + T + after_each 180 + teardown 30, so at T=1200:
+  # 2 x 1530 = 3060s, leaving 540s for job setup (~96s measured, run
+  # 33968109425) and a run-functional.sh retry of a case that failed before
+  # the agent ran. A hang that hits the GitHub Actions job timeout instead
+  # loses every case's artifacts, which is why T is not larger. 1200 is a
+  # placeholder until 003 has an observed CI runtime (it has never run: its
+  # PR needs ok-to-test); 001 has taken up to 236.8s (run 33968109425).
+  # A third case at this value does not fit; re-derive when one is added.
+  timeout: 1200
   parallelism: 1
   # Advisory only — the opaque-CLI-runner contract does not enforce this for
   # our runner type; a runaway run still spends what it spends and only
@@ -90,38 +78,22 @@ execution:
     # up to 2 iterations (validation_loop.max_iterations: 2) — worst case
     # ~7200s of agent time, on top of sandbox creation/image pull/
     # pre_script/post_script, none of which timeout_minutes bounds. None of
-    # that fits inside this CI job's 45-minute cap with any safety margin,
+    # that fits inside this CI job's 60-minute cap with any safety margin,
     # so this eval does not attempt to reproduce the full production
     # timeout envelope; the window is derived from the job budget instead
     # (see execution.timeout above).
     #
-    # Every case in this suite shares this window, run back to back
-    # (parallelism: 1) inside one 45-minute matrix leg: today 001-fix-add
-    # (a 2-line arithmetic bug) and 003-dead-config-field (a cross-file
-    # dead-config removal with a larger 60-turn / $4.00 budget), with
-    # #1058's 002-needs-input-uninterpretable in flight — three is what
-    # execution.timeout above is derived for.
-    # 420s here, 80s under execution.timeout (500) so this inner `timeout`
-    # fires first and fullsend still writes a partial metrics.json before
-    # returning (see writeMetricsJSON in run.go's error path), giving an
-    # inconclusive but readable "metrics.json not found"-adjacent judge
-    # failure rather than a harness SIGKILL. The 500s outer value is what
-    # makes the job budget add up with real setup margin — see
-    # execution.timeout above — so a hang in one case still leaves the
-    # others their full window and their artifacts; at the old 1700/1800 a
-    # first-case hang left the rest to the GitHub Actions job timeout,
-    # which produces no artifacts. 001 is NOT sub-minute: it observed 44
-    # turns / 236.8s (run 33968109425) and 37 turns / 195.8s (run
-    # 34268404969), so 420s clears its measured max by ~183s (well over the
-    # ~41s run-to-run swing between those two). 003 has no observed CI
-    # runtime yet; if its first real run needs more than 420s, the code
-    # cases need their own matrix legs rather than a larger share of this
-    # one.
+    # 1100s here, 100s under execution.timeout (1200), so this inner
+    # `timeout` fires first and fullsend still writes a partial metrics.json
+    # before returning (see writeMetricsJSON in run.go's error path), giving
+    # an inconclusive but readable judge failure rather than a harness
+    # SIGKILL. Both cases share this window; see execution.timeout above for
+    # the leg arithmetic.
     # Separately, pr_created can also fail when the agent finishes
     # in-budget but never emits a schema-valid code-result.json —
     # validation_loop then skips post_script (ADR 0022), so no PR is
     # created despite a clean timeout path.
-    EVAL_TIMEOUT: "420"
+    EVAL_TIMEOUT: "1100"
 
 hooks:
   before_each:

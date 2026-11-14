@@ -5,9 +5,6 @@ expected_files:
   - config/fields.go
   - config/config_test.go
 
-labels:
-  forbidden: []
-
 # Consumed by eval.yaml's removed_symbols judge: for each symbol, each file
 # maps to the minimum number of deletion lines that must name the symbol,
 # and the symbol must not survive in any added or context line of the diff.
@@ -30,19 +27,13 @@ removed_symbols:
     config/fields.go: 1       # case "verbose_logging"
     config/config_test.go: 1  # raw literal in TestLoad
 
-# Code agent budgets (sandbox work + retries). Unmeasured ceiling, and to be
-# precise about what "unmeasured" means here: the eval harness has never
-# executed this case at all. Every Functional Tests run on the branch that
-# adds it was gated off by check-e2e-authorization.sh (external contributor,
-# no ok-to-test label), so nothing below is derived from a run of this
-# fixture — the numbers are a ceiling, not an observation. Re-derive from
-# the first real run, which needs a maintainer to apply ok-to-test.
-# Values mirror 001-fix-add's ceiling (60 turns / $4.00) and eval.yaml's
-# max_budget_usd. For reference, 001 (a trivial fixture) observed 12 turns /
-# $2.12 (CI run 29424512121) and 35 turns / $0.98 (CI run 30166455238); this
-# cross-file task is harder, so its ceiling is set no lower.
+# Code agent budgets. Report-only: the eval's max_turns/max_cost judges have
+# no threshold. Placeholders, not observations: this case has never run
+# (its PR needs ok-to-test). They match 001-fix-add (60 turns / $0.75, ~3x
+# its $0.23 Sonnet 5.5 cost in run 37125458624) and eval.yaml's
+# max_budget_usd; re-derive from 003's first real run.
 max_turns: 60
-max_cost_usd: 4.00
+max_cost_usd: 0.75
 
 # Human reference only; not consumed by judges (unlike triage/review quality).
 code_expectations: |
