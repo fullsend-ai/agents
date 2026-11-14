@@ -107,8 +107,17 @@ check_validation_loop_at_path() {
       echo "${harness_name}: yq failed to extract schema at ${location}"
       return 1
     }
-    # Allow inheritance only when schema is empty/null AND there is a usable top-level schema
-    if [[ -z "${per_location_schema}" || "${per_location_schema}" == "null" ]]; then
+    # Check YAML type of per-location schema to distinguish null from string "null"
+    local per_location_type_selector
+    per_location_type_selector="${path}.validation_loop.schema | type"
+    local per_location_type
+    per_location_type="$(yq "${per_location_type_selector}" "${harness}")" || {
+      echo "${harness_name}: yq failed to check schema type at ${location}"
+      return 1
+    }
+
+    # Allow inheritance only when schema is YAML null AND there is a usable top-level schema
+    if [[ "${per_location_type}" == *"null"* && "${per_location_type}" != *"str"* ]]; then
       # Check if top-level schema exists AND is usable (non-empty, non-null)
       local top_level_has_schema
       top_level_has_schema="$(yq '.validation_loop | has("schema")' "${harness}")" || {
@@ -116,15 +125,32 @@ check_validation_loop_at_path() {
         return 1
       }
       if [[ "${top_level_has_schema}" == "true" ]]; then
+        # Check type of top-level schema to distinguish null from string "null"
+        local top_level_type_selector
+        top_level_type_selector=".validation_loop.schema | type"
+        local top_level_type
+        top_level_type="$(yq "${top_level_type_selector}" "${harness}")" || {
+          echo "${harness_name}: yq failed to check top-level schema type"
+          return 1
+        }
+        # Top-level schema must be non-null and non-empty (can be string "null" but not empty string)
+        if [[ "${top_level_type}" == *"null"* && "${top_level_type}" != *"str"* ]]; then
+          # YAML null - invalid
+          echo "${harness_name}: ${location} validation_loop has script but schema is null (and top-level schema is also null)"
+          return 1
+        fi
+        # Check for empty string
         local top_level_schema
         top_level_schema="$(yq '.validation_loop.schema' "${harness}")" || {
           echo "${harness_name}: yq failed to extract top-level schema value"
           return 1
         }
-        if [[ -z "${top_level_schema}" || "${top_level_schema}" == "null" ]]; then
-          echo "${harness_name}: ${location} validation_loop has script but schema is empty/null (and top-level schema is also empty/null)"
+        if [[ -z "${top_level_schema}" ]]; then
+          # Empty string - invalid
+          echo "${harness_name}: ${location} validation_loop has script but schema is null (and top-level schema is also empty)"
           return 1
         fi
+        # Top-level schema is valid (non-null, non-empty)
         return 0
       else
         echo "${harness_name}: ${location} validation_loop has script but no schema (and no top-level schema to inherit)"
@@ -154,6 +180,27 @@ check_validation_loop_at_path() {
     return 1
   fi
 
+  # Check schema type to distinguish YAML null from string "null"
+  local schema_type_selector
+  if [[ "${path}" == "." ]]; then
+    schema_type_selector=".validation_loop.schema | type"
+  else
+    schema_type_selector="${path}.validation_loop.schema | type"
+  fi
+  local schema_type
+  schema_type="$(yq "${schema_type_selector}" "${harness}")" || {
+    echo "${harness_name}: yq failed to check schema type at ${location}"
+    return 1
+  }
+
+  # YAML null values are invalid (require schema key with non-null value)
+  # String "null" is valid (it's a file path)
+  if [[ "${schema_type}" == *"null"* && "${schema_type}" != *"str"* ]]; then
+    echo "${harness_name}: ${location} validation_loop.schema is null"
+    return 1
+  fi
+
+  # Empty string is also invalid
   local schema_value
   if [[ "${path}" == "." ]]; then
     schema_value="$(yq ".validation_loop.schema" "${harness}")" || {
@@ -166,8 +213,8 @@ check_validation_loop_at_path() {
       return 1
     }
   fi
-  if [[ -z "${schema_value}" || "${schema_value}" == "null" ]]; then
-    echo "${harness_name}: ${location} validation_loop.schema is empty or null"
+  if [[ -z "${schema_value}" ]]; then
+    echo "${harness_name}: ${location} validation_loop.schema is empty"
     return 1
   fi
 
@@ -561,12 +608,12 @@ test_negative_fixtures() {
 
   local expected_failures=(
     "script-no-schema.yaml:test_validation_loop_schema:^script-no-schema.yaml.*top-level validation_loop has script but no schema"
-    "empty-schema.yaml:test_validation_loop_schema:^empty-schema.yaml.*top-level validation_loop.schema is empty or null"
-    "schema-path-explicit-empty.yaml:test_validation_loop_schema:^schema-path-explicit-empty.yaml.*top-level validation_loop.schema is empty or null"
+    "empty-schema.yaml:test_validation_loop_schema:^empty-schema.yaml.*top-level validation_loop.schema is empty"
+    "schema-path-explicit-empty.yaml:test_validation_loop_schema:^schema-path-explicit-empty.yaml.*top-level validation_loop.schema is empty"
     "forge-script-no-inherited-schema.yaml:test_validation_loop_schema:^forge-script-no-inherited-schema.yaml.*validation_loop has script but no schema.*no top-level schema"
     "overlay-script-no-inherited-schema.yaml:test_validation_loop_schema:^overlay-script-no-inherited-schema.yaml.*validation_loop has script but no schema.*no top-level schema"
-    "forge-null-inherited-schema.yaml:test_validation_loop_schema:^forge-null-inherited-schema.yaml.*validation_loop has script but schema is empty/null.*top-level schema is also empty/null"
-    "overlay-empty-inherited-schema.yaml:test_validation_loop_schema:^overlay-empty-inherited-schema.yaml.*validation_loop has script but schema is empty/null.*top-level schema is also empty/null"
+    "forge-null-inherited-schema.yaml:test_validation_loop_schema:^forge-null-inherited-schema.yaml.*validation_loop has script but schema is null"
+    "overlay-empty-inherited-schema.yaml:test_validation_loop_schema:^overlay-empty-inherited-schema.yaml.*validation_loop has script but schema is null"
     "missing-schema-file.yaml:test_schema_files_exist_and_valid:^missing-schema-file.yaml.*top-level schema file not found"
     "forge-missing-schema-file.yaml:test_schema_files_exist_and_valid:^forge-missing-schema-file.yaml.*forge.github.*schema file not found"
     "overlay-bad-json-schema.yaml:test_schema_files_exist_and_valid:^overlay-bad-json-schema.yaml.*overlays\[0\].*schema file is not valid JSON"
@@ -629,6 +676,16 @@ test_positive_fixtures() {
     "null-schema-inheritance.yaml"
   )
 
+  # Test absolute-schema-path-valid: create a temporary fixture with an absolute path
+  local abs_test_dir="$(mktemp -d)"
+  local abs_schema_path="${SCRIPT_DIR}/test-fixtures/schemas/review-result.schema.json"
+  cat > "${abs_test_dir}/absolute-schema-path-valid.yaml" << EOF
+---
+validation_loop:
+  script: scripts/validate-output-schema.sh
+  schema: ${abs_schema_path}
+EOF
+
   for fixture_name in "${expected_passes[@]}"; do
     local fixture_file="${fixtures_dir}/${fixture_name}"
 
@@ -654,6 +711,22 @@ test_positive_fixtures() {
       continue
     fi
   done
+
+  # Test absolute path fixture separately
+  output="$(HARNESS_DIR="${abs_test_dir}" REPO_ROOT="${SCRIPT_DIR}"/test-fixtures test_validation_loop_schema 2>&1)" || exit_code=$?
+  if [[ ${exit_code} -ne 0 ]]; then
+    echo "Fixture absolute-schema-path-valid.yaml: test_validation_loop_schema failed with exit_code=${exit_code}"
+    found_error=1
+  else
+    output="$(HARNESS_DIR="${abs_test_dir}" REPO_ROOT="${SCRIPT_DIR}"/test-fixtures test_schema_files_exist_and_valid 2>&1)" || exit_code=$?
+    if [[ ${exit_code} -ne 0 ]]; then
+      echo "Fixture absolute-schema-path-valid.yaml: test_schema_files_exist_and_valid failed with exit_code=${exit_code}"
+      found_error=1
+    fi
+  fi
+
+  # Clean up temporary directory
+  rm -rf "${abs_test_dir}"
 
   if [[ ${found_error} -eq 0 ]]; then
     return 0
