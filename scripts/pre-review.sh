@@ -482,11 +482,12 @@ forge_list_repo_labels() {
 # Bundled into pre-review.sh and post-review.sh via review-ops.lib.sh.
 # All functions use curl against the GitLab REST API.
 #
-# Expected globals (set by forge_parse_pr_url):
+# Expected globals (set by forge_parse_pr_url or caller):
 #   REPO           — plain project path (e.g., "group/project")
 #   REPO_ENCODED   — URL-encoded project path (e.g., "group%2Fproject")
 #   PR_NUMBER      — merge request IID
 #   GITLAB_HOST    — API host (e.g., "gitlab.com")
+#   RESULT_FILE    — (optional) path to reviewed agent-result JSON (for head_sha)
 #
 # Expected env vars:
 #   PR_URL         — HTML URL of the merge request
@@ -728,16 +729,42 @@ forge_resolve_outdated_review_threads() {
     return 0
   fi
 
-  local mr_info current_sha
-  mr_info=$(_gitlab_api GET "/projects/${REPO_ENCODED}/merge_requests/${PR_NUMBER}" 2>/dev/null) || mr_info="{}"
-  current_sha=$(echo "${mr_info}" | jq -r '.diff_refs.head_sha // .sha // empty' 2>/dev/null) || current_sha=""
-  if [[ -z "${current_sha}" ]]; then
+  local reviewed_sha=""
+  if [[ -n "${RESULT_FILE:-}" && -f "${RESULT_FILE}" ]]; then
+    reviewed_sha=$(jq -r '(.head_sha // empty) | strings' "${RESULT_FILE}" 2>/dev/null) || reviewed_sha=""
+  fi
+  if [[ -z "${reviewed_sha}" ]]; then
+    echo "::warning::Could not determine reviewed head SHA — skipping outdated-thread resolution"
     return 0
   fi
 
+  local mr_info live_head_sha
+  if ! mr_info=$(_gitlab_api GET "/projects/${REPO_ENCODED}/merge_requests/${PR_NUMBER}" 2>/dev/null); then
+    echo "::warning::Failed to fetch MR details for #${PR_NUMBER} — skipping outdated-thread resolution"
+    return 0
+  fi
+  live_head_sha=$(echo "${mr_info}" | jq -r '[.diff_refs.head_sha?, .sha? | strings | select(length > 0)] | first // empty' 2>/dev/null) || live_head_sha=""
+  if [[ -z "${live_head_sha}" ]]; then
+    echo "::warning::Could not determine MR head SHA — skipping outdated-thread resolution"
+    return 0
+  fi
+  if [[ "${live_head_sha}" != "${reviewed_sha}" ]]; then
+    echo "MR head moved ($(_gha_sanitize "${reviewed_sha}") -> $(_gha_sanitize "${live_head_sha}")) — skipping outdated-thread resolution"
+    return 0
+  fi
+
+  local current_sha="${reviewed_sha}"
+
   local current_user bot_user_id
-  current_user=$(_gitlab_api GET "/user" 2>/dev/null) || current_user="{}"
-  bot_user_id=$(echo "${current_user}" | jq -r '.id // empty' 2>/dev/null) || bot_user_id=""
+  if ! current_user=$(_gitlab_api GET "/user" 2>/dev/null); then
+    echo "::warning::Could not determine review identity — skipping outdated-thread resolution"
+    return 0
+  fi
+  bot_user_id=$(echo "${current_user}" | jq -r '(.id? | select(. != null and . != "")) | tostring' 2>/dev/null) || bot_user_id=""
+  if [[ -z "${bot_user_id}" ]]; then
+    echo "::warning::Could not determine review identity — skipping outdated-thread resolution"
+    return 0
+  fi
 
   local page=1 all_discussions="[]"
   while [[ "${page}" -le 10 ]]; do
@@ -763,20 +790,8 @@ forge_resolve_outdated_review_threads() {
     | .notes |= (map(select(.system != true)) // [])
     | select(.notes | type == "array" and length > 0)
     | select(.notes | any(.resolvable == true and .resolved == false))
-    | select(
-        if ($bot_id != "") then
-          .notes | all((.author.id | tostring) == $bot_id)
-        else
-          .notes | all((.body // "" | test("<!--[ ]*fullsend|🤖 Fullsend"; "i")))
-        end
-      )
-    | select(
-        if ($current_sha != "") then
-          (.notes[0].position.head_sha // empty) != "" and .notes[0].position.head_sha != $current_sha
-        else
-          false
-        end
-      )
+    | select(.notes | all((.author.id | tostring) == $bot_id))
+    | select((.notes[0].position.head_sha // empty) != "" and .notes[0].position.head_sha != $current_sha)
     | .id
   ' 2>/dev/null) || discussion_ids=""
 
