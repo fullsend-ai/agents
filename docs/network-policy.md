@@ -20,11 +20,14 @@ allow `curl` because their API access requires it (the `gh` CLI is not
 available for GitLab or Jira).
 
 All agents share the base policy
-[`policies/base.yaml`](https://github.com/fullsend-ai/agents/blob/main/policies/base.yaml). Forge-specific network
-access (GitHub, GitLab, Jira endpoints) is provided by profiles under
+[`policies/base.yaml`](https://github.com/fullsend-ai/agents/blob/main/policies/base.yaml). GitHub and GitLab network
+access is provided by profiles under
 [`profiles/`](https://github.com/fullsend-ai/agents/tree/main/profiles) and wired in via forge-level or overlay
-sections in each harness file. See the individual profile files for the
-full list of allowed hosts and binaries.
+sections in each harness file; see the individual profile files for the
+full list of allowed hosts and binaries. Jira access comes from the
+`jira` provider (profile `fullsend-jira`) built into fullsend, which the
+Jira overlays attach; see fullsend's
+[Jira integration guide](https://github.com/fullsend-ai/fullsend/blob/main/docs/guides/user/jira-integration.md).
 
 ## Before you start
 

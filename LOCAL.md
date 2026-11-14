@@ -131,20 +131,6 @@ runner, no override workaround needed:
 
 ```bash
 export FULLSEND_WORK_ITEM_URL="https://your-site.atlassian.net/browse/TESTPROJ-42"
-# Bot user: set the email (Basic auth). Service account: leave both email
-# variables unset (Bearer auth).
-# - Post-scripts read both FULLSEND_JIRA_* values.
-# - The sandbox's builtin jira provider reads FULLSEND_JIRA_TOKEN (needs a
-#   fullsend release that includes fullsend-ai/fullsend#9233).
-# - OAuth 2.0 client credentials instead of a token: export
-#   FULLSEND_JIRA_CLIENT_ID, FULLSEND_JIRA_CLIENT_SECRET and JIRA_API_URL
-#   (the https://api.atlassian.com/ex/jira/<cloudId> gateway), and leave
-#   FULLSEND_JIRA_TOKEN unset. Setting both modes fails the run.
-# - fullsend run sets JIRA_USER_EMAIL only for a Jira event; for a local run,
-#   export it yourself for the sandbox skills (below).
-export FULLSEND_JIRA_TOKEN="your-jira-api-token"
-export FULLSEND_JIRA_EMAIL="you@example.com"
-export JIRA_USER_EMAIL="${FULLSEND_JIRA_EMAIL}"
 export JIRA_BASE_URL="https://your-site.atlassian.net"
 # The post-scripts require the .fullsend directory; nothing sets it for you.
 export FULLSEND_DIR="<path to the .fullsend directory>"
@@ -154,6 +140,33 @@ export FULLSEND_FORGE="jira"
 export JIRA_DUPLICATE_TRANSITION="Duplicate"
 export JIRA_NOT_PLANNED_TRANSITION="Won't Do"
 export JIRA_SPLIT_TRANSITION="Done"
+```
+
+Then export the credentials for one mode; setting both fails the run. They
+stay on the host, where the post-scripts and the builtin `jira` provider read
+them (the provider needs a fullsend release that includes
+fullsend-ai/fullsend#9233).
+
+**Static token:**
+
+```bash
+export FULLSEND_JIRA_TOKEN="your-jira-api-token"
+# Bot user only. For a service account's token, skip both email lines.
+export FULLSEND_JIRA_EMAIL="you@example.com"
+# fullsend run sets this only for a Jira event; set it for the sandbox skills.
+export JIRA_USER_EMAIL="${FULLSEND_JIRA_EMAIL}"
+```
+
+**OAuth 2.0 client credentials:**
+
+```bash
+export FULLSEND_JIRA_CLIENT_ID="your-client-id"
+export FULLSEND_JIRA_CLIENT_SECRET="your-client-secret"
+# Atlassian's public tenant-info endpoint returns the site's cloud ID.
+CLOUD_ID="$(curl -fsS https://your-site.atlassian.net/_edge/tenant_info | jq -er .cloudId)"
+echo "${CLOUD_ID}"
+export JIRA_API_URL="https://api.atlassian.com/ex/jira/${CLOUD_ID}"
+unset FULLSEND_JIRA_TOKEN FULLSEND_JIRA_EMAIL JIRA_USER_EMAIL
 ```
 
 Run `fullsend run triage` the same way as step 3 above — `--target-repo`
@@ -176,22 +189,7 @@ require `ISSUE_NUMBER`. It derives the work-item key from
 external key as a GitHub or GitLab issue number.
 
 ```bash
-# Jira-source env vars.
-# - FULLSEND_JIRA_TOKEN: read on the host by the builtin jira provider
-#   (needs a fullsend release that includes fullsend-ai/fullsend#9233) and
-#   by the post-code Jira write. It never enters the sandbox environment.
-# - Or OAuth 2.0 client credentials: FULLSEND_JIRA_CLIENT_ID,
-#   FULLSEND_JIRA_CLIENT_SECRET and JIRA_API_URL (the gateway), with
-#   FULLSEND_JIRA_TOKEN unset. fullsend mints the sandbox token; the
-#   secret stays on the host. Setting both modes fails the run.
-# - JIRA_USER_EMAIL: enters the code sandbox with JIRA_BASE_URL as
-#   non-secret config. fullsend run sets it from FULLSEND_JIRA_EMAIL only
-#   for a Jira event; for a local run, export it yourself (below).
-# - Service account: leave both email variables unset (Bearer auth).
 export FULLSEND_WORK_ITEM_URL="https://your-site.atlassian.net/browse/TESTPROJ-42"
-export FULLSEND_JIRA_TOKEN="your-jira-api-token"
-export FULLSEND_JIRA_EMAIL="you@example.com"
-export JIRA_USER_EMAIL="${FULLSEND_JIRA_EMAIL}"
 export JIRA_BASE_URL="https://your-site.atlassian.net"
 # The post-scripts require the .fullsend directory; nothing sets it for you.
 export FULLSEND_DIR="<path to the .fullsend directory>"
@@ -199,6 +197,33 @@ export FULLSEND_DIR="<path to the .fullsend directory>"
 # Target forge — the code agent still pushes/creates PRs on this forge
 export FULLSEND_FORGE="github"
 export GH_TOKEN="$(gh auth token)"
+```
+
+Then export the credentials for one mode; setting both fails the run. They
+stay on the host, where the post-scripts and the builtin `jira` provider read
+them (the provider needs a fullsend release that includes
+fullsend-ai/fullsend#9233).
+
+**Static token:**
+
+```bash
+export FULLSEND_JIRA_TOKEN="your-jira-api-token"
+# Bot user only. For a service account's token, skip both email lines.
+export FULLSEND_JIRA_EMAIL="you@example.com"
+# fullsend run sets this only for a Jira event; set it for the sandbox skills.
+export JIRA_USER_EMAIL="${FULLSEND_JIRA_EMAIL}"
+```
+
+**OAuth 2.0 client credentials:**
+
+```bash
+export FULLSEND_JIRA_CLIENT_ID="your-client-id"
+export FULLSEND_JIRA_CLIENT_SECRET="your-client-secret"
+# Atlassian's public tenant-info endpoint returns the site's cloud ID.
+CLOUD_ID="$(curl -fsS https://your-site.atlassian.net/_edge/tenant_info | jq -er .cloudId)"
+echo "${CLOUD_ID}"
+export JIRA_API_URL="https://api.atlassian.com/ex/jira/${CLOUD_ID}"
+unset FULLSEND_JIRA_TOKEN FULLSEND_JIRA_EMAIL JIRA_USER_EMAIL
 ```
 
 Run `fullsend run code` the same way as step 3 above. `--target-repo`
