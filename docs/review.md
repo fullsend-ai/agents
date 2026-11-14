@@ -23,7 +23,7 @@ The review agent runs automatically when:
 
 In per-repo installs, it also triggers when the `ready-for-review` label is applied to a PR/MR.
 
-All automatic triggers require the actor to have triage-level repository permission or higher (triage, write, maintain, or admin).
+All automatic triggers require the actor to have triage-level repository permission or higher (triage, write, maintain, or admin). On GitLab, the actor needs the Developer role or higher.
 
 It can also be triggered manually with the `/fs-review` command.
 
