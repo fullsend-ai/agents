@@ -25,7 +25,12 @@
 #
 # Expected env vars:
 #   JIRA_BASE_URL          — Jira Cloud base URL (https://<site>.atlassian.net)
-#   JIRA_TOKEN             — Jira API token
+#   JIRA_TOKEN             — Jira API token. Or, instead of it:
+#   FULLSEND_JIRA_CLIENT_ID, FULLSEND_JIRA_CLIENT_SECRET
+#                          — service-account OAuth 2.0 client credentials.
+#                            REST calls then use an access token minted on
+#                            the runner and need JIRA_API_URL. Setting both
+#                            modes fails.
 #   FULLSEND_DIR           — .fullsend directory whose config.yaml holds
 #                            tracker.jira, for `fullsend issues create`
 #   SCRIBE_JIRA_PROJECT    — Jira project key that backlog reads and new
@@ -40,7 +45,10 @@
 #                            gateway https://api.atlassian.com/ex/jira/<cloudId>
 #                            that `fullsend run` resolves and exports. Falls
 #                            back to JIRA_BASE_URL when unset (older fullsend
-#                            releases). Browse links always use JIRA_BASE_URL.
+#                            releases). Required with client credentials:
+#                            scribe runs are not Jira-sourced, so `fullsend
+#                            run` does not set it and the operator must.
+#                            Browse links always use JIRA_BASE_URL.
 #   SCRIBE_JIRA_ISSUE_TYPE — issue type name for created issues (default: "Task")
 #   SCRIBE_JIRA_LABELS     — comma-separated allowlist of labels that scribe may
 #                            apply to Jira issues (default: "meeting-notes")
@@ -51,12 +59,16 @@
 JIRA_SCRIBE_OPS_SH_LOADED=1
 
 # JIRA_USER_EMAIL is optional: without it, requests use Bearer auth.
-: "${JIRA_TOKEN:?JIRA_TOKEN must be set}"
-: "${JIRA_BASE_URL:?JIRA_BASE_URL must be set}"
-: "${SCRIBE_JIRA_PROJECT:?SCRIBE_JIRA_PROJECT must be set}"
-
 # shellcheck source=jira-auth.lib.sh
 source "${SCRIPT_DIR}/lib/jira-auth.lib.sh"
+jira_auth_select "${JIRA_TOKEN:-}" FULLSEND_JIRA_CLIENT_ID FULLSEND_JIRA_CLIENT_SECRET || exit 1
+if [[ "${JIRA_AUTH_MODE}" == "none" ]]; then
+  echo "ERROR: JIRA_TOKEN must be set, or FULLSEND_JIRA_CLIENT_ID and FULLSEND_JIRA_CLIENT_SECRET" >&2
+  exit 1
+fi
+: "${JIRA_BASE_URL:?JIRA_BASE_URL must be set}"
+: "${SCRIBE_JIRA_PROJECT:?SCRIBE_JIRA_PROJECT must be set}"
+jira_auth_require_api_url || exit 1
 
 while [[ "${JIRA_BASE_URL}" == */ ]]; do
   JIRA_BASE_URL="${JIRA_BASE_URL%/}"
@@ -83,13 +95,17 @@ SCRIBE_JIRA_LABELS="${SCRIBE_JIRA_LABELS:-meeting-notes}"
 
 # Maximum pages fetched per paginated Jira read (100 issues per JQL page).
 SCRIBE_JIRA_MAX_PAGES="${SCRIBE_JIRA_MAX_PAGES:-50}"
+# Client credentials: mint the access token here, in the script's own
+# shell, so later REST calls reuse it. A failure is reported here and each
+# REST call then fails on its own.
+jira_auth_mint || true
 
 _scribe_jira_api() {
   local method="$1"
   shift
   local endpoint="$1"
   shift
-  jira_auth_curl "${JIRA_TOKEN}" "${JIRA_USER_EMAIL:-}" \
+  jira_auth_curl "${JIRA_TOKEN:-}" "${JIRA_USER_EMAIL:-}" \
     --fail --silent --show-error \
     --connect-timeout 10 --max-time 30 \
     --header "Content-Type: application/json" \
@@ -109,7 +125,7 @@ _scribe_jira_api_with_status() {
   shift
   local err_file raw http_code body
   err_file=$(mktemp)
-  raw=$(jira_auth_curl "${JIRA_TOKEN}" "${JIRA_USER_EMAIL:-}" \
+  raw=$(jira_auth_curl "${JIRA_TOKEN:-}" "${JIRA_USER_EMAIL:-}" \
     --silent --show-error \
     --connect-timeout 10 --max-time 30 \
     --header "Content-Type: application/json" \
@@ -118,7 +134,7 @@ _scribe_jira_api_with_status() {
     --write-out '\n%{http_code}' \
     "${SCRIBE_JIRA_API_BASE}/rest/api/3${endpoint}" \
     "$@" 2>"${err_file}") || {
-    echo "Jira API error: curl failed — $(_gha_sanitize "$(cat "${err_file}")")" >&2
+    echo "Jira API error: curl failed — $(_gha_sanitize "$(grep -v '^::add-mask::' "${err_file}")")" >&2
     rm -f "${err_file}"
     return 1
   }
@@ -462,7 +478,7 @@ forge_create_issue() {
     echo "ERROR: forge_create_issue: FULLSEND_DIR is not set; the fullsend CLI needs it for the tracker.jira settings" >&2
     return 1
   fi
-  response=$(printf '%s' "${body}" | jira_auth_fullsend fullsend "${JIRA_TOKEN}" "${JIRA_USER_EMAIL:-}" \
+  response=$(printf '%s' "${body}" | jira_auth_fullsend fullsend "${JIRA_TOKEN:-}" "${JIRA_USER_EMAIL:-}" \
     issues create \
     --tracker jira \
     --fullsend-dir "${FULLSEND_DIR}" \

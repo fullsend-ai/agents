@@ -8,6 +8,11 @@
 [[ -n "${AGENTS_TEST_LIB_SH_LOADED:-}" ]] && return 0
 AGENTS_TEST_LIB_SH_LOADED=1
 
+# Jira credentials from the developer's environment would change which
+# credential mode the scripts select; tests set exactly what they need.
+unset FULLSEND_JIRA_TOKEN FULLSEND_JIRA_EMAIL FULLSEND_JIRA_CLIENT_ID \
+  FULLSEND_JIRA_CLIENT_SECRET JIRA_TOKEN JIRA_USER_EMAIL JIRA_API_URL
+
 # SCRIPT_TEST_TARGET=source|bundled (default: source)
 resolve_agent_script() {
   local base="$1"

@@ -22,7 +22,11 @@
 # Expected env vars:
 #   ISSUE_URL       — HTML URL of the issue (https://<host>.atlassian.net/browse/PROJ-123)
 #   JIRA_TOKEN      — Jira API token (the triage harness maps
-#                     FULLSEND_JIRA_TOKEN to it)
+#                     FULLSEND_JIRA_TOKEN to it). Or, instead of it:
+#   FULLSEND_JIRA_CLIENT_ID, FULLSEND_JIRA_CLIENT_SECRET
+#                   — service-account OAuth 2.0 client credentials. REST
+#                     calls then use an access token minted on the runner
+#                     and need JIRA_API_URL. Setting both modes fails.
 #   JIRA_USER_EMAIL — (optional) bot-user email (the triage harness maps
 #                     FULLSEND_JIRA_EMAIL to it). When set, requests use
 #                     Basic auth with email and token; when unset or
@@ -33,14 +37,16 @@
 #   JIRA_API_URL    — (optional) where REST calls go, e.g. the Atlassian
 #                     API gateway https://api.atlassian.com/ex/jira/<cloudId>
 #                     that `fullsend run` resolves and exports. Falls back
-#                     to JIRA_BASE_URL when unset (older fullsend releases).
+#                     to JIRA_BASE_URL when unset (older fullsend releases),
+#                     except with client credentials, which require it.
 #                     Browse links always use JIRA_BASE_URL.
 #
 # The `fullsend issues` CLI reads its credentials from FULLSEND_JIRA_TOKEN
 # and, for a bot user, FULLSEND_JIRA_EMAIL, and its Jira site and API
 # gateway from tracker.jira in --fullsend-dir. jira_auth_fullsend passes
-# the same token and email to it, so one set of credentials covers both
-# the raw REST calls in this file and the `fullsend` shell-outs below.
+# the same token and email to it, or the client credentials, so one set of
+# credentials covers both the raw REST calls in this file and the
+# `fullsend` shell-outs below.
 #
 # Optional env vars:
 #   JIRA_DUPLICATE_TRANSITION   — transition name for the "duplicate" action
@@ -59,16 +65,25 @@ JIRA_TRIAGE_OPS_SH_LOADED=1
 # Matches the idiom pre-triage.src.sh / post-triage.src.sh already use for
 # ISSUE_URL and FULLSEND_TRACKER.
 # JIRA_USER_EMAIL is optional: without it, requests use Bearer auth.
-: "${JIRA_TOKEN:?JIRA_TOKEN must be set}"
-
 # shellcheck source=jira-auth.lib.sh
 source "${SCRIPT_DIR}/lib/jira-auth.lib.sh"
+jira_auth_select "${JIRA_TOKEN:-}" FULLSEND_JIRA_CLIENT_ID FULLSEND_JIRA_CLIENT_SECRET || exit 1
+if [[ "${JIRA_AUTH_MODE}" == "none" ]]; then
+  echo "ERROR: JIRA_TOKEN must be set, or FULLSEND_JIRA_CLIENT_ID and FULLSEND_JIRA_CLIENT_SECRET" >&2
+  exit 1
+fi
 # JIRA_API_URL is optional, but the credentials are sent to it, so refuse
 # anything that is not https.
 if [[ -n "${JIRA_API_URL:-}" && "${JIRA_API_URL}" != https://* ]]; then
   echo "ERROR: JIRA_API_URL must start with https://" >&2
   exit 1
 fi
+jira_auth_require_api_url || exit 1
+# Client credentials: mint the access token here, in the script's own
+# shell, so later REST calls reuse it. A failure is reported here and each
+# REST call then fails on its own, keeping the caller's fail-open or
+# fail-closed handling.
+jira_auth_mint || true
 
 # JIRA_BASE_URL is derived at runtime by tracker_parse_issue_url, so it
 # cannot be validated at source time — keep a per-call guard for it.
@@ -96,7 +111,7 @@ _jira_api() {
   local api_base
   api_base=$(_jira_api_base) || return 1
 
-  jira_auth_curl "${JIRA_TOKEN}" "${JIRA_USER_EMAIL:-}" \
+  jira_auth_curl "${JIRA_TOKEN:-}" "${JIRA_USER_EMAIL:-}" \
     --fail --silent --show-error \
     --connect-timeout 10 --max-time 30 \
     --header "Content-Type: application/json" \
@@ -118,7 +133,7 @@ _jira_api_with_status() {
   local err_file
   err_file=$(mktemp)
   local raw
-  raw=$(jira_auth_curl "${JIRA_TOKEN}" "${JIRA_USER_EMAIL:-}" \
+  raw=$(jira_auth_curl "${JIRA_TOKEN:-}" "${JIRA_USER_EMAIL:-}" \
     --silent --show-error \
     --connect-timeout 10 --max-time 30 \
     --header "Content-Type: application/json" \
@@ -126,7 +141,7 @@ _jira_api_with_status() {
     --write-out '\n%{http_code}' \
     "${api_base}/rest/api/3${endpoint}" \
     "$@" 2>"${err_file}") || {
-    echo "Jira API error: curl failed — $(cat "${err_file}")" >&2
+    echo "Jira API error: curl failed — $(grep -v '^::add-mask::' "${err_file}")" >&2
     rm -f "${err_file}"
     return 1
   }
@@ -350,7 +365,7 @@ _jira_post_comment() {
     echo "ERROR: FULLSEND_DIR is not set; the fullsend CLI needs it for the tracker.jira settings" >&2
     return 1
   fi
-  printf '%s' "${body}" | jira_auth_fullsend fullsend "${JIRA_TOKEN}" "${JIRA_USER_EMAIL:-}" \
+  printf '%s' "${body}" | jira_auth_fullsend fullsend "${JIRA_TOKEN:-}" "${JIRA_USER_EMAIL:-}" \
     issues post-comment --tracker jira --fullsend-dir "${FULLSEND_DIR}" \
     --project "${REPO}" --number "${JIRA_ISSUE_NUM}" \
     --marker "${marker}" --result -

@@ -3731,7 +3731,7 @@ for arg in "\$@"; do
   fi
   PREV="\${arg}"
 done
-echo "fullsend \$* env-token=\${FULLSEND_JIRA_TOKEN:-unset} env-email=\${FULLSEND_JIRA_EMAIL-unset} <<BODY:\${BODY}:BODY>>" >> "${JIRA_INT_FULLSEND_LOG}"
+echo "fullsend \$* env-token=\${FULLSEND_JIRA_TOKEN:-unset} env-email=\${FULLSEND_JIRA_EMAIL-unset} env-client-id=\${FULLSEND_JIRA_CLIENT_ID-unset} env-client-secret=\${FULLSEND_JIRA_CLIENT_SECRET:+set} <<BODY:\${BODY}:BODY>>" >> "${JIRA_INT_FULLSEND_LOG}"
 if [[ -n "\${MOCK_FULLSEND_FAIL:-}" ]]; then
   echo "Error: Jira API returned 401" >&2
   exit 1
@@ -3743,7 +3743,7 @@ chmod +x "${JIRA_INT_MOCK_BIN}/fullsend"
 # hooks (it runs repo-controlled code in the real tool).
 cat > "${JIRA_INT_MOCK_BIN}/pre-commit" <<MOCKEOF
 #!/usr/bin/env bash
-echo "pre-commit jira-token=\${JIRA_TOKEN:-unset} jira-email=\${JIRA_USER_EMAIL:-unset} fullsend-token=\${FULLSEND_JIRA_TOKEN:-unset} fullsend-email=\${FULLSEND_JIRA_EMAIL:-unset}" >> "${JIRA_INT_PRECOMMIT_LOG}"
+echo "pre-commit jira-token=\${JIRA_TOKEN:-unset} jira-email=\${JIRA_USER_EMAIL:-unset} fullsend-token=\${FULLSEND_JIRA_TOKEN:-unset} fullsend-email=\${FULLSEND_JIRA_EMAIL:-unset} client-id=\${FULLSEND_JIRA_CLIENT_ID:-unset} client-secret=\${FULLSEND_JIRA_CLIENT_SECRET:+set}" >> "${JIRA_INT_PRECOMMIT_LOG}"
 exit 0
 MOCKEOF
 chmod +x "${JIRA_INT_MOCK_BIN}/pre-commit"
@@ -3792,11 +3792,11 @@ cat > /dev/null
 read -r _ _ _ gp _ < "/proc/\${PPID}/stat"
 leak=no
 for pid in "\${PPID}" "\${gp}"; do
-  if tr '\\0' '\\n' < "/proc/\${pid}/environ" 2>/dev/null | grep -qE '^(JIRA_TOKEN|JIRA_USER_EMAIL|FULLSEND_JIRA_TOKEN|FULLSEND_JIRA_EMAIL)=.'; then
+  if tr '\\0' '\\n' < "/proc/\${pid}/environ" 2>/dev/null | grep -qE '^(JIRA_TOKEN|JIRA_USER_EMAIL|FULLSEND_JIRA_TOKEN|FULLSEND_JIRA_EMAIL|FULLSEND_JIRA_CLIENT_ID|FULLSEND_JIRA_CLIENT_SECRET)=.'; then
     leak=yes
   fi
 done
-echo "${hook_name} jira-token=\${JIRA_TOKEN:-unset} jira-email=\${JIRA_USER_EMAIL:-unset} fullsend-token=\${FULLSEND_JIRA_TOKEN:-unset} fullsend-email=\${FULLSEND_JIRA_EMAIL:-unset} proc-environ-leak=\${leak}" >> "${log_path}"
+echo "${hook_name} jira-token=\${JIRA_TOKEN:-unset} jira-email=\${JIRA_USER_EMAIL:-unset} fullsend-token=\${FULLSEND_JIRA_TOKEN:-unset} fullsend-email=\${FULLSEND_JIRA_EMAIL:-unset} proc-environ-leak=\${leak} client-id=\${FULLSEND_JIRA_CLIENT_ID:-unset} client-secret=\${FULLSEND_JIRA_CLIENT_SECRET:+set}" >> "${log_path}"
 exit 0
 HOOKEOF
   chmod +x "${hook_path}"
@@ -3849,7 +3849,12 @@ run_jira_int() {
     for kv in "$@"; do
       export "${kv?}"
     done
-    bash "${POST_SCRIPT}"
+    # JIRA_INT_XTRACE=1 traces the script and its re-exec via SHELLOPTS.
+    if [ -n "${JIRA_INT_XTRACE:-}" ]; then
+      env SHELLOPTS=xtrace bash "${POST_SCRIPT}"
+    else
+      bash "${POST_SCRIPT}"
+    fi
   ) > "${JIRA_INT_OUT}" 2>&1 || JIRA_INT_RC=$?
 }
 
@@ -4043,6 +4048,64 @@ elif ! grep -qF "JIRA_TOKEN is required" "${JIRA_INT_OUT}" || [ -s "${JIRA_INT_F
 else
   echo "PASS: jira-missing-token-fails-step (expected failure, got exit ${JIRA_INT_RC})"
 fi
+
+# OAuth 2.0 client credentials (#1926): with no token, the stage update
+# runs the CLI with the client variables and no FULLSEND_JIRA_TOKEN or
+# FULLSEND_JIRA_EMAIL. Hooks see neither client variable, and the secret
+# reaches no output and no command line.
+JIRA_CLIENT_SECRET_VALUE="client-secret-DO-NOT-LEAK"
+JIRA_CLIENT_ENV=(JIRA_TOKEN= FULLSEND_JIRA_TOKEN= JIRA_USER_EMAIL= FULLSEND_JIRA_EMAIL=
+  FULLSEND_JIRA_CLIENT_ID=client-id-1 "FULLSEND_JIRA_CLIENT_SECRET=${JIRA_CLIENT_SECRET_VALUE}")
+: > "${JIRA_INT_PRECOMMIT_LOG}"
+: > "${JIRA_INT_PREPUSH_LOG}"
+JIRA_INT_WITH_PRECOMMIT=1 JIRA_INT_PREPUSH_HOOK="${JIRA_INT_PREPUSH_LOG}" \
+  run_jira_int "jira-client-credentials" github "${JIRA_CLIENT_ENV[@]}"
+if [ "${JIRA_INT_RC}" -ne 0 ]; then
+  jira_int_fail "jira-client-credentials-stage-update" "post-code failed"
+elif ! grep -qF "env-token=unset env-email=unset env-client-id=client-id-1 env-client-secret=set" "${JIRA_INT_FULLSEND_LOG}" \
+     || ! grep -qF -- "${JIRA_CODE_MARKER}" "${JIRA_INT_FULLSEND_LOG}"; then
+  jira_int_fail "jira-client-credentials-stage-update" "the CLI did not get the client variables alone"
+elif ! grep -qF "client-id=unset client-secret=" "${JIRA_INT_PRECOMMIT_LOG}" \
+     || grep -qF "client-secret=set" "${JIRA_INT_PRECOMMIT_LOG}" \
+     || ! grep -qF "proc-environ-leak=no client-id=unset client-secret=" "${JIRA_INT_PREPUSH_LOG}" \
+     || grep -qF "client-secret=set" "${JIRA_INT_PREPUSH_LOG}"; then
+  jira_int_fail "jira-client-credentials-stage-update" "client credentials visible to pre-commit or a pre-push hook"
+elif grep -qF "${JIRA_CLIENT_SECRET_VALUE}" "${JIRA_INT_OUT}" "${JIRA_INT_FULLSEND_LOG}" "${JIRA_INT_FORGE_LOG}"; then
+  jira_int_fail "jira-client-credentials-stage-update" "client secret in output or on a command line"
+else
+  echo "PASS: jira-client-credentials-stage-update"
+fi
+
+# Under xtrace, the client secret must not appear on any traced line.
+JIRA_XTRACE_SECRET_VALUE="xtrace-secret-Q7Zk9wPv"
+JIRA_INT_XTRACE=1 run_jira_int "jira-client-credentials-xtrace" github \
+  "${JIRA_CLIENT_ENV[@]}" "FULLSEND_JIRA_CLIENT_SECRET=${JIRA_XTRACE_SECRET_VALUE}"
+if [ "${JIRA_INT_RC}" -ne 0 ]; then
+  jira_int_fail "jira-client-credentials-xtrace-no-secret" "post-code failed"
+elif ! grep -q '^+' "${JIRA_INT_OUT}"; then
+  jira_int_fail "jira-client-credentials-xtrace-no-secret" "no xtrace output"
+elif grep -qF "${JIRA_XTRACE_SECRET_VALUE}" "${JIRA_INT_OUT}" "${JIRA_INT_FULLSEND_LOG}" "${JIRA_INT_FORGE_LOG}"; then
+  grep -nF "${JIRA_XTRACE_SECRET_VALUE}" "${JIRA_INT_OUT}" | head -5 || true
+  jira_int_fail "jira-client-credentials-xtrace-no-secret" "client secret on a traced line"
+else
+  echo "PASS: jira-client-credentials-xtrace-no-secret"
+fi
+
+# A token and client credentials together, or one client variable alone,
+# fail the Jira write without calling the CLI.
+for _jira_conflict_case in "both|JIRA_TOKEN=fake-jira-token" "id-only|FULLSEND_JIRA_CLIENT_SECRET="; do
+  _jira_conflict_name="${_jira_conflict_case%%|*}"
+  run_jira_int "jira-client-conflict-${_jira_conflict_name}" github \
+    "${JIRA_CLIENT_ENV[@]}" "${_jira_conflict_case#*|}"
+  if [ "${JIRA_INT_RC}" -eq 0 ]; then
+    jira_int_fail "jira-client-conflict-${_jira_conflict_name}-fails-step" "expected failure but got success"
+  elif ! grep -qF "FULLSEND_JIRA_CLIENT_" "${JIRA_INT_OUT}" || [ -s "${JIRA_INT_FULLSEND_LOG}" ] \
+       || grep -qF "${JIRA_CLIENT_SECRET_VALUE}" "${JIRA_INT_OUT}"; then
+    jira_int_fail "jira-client-conflict-${_jira_conflict_name}-fails-step" "missing error naming the variables, a write was attempted, or the secret was printed"
+  else
+    echo "PASS: jira-client-conflict-${_jira_conflict_name}-fails-step (expected failure, got exit ${JIRA_INT_RC})"
+  fi
+done
 
 # The config-backed CLI needs FULLSEND_DIR for tracker.jira.
 run_jira_int "jira-missing-fullsend-dir" github FULLSEND_DIR=

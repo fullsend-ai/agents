@@ -109,7 +109,7 @@ SKILL_LOCAL_VARS=(
   HEAD_PIPELINE_ID HEAD_PIPELINE_SHA HEAD_SHA
   IID INCOMPLETE_COMPARE INCREMENTAL_DIFF
   IS_DRAFT ISSUE_KEY
-  JIRA_AUTH JIRA_AUTH_FLAG JIRA_EMAIL
+  JIRA_AUTH JIRA_AUTH_FLAG JIRA_EMAIL JIRA_TOKEN_NOW
   JOB_ID LAST_DEP LINE_COUNT LINES_CHANGED LOGIN_SELECT
   MERGE_BASE_FILE MR_DATA MR_IID MR_JSON MR_SHA
   NET_COMPLETE NET_N NOW NUMBER OLD_NAME ORG OTHER OTHER_PROJECT_ID OWN_N
@@ -266,7 +266,7 @@ extract_skill_paths() {
 # tokens delivered by the harness's providers across top-level, forge
 # blocks, and overlays. File-based providers (providers/*.yaml)
 # contribute their credentials keys; built-in github* providers map to
-# GH_TOKEN. These tokens are reachable only in harnesses that list the
+# GH_TOKEN and the built-in jira provider to JIRA_TOKEN. These tokens are reachable only in harnesses that list the
 # matching provider, so they are exempted per harness, never globally.
 extract_provider_tokens() {
   local harness_file="$1"
@@ -285,6 +285,9 @@ extract_provider_tokens() {
             "${REPO_ROOT}/${provider}" 2>/dev/null || true
         elif [[ "$provider" == github* ]]; then
           echo "GH_TOKEN"
+        elif [[ "$provider" == jira ]]; then
+          # Builtin jira provider (fullsend-ai/fullsend#9233).
+          echo "JIRA_TOKEN"
         fi
       done | sort -u
 }

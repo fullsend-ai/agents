@@ -17,7 +17,9 @@
 #
 # Jira backlog (FULLSEND_TRACKER=jira): see lib/jira-scribe-ops.lib.sh for
 # JIRA_BASE_URL, JIRA_TOKEN, SCRIBE_JIRA_PROJECT, FULLSEND_DIR, and the
-# optional JIRA_USER_EMAIL (unset or empty selects Bearer auth).
+# optional JIRA_USER_EMAIL (unset or empty selects Bearer auth), or the
+# FULLSEND_JIRA_CLIENT_ID and FULLSEND_JIRA_CLIENT_SECRET client credentials
+# instead of JIRA_TOKEN (these need JIRA_API_URL).
 #
 # Optional env vars:
 #   SCRIBE_NAME_FILTER    — substring filter on doc names
@@ -46,6 +48,10 @@ fi
 if [[ -n "${GITLAB_TOKEN:-}" ]]; then
   echo "::add-mask::${GITLAB_TOKEN}"
 fi
+# With FULLSEND_JIRA_CLIENT_ID and FULLSEND_JIRA_CLIENT_SECRET there is no
+# token to mask here: jira-auth.lib.sh masks the access token it mints, the
+# client secret is never printed, and a missing JIRA_API_URL has already
+# failed the load of jira-scribe-ops.lib.sh.
 if [[ -n "${JIRA_TOKEN:-}" ]]; then
   # Sanitize workflow-command delimiters before interpolating into ::add-mask::
   # so a crafted token cannot inject additional workflow commands.

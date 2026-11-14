@@ -33,7 +33,9 @@
 # config.yaml holds tracker.jira for the fullsend CLI) to write the
 # code-stage update and PR/MR URL to the Jira issue. JIRA_USER_EMAIL is
 # optional: when set, the write uses bot-user Basic auth; when unset or
-# empty, service-account Bearer auth. JIRA_BASE_URL is optional and
+# empty, service-account Bearer auth. FULLSEND_JIRA_CLIENT_ID and
+# FULLSEND_JIRA_CLIENT_SECRET can replace JIRA_TOKEN (service-account OAuth
+# 2.0 client credentials); setting both modes fails the Jira write. JIRA_BASE_URL is optional and
 # cross-checked against the work-item URL. GitLab targets take the GitLab
 # host from CI_SERVER_HOST.
 #
@@ -88,21 +90,30 @@ set -euo pipefail
 # ---------------------------------------------------------------------------
 _jira_token_saved=""
 _jira_email_saved=""
+_jira_client_id_saved=""
+_jira_client_secret_saved=""
+# Keep credentials off the trace: xtrace off for the stash, restored after.
+_jira_xtrace_was_on=0; [[ $- == *x* ]] && _jira_xtrace_was_on=1; set +x
 if [[ -n "${_POST_CODE_JIRA_FD:-}" ]]; then
   _jira_stash_fd="${_POST_CODE_JIRA_FD}"
   unset _POST_CODE_JIRA_FD
-  { IFS= read -r -d '' _jira_token_saved || true; IFS= read -r -d '' _jira_email_saved || true; } \
+  { IFS= read -r -d '' _jira_token_saved || true; IFS= read -r -d '' _jira_email_saved || true
+    IFS= read -r -d '' _jira_client_id_saved || true; IFS= read -r -d '' _jira_client_secret_saved || true; } \
     < "/proc/self/fd/${_jira_stash_fd}"
   exec {_jira_stash_fd}<&-
   unset _jira_stash_fd
-elif [[ -n "${JIRA_TOKEN:-}${JIRA_USER_EMAIL:-}${FULLSEND_JIRA_TOKEN:-}${FULLSEND_JIRA_EMAIL:-}" ]]; then
+elif [[ -n "${JIRA_TOKEN:-}${JIRA_USER_EMAIL:-}${FULLSEND_JIRA_TOKEN:-}${FULLSEND_JIRA_EMAIL:-}${FULLSEND_JIRA_CLIENT_ID:-}${FULLSEND_JIRA_CLIENT_SECRET:-}" ]]; then
   _jira_stash_file="$(mktemp)"
   exec {_jira_stash_fd}<>"${_jira_stash_file}"
   rm -f "${_jira_stash_file}"
-  printf '%s\0%s\0' "${JIRA_TOKEN-}" "${JIRA_USER_EMAIL-}" >&"${_jira_stash_fd}"
+  printf '%s\0%s\0%s\0%s\0' "${JIRA_TOKEN-}" "${JIRA_USER_EMAIL-}" \
+    "${FULLSEND_JIRA_CLIENT_ID-}" "${FULLSEND_JIRA_CLIENT_SECRET-}" >&"${_jira_stash_fd}"
   exec env -u JIRA_TOKEN -u JIRA_USER_EMAIL -u FULLSEND_JIRA_TOKEN -u FULLSEND_JIRA_EMAIL \
+    -u FULLSEND_JIRA_CLIENT_ID -u FULLSEND_JIRA_CLIENT_SECRET \
     _POST_CODE_JIRA_FD="${_jira_stash_fd}" "${BASH}" "${BASH_SOURCE[0]}" "$@"
 fi
+(( _jira_xtrace_was_on )) && set -x
+unset _jira_xtrace_was_on
 
 SCRIPT_DIR_POST="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/git-graph-policy.lib.sh
@@ -548,9 +559,15 @@ post_jira_stage_update() {
   # The credentials were withheld from the environment at the start of the
   # script (see "Jira credential isolation"); they are passed to the trusted
   # CLI below and nowhere else. The email is optional: without it the CLI
-  # uses service-account Bearer auth.
-  if [ -z "${_jira_token_saved:-}" ]; then
-    gha_echo error "JIRA_TOKEN is required to write to Jira"
+  # uses service-account Bearer auth. Client credentials replace the token,
+  # and the CLI mints its own access token from them.
+  if ! jira_auth_select "${_jira_token_saved:-}" \
+    _jira_client_id_saved _jira_client_secret_saved; then
+    gha_echo error "Conflicting Jira credentials; cannot write to Jira"
+    return 1
+  fi
+  if [ "${JIRA_AUTH_MODE}" = "none" ]; then
+    gha_echo error "JIRA_TOKEN is required to write to Jira (or FULLSEND_JIRA_CLIENT_ID and FULLSEND_JIRA_CLIENT_SECRET)"
     return 1
   fi
   if [ -z "${FULLSEND_DIR:-}" ]; then
@@ -573,7 +590,8 @@ post_jira_stage_update() {
 Review and merge happen on the ${noun}."
 
   # The credentials reach the CLI through FULLSEND_JIRA_TOKEN and, for a
-  # bot user only, FULLSEND_JIRA_EMAIL, never through command-line flags,
+  # bot user only, FULLSEND_JIRA_EMAIL, or through FULLSEND_JIRA_CLIENT_ID
+  # and FULLSEND_JIRA_CLIENT_SECRET, never through command-line flags,
   # keeping them out of the process list. The Jira site and API gateway
   # come from tracker.jira in FULLSEND_DIR's config.yaml.
   printf '%s' "${body}" | jira_auth_fullsend "${_jira_fullsend_bin}" \
