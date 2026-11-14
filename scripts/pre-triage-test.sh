@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# pre-triage-test.sh — Test pre-triage.sh with the Jira tracker.
+# pre-triage-test.sh — Test pre-triage.sh with the Jira and GitLab trackers.
 #
-# Uses a mock curl command to capture calls without hitting Jira Cloud.
+# Uses a mock curl command to capture calls without hitting Jira Cloud or GitLab.
 # Run from the repo root: bash scripts/pre-triage-test.sh
 
 set -euo pipefail
@@ -60,6 +60,7 @@ export PATH="${MOCK_BIN}:${PATH}"
 export FULLSEND_TRACKER="jira"
 export JIRA_USER_EMAIL="triage@example.com"
 export JIRA_TOKEN="fake-jira-token"
+unset JIRA_API_URL
 
 run_test() {
   local test_name="$1"
@@ -122,6 +123,10 @@ run_test "jira-valid-url-resets-pr-open-label" \
   "https://test.atlassian.net/browse/TESTPROJ-42" \
   '"remove":"pr-open"'
 
+run_test "jira-valid-url-resets-completed-label" \
+  "https://test.atlassian.net/browse/TESTPROJ-42" \
+  '"remove":"completed"'
+
 # Malformed Jira issue URL: fails validation, performs no mutation.
 run_test "jira-malformed-url-fails" \
   "https://test.atlassian.net/not-an-issue-url" \
@@ -165,9 +170,41 @@ run_test "jira-base-url-multiple-trailing-slashes-ok" \
   '"remove":"needs-info"'
 unset JIRA_BASE_URL
 
-# --- Jira credential guard tests (#876) ---
-# Verify that source-time :? guards on JIRA_USER_EMAIL and JIRA_TOKEN reject
-# unset and empty values before any API call is made.
+# --- JIRA_API_URL routing (#1876) ---
+# Unset: REST calls fall back to the site URL (older fullsend releases).
+run_test "jira-api-url-unset-falls-back-to-site" \
+  "https://test.atlassian.net/browse/TESTPROJ-42" \
+  "https://test.atlassian.net/rest/api/3/issue/TESTPROJ-42"
+
+# Set: REST calls go to the API gateway; trailing slashes are stripped so
+# the request URL has no double slash.
+JIRA_GATEWAY="https://api.atlassian.com/ex/jira/11111111-2222-3333-4444-555555555555"
+export JIRA_API_URL="${JIRA_GATEWAY}//"
+run_test "jira-api-url-routes-rest-calls" \
+  "https://test.atlassian.net/browse/TESTPROJ-42" \
+  "${JIRA_GATEWAY}/rest/api/3/issue/TESTPROJ-42"
+if grep -qF "atlassian.net/rest/api/3" "${CURL_LOG}"; then
+  echo "FAIL: jira-api-url-no-site-rest-calls — REST call sent to the site URL"
+  cat "${CURL_LOG}"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: jira-api-url-no-site-rest-calls"
+fi
+
+# The credentials are sent to JIRA_API_URL, so a non-https value is refused
+# before any request is made.
+export JIRA_API_URL="http://api.atlassian.com/ex/jira/11111111-2222-3333-4444-555555555555"
+run_test "jira-api-url-non-https-fails" \
+  "https://test.atlassian.net/browse/TESTPROJ-42" \
+  "JIRA_API_URL must start with https://" \
+  "true" "true"
+unset JIRA_API_URL
+
+# --- Jira credential guard tests (#876, #1900) ---
+# Verify that the source-time :? guard on JIRA_TOKEN rejects unset and empty
+# values before any API call is made. JIRA_USER_EMAIL is optional: with it
+# the REST calls use Basic auth, without it (unset, empty, or blank) Bearer
+# auth with the service-account token.
 
 unset JIRA_TOKEN
 run_test "jira-missing-token-fails" \
@@ -183,19 +220,128 @@ run_test "jira-empty-token-fails" \
   "true" "true"
 export JIRA_TOKEN="fake-jira-token"
 
-unset JIRA_USER_EMAIL
-run_test "jira-missing-email-fails" \
+echo '[]' > "${MOCK_LABELS_FILE}"
+run_test "jira-email-uses-basic-auth" \
   "https://test.atlassian.net/browse/TESTPROJ-42" \
-  "JIRA_USER_EMAIL must be set" \
-  "true" "true"
+  "--user triage@example.com:fake-jira-token"
+if grep -qF -- "--oauth2-bearer" "${CURL_LOG}"; then
+  echo "FAIL: jira-email-no-bearer-auth — Bearer auth sent alongside an email"
+  cat "${CURL_LOG}"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: jira-email-no-bearer-auth"
+fi
+
+# Unset, empty, and whitespace-only emails all mean "no email": Bearer auth,
+# never an empty-user Basic header.
+for email_case in unset empty blank; do
+  case "${email_case}" in
+    unset) unset JIRA_USER_EMAIL ;;
+    empty) export JIRA_USER_EMAIL="" ;;
+    blank) export JIRA_USER_EMAIL="  " ;;
+  esac
+  run_test "jira-email-${email_case}-uses-bearer-auth" \
+    "https://test.atlassian.net/browse/TESTPROJ-42" \
+    "--oauth2-bearer fake-jira-token"
+  if grep -qF -- "--user" "${CURL_LOG}"; then
+    echo "FAIL: jira-email-${email_case}-no-basic-auth — Basic auth sent without an email"
+    cat "${CURL_LOG}"
+    FAILURES=$((FAILURES + 1))
+  else
+    echo "PASS: jira-email-${email_case}-no-basic-auth"
+  fi
+done
 export JIRA_USER_EMAIL="triage@example.com"
 
-export JIRA_USER_EMAIL=""
-run_test "jira-empty-email-fails" \
+# Bearer mode uses the same JIRA_API_URL gateway path as Basic mode.
+unset JIRA_USER_EMAIL
+export JIRA_API_URL="https://api.atlassian.com/ex/jira/11111111-2222-3333-4444-555555555555"
+run_test "jira-bearer-routes-to-api-url" \
   "https://test.atlassian.net/browse/TESTPROJ-42" \
-  "JIRA_USER_EMAIL must be set" \
-  "true" "true"
+  "--oauth2-bearer fake-jira-token --fail --silent --show-error --connect-timeout 10 --max-time 30 --header Content-Type: application/json --request GET ${JIRA_API_URL}/rest/api/3/issue/TESTPROJ-42"
+if grep -qF "atlassian.net/rest/api/3" "${CURL_LOG}"; then
+  echo "FAIL: jira-bearer-no-site-rest-calls — REST call sent to the site URL"
+  cat "${CURL_LOG}"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: jira-bearer-no-site-rest-calls"
+fi
+unset JIRA_API_URL
 export JIRA_USER_EMAIL="triage@example.com"
+
+# --- GitLab origin validation (#1732) ---
+# Self-managed GitLab on a non-default HTTPS port: the issue URL's scheme,
+# host, and port must match the trusted CI server origin before any token is
+# sent, and API requests must keep the port.
+
+printf '#!/usr/bin/env bash\necho "curl $*" >> %s\n' "${CURL_LOG}" > "${MOCK_BIN}/curl"
+cat >> "${MOCK_BIN}/curl" <<'CURLMOCK'
+echo '{"labels":[]}'
+exit 0
+CURLMOCK
+chmod +x "${MOCK_BIN}/curl"
+
+export FULLSEND_TRACKER="gitlab"
+export GITLAB_TOKEN="fake-gitlab-token"
+export CI_SERVER_URL="https://ce.example.test:34881"
+export CI_SERVER_HOST="ce.example.test"
+
+run_test "gitlab-custom-port-matching-origin-ok" \
+  "https://ce.example.test:34881/group/project/-/issues/42" \
+  "https://ce.example.test:34881/api/v4/projects/group%2Fproject/issues/42"
+
+run_test "gitlab-custom-port-mismatched-port-fails" \
+  "https://ce.example.test:8443/group/project/-/issues/42" \
+  "does not match CI server origin" \
+  "true" "true"
+
+run_test "gitlab-custom-port-missing-port-fails" \
+  "https://ce.example.test/group/project/-/issues/42" \
+  "does not match CI server origin" \
+  "true" "true"
+
+run_test "gitlab-custom-port-http-scheme-fails" \
+  "http://ce.example.test:34881/group/project/-/issues/42" \
+  "does not match expected GitLab pattern" \
+  "true" "true"
+
+run_test "gitlab-custom-port-different-host-fails" \
+  "https://evil.example.test:34881/group/project/-/issues/42" \
+  "does not match CI server origin" \
+  "true" "true"
+
+# A non-HTTPS trusted origin fails closed, even for a matching host and port.
+export CI_SERVER_URL="http://ce.example.test:34881"
+run_test "gitlab-non-https-ci-server-url-fails" \
+  "https://ce.example.test:34881/group/project/-/issues/42" \
+  "CI_SERVER_URL is not an HTTPS origin" \
+  "true" "true"
+
+# CI_SERVER_URL host must match CI_SERVER_HOST.
+export CI_SERVER_URL="https://evil.example.test:34881"
+run_test "gitlab-ci-server-url-host-mismatch-fails" \
+  "https://evil.example.test:34881/group/project/-/issues/42" \
+  "does not match CI_SERVER_HOST" \
+  "true" "true"
+
+# Standard-port regression: gitlab.com with and without CI_SERVER_URL.
+export CI_SERVER_URL="https://gitlab.com"
+export CI_SERVER_HOST="gitlab.com"
+run_test "gitlab-com-default-port-ok" \
+  "https://gitlab.com/group/project/-/issues/42" \
+  "https://gitlab.com/api/v4/projects/group%2Fproject/issues/42"
+
+run_test "gitlab-com-unexpected-port-fails" \
+  "https://gitlab.com:8443/group/project/-/issues/42" \
+  "does not match CI server origin" \
+  "true" "true"
+
+unset CI_SERVER_URL
+run_test "gitlab-com-no-ci-server-url-ok" \
+  "https://gitlab.com/group/project/-/issues/42" \
+  "https://gitlab.com/api/v4/projects/group%2Fproject/issues/42"
+
+unset CI_SERVER_HOST GITLAB_TOKEN
 
 # --- Summary ---
 

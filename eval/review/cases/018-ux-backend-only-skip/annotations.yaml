@@ -1,0 +1,24 @@
+state: open
+
+labels:
+  required: []
+  forbidden:
+    - ready-for-merge
+  risk_label_required: false
+
+findings:
+  required: []
+  forbidden:
+    - uxd-evaluate-code-heuristics
+
+max_cost_usd: 5.00
+
+review_expectations: |
+  Pure backend Go change: a nil-pointer fix in a repository layer with
+  a corresponding unit test. No UI files, no frontend code, no design
+  artifacts.
+
+  The orchestrator should classify this as a backend-only change and either
+  skip the user-experience dimension entirely or the skill should return
+  no findings. The uxd-evaluate-code-heuristics category is forbidden --
+  if it appears, the gating is broken.

@@ -12,6 +12,7 @@ No additional setup is required beyond the standard fullsend configuration.
 
 - Review feedback is addressed quickly — often before the reviewer checks back.
 - Fixes are scoped to exactly what the review requested, reducing churn.
+- Project CI failures caused by the PR are diagnosed and, when in scope, fixed in the same run.
 - The iteration cap prevents the fix and [review](review.md) agents from looping indefinitely.
 
 ## Triggers
@@ -20,6 +21,8 @@ The fix agent runs automatically when the [review agent](review.md) submits a
 "changes requested" review on a same-repo PR (fork PRs are blocked).
 
 It can also be triggered manually with the `/fs-fix` command.
+
+The harness also declares a CEL `trigger:` for fullsend's harness dispatch, on GitHub and GitLab only: `/fs-fix` from a human on a same-repo PR/MR, or a "changes requested" review from a `*-review[bot]` reviewer on a same-repo PR that is bot-authored or labeled `fullsend-fix` and is not labeled `fullsend-no-fix`. It has no Jira path. Dispatch does not evaluate it for the built-in fix agent yet, so the routing above is what runs today.
 
 ## Commands
 
@@ -38,6 +41,15 @@ command. The text gives you direct control over what to fix:
 - `/fs-fix the error handling in processItem needs to distinguish between retryable and fatal errors`
 - `/fs-fix address the concern raised in #42` — same-repo references work
   ([details](#links-and-urls-in-instructions))
+- `/fs-fix rebase` / `/fs-fix rebase onto main` — rebase the PR onto its
+  target branch ([details](#rebasing-a-stale-pr))
+- `/fs-fix fix merge conflicts` — rebase onto the target and resolve conflicts
+- `/fs-fix squash` / `/fs-fix squash these commits` — squash the whole PR
+  into a single commit
+  ([details](#squashing-or-redoing-fix-agent-commits))
+- `/fs-fix redo from scratch` / `/fs-fix start over` — discard the
+  contiguous fix-agent commits at HEAD and redo that work
+  ([details](#squashing-or-redoing-fix-agent-commits))
 
 `/fs-fix-stop` adds the `fullsend-no-fix` label to the PR, preventing any
 further automatic fix runs. Manual `/fs-fix` commands still work.
@@ -48,7 +60,9 @@ Remove the label or use `/fs-fix` to re-engage.
 | Label | Meaning |
 |-------|---------|
 | `fullsend-no-fix` | Prevents automatic fix runs on this PR. Applied by `/fs-fix-stop`. Manual `/fs-fix` commands are unaffected. |
+| `fullsend-fix-budget/N` | Lowers the automatic fix cap for this PR to `N` (a positive integer below `ITERATION_CAP`). Set by a maintainer; the review agent cannot add or remove it. A label that is not a positive integer, is oversized, or is not lower than `ITERATION_CAP` is ignored; with several valid labels the smallest `N` wins. `needs-human` and the stop message use the lowered cap. Manual `/fs-fix` commands are unchanged and keep `ITERATION_CAP_HUMAN`. |
 | `needs-human` | The fix agent is approaching its iteration cap and needs human direction. Applied automatically when an automatic fix iteration reaches the warning threshold. |
+| `fix-agent-failed` | Last-resort fallback applied to the PR when the post-fix script fails and cannot post a failure comment even after retrying transient forge errors. Does not trigger or block the agent — it exists purely so the failure stays discoverable when the forge outage also swallows the comment. |
 
 ## Configuration
 
@@ -59,16 +73,49 @@ See [Customizing with AGENTS.md](https://fullsend.sh/docs/guides/user/customizin
 
 | Variable | Default | Effect |
 |----------|---------|--------|
-| `FULLSEND_FORGE` | `github` | Selects the forge platform (`github` or `gitlab`). Set automatically by the harness `forge` block. |
+| `FULLSEND_FORGE` | `github` | Selects the forge platform (`github` or `gitlab`). Set automatically by the harness forge overlays (`overlays:` entries guarded by `runtime.forge`). |
+| `GITHUB_SIGNED_COMMITS` | `false` | `true` publishes the branch through the GitHub Git Data API so GitHub signs the commits (see [Signed commits](code.md#signed-commits)); anything else keeps `git push`. Set in the GitHub overlay (`runtime.forge == "github"`) of `harness/fix.yaml`; override via `base:` composition. |
+| `FIX_CONFLICT_UPDATE_STRATEGY` | `merge` | How the fix agent updates a PR/MR when the forge reports a **real** merge conflict: `merge` (default; creates a merge commit and preserves history) or `rebase` (replays the PR onto the target; the post-script force-pushes with `--force-with-lease`). Blocked/behind/unknown mergeability is never treated as a conflict. Override via `base:` composition. |
+
+### Skill: `fix-review`
+
+The fix agent uses the `fix-review` skill for its procedure. Forge-specific recipes live in `skills/fix-review/github` and `skills/fix-review/gitlab`.
+
+### Skill: `fix-ci-inspection`
+
+The fix agent uses the `fix-ci-inspection` skill to inspect project CI, classify failures, and record `ci_inspections`. Forge-specific command recipes remain in `skills/fix-review/github` and `skills/fix-review/gitlab`.
+
+To cover a CI system other than GitHub Actions or GitLab CI, add a skill in `.agents/skills/` whose description names that system (or log inspection) and include it in your harness `skills:` array via `base:` composition. During CI inspection the agent only uses skills already injected for the run through that harness `skills:`/`base:` composition — it does not scan or load `SKILL.md` files from the PR's own working-tree checkout.
+
+### Skill: `fix-history-rewrite`
+
+The fix agent uses the `fix-history-rewrite` skill for human-requested rebase, squash, and redo/reset, and for a forge-conflict rebase when `FIX_CONFLICT_UPDATE_STRATEGY=rebase`.
+
+### Skill: `fix-verification`
+
+The fix agent uses the `fix-verification` skill after fixes are implemented: mandatory secret scanning, pre-commit hooks with an infrastructure fallback, tests and linters, self-review, and committing with disclosures.
+
+### Skill: `fix-result-contract`
+
+The fix agent uses the `fix-result-contract` skill as the canonical owner of the `agent-result.json` handoff contract: schema requirements, the `fullsend-check-output` validation loop, partial-work behavior, failure handling, optional PR title/description proposals, and validation-retry semantics (including carrying `rebased_onto_target`, `merged_target`, `conflict_update`, `history_rewritten`, and the PR metadata fields forward when the runner clears the output directory between retries).
 
 ## How the agent works
 
 The fix agent follows a similar pipeline to the [code agent](code.md), with an additional validation step:
 
-1. **Pre-script** validates inputs and checks the iteration cap (preventing infinite fix loops).
-2. **Sandbox** — the agent reads each review finding, implements targeted fixes, and verifies them against tests and linters.
+1. **Pre-script** validates inputs, checks the iteration cap (preventing infinite fix loops), and — when the forge reports a real merge conflict — fetches the latest target branch into the sandbox checkout.
+2. **Sandbox** — the agent inspects forge mergeability, reconciles a reported conflict, reads each review finding, inspects project CI, implements targeted fixes, and verifies them against tests and linters.
 3. **Validation loop** — the output is checked against a schema, with up to 2 retry iterations if the output is malformed.
-4. **Post-script** pushes the commit and posts a summary comment on the PR.
+4. **Post-script** publishes the commit (on GitHub through the API when `GITHUB_SIGNED_COMMITS` is `true`, so it is signed — see [Signed commits](code.md#signed-commits)) and posts a summary comment on the PR.
+
+### Updating the PR title and description
+
+A fix can leave the PR title or description inaccurate, for example after content moves to a different file or a test count changes. When that happens the agent proposes a replacement in the optional `pr_title` / `pr_body` fields of `agent-result.json`, and the post-script applies it. GitHub uses `gh pr edit` with the body passed through `--body-file -`. GitLab uses the merge request update API (`title` / `description`). The update happens only when all of these hold:
+
+- the output passed schema validation and the post-script's secret scan of `agent-result.json`;
+- the live value still matches the SHA-256 the agent recorded for the value it read (`pr_title_base_sha256` / `pr_body_base_sha256`). A human edit made after the agent read the value and before the post-script's check is not overwritten; the field is skipped with a warning instead. The check and the write are separate API calls, because neither `gh pr edit` nor the GitLab MR update offers a conditional write, so an edit landing in the short window between them can still be overwritten.
+
+A field the agent did not propose is left unchanged. When the body is replaced, the existing issue-closing reference and the `### Post-script verification` section are kept. Before the body is written, the post-script checks that the merged body still shows them outside fenced code and HTML comments. If a proposal's Markdown could hide them (for example an unclosed code fence or HTML comment), only the body update is skipped with a warning; the post-script does not close or change the agent's Markdown, and a valid title update still applies. The outcome is noted in the summary comment. A failed update is logged as a warning and does not fail the run or block the summary.
 
 ### Signed-off-by trailers
 
@@ -89,6 +136,95 @@ The strip is recorded on the PR summary comment:
 _Removed a Signed-off-by trailer from 1 agent commit._
 ```
 
+### Rebasing a stale PR
+
+When a PR falls behind its target branch, comment `/fs-fix rebase` (or
+`/fs-fix rebase onto main`, `/fs-fix fix merge conflicts`). The agent
+rebases the PR branch onto the target; the post-script force-pushes with
+`--force-with-lease`.
+
+The agent rebases on an explicit human `/fs-fix` rebase request, or when
+the forge reports a real merge conflict and `FIX_CONFLICT_UPDATE_STRATEGY`
+is `rebase`. Automatic review-triggered fixes do not rebase merely because
+the branch is behind. An already-up-to-date branch is a no-op.
+
+The agent does not push. History rewrite is local; the post-script is what
+updates the remote PR branch.
+
+### Forge-reported merge conflicts
+
+When the GitHub or GitLab API reports a **real** merge conflict (GitHub
+`mergeable: CONFLICTING`, GitLab `detailed_merge_status: conflict`), the
+fix agent reconciles the PR/MR with its actual base branch before applying
+review fixes. A blocked PR (missing approvals or failing checks), a branch
+that is merely behind, or an unknown API response does **not** trigger this
+path.
+
+`FIX_CONFLICT_UPDATE_STRATEGY` selects how to reconcile:
+
+| Value | Effect | History |
+|-------|--------|---------|
+| `merge` (default) | Merge the target into the PR/MR branch, keeping a merge commit. The post-script fast-forwards the remote branch. | Preserves existing commits. |
+| `rebase` | Rebase the PR/MR commits onto the target. The post-script force-pushes with `--force-with-lease`. | Rewrites commit SHAs. |
+
+Override the default in a derived harness:
+
+```yaml
+base: <upstream fix harness>
+env:
+  runner:
+    FIX_CONFLICT_UPDATE_STRATEGY: "rebase"
+  sandbox:
+    FIX_CONFLICT_UPDATE_STRATEGY: "rebase"
+```
+
+A human `/fs-fix rebase` request still rebases even when the strategy is
+`merge`. The pre-script fetches the latest target branch into the sandbox
+checkout so the agent can merge or rebase without `git fetch`.
+
+### Squashing or redoing fix-agent commits
+
+When a PR is ready to land as one commit, comment `/fs-fix squash` (or
+`/fs-fix squash these commits`) to collapse the **whole PR** — not just
+the fix agent's own commits — into a single commit. Comment
+`/fs-fix redo from scratch` (or `/fs-fix start over`) to discard the
+contiguous fix-agent commits at HEAD and redo that narrower slice of
+work. The post-script force-pushes with `--force-with-lease`.
+
+These two requests have different scopes:
+
+- **Squash** targets the entire PR, from where it forked off the target
+  branch through HEAD, regardless of who authored each commit along the
+  way. The end result is one commit. When a plain `git reset --soft` and
+  recommit isn't practical — most often because a squash was combined
+  with a rebase and replaying several original commits onto the new base
+  produces too many conflicts to resolve cleanly commit-by-commit — the
+  agent may fall back to a "manual squash": reset to the merge base and
+  re-implement the PR's net effect directly as a single commit, then
+  re-verify it with tests and linters like any other fix. The commit
+  message is written to describe everything that ended up in the PR, not
+  just its original goal — including changes made along the way in
+  response to review feedback.
+- **Redo/reset** only discards and re-implements the contiguous suffix of
+  commits the fix agent itself authored. Human-authored commits and the
+  original code-agent commits below that suffix are preserved untouched.
+  On GitHub, when commits are published through the API and so authored
+  by the App's bot user, the author is the `Authored-by` trailer the
+  publish adds (see
+  [Signed commits](code.md#signed-commits)).
+
+If the redo/reset range cannot be determined — HEAD is not a fix-agent
+commit, or ownership is mixed in a way that is ambiguous — the agent
+fails closed and explains the blocker rather than rewriting. If squash
+and redo are requested together, the agent also fails closed rather than
+guessing which was meant.
+
+Automatic review-triggered fixes do not squash or reset. Without an
+explicit human request, the agent continues to append commits.
+
+The agent does not push. History rewrite is local; the post-script is what
+updates the remote PR branch.
+
 ### Input details
 
 **Bot-triggered** (review agent requests changes):
@@ -97,6 +233,7 @@ _Removed a Signed-off-by trailer from 1 agent commit._
 |-------|--------|-------------------|
 | Review body | Latest `CHANGES_REQUESTED` review from the review bot | Pre-fetched on the runner before the sandbox starts, injected as `review-body.txt` |
 | PR diff | Forge-specific skill (GitHub: `gh pr diff`, GitLab: MR changes API) | Agent calls this to understand what code changed |
+| Project CI | Forge-specific skill (GitHub: `gh pr checks` / `gh run view`, GitLab: MR pipelines API) | Agent inspects project jobs, excluding Fullsend dispatch |
 | Repository checkout | Full repo at PR HEAD | Checked out on the runner, mounted into the sandbox |
 | Repo conventions | `AGENTS.md`, `CLAUDE.md`, `CONTRIBUTING.md` | Read from the checkout inside the sandbox |
 
@@ -106,6 +243,7 @@ _Removed a Signed-off-by trailer from 1 agent commit._
 |-------|--------|-------------------|
 | Human instruction | Free text after `/fs-fix` in the comment | Extracted by the workflow, passed as `HUMAN_INSTRUCTION` env var (up to 10,000 bytes) |
 | PR diff | Forge-specific skill | Same as bot-triggered |
+| Project CI | Forge-specific skill | Same as bot-triggered |
 | Repository checkout | Full repo at PR HEAD | Same as bot-triggered |
 | Repo conventions | `AGENTS.md`, `CLAUDE.md`, `CONTRIBUTING.md` | Same as bot-triggered |
 | Review body (if any) | Prior review bot `CHANGES_REQUESTED` review | Still injected as `review-body.txt`, but human instruction takes precedence |
@@ -119,11 +257,29 @@ If your project uses a custom image, update the `image:` field in both
 ## What the agent acts on
 
 **When triggered by a review:** the agent reads the review body, the PR diff,
-and the full repository checkout.
+project CI, and the full repository checkout.
 
 **When triggered by `/fs-fix`:** the agent reads your instruction text, the PR
-diff, the full repository checkout, and any prior review. When a human
-instruction is present, it takes precedence over the review body.
+diff, project CI, the full repository checkout, and any prior review. When a
+human instruction is present, it takes precedence over the review body.
+
+### Project CI
+
+The agent inspects the PR's project CI jobs during context gathering. It reads
+available job logs and artifacts, classifies each failure, and reports the
+diagnosis in the PR summary.
+
+- **PR-caused failures** that fall within authorized scope are fixed in the
+  same run. A narrow `/fs-fix` instruction (for example `rebase` or a single
+  file edit) does not authorize extra CI-driven edits; the diagnosis is still
+  reported.
+- **Flaky or transient infrastructure failures** produce a recommendation that
+  you rerun the affected jobs. The agent does not rerun jobs itself.
+- **Unrelated failures** produce guidance to file an issue with the responsible
+  owner. The agent does not change unrelated code to make those jobs pass.
+- **Fullsend agent/dispatch workflows** (the `fullsend` shim, `notify-agent-sync`,
+  and their `dispatch-*` jobs) are excluded. They are orchestration
+  infrastructure, not project CI.
 
 ### What the agent does not read
 
@@ -136,12 +292,8 @@ than you might expect:
 - **Other PR comments.** General discussion comments on the PR are not part of
   the agent's input. Only the review body and the `/fs-fix` instruction are
   read.
-- **CI logs and check status.** The fix agent does not read CI logs,
-  check run output, or merge readiness indicators. It addresses review
-  feedback, not CI failures. (The [code agent](code.md) handles CI failures
-  during implementation.)
 - **Issue body.** The fix agent does not read the linked issue. It operates
-  purely on the PR and review context.
+  purely on the PR, review, and project-CI context.
 
 ### Links and URLs in instructions
 
@@ -168,7 +320,9 @@ instruction supports multi-line text (up to 10,000 bytes).
 
 The fix agent enforces iteration caps to prevent infinite review-fix loops:
 
-- **Automatic:** up to 5 iterations per PR (configurable).
+- **Automatic:** up to 5 iterations per PR (configurable). A maintainer can
+  lower this for a single PR with a `fullsend-fix-budget/N` label
+  ([control labels](#control-labels)).
 - **Manual (`/fs-fix`):** up to 10 total iterations per PR (configurable), shared
   across automatic and manual triggers.
 - When an automatic run is approaching its cap, the agent applies the
@@ -178,8 +332,10 @@ The fix agent enforces iteration caps to prevent infinite review-fix loops:
 
 ## Multi-forge support
 
-The fix agent supports both GitHub and GitLab. The harness `forge` block
-selects the platform at runtime via `FULLSEND_FORGE`. On GitHub, the agent
+The fix agent supports both GitHub and GitLab. The harness `overlays:`
+entries, guarded by `runtime.forge` CEL conditions, select the
+forge-specific providers, skills, and env (including `FULLSEND_FORGE`) at
+runtime. On GitHub, the agent
 uses `gh` for API access; on GitLab, it uses `curl` against the REST API.
 Scripts dispatch forge-specific operations through `fix-ops.lib.sh`, and
 forge-specific skills provide the appropriate CLI recipes.
@@ -212,4 +368,4 @@ Effort: `high` (explicit in the harness; override per run with `fullsend run --e
 
 ## Source
 
-[`harness/fix.yaml`](../harness/fix.yaml)
+[`harness/fix.yaml`](https://github.com/fullsend-ai/agents/blob/main/harness/fix.yaml)

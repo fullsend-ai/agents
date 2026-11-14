@@ -1,7 +1,7 @@
 {
   "version": "1",
   "generated_by": "skillsaw 0.18.0",
-  "generated_at": "2026-09-09T12:46:25.099998+00:00",
+  "generated_at": "2026-10-08T07:15:56.371153+00:00",
   "violations": [
     {
       "fingerprint": "34efa8521ae07039",
@@ -9,6 +9,22 @@
       "file_path": "skills/github-forge/SKILL.md",
       "line": 2,
       "message": "Name 'github' does not match directory name 'github-forge'",
+      "severity": "error"
+    },
+    {
+      "fingerprint": "10342080fcd47b75",
+      "rule_id": "agentskill-name",
+      "file_path": "skills/gitlab-forge/SKILL.md",
+      "line": 2,
+      "message": "Name 'gitlab' does not match directory name 'gitlab-forge'",
+      "severity": "error"
+    },
+    {
+      "fingerprint": "a44e1496f6fe3e11",
+      "rule_id": "agentskill-name",
+      "file_path": "skills/issue-labels/github/SKILL.md",
+      "line": 2,
+      "message": "Name 'issue-labels' does not match directory name 'github'",
       "severity": "error"
     },
     {
@@ -28,14 +44,6 @@
       "severity": "error"
     },
     {
-      "fingerprint": "a44e1496f6fe3e11",
-      "rule_id": "agentskill-name",
-      "file_path": "skills/issue-labels/github/SKILL.md",
-      "line": 2,
-      "message": "Name 'issue-labels' does not match directory name 'github'",
-      "severity": "error"
-    },
-    {
       "fingerprint": "4aecb9c5f36aa70f",
       "rule_id": "agentskill-name",
       "file_path": "skills/jira-forge/SKILL.md",
@@ -44,47 +52,55 @@
       "severity": "error"
     },
     {
-      "fingerprint": "10342080fcd47b75",
-      "rule_id": "agentskill-name",
-      "file_path": "skills/gitlab-forge/SKILL.md",
-      "line": 2,
-      "message": "Name 'gitlab' does not match directory name 'gitlab-forge'",
-      "severity": "error"
-    },
-    {
-      "fingerprint": "43a3bb24cb22288e",
-      "rule_id": "context-budget",
-      "file_path": "skills/code-review/SKILL.md",
-      "message": "Estimated 3,846 tokens exceeds skill warn limit of 3,000",
-      "severity": "warning",
-      "value": 3846,
-      "baseline_mode": "ceiling"
+      "fingerprint": "45a0577d6723aa54",
+      "rule_id": "content-contradiction",
+      "file_path": "skills/pr-review/SKILL.md",
+      "message": "Possible contradiction: 'minimal' vs 'exhaustive'",
+      "severity": "warning"
     },
     {
       "fingerprint": "8aba1d160bb4c413",
       "rule_id": "context-budget",
       "file_path": "skills/code-implementation/SKILL.md",
-      "message": "Estimated 12,180 tokens exceeds skill error limit of 6,000",
+      "message": "Estimated 12,620 tokens exceeds skill error limit of 6,000",
       "severity": "error",
-      "value": 12180,
+      "value": 12620,
       "baseline_mode": "ceiling"
     },
     {
-      "fingerprint": "3841c25d67e33e68",
+      "fingerprint": "43a3bb24cb22288e",
       "rule_id": "context-budget",
-      "file_path": "skills/pr-risk-assessment/SKILL.md",
-      "message": "Estimated 3,778 tokens exceeds skill warn limit of 3,000",
+      "file_path": "skills/code-review/SKILL.md",
+      "message": "Estimated 3,873 tokens exceeds skill warn limit of 3,000",
       "severity": "warning",
-      "value": 3778,
+      "value": 3873,
       "baseline_mode": "ceiling"
     },
     {
       "fingerprint": "0285e1a7243ebead",
       "rule_id": "context-budget",
       "file_path": "skills/pr-review/SKILL.md",
-      "message": "Estimated 16,050 tokens exceeds skill error limit of 6,000",
+      "message": "Estimated 17,111 tokens exceeds skill error limit of 6,000",
       "severity": "error",
-      "value": 16050,
+      "value": 17111,
+      "baseline_mode": "ceiling"
+    },
+    {
+      "fingerprint": "3841c25d67e33e68",
+      "rule_id": "context-budget",
+      "file_path": "skills/pr-risk-assessment/SKILL.md",
+      "message": "Estimated 3,910 tokens exceeds skill warn limit of 3,000",
+      "severity": "warning",
+      "value": 3910,
+      "baseline_mode": "ceiling"
+    },
+    {
+      "fingerprint": "22073290a7e46a35",
+      "rule_id": "context-budget",
+      "file_path": "skills/retro-analysis/SKILL.md",
+      "message": "Estimated 3,797 tokens exceeds skill warn limit of 3,000",
+      "severity": "warning",
+      "value": 3797,
       "baseline_mode": "ceiling"
     }
   ]

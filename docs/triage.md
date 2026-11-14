@@ -20,9 +20,11 @@ The triage agent runs automatically when:
 
 - A new issue is opened
 - An existing issue is edited
-- Someone comments on an issue labeled `needs-info` (to re-evaluate after the reporter provides clarification)
+- The `ready-for-triage` label is added to an issue
 
 It can also be triggered manually with the `/fs-triage` command.
+
+The harness also declares a CEL `trigger:` for fullsend's harness dispatch: an issue opened or edited by a human, the `ready-for-triage` label added to an issue, or `/fs-triage` from a human on an issue, a PR or an MR. Dispatch does not evaluate it for the built-in triage agent yet, so the routing above is what runs today.
 
 ## Commands
 
@@ -40,18 +42,19 @@ These labels are managed by the triage agent based on its assessment of the issu
 | Label | Meaning |
 |-------|---------|
 | `needs-info` | The issue lacks sufficient information. The agent posted clarifying questions. |
-| `ready-to-code` | The issue is fully specified and low-risk (bug, documentation, performance). Bug and documentation categories also receive their eponymous labels (`bug`, `documentation`) automatically. Triggers the [code agent](code.md). This behavior is configurable via [Variables](#variables). Exception: when `requires_workflow_changes` is set in the triage result, `triaged` is applied instead because the code agent cannot modify workflow files. |
-| `triaged` | The issue is fully specified but is a feature or other category that requires human prioritization before coding. |
+| `ready-to-code` | The issue is fully specified and low-risk (bug, documentation, performance). Bug and documentation categories also receive their eponymous labels (`bug`, `documentation`) automatically. Triggers the [code agent](code.md). This behavior is configurable via [Variables](#variables). Exception: `triaged` is applied instead when `requires_workflow_changes` is set, when `TRIAGE_AUTO_CODE` is `off`/`never`, or when `TRIAGE_AUTO_CODE` is `discretionary` and the agent withholds promotion. |
+| `triaged` | The issue is fully specified but requires human prioritization before coding — a feature or other category, auto-promotion disabled, or a discretionary withhold. |
 | `duplicate` | The issue duplicates an existing one. The agent identified the original and the issue is closed automatically. |
 | `blocked` | The issue depends on another issue or external condition. The agent identified the blocker. |
 | `feature` | The issue is a feature request. Applied alongside `triaged` so humans can prioritize before coding begins. |
 | `question` | The issue is a question rather than a bug or feature request. |
-| `bug` | The issue is a confirmed bug. Applied alongside `ready-to-code` to categorize the issue. |
-| `documentation` | The issue concerns documentation improvements or additions. Applied alongside `ready-to-code` to categorize the issue. |
+| `bug` | The issue is a confirmed bug. Applied alongside `ready-to-code` or `triaged` (see the `ready-to-code` exceptions above) to categorize the issue. |
+| `documentation` | The issue concerns documentation improvements or additions. Applied alongside `ready-to-code` or `triaged` (see the `ready-to-code` exceptions above) to categorize the issue. |
 | `not-planned` | The issue is out of scope, invalid, or spam. The issue is closed with reason "not planned". |
+| `completed` | The work described in the issue is done (all child issues closed, addressing PRs/MRs merged, acceptance criteria met). The issue is closed with reason "completed". Distinct from `not-planned` (rejected) and from `in-progress` (open PR/MR still in flight). |
 | `pr-open` | An open PR or merge request already addresses this issue. Applied either by the triage agent's `in-progress` action — used when a PR/MR *fixes* the issue, as opposed to `prerequisites`/`blocked` when a PR/MR must merely land first — or by the code agent's pre-check when it finds a human PR before dispatching. No automation clears this label when the linked PR/MR is closed without merging: nothing re-triages on PR/MR close, so the issue keeps `pr-open` — and the in-progress comment stays on the issue — until triage runs again, via an issue edit or a manual `/fs-triage`. |
 
-The `split` action decomposes an issue that bundles multiple independent concerns into separate sub-issues. The agent creates one sub-issue per independent item (in the source repo by default, or in a cross-repo target if allowed by `create_issues.allow_targets` in config.yaml), posts a comment listing the new sub-issues, cleans up stale labels (`blocked`, `needs-info`, `ready-to-code`, `pr-open`), and closes the original issue with reason "completed". Each sub-issue is then triaged independently.
+The `split` action decomposes an issue that bundles multiple independent concerns into separate sub-issues. The agent creates one sub-issue per independent item (in the source repo by default, or in a cross-repo target if allowed by `tracker.<provider>.allowed_targets` in config.yaml), posts a comment listing the new sub-issues, cleans up stale labels (`blocked`, `needs-info`, `ready-to-code`, `pr-open`), and closes the original issue with reason "completed". Each sub-issue is then triaged independently.
 
 The `issue-labels` skill may also apply contextual labels (e.g., `area/api`,
 `kind/bug`) but these are informational — they do not control agent behavior.
@@ -101,7 +104,7 @@ invent labels or apply labels not listed here.
 ## Control labels (never recommend these)
 
 These are managed by the triage pipeline. Never include them in `label_actions`:
-`needs-info`, `ready-to-code`, `duplicate`, `feature`, `blocked`, `triaged`, `question`, `bug`, `documentation`, `not-planned`, `pr-open`.
+`needs-info`, `ready-to-code`, `duplicate`, `feature`, `blocked`, `triaged`, `question`, `bug`, `documentation`, `not-planned`, `completed`, `pr-open`.
 
 ## Area labels
 
@@ -165,21 +168,65 @@ post-script applies the actions via `PUT /rest/api/3/issue/{key}` with
 
 | Variable | Description | Default | Valid values |
 |----------|-------------|---------|--------------|
-| `TRIAGE_AUTO_CODE` | Controls whether triage auto-applies `ready-to-code`. `on` — auto-promote categories listed in `TRIAGE_AUTO_CODE_CATEGORIES`. `off` — never auto-promote; always apply `triaged`. | `on` | `on`, `off` |
-| `TRIAGE_AUTO_CODE_CATEGORIES` | Comma-separated list of categories to auto-promote when `TRIAGE_AUTO_CODE=on`. | `bug,documentation,performance` | `bug`, `documentation`, `performance` |
+| `TRIAGE_AUTO_CODE` | Controls whether triage auto-applies `ready-to-code`. See [Ready-to-code promotion](#ready-to-code-promotion). | `on` | `on`/`always`, `off`/`never`, `discretionary` |
+| `TRIAGE_AUTO_CODE_CATEGORIES` | Comma-separated list of categories eligible for auto-promotion when `TRIAGE_AUTO_CODE` is `on`/`always` or `discretionary`. | `bug,documentation,performance` | `bug`, `documentation`, `performance` |
 
 To override these defaults per repo or org, create a custom harness for the
 triage agent the same way the [code agent](code.md#how-to-configure) does —
 a `.fullsend/triage.yaml` with a `base:` pointing at
-[`harness/triage.yaml`](../harness/triage.yaml) and your own `env.runner`
-values, referenced from `.fullsend/config.yaml`.
+[`harness/triage.yaml`](https://github.com/fullsend-ai/agents/blob/main/harness/triage.yaml) and your own `env.runner`
+and `env.sandbox` values, referenced from `.fullsend/config.yaml`.
+
+#### Ready-to-code promotion
+
+`TRIAGE_AUTO_CODE` has three modes:
+
+- `on` / `always` — auto-apply `ready-to-code` for categories listed in
+  `TRIAGE_AUTO_CODE_CATEGORIES`. This is the default. `on` is the supported
+  alias for `always`.
+- `off` / `never` — never auto-apply `ready-to-code`; always apply `triaged`.
+  A human must run `/fs-code` or apply the label. `off` is the supported
+  alias for `never`.
+- `discretionary` — the triage agent decides per issue. On a `sufficient`
+  result it sets `triage_summary.promote_to_ready_to_code` to `true` (promote)
+  or `false` (leave `triaged` for human prioritization). The post-script
+  honors that field only in this mode, and only when the category is in
+  `TRIAGE_AUTO_CODE_CATEGORIES` and `requires_workflow_changes` is not set.
+  If the field is omitted, the post-script withholds promotion.
+
+Use `discretionary` for workflows such as backlog grooming, where
+triage should still classify issues but must not flood the coding queue.
 
 ### Issue filing allowlist
 
-Cross-repo issue creation for prerequisites is governed by
-`create_issues.allow_targets` in `config.yaml`. Prerequisite issues
-targeting repos outside the allowlist are skipped with a warning and
-surfaced in the summary comment so they can be filed manually.
+Cross-repo issue creation for prerequisites and split sub-issues is
+governed by `tracker.<provider>.allowed_targets` in `config.yaml`. The
+post-script honors the targets of the `tracker` provider block that
+matches `FULLSEND_TRACKER`:
+
+- GitHub: `tracker.github.allowed_targets.orgs` and `repos`.
+- GitLab: `tracker.gitlab.allowed_targets.groups` and `repos`. A group also
+  covers its subgroups' projects.
+- Jira: `tracker.jira.allowed_targets.projects` (project keys).
+
+A `tracker` mapping for another provider, or one with more than one
+provider block, grants no cross-repo targets (the post-script logs a warning
+naming the providers it found). The former `create_issues.allow_targets` key
+is no longer read and logs a warning if present; move `orgs` and `repos` to
+`tracker.github.allowed_targets`, `repos` to `tracker.gitlab.allowed_targets`
+(with `groups` for group-wide access), and `jira_projects` to
+`tracker.jira.allowed_targets.projects`. Issues targeting repos
+outside the allowlist are skipped with a warning and surfaced in the
+summary comment so they can be filed manually.
+
+A configuration preset (`config.base.yaml`, beside `config.yaml`) is
+composed beneath the overlay with fullsend's whole-object `tracker` merge:
+an overlay without `tracker` (or with a null or bare `tracker:`) inherits
+the base's targets, and an overlay that sets `tracker` (including an
+explicit empty target policy) replaces them. A null or bare `tracker:` that
+inherits base targets prints a warning; to revoke them, set an explicit empty
+`allowed_targets` instead. If either file cannot be parsed, cross-repo issue
+creation is disabled with a warning.
 
 The source repo (where the triaged issue lives) is always implicitly
 allowed.
@@ -189,6 +236,13 @@ allowed.
 `gitlab-triage-ops.lib.sh` validates `GITLAB_HOST` against `CI_SERVER_HOST`,
 a GitLab CI predefined variable set automatically by the runner. Validation
 fails closed when `CI_SERVER_HOST` is not set.
+
+The trusted origin (scheme, host, and optional port) comes from
+`CI_SERVER_URL`, falling back to `https://${CI_SERVER_HOST}` when it is unset.
+Before any token is sent, the issue URL's origin must match it exactly, so
+self-managed instances on a non-default HTTPS port (for example
+`https://gitlab.example.com:8443`) work, while a mismatched port or a
+non-HTTPS origin is rejected. API requests use the trusted origin.
 
 ## Multi-forge support
 
@@ -207,11 +261,25 @@ GitHub/GitLab auth vars:
 | Variable | Description |
 |----------|-------------|
 | `FULLSEND_WORK_ITEM_URL` | The `https://<site>.atlassian.net/browse/<KEY>-<n>` URL of the issue to triage. |
-| `JIRA_USER_EMAIL` | Email address of the Jira Cloud account used for Basic auth. |
-| `JIRA_TOKEN` | API token for that account. Available to the runner for post-script mutations; the sandbox receives the `jira-ro` provider's opaque placeholder instead of the real token. |
-| `JIRA_BASE_URL` | Base URL of the Jira Cloud site (e.g. `https://<site>.atlassian.net`). |
+| `FULLSEND_JIRA_TOKEN` | Jira API token, set as a repository secret. The harness maps it to `JIRA_TOKEN` in `env.runner` for post-script mutations, and the `jira-ro` provider reads it for sandbox reads; the sandbox receives the provider's opaque placeholder as `JIRA_TOKEN` instead of the real token. The legacy `JIRA_TOKEN` secret is no longer read. |
+| `FULLSEND_JIRA_EMAIL` | Optional repository secret. Email of a bot-user account. When set, requests use Basic auth with email and token; when unset or empty (a service account), Bearer auth with the token. The harness maps it to `JIRA_USER_EMAIL` in `env.runner`, and `fullsend run` sets `JIRA_USER_EMAIL` from it so the sandbox gets it through `env/jira/triage.env`. The legacy `JIRA_USER_EMAIL` secret is no longer read. |
+| `FULLSEND_DIR` | The `.fullsend` directory. The post-script passes it to `fullsend issues post-comment --fullsend-dir`, which reads the Jira site and API gateway from `tracker.jira` in its `config.yaml`. The harness passes `${FULLSEND_DIR}` through to `env.runner` from the host environment, so the operator must set it. |
+| `JIRA_BASE_URL` | Base URL of the Jira Cloud site (e.g. `https://<site>.atlassian.net`). Used for browse links. |
+| `JIRA_API_URL` | Optional. Where the post-script curl helpers and the sandboxed skills send REST calls; `fullsend run` sets it to the Atlassian API gateway for the site (`https://api.atlassian.com/ex/jira/<cloudId>`), which accepts both bot-account and service-account tokens. Falls back to `JIRA_BASE_URL` when unset. |
 
-Closing an issue (`duplicate`, `not-planned`, `split` actions) performs a
+Jira triage requires a fullsend release that includes the config-backed Jira
+commands
+([fullsend-ai/fullsend#9078](https://github.com/fullsend-ai/fullsend/pull/9078)),
+so that `fullsend issues post-comment --tracker jira --fullsend-dir` can read
+`tracker.jira` from `FULLSEND_DIR`.
+
+**Upgrade requirement:** Jira triage also needs a fullsend release that
+includes [fullsend-ai/fullsend#9411](https://github.com/fullsend-ai/fullsend/issues/9411).
+With it, the `jira-ro` provider reads `FULLSEND_JIRA_TOKEN` and `fullsend run`
+sets `JIRA_USER_EMAIL` from `FULLSEND_JIRA_EMAIL`. The legacy `JIRA_TOKEN` and
+`JIRA_USER_EMAIL` secrets are no longer read.
+
+Closing an issue (`duplicate`, `not-planned`, `completed`, `split` actions) performs a
 Jira workflow transition rather than a status field write, since Jira has no
 universal "closed" state. The transition name for each action is configured
 independently:
@@ -220,16 +288,41 @@ independently:
 |----------|----------|
 | `JIRA_DUPLICATE_TRANSITION` | The `duplicate` action. |
 | `JIRA_NOT_PLANNED_TRANSITION` | The `not-planned` action. |
-| `JIRA_SPLIT_TRANSITION` | Closing the original issue after a `split` action. |
+| `JIRA_SPLIT_TRANSITION` | The `split` action, and the `completed` action (both close with GitHub reason `completed`). |
 
 If the relevant variable is unset when that action fires, the post-script
 fails loudly rather than silently skipping the close — set all three to the
 same transition name if your Jira workflow doesn't distinguish between them.
 
 Cross-project issue creation for Jira prerequisites is gated by a
-`create_issues.allow_targets.jira_projects` list of Jira project keys in
-`config.yaml`, alongside the existing `orgs`/`repos` keys used for
-GitHub/GitLab. The issue's own project is always implicitly allowed.
+`tracker.jira.allowed_targets.projects` list of Jira project keys in
+`config.yaml` (see [Issue filing allowlist](#issue-filing-allowlist)). The
+issue's own project is always implicitly allowed.
+
+For Jira-sourced runs (`FULLSEND_WORK_ITEM_SOURCE=jira`), the post-script
+writes results to the issue at `FULLSEND_WORK_ITEM_URL`:
+
+- The triage comment is posted on the Jira issue.
+- Labels and components are updated on the Jira issue.
+- Close actions run as Jira transitions.
+
+The run stops before any write if `FULLSEND_WORK_ITEM_KEY` does not match
+that URL, or if an explicit `FULLSEND_TRACKER` or `ISSUE_URL` points
+somewhere else.
+
+- **Retries:** comments are idempotent. Sticky comments (`sufficient`,
+  `in-progress`) use fixed markers. Other comments use a marker scoped to the
+  CI run (`GITHUB_RUN_ID` or `CI_PIPELINE_ID`). A re-run of the same workflow
+  or pipeline edits its earlier comment, while a new triage run still posts a
+  new one.
+- **Write failures:** a failed Jira write fails the step. This covers label
+  adds and removals, component updates, comments and transitions.
+- **Updates that cannot be applied:** these are listed under **Not applied in
+  Jira** in the comment, as well as being logged. Two cases exist:
+  - a `label_actions` add for a label not used anywhere on the Jira site
+    (labels are not auto-created);
+  - component changes skipped because the current components could not be
+    read.
 
 Jira Server/Data Center (self-hosted) is out of scope — only Jira Cloud hosts
 (`*.atlassian.net`) are supported.
@@ -271,7 +364,7 @@ If you use `base:` composition to override `harness/triage.yaml`:
   against GitHub, GitLab, and Jira patterns regardless of the active forge.
   This is intentional — the schema is forge-neutral. Cross-forge issue
   creation (`prerequisites.create`) is enforced at runtime (the forge API
-  rejects foreign project paths, and `create_issues.allow_targets` gates it
+  rejects foreign project paths, and `tracker.<provider>.allowed_targets` gates it
   further), but comment URLs (`pull_requests[].url`,
   `prerequisites.existing[].url`) are interpolated verbatim and are
   schema-constrained only. The prompt includes examples of the relevant URL
@@ -279,17 +372,32 @@ If you use `base:` composition to override `harness/triage.yaml`:
 - **Jira credentials use provider-backed delivery**: The `jira-ro`
   provider and `fullsend-jira-ro` OpenShell profile handle Jira API
   token injection at the network layer. Sandbox curl commands use
-  `--user "${JIRA_USER_EMAIL}:${JIRA_TOKEN}"` for Basic auth, but
+  `--user "${JIRA_USER_EMAIL}:${JIRA_TOKEN}"` (Basic auth) when
+  `JIRA_USER_EMAIL` is set and `--oauth2-bearer "${JIRA_TOKEN}"`
+  (Bearer auth, for a service account) when it is empty, but
   `JIRA_TOKEN` inside the sandbox is the provider's opaque placeholder
   — the real API token is never expanded into sandbox config or env
-  files. OpenShell replaces the placeholder in the Basic Authorization
-  header at the proxy boundary. `JIRA_USER_EMAIL` and `JIRA_BASE_URL`
-  remain in `env.sandbox` as non-secret configuration. Runner-side
-  post-scripts retain the real `JIRA_TOKEN` via `env.runner` for
-  trusted mutations (label writes, transitions, comment posting).
-  Do not switch to bearer auth — the Jira Cloud tenant URL
-  (`*.atlassian.net/rest/api/3/...`) requires Basic auth with
-  `email:api_token`.
+  files. OpenShell replaces the placeholder in the Authorization
+  header at the proxy boundary. `JIRA_BASE_URL` remains in
+  `env.sandbox` as non-secret configuration; `JIRA_USER_EMAIL` and
+  `JIRA_API_URL` reach the sandbox through `env/jira/triage.env`, so an
+  unset value expands to empty instead of failing the run. `fullsend run`
+  sets `JIRA_USER_EMAIL` from `FULLSEND_JIRA_EMAIL`, and the provider
+  reads the `FULLSEND_JIRA_TOKEN` secret (both need
+  fullsend-ai/fullsend#9411). Runner-side post-scripts get the real
+  token from `FULLSEND_JIRA_TOKEN` and the optional email from
+  `FULLSEND_JIRA_EMAIL` via `env.runner` for trusted mutations (label
+  writes, transitions, comment posting), and pick Basic or Bearer auth
+  the same way through `scripts/lib/jira-auth.lib.sh`. Both modes send
+  REST calls to `JIRA_API_URL`.
+- **GitHub and GitLab credentials use provider-backed delivery**:
+  `GH_TOKEN` and `GITLAB_TOKEN` are not expanded into `env.sandbox` or
+  host env files. The sandbox receives the `github-ro` / `gitlab-rw`
+  provider's opaque placeholder; OpenShell substitutes the real token
+  at the proxy. Runner-side pre/post scripts retain the real token via
+  `env.runner`. Do not re-add these keys to `env.sandbox` or to
+  `expand: true` host files — that overwrites the placeholder and
+  leaks the real credential into the sandbox.
 - **GitLab and Jira functional eval coverage is deferred**: The eval cases
   under `eval/triage/cases/` currently cover GitHub only. GitLab and Jira
   behavior is covered by unit-level bash tests in
@@ -317,4 +425,4 @@ Effort: `high` (explicit in the harness; override per run with `fullsend run --e
 
 ## Source
 
-[`harness/triage.yaml`](../harness/triage.yaml)
+[`harness/triage.yaml`](https://github.com/fullsend-ai/agents/blob/main/harness/triage.yaml)

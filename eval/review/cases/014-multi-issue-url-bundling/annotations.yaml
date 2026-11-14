@@ -1,0 +1,21 @@
+state: open
+
+labels:
+  required: []
+  forbidden:
+    - ready-for-merge
+
+findings:
+  required:
+    - scope-bundling
+  forbidden:
+    - missing-authorization
+
+max_cost_usd: 3.75
+
+review_expectations: |
+  The two distinct deliverables are authorized solely through same-repository
+  issue URLs. A good review resolves both issues, recognizes the separate
+  docs/plans and skills domains, and reports a medium-or-higher
+  [scope-bundling] finding that recommends separate PRs. It must not report
+  missing authorization.

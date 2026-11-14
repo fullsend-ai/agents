@@ -21,6 +21,11 @@
       "type": "boolean",
       "default": true,
       "description": "Whether the PR should close the linked issue on merge. Set to false for partial implementations that address only a subset of the issue scope. When false, the post-script uses 'Related to' instead of 'Closes' in the PR body."
+    },
+    "inject_issue_scope": {
+      "type": "boolean",
+      "default": true,
+      "description": "Whether the post-script should inject the issue number as a conventional-commit scope when the commit subject has none. Set to false when the target repo's documented convention requires scope to be a codebase-area noun (or omitted), not a ticket id. When false, the post-script uses the commit subject as the PR title unchanged."
     }
   }
 }

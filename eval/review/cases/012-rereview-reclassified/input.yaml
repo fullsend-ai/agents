@@ -1,0 +1,41 @@
+forge: github
+seed_issues:
+  - title: "Document the test command"
+    body: |
+      The README should tell developers how to run tests.
+fixture:
+  type: pull_request
+  title: "docs: document the test command"
+  body: |
+    Fixes #1
+
+    Document how to run the tests.
+  base: main
+  files:
+    - path: README.md
+      content: |
+        # Example service
+
+        Run the tests with `pytset`.
+    - path: src/note.py
+      content: |
+        NOTE = "v1"
+  followup_files:
+    - path: README.md
+      content: |
+        # Example service
+
+        Run the tests with `pytset`.
+    - path: src/note.py
+      content: |
+        NOTE = "v2"
+prior_review:
+  provenance: app-verified
+  body: |
+    ## Findings
+
+    #### High
+
+    - **[logic-error]** `README.md:3` — test command is wrong.
+
+    <!-- fullsend:review-findings-v2:eyJ2ZXJzaW9uIjoyLCJmaW5kaW5ncyI6W3sic2V2ZXJpdHkiOiJoaWdoIiwiY2F0ZWdvcnkiOiJsb2dpYy1lcnJvciIsImZpbGUiOiJSRUFETUUubWQiLCJsaW5lIjozLCJpZCI6ImZfcmVjbGFzczEifV19 -->

@@ -11,6 +11,11 @@
       "automerge": true
     },
     {
+      "description": "harness/triggertest pins cel-go to fullsend's go.mod; bump it with the fullsend pin, not on its own",
+      "matchFileNames": ["harness/triggertest/go.mod"],
+      "enabled": false
+    },
+    {
       "description": "Ignore fullsend self-references (own reusable workflows and actions)",
       "matchManagers": ["github-actions"],
       "matchPackageNames": ["/^fullsend-ai\\//"],

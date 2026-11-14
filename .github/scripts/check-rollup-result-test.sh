@@ -14,51 +14,8 @@ run_rollup() {
   EVENT_NAME="$1" \
   GATE_RESULT="$2" DETECT_RESULT="$3" TESTS_RESULT="$4" \
   CROSS_REPO="${5:-}" \
+  HEAD_SHA="${HEAD_SHA:-}" \
   bash "${ROLLUP_SCRIPT}" 2>/dev/null
-}
-
-# Runs the roll-up on a pull_request_target `labeled` event with a stub `gh`
-# on PATH that reports $1 as the previous conclusion for this check name on
-# this commit ("" = no previous run at all).
-run_rollup_labeled() {
-  local prior="$1"
-  local label="${2:-ready-for-review}"
-  local stubdir
-  stubdir="$(mktemp -d)"
-  cat > "${stubdir}/gh" <<STUB
-#!/bin/sh
-printf '%s' "${prior}"
-STUB
-  chmod +x "${stubdir}/gh"
-  PATH="${stubdir}:${PATH}" \
-  EVENT_NAME="pull_request_target" EVENT_ACTION="labeled" LABEL_NAME="${label}" \
-  HEAD_SHA="deadbeef" GITHUB_REPOSITORY="fullsend-ai/agents" GITHUB_RUN_ID="1" \
-  GATE_RESULT="skipped" DETECT_RESULT="skipped" TESTS_RESULT="skipped" \
-  CROSS_REPO="false" \
-  bash "${ROLLUP_SCRIPT}" 2>/dev/null
-  local rc=$?
-  rm -rf "${stubdir}"
-  return $rc
-}
-
-assert_labeled_pass() {
-  TESTS=$((TESTS + 1))
-  if run_rollup_labeled "$2" "${3:-}" >/dev/null; then
-    echo "PASS: $1"
-  else
-    echo "FAIL: $1 — expected exit 0"
-    FAILURES=$((FAILURES + 1))
-  fi
-}
-
-assert_labeled_fail() {
-  TESTS=$((TESTS + 1))
-  if run_rollup_labeled "$2" "${3:-}" >/dev/null; then
-    echo "FAIL: $1 — expected exit 1"
-    FAILURES=$((FAILURES + 1))
-  else
-    echo "PASS: $1"
-  fi
 }
 
 assert_pass() {
@@ -85,6 +42,21 @@ assert_fail() {
   fi
 }
 
+# assert_output NAME PATTERN ARGS... — the roll-up output matches PATTERN.
+assert_output() {
+  local test_name="$1" pattern="$2"
+  shift 2
+  TESTS=$((TESTS + 1))
+  local out
+  out="$(run_rollup "$@" || true)"
+  if grep -qF -- "${pattern}" <<<"${out}"; then
+    echo "PASS: ${test_name}"
+  else
+    echo "FAIL: ${test_name} — expected output containing '${pattern}', got: ${out}"
+    FAILURES=$((FAILURES + 1))
+  fi
+}
+
 # --- Test cases ---
 #                                       event_name            gate      detect    tests     cross_repo
 
@@ -93,11 +65,18 @@ assert_fail "push, tests failure"       push                  skipped   success 
 assert_pass "merge_group, all success"  merge_group           skipped   success   success   ""
 assert_fail "merge_group, tests fail"   merge_group           skipped   success   failure   ""
 
-assert_pass "PRT, all success"          pull_request_target   success   success   success   ""
-assert_fail "PRT, detect skipped"       pull_request_target   success   skipped   skipped   ""
-assert_fail "PRT, all skipped"          pull_request_target   skipped   skipped   skipped   ""
+assert_pass "PR, all success"           pull_request          success   success   success   ""
+assert_pass "PR, no agents to test"     pull_request          success   success   skipped   ""
+assert_fail "PR, tests failure"         pull_request          success   success   failure   ""
+assert_fail "PR, unauthorized author"   pull_request          success   skipped   skipped   ""
+assert_fail "fork PR, gate skipped"     pull_request          skipped   skipped   skipped   ""
 
-assert_fail "gate cancelled"            pull_request_target   cancelled skipped   skipped   ""
+assert_pass "ok-to-test, all success"   issue_comment         skipped   success   success   ""
+assert_fail "ok-to-test, tests failure" issue_comment         skipped   success   failure   ""
+assert_fail "ok-to-test, detect skipped" issue_comment        skipped   skipped   skipped   ""
+
+assert_fail "gate cancelled"            pull_request          cancelled skipped   skipped   ""
+assert_fail "gate failure"              pull_request          failure   skipped   skipped   ""
 assert_fail "detect failure"            push                  skipped   failure   skipped   ""
 assert_fail "detect cancelled"          push                  skipped   cancelled skipped   ""
 assert_fail "tests cancelled"           push                  skipped   success   cancelled ""
@@ -106,23 +85,27 @@ assert_pass "cross-repo, all success"   push                  skipped   success 
 assert_fail "cross-repo, tests skipped" push                  skipped   success   skipped   true
 assert_pass "same-repo, tests skipped"  push                  skipped   success   skipped   ""
 
+# pull_request_target and labeled events are no longer special: no trigger
+# for them remains, and the roll-up does not call the API to mirror a verdict.
+assert_pass "PRT treated as a non-PR event" pull_request_target skipped success   success   ""
+
+# --- Fork PR failure message names /ok-to-test <sha> ---
+HEAD_SHA="0123456789abcdef0123456789abcdef01234567"
+assert_output "fork PR message names /ok-to-test with the head sha" \
+  "/ok-to-test 0123456789abcdef0123456789abcdef01234567" \
+  pull_request skipped skipped skipped ""
+HEAD_SHA=""
+assert_output "fork PR message without a head sha names a placeholder" \
+  "/ok-to-test <full sha of the latest push>" \
+  pull_request skipped skipped skipped ""
+HEAD_SHA=$'abc\n::warning::injected'
+assert_output "non-sha HEAD_SHA never reaches the error line" \
+  "/ok-to-test <full sha of the latest push>" \
+  pull_request skipped skipped skipped ""
+HEAD_SHA=""
+
 # --- Summary ---
 echo ""
-# --- label events carry no verdict: mirror the previous one (#954) ---------
-# A labeled event for anything but ok-to-test skips the gate by design. The
-# roll-up must not assert a fresh verdict, because whatever it reports
-# supersedes the previous check run of the same name on this commit.
-assert_labeled_pass "labeled: mirrors a previous success" "success"
-assert_labeled_fail "labeled: does not launder a previous failure" "failure"
-assert_labeled_fail "labeled: does not launder a previous cancellation" "cancelled"
-assert_labeled_fail "labeled: fails closed when there is no previous verdict" ""
-# ok-to-test is the one label that authorises a real run, so it must fall
-# through to the normal rules rather than mirroring anything. Drive this
-# through run_rollup_labeled so the mirror block is actually entered and
-# declines: a stubbed prior "success" must NOT be mirrored here.
-assert_labeled_fail "labeled ok-to-test does not mirror, it runs the normal rules" \
-  "success" "ok-to-test"
-
 echo "=== ${TESTS} tests, ${FAILURES} failures ==="
 if [[ "${FAILURES}" -gt 0 ]]; then
   exit 1

@@ -80,9 +80,10 @@ inside 9b, before each retry iteration (9c), and before commit (10),
 check remaining time **only if `TIMEOUT_SECONDS` is set**:
 
 ```bash
-if [ -n "${TIMEOUT_SECONDS:-}" ]; then
-  ELAPSED=$(( $(date +%s) - AGENT_START ))
-  REMAINING=$(( TIMEOUT_SECONDS - ELAPSED ))
+if test -n "${TIMEOUT_SECONDS:-}"; then
+  NOW=$(date +%s)
+  ELAPSED=$((NOW - AGENT_START))
+  REMAINING=$((TIMEOUT_SECONDS - ELAPSED))
   echo "::notice::Time check: ${ELAPSED}s elapsed, ${REMAINING}s remaining"
 fi
 ```
@@ -108,6 +109,13 @@ budget so they scale to any timeout value; the one flat value is the
 - **Before 10 (commit):** If less than 8% of the budget remaining, skip
   gitlint validation and commit immediately. A commit that fails gitlint
   CI is better than no commit at all.
+
+## Critical rule — commit before exit
+
+**CRITICAL RULE: Your final tool calls before any text response MUST
+include `git add` and `git commit`. Working-tree edits are lost when the
+sandbox exits. Commit is the single most important step in this
+workflow — a disclosed partial commit is always better than no commit.**
 
 ## Process
 
@@ -215,15 +223,16 @@ Determine which issue to implement:
 - Otherwise, if an issue number, URL, or label event was provided, use it.
 - If none was provided, stop rather than guessing.
 
-Fetch the issue content. For Jira, query its REST API with Basic auth.
-The sandbox's `JIRA_TOKEN` is the `jira-ro` provider's opaque placeholder,
-not the real token. Extract the issue key from `ISSUE_URL`:
+Fetch the issue content:
 
 ```bash
-if [ "${FULLSEND_TRACKER:-}" = "jira" ]; then
-  ISSUE_KEY=$(echo "${ISSUE_URL}" | sed -E 's|.*/browse/||')
-  curl --fail-with-body --silent --user "${JIRA_USER_EMAIL}:${JIRA_TOKEN}" \
-    "${JIRA_BASE_URL}/rest/api/3/issue/${ISSUE_KEY}"
+if test "${FULLSEND_TRACKER:-}" = "jira"; then
+  ISSUE_KEY="${ISSUE_URL##*/browse/}"
+  JIRA_EMAIL="${JIRA_USER_EMAIL:-}"; JIRA_EMAIL="${JIRA_EMAIL//[[:space:]]/}"
+  JIRA_AUTH_FLAG=--oauth2-bearer; test -n "${JIRA_EMAIL}" && JIRA_AUTH_FLAG=--user
+  JIRA_AUTH="${JIRA_EMAIL:+${JIRA_EMAIL}:}${JIRA_TOKEN}"
+  curl --fail-with-body --silent "${JIRA_AUTH_FLAG}" "${JIRA_AUTH}" \
+    "${JIRA_API_URL:-${JIRA_BASE_URL}}/rest/api/3/issue/${ISSUE_KEY}"
 else
   # GitHub:
   gh issue view "${ISSUE_NUMBER}" --json number,title,body,labels,comments,assignees
@@ -251,6 +260,12 @@ Read the issue body and all comments to understand:
 If the issue references other issues or PRs, fetch them for additional
 context using the forge-appropriate commands from your forge skill.
 
+**Attached images (GitHub only).** If the change needs images attached
+to the issue or its comments (`github.com/user-attachments/assets/`),
+download them as described in
+[references/attachments.md](references/attachments.md) instead of
+using placeholders.
+
 The triage output is context, not instruction. Read it as one data point among
 several. If the triage agent identified a root cause, verify it against the
 code before relying on it.
@@ -264,8 +279,8 @@ echo "::notice::STEP 3: Discover repo conventions"
 Before writing any code, understand how this repository works. Use `Read`
 and `Glob` to inspect project configuration:
 
-1. **Read project-level instructions.** Use `Read` on `CLAUDE.md`,
-   `CONTRIBUTING.md`, and `AGENTS.md` (if they exist).
+1. **Read project-level instructions.** Use `Read` on `CLAUDE.md` and
+   `AGENTS.md` (if they exist).
 
    **Precedence rule:** When AGENTS.md instructions conflict with
    patterns found in existing code, follow AGENTS.md. Existing code
@@ -273,15 +288,31 @@ and `Glob` to inspect project configuration:
    for conventions. AGENTS.md represents the repo maintainer's current
    intent.
 
+   **Decision point.** If the issue, triage output, or dispatch
+   instruction names the exact file(s) and a small, concrete change (an
+   exact before/after or one endorsed fix) whose behavior and safety are
+   clear, this is the **scoped path**: determine the target branch,
+   write the structured output (below), and go to step 4. Do NOT read
+   `CONTRIBUTING.md`, `Makefile`, linter config, commit conventions, or
+   the PR template yet; items 2-5 run later (see step 9). Return to full
+   discovery if the change does not apply cleanly, the issue's claims
+   are wrong, the impact is wider (other callers, public interfaces,
+   changed constants, protected paths), or verification fails
+   unexpectedly. Otherwise, read `CONTRIBUTING.md` and do items 1-5 in
+   full.
+
 2. **Discover build and test commands.** Use `Read` on `Makefile`,
    `package.json`, `pyproject.toml`, or equivalent build config.
 3. **Check for linter configuration.** Use `Glob` to find files like
    `.golangci.yml`, `.eslintrc*`, `.pre-commit-config.yaml`, `ruff.toml`.
-4. **Check for PR title conventions.** Look for title format requirements
-   in `CLAUDE.md`, `CONTRIBUTING.md`, or `.github/workflows/` (e.g., a
-   `check-pr-title` action with a regex). If the repo requires a specific
-   format like `type(TICKET): description`, note the convention — you will
-   use it when writing the commit subject in step 10.
+4. **Check for PR title conventions** in `CLAUDE.md`, `CONTRIBUTING.md`,
+   `COMMITS.md`, `commitlint.config.*`, or `.github/workflows/`.
+   Conventional Commits v1.0.0 item 4: "A scope MUST consist of a noun
+   describing a section of the codebase surrounded by parenthesis, e.g.,
+   `fix(parser):`". **ticket-scope** if any ticket-id preference exists
+   (docs, commitlint, CI), even with a CC citation (`feat(#1234):` is
+   correct, wrong for area-scope); **area-scope** only if that MUST
+   applies with no ticket-id preference; else **unknown**.
 5. **Check for PR template.** Find the repo's pull request template(s).
    If multiple templates exist, note them — you will select the right
    one in step 10d after classifying the task type. If found, read and
@@ -289,7 +320,8 @@ and `Glob` to inspect project configuration:
    and prompts (skip HTML comments). If no visible sections remain after
    stripping comments, treat it as no template found. You will structure
    the `pr_body` field in step 10d to match template sections — the
-   post-script uses `pr_body` as the PR description.
+   post-script uses `pr_body` as the PR description. For a repository-boundary
+   no-commit escalation, follow the compact output in `agents/code.md` instead.
 
 From these files, determine:
 
@@ -298,10 +330,8 @@ From these files, determine:
   `npm test`, `pytest`)
 - **Lint command** — how to run linters (e.g., `make lint`, `pre-commit run --files`)
 - **Commit conventions** — message format
-- **PR title conventions** — whether the repo enforces a title format via
-  CI (e.g., `type(TICKET): description`). The post-script uses the commit
-  subject as the PR title and will inject a `(#ISSUE_NUMBER)` scope if
-  missing, but matching the repo's expected format directly is preferred.
+- **PR title conventions** — from step 4; post-script injects
+  `(#ISSUE_NUMBER)` unless `inject_issue_scope` is `false`.
 - **Branch conventions** — naming patterns, target branch
 
 Determine the correct target branch from the issue context. If the issue
@@ -312,15 +342,15 @@ these commands in order until one succeeds:
 ```bash
 # Try each discovery method; use the first that returns a non-empty value.
 DEFAULT_BRANCH=""
-if [ "${FULLSEND_FORGE:-github}" = "github" ]; then
+if test "${FULLSEND_FORGE:-github}" = "github"; then
   DEFAULT_BRANCH="$(gh repo view --json defaultBranchRef \
     --jq '.defaultBranchRef.name' 2>/dev/null)" || true
 fi
-if [ -z "${DEFAULT_BRANCH}" ]; then
+if test -z "${DEFAULT_BRANCH}"; then
   DEFAULT_BRANCH="$(git rev-parse --abbrev-ref origin/HEAD 2>/dev/null \
     | sed 's|^origin/||')" || true
 fi
-if [ -z "${DEFAULT_BRANCH}" ] || [ "${DEFAULT_BRANCH}" = "HEAD" ]; then
+if test -z "${DEFAULT_BRANCH}" || test "${DEFAULT_BRANCH}" = "HEAD"; then
   DEFAULT_BRANCH="$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null \
     | sed 's|^refs/remotes/origin/||')" || true
 fi
@@ -470,7 +500,12 @@ reproduce.
 
 ### 8. Plan the implementation
 
-Before writing code, form a concrete plan:
+Before writing code, form a concrete plan.
+
+On the scoped path (step 3), read the target file(s) in full plus only
+the callers or tests needed to confirm the change. Skip unrelated files
+(siblings, docs, evals, workflows). Items 7-9 (risk, old literals, API
+contracts) still apply.
 
 1. **Read affected files in full** — not just the lines mentioned in the issue.
    Understand the surrounding context, imports, types, and call sites.
@@ -518,7 +553,10 @@ and how you will verify it works.
 
 ### 9. Implement and verify
 
-Write the code change, then verify it.
+Write the code change, then verify it. On the scoped path, read
+`CONTRIBUTING.md` (if present) and do step 3 items 2-5 (build/test,
+linter config, title conventions, PR template) before verification;
+lint, commit format, and `pr_body` depend on them.
 
 **Context efficiency:** A PostToolUse hook automatically compacts verification
 tool output. Successful runs of scan-secrets, pre-commit, tests, linters, and
@@ -658,9 +696,10 @@ The first run may be slow (installs hook environments). This is normal.
 
   ```bash
   RUN_FALLBACK=1
-  if [ -n "${TIMEOUT_SECONDS:-}" ] && [ -n "${AGENT_START:-}" ]; then
-    REMAINING=$(( TIMEOUT_SECONDS - ($(date +%s) - AGENT_START) ))
-    if [ "$REMAINING" -lt 300 ]; then
+  if test -n "${TIMEOUT_SECONDS:-}" && test -n "${AGENT_START:-}"; then
+    NOW=$(date +%s)
+    REMAINING=$((TIMEOUT_SECONDS - (NOW - AGENT_START)))
+    if test "$REMAINING" -lt 300; then
       RUN_FALLBACK=0; echo "::warning::Direct-execution fallback skipped: ${REMAINING}s remaining < 300s floor"
     else
       echo "::notice::Fallback time check: ${REMAINING}s remaining >= 300s floor — proceeding"
@@ -901,6 +940,10 @@ Read every line. Check for:
 
 If you added more than necessary, revert the extras before staging.
 
+**After verification passes, proceed IMMEDIATELY to Step 10 (Commit).
+Do not produce any text summary, status update, or final response
+before committing your changes. The commit step is not optional.**
+
 ### 10. Commit
 
 ```bash
@@ -953,15 +996,10 @@ The commit message must:
   `CONTRIBUTING.md`, `CLAUDE.md`, `.gitlint`, or the existing commit history
   uses a specific format (e.g., Conventional Commits, Angular-style, ticket
   prefixes), follow it.
-- **Include the issue reference in the commit subject.** The post-script
-  uses the commit subject as the PR title. Many repos enforce PR title
-  conventions like `type(TICKET): description`. Always include the issue
-  number as a scope: `<type>(#<number>): <description>`. If the repo uses
-  Jira-style ticket IDs (e.g., `PROJ-123`) and the issue title or body
-  contains one, use that instead: `<type>(PROJ-123): <description>`.
-- **Fall back to `<type>(#<number>): <description>` if no convention was
-  found.** The `(#<number>)` scope ensures the PR title passes most
-  title-check CI jobs.
+- **Scope from step 3** (post-script uses the commit subject as the PR
+  title): ticket-scope/unknown use `<type>(#<number>):` (or a Jira key);
+  area-scope uses a codebase-area noun and sets
+  `inject_issue_scope: false` in the result file (step 10d).
 - **Reference the issue number in the body.** If your implementation
   fully addresses the issue scope, use `Closes #<number>`. If your
   implementation addresses only a subset of the issue (e.g., the triage
@@ -978,8 +1016,8 @@ test -f .gitlint && cat .gitlint
 
 Most repos enforce a title length limit (commonly 72 characters). If
 `.gitlint` has `[title-max-length] line-length=72`, keep the title
-(first line) under that limit. Use a concise `<type>: <description>`
-that fits.
+(first line) under that limit: keep the classified scope (ticket or
+area) and shorten only the `<description>`.
 
 **Body line length — comply with the repo's gitlint config:**
 
@@ -1012,7 +1050,7 @@ The commit body should:
 - Note any trade-offs, assumptions, or edge cases
 
 ```bash
-git commit -m "<type>(#<number>): <short-description>
+git commit -m "<type>(<scope>): <short-description>
 
 <What changed and why. Hard-wrap at the limit from
 .gitlint if one is configured. Write substantive
@@ -1093,18 +1131,19 @@ jq --arg pb "$pr_body" '. + {pr_body: $pb}' \
   && mv "${FULLSEND_OUTPUT_DIR}/agent-result.json.tmp" "${FULLSEND_OUTPUT_DIR}/agent-result.json"
 ```
 
-**Closing reference:** If your implementation addresses only a subset of
-the issue scope, add `closes_issue: false` to the result file so the
-post-script uses `Related to` instead of `Closes` in the PR body:
+**Opt-out flags** (default `true`):
+
+- `closes_issue: false` for a partial implementation: the post-script
+  writes `Related to` instead of `Closes`.
+- `inject_issue_scope: false` on area-scope repos: no `(#<number>)`
+  title injection.
 
 ```bash
 jq '. + {closes_issue: false}' \
   "${FULLSEND_OUTPUT_DIR}/agent-result.json" > "${FULLSEND_OUTPUT_DIR}/agent-result.json.tmp" \
   && mv "${FULLSEND_OUTPUT_DIR}/agent-result.json.tmp" "${FULLSEND_OUTPUT_DIR}/agent-result.json"
+# same pattern for inject_issue_scope: jq '. + {inject_issue_scope: false}' ...
 ```
-
-If your implementation fully addresses the issue, omit this field — the
-default is `true` (the post-script appends `Closes`).
 
 ### 11. Validate structured output
 
@@ -1122,18 +1161,19 @@ cat "${FULLSEND_OUTPUT_DIR}/agent-result.json"
 ```
 
 The file must be valid JSON with `target_branch` (required) and
-optionally `pr_body` and `closes_issue`:
+optionally `pr_body`, `closes_issue`, and `inject_issue_scope`:
 
 ```json
 {
   "target_branch": "main",
-  "pr_body": "## Summary\n\nWhat changed and why.\n\n## Testing\n\nHow it was tested."
+  "pr_body": "## Summary\n\nWhat changed and why.\n\n## Testing\n\nHow it was tested.",
+  "inject_issue_scope": false
 }
 ```
 
 **Schema compliance:** The schema uses `additionalProperties: false`.
-Only `target_branch`, `pr_body`, and `closes_issue` are allowed. Any
-other fields will cause validation to fail.
+Only `target_branch`, `pr_body`, `closes_issue`, and `inject_issue_scope`
+are allowed. Any other fields will cause validation to fail.
 
 Validate the output against the schema:
 
@@ -1162,6 +1202,4 @@ written in step 3 must exist and be valid. Run `fullsend-check-output`
 
 ## Constraints
 
-The agent definition (`agents/code.md`) is the authoritative list of
-prohibitions. This skill does not restate them. If a step in this skill
-appears to conflict with the agent definition, the agent definition wins.
+`agents/code.md` is authoritative and wins on conflict.

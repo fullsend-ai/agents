@@ -16,17 +16,25 @@ ones to assign.
 ## Step 0: Derive variables from ISSUE_URL
 
 ```bash
-ISSUE_KEY=$(echo "${ISSUE_URL}" | sed -E 's|.*/browse/||')
+ISSUE_KEY="${ISSUE_URL##*/browse/}"
 PROJECT_KEY="${ISSUE_KEY%-*}"
+echo "issue ${ISSUE_KEY}, project ${PROJECT_KEY}"
 ```
 
 ## Step 1: Discover available components
 
-Query the project's components from the Jira Cloud REST API:
+Query the project's components from the Jira Cloud REST API. Pick the auth
+mode as the `jira` skill describes: Basic when `JIRA_USER_EMAIL` is set,
+Bearer when it is empty.
 
 ```bash
-curl --silent --user "${JIRA_USER_EMAIL}:${JIRA_TOKEN}" \
-  "${JIRA_BASE_URL}/rest/api/3/project/${PROJECT_KEY}/components" \
+JIRA_EMAIL="${JIRA_USER_EMAIL:-}"; JIRA_EMAIL="${JIRA_EMAIL//[[:space:]]/}"
+JIRA_AUTH_FLAG=--oauth2-bearer; test -n "${JIRA_EMAIL}" && JIRA_AUTH_FLAG=--user
+JIRA_AUTH="${JIRA_EMAIL:+${JIRA_EMAIL}:}${JIRA_TOKEN}"
+ISSUE_KEY="${ISSUE_URL##*/browse/}"
+PROJECT_KEY="${ISSUE_KEY%-*}"
+curl --silent "${JIRA_AUTH_FLAG}" "${JIRA_AUTH}" \
+  "${JIRA_API_URL:-${JIRA_BASE_URL}}/rest/api/3/project/${PROJECT_KEY}/components" \
   | jq '[.[] | {name, description}]'
 ```
 
@@ -36,8 +44,12 @@ emit `component_actions`.
 ## Step 2: Check current components on the issue
 
 ```bash
-curl --silent --user "${JIRA_USER_EMAIL}:${JIRA_TOKEN}" \
-  "${JIRA_BASE_URL}/rest/api/3/issue/${ISSUE_KEY}?fields=components" \
+JIRA_EMAIL="${JIRA_USER_EMAIL:-}"; JIRA_EMAIL="${JIRA_EMAIL//[[:space:]]/}"
+JIRA_AUTH_FLAG=--oauth2-bearer; test -n "${JIRA_EMAIL}" && JIRA_AUTH_FLAG=--user
+JIRA_AUTH="${JIRA_EMAIL:+${JIRA_EMAIL}:}${JIRA_TOKEN}"
+ISSUE_KEY="${ISSUE_URL##*/browse/}"
+curl --silent "${JIRA_AUTH_FLAG}" "${JIRA_AUTH}" \
+  "${JIRA_API_URL:-${JIRA_BASE_URL}}/rest/api/3/issue/${ISSUE_KEY}?fields=components" \
   | jq '[.fields.components[].name]'
 ```
 

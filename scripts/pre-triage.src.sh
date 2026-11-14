@@ -30,7 +30,7 @@ tracker_parse_issue_url
 
 echo "Resetting triage labels on ${REPO}#${ISSUE_NUMBER}"
 
-TRIAGE_LABELS=(needs-info ready-to-code duplicate feature question not-planned pr-open)
+TRIAGE_LABELS=(needs-info ready-to-code duplicate feature question not-planned completed pr-open)
 
 tracker_strip_labels "${TRIAGE_LABELS[@]}"
 tracker_verify_labels_stripped "${TRIAGE_LABELS[@]}"

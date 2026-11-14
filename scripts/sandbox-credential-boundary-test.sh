@@ -31,7 +31,10 @@ FAILURES=0
 # Add new entries here when onboarding provider-backed credentials.
 DENYLIST=(
   JIRA_TOKEN
+  FULLSEND_JIRA_TOKEN
   OPENAI_API_KEY
+  GH_TOKEN
+  GITLAB_TOKEN
 )
 
 # ---------------------------------------------------------------------------
@@ -44,13 +47,17 @@ assert_fail() {
   FAILURES=$((FAILURES + 1))
 }
 
-# check_env_sandbox — scan env.sandbox values (top-level + overlays) for
-# a denylisted variable reference.  Catches both KEY matches and VALUE
-# expansion patterns like ${VAR}.
+# check_env_sandbox — scan env.sandbox values (top-level, overlays, and
+# forge blocks) for a denylisted variable reference.  Catches both KEY
+# matches and VALUE expansion patterns like ${VAR}.
 check_env_sandbox() {
   local harness_file="$1" denied_var="$2"
   local pattern="\${${denied_var}}"
-  yq -r '[.env.sandbox // {}, .overlays[]?.env.sandbox // {}] | .[] | to_entries[] | [.key, .value] | @tsv' "${harness_file}" |
+  yq -r '[
+      (.env.sandbox // {}),
+      (.overlays[]? | .env.sandbox // {}),
+      (.forge[]? | .env.sandbox // {})
+    ] | .[] | to_entries[] | [.key, .value] | @tsv' "${harness_file}" |
     while IFS=$'\t' read -r key value; do
       if [[ "${key}" == "${denied_var}" || "${value}" == *"${pattern}"* ]]; then
         echo "${key}=${value}"
@@ -58,18 +65,26 @@ check_env_sandbox() {
     done
 }
 
-# check_host_files — scan host_files with expand: true for denylisted
-# variable references in their source files.
+# check_host_files — scan host_files with expand: true (top-level,
+# overlays, and forge blocks) for denylisted variable references in
+# their source files.
 check_host_files() {
   local harness_file="$1" denied_var="$2"
-  local src src_path
+  local src src_path fullsend_dir
+  # host_files sources resolve against the directory that holds harness/:
+  # the repo root for the fleet, examples/<name>/ for an example.
+  fullsend_dir="$(dirname "$(dirname "${harness_file}")")"
   while IFS= read -r src; do
     [[ "${src}" == *'$'* ]] && continue
-    src_path="${REPO_ROOT}/${src}"
+    src_path="${fullsend_dir}/${src}"
     if [[ -f "${src_path}" ]] && grep -qF "${denied_var}" "${src_path}"; then
       echo "${src}"
     fi
-  done < <(yq -r '[.host_files // [], .overlays[]?.host_files // []] | flatten | .[] | select(.expand == true) | .src' "${harness_file}")
+  done < <(yq -r '[
+      (.host_files // []),
+      (.overlays[]? | .host_files // []),
+      (.forge[]? | .host_files // [])
+    ] | flatten | .[] | select(.expand == true) | .src' "${harness_file}")
 }
 
 # ---------------------------------------------------------------------------
@@ -77,7 +92,9 @@ check_host_files() {
 # ---------------------------------------------------------------------------
 HARNESS_DIR="${REPO_ROOT}/harness"
 HARNESS_FILES=()
-for f in "${HARNESS_DIR}"/*.yaml; do
+# examples/ holds reference agents meant to be copied, so they are held to
+# the same boundary as the fleet.
+for f in "${HARNESS_DIR}"/*.yaml "${REPO_ROOT}"/examples/*/harness/*.yaml; do
   [[ -f "$f" ]] && HARNESS_FILES+=("$f")
 done
 
@@ -122,12 +139,12 @@ for harness in "${HARNESS_FILES[@]}"; do
 done
 
 # ---------------------------------------------------------------------------
-# Test: Jira skill files carry the opaque placeholder through Basic auth
+# Test: Jira skill files carry the opaque placeholder in the selected auth
 # ---------------------------------------------------------------------------
 # This is the positive complement to the sandbox env denylist above:
 # the real JIRA_TOKEN never enters sandbox config (env.sandbox, env files),
 # but sandbox curl commands must still carry the provider-supplied opaque
-# placeholder via --user for Basic auth.
+# placeholder, via --user (Basic) or --oauth2-bearer (Bearer).
 JIRA_SKILL_FILES=(
   "${REPO_ROOT}/skills/jira-forge/SKILL.md"
   "${REPO_ROOT}/skills/issue-labels/jira/SKILL.md"
@@ -137,17 +154,21 @@ JIRA_SKILL_FILES=(
 
 for skill_file in "${JIRA_SKILL_FILES[@]}"; do
   skill_name="$(basename "$(dirname "${skill_file}")")"
-  test_name="skill-${skill_name}-uses-basic-auth-placeholder"
+  test_name="skill-${skill_name}-uses-auth-placeholder"
 
   if [ ! -f "${skill_file}" ]; then
     assert_fail "${test_name}" "${skill_file} not found"
     continue
   fi
 
-  if grep -qF -- '--user "${JIRA_USER_EMAIL}:${JIRA_TOKEN}"' "${skill_file}"; then
+  # Basic auth (--user email:placeholder) with a non-blank trimmed email,
+  # Bearer (--oauth2-bearer placeholder) without one (#1900).
+  if grep -qF -- 'JIRA_EMAIL="${JIRA_USER_EMAIL:-}"; JIRA_EMAIL="${JIRA_EMAIL//[[:space:]]/}"' "${skill_file}" \
+    && grep -qF -- 'JIRA_AUTH_FLAG=--oauth2-bearer; test -n "${JIRA_EMAIL}" && JIRA_AUTH_FLAG=--user' "${skill_file}" \
+    && grep -qF -- 'JIRA_AUTH="${JIRA_EMAIL:+${JIRA_EMAIL}:}${JIRA_TOKEN}"' "${skill_file}"; then
     assert_pass "${test_name}"
   else
-    assert_fail "${test_name}" "missing --user Basic auth with opaque JIRA_TOKEN placeholder"
+    assert_fail "${test_name}" "missing Basic/Bearer auth with the opaque JIRA_TOKEN placeholder"
   fi
 done
 

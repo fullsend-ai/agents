@@ -9,6 +9,10 @@
 #   ISSUE_URL        — HTML URL of the issue
 #   FULLSEND_TRACKER — "github", "gitlab", or "jira" (falls back to FULLSEND_FORGE)
 #
+# Jira-sourced runs: when FULLSEND_WORK_ITEM_SOURCE is "jira", results are
+# written to the Jira issue at FULLSEND_WORK_ITEM_URL (exported by
+# `fullsend run`), and FULLSEND_WORK_ITEM_KEY must match that URL.
+#
 # The agent writes its decision to output/agent-result.json (relative to
 # the iteration directory). This script finds the most recent iteration's output.
 #
@@ -19,6 +23,26 @@
 # issues.labeled/issues.unlabeled, avoiding the re-triage loop.
 
 set -euo pipefail
+
+# Route Jira-sourced runs to the originating Jira issue. Refuse to run when an
+# explicit tracker or ISSUE_URL points elsewhere, so results never land on a
+# different work item.
+if [[ "${FULLSEND_WORK_ITEM_SOURCE:-}" == "jira" ]]; then
+  if [[ -n "${FULLSEND_TRACKER:-}" && "${FULLSEND_TRACKER}" != "jira" ]]; then
+    echo "ERROR: FULLSEND_WORK_ITEM_SOURCE is jira but FULLSEND_TRACKER selects a different tracker" >&2
+    exit 1
+  fi
+  FULLSEND_TRACKER="jira"
+  if [[ -z "${FULLSEND_WORK_ITEM_URL:-}" || -z "${FULLSEND_WORK_ITEM_KEY:-}" ]]; then
+    echo "ERROR: FULLSEND_WORK_ITEM_URL and FULLSEND_WORK_ITEM_KEY are required for a Jira-sourced run" >&2
+    exit 1
+  fi
+  if [[ -n "${ISSUE_URL:-}" && "${ISSUE_URL}" != "${FULLSEND_WORK_ITEM_URL}" ]]; then
+    echo "ERROR: ISSUE_URL does not match FULLSEND_WORK_ITEM_URL for a Jira-sourced run" >&2
+    exit 1
+  fi
+  ISSUE_URL="${FULLSEND_WORK_ITEM_URL}"
+fi
 
 : "${ISSUE_URL:?ISSUE_URL must be set}"
 FULLSEND_TRACKER="${FULLSEND_TRACKER:-${FULLSEND_FORGE:-}}"
@@ -181,6 +205,34 @@ tracker_create_issue() {
   rm -f "${err_file}"
   echo "${url}"
 }
+
+# Apply ready-for-triage to a newly created issue so the dispatch shim
+# picks it up. issues.opened from a workflow-driven create may not start
+# a new run; issues.labeled does. Failures are non-fatal for the caller.
+#
+# target_repo must be the same already-allowlisted repo (checked via
+# is_target_allowed) that created_url's issue was created in. Mutating
+# against target_repo directly — rather than re-deriving the repo by
+# parsing created_url — avoids trusting an unvalidated/unanchored parse
+# of forge-returned text to pick which repo gets a label mutation.
+tracker_dispatch_triage() {
+  local created_url="$1"
+  local target_repo="$2"
+  local saved_repo="${REPO}"
+  local saved_number="${ISSUE_NUMBER}"
+  REPO="${target_repo}"
+  ISSUE_NUMBER=$(basename "${created_url}")
+  # Ensure the label exists in the target repo (needed for cross-repo splits).
+  tracker_create_label "ready-for-triage" "Triggers triage agent dispatch" "0E8A16"
+  local rc=0
+  if ! tracker_add_label "ready-for-triage"; then
+    echo "::warning::Failed to add ready-for-triage label to $(_gha_sanitize "${created_url}")" >&2
+    rc=1
+  fi
+  REPO="${saved_repo}"
+  ISSUE_NUMBER="${saved_number}"
+  return "${rc}"
+}
 # END bundled: lib/github-triage-ops.lib.sh
     ;;
   gitlab)
@@ -200,6 +252,10 @@ tracker_create_issue() {
 # Expected env vars:
 #   ISSUE_URL      — HTML URL of the issue
 #   GITLAB_TOKEN   — GitLab personal/project access token
+#   CI_SERVER_HOST — GitLab CI predefined variable (set by runner)
+#   CI_SERVER_URL  — GitLab CI predefined variable; API origin, including
+#                    any non-default port (falls back to
+#                    https://${CI_SERVER_HOST} when unset)
 #
 # Token scopes: GITLAB_TOKEN requires minimum scopes:
 #   - api (read/write issues, labels, notes, merge requests)
@@ -224,6 +280,9 @@ GITLAB_TRIAGE_OPS_SH_LOADED=1
 # variable set automatically by the runner.
 #
 # Fails closed: rejects when CI_SERVER_HOST is not set.
+#
+# Also derives the trusted origin (scheme, host, and optional port) from
+# CI_SERVER_URL so self-managed instances on non-default HTTPS ports work.
 #
 # Sourced by all gitlab-*-ops.lib.sh files and inlined by the bundler.
 
@@ -251,6 +310,35 @@ _validate_gitlab_host() {
     return 1
   fi
 }
+
+# Prints the trusted GitLab origin (https://host[:port]) for API requests
+# and generated links. Derived from CI_SERVER_URL, a GitLab CI predefined
+# variable that carries any non-default port; falls back to
+# https://${CI_SERVER_HOST} when CI_SERVER_URL is unset. Fails closed when
+# the origin is not HTTPS or its host does not match CI_SERVER_HOST.
+_gitlab_trusted_origin() {
+  _validate_gitlab_host "${CI_SERVER_HOST:-}" || return 1
+  local origin="${CI_SERVER_URL:-https://${CI_SERVER_HOST}}"
+  if [[ ! "${origin}" =~ ^https://([a-zA-Z0-9._-]+)(:[0-9]+)?$ ]]; then
+    echo "ERROR: CI_SERVER_URL is not an HTTPS origin (https://host[:port]): $(_gha_sanitize "${origin}")" >&2
+    return 1
+  fi
+  local host="${BASH_REMATCH[1]}"
+  _validate_gitlab_host "${host}" || return 1
+  printf '%s\n' "${origin}"
+}
+
+# Validates an origin (https://host[:port]) parsed from an untrusted URL
+# against the trusted CI server origin. Scheme, host, and port must all
+# match: a URL without a port only matches a trusted origin without one.
+_validate_gitlab_origin() {
+  local origin="$1" trusted
+  trusted=$(_gitlab_trusted_origin) || return 1
+  if [[ "${origin,,}" != "${trusted,,}" ]]; then
+    echo "ERROR: GitLab origin '$(_gha_sanitize "${origin}")' does not match CI server origin '$(_gha_sanitize "${trusted}")'" >&2
+    return 1
+  fi
+}
 # END bundled: lib/gitlab-host-validation.lib.sh
 
 _gitlab_api() {
@@ -263,11 +351,13 @@ _gitlab_api() {
     return 1
   fi
   _validate_gitlab_host "${GITLAB_HOST}" || return 1
+  local origin
+  origin=$(_gitlab_trusted_origin) || return 1
   curl --fail --silent --show-error \
     --connect-timeout 10 --max-time 30 \
     --header "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
     --request "${method}" \
-    "https://${GITLAB_HOST}/api/v4${endpoint}" \
+    "${origin}/api/v4${endpoint}" \
     "$@"
 }
 
@@ -281,6 +371,8 @@ _gitlab_api_with_status() {
     return 1
   fi
   _validate_gitlab_host "${GITLAB_HOST}" || return 1
+  local origin
+  origin=$(_gitlab_trusted_origin) || return 1
   local err_file
   err_file=$(mktemp)
   local raw
@@ -289,7 +381,7 @@ _gitlab_api_with_status() {
     --header "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
     --request "${method}" \
     --write-out '\n%{http_code}' \
-    "https://${GITLAB_HOST}/api/v4${endpoint}" \
+    "${origin}/api/v4${endpoint}" \
     "$@" 2>"${err_file}") || {
     echo "GitLab API error: curl failed — $(cat "${err_file}")" >&2
     rm -f "${err_file}"
@@ -310,19 +402,20 @@ _gitlab_api_with_status() {
 # --- URL handling ---
 
 tracker_validate_issue_url() {
-  if [[ ! "${ISSUE_URL}" =~ ^https://[a-zA-Z0-9._-]+(/[a-zA-Z0-9._-]+)+/-/issues/[0-9]+$ ]]; then
+  if [[ ! "${ISSUE_URL}" =~ ^(https://[a-zA-Z0-9._-]+(:[0-9]+)?)(/[a-zA-Z0-9._-]+)+/-/issues/[0-9]+$ ]]; then
     echo "ERROR: ISSUE_URL does not match expected GitLab pattern: $(_gha_sanitize "${ISSUE_URL}")" >&2
     return 1
   fi
-  local host
-  host=$(echo "${ISSUE_URL}" | sed -E 's|^https://([^/:]+)/.*|\1|')
-  _validate_gitlab_host "${host}" || return 1
+  local origin="${BASH_REMATCH[1]}"
+  _validate_gitlab_origin "${origin}" || return 1
 }
 
 tracker_parse_issue_url() {
   # Extract host, project path, and issue IID from URL.
   # e.g., https://gitlab.com/group/subgroup/project/-/issues/42
-  GITLAB_HOST=$(echo "${ISSUE_URL}" | sed -E 's|^https://([^/:]+)/.*|\1|')
+  # The port, if any, is checked by tracker_validate_issue_url; GITLAB_HOST
+  # holds the hostname only and API requests use the trusted CI origin.
+  GITLAB_HOST=$(echo "${ISSUE_URL}" | sed -E 's|^https://([^/:]+)(:[0-9]+)?/.*|\1|')
   REPO=$(echo "${ISSUE_URL}" | sed -E 's|^https://[^/]+/(.+)/-/issues/[0-9]+$|\1|')
   REPO_ENCODED=$(printf '%s' "${REPO}" | jq -sRr @uri)
   ISSUE_NUMBER=$(basename "${ISSUE_URL}")
@@ -517,6 +610,32 @@ tracker_create_issue() {
   }
   echo "${response}" | jq -r '.web_url'
 }
+
+# Apply ready-for-triage to a newly created issue so GitLab dispatch
+# picks it up. Uses _gitlab_api (host-allowlisted) against target_repo —
+# the same already-allowlisted project (checked via is_target_allowed)
+# that created_url's issue was created in — rather than re-deriving the
+# project by parsing created_url, which would trust an unvalidated parse
+# of forge-returned text to pick which project gets a label mutation.
+tracker_dispatch_triage() {
+  local created_url="$1"
+  local target_repo="$2"
+  local saved_repo="${REPO}"
+  local saved_encoded="${REPO_ENCODED}"
+  local saved_number="${ISSUE_NUMBER}"
+  REPO="${target_repo}"
+  REPO_ENCODED=$(printf '%s' "${REPO}" | jq -sRr @uri)
+  ISSUE_NUMBER=$(basename "${created_url}")
+  local rc=0
+  if ! tracker_add_label "ready-for-triage"; then
+    echo "::warning::Failed to add ready-for-triage label to $(_gha_sanitize "${created_url}")" >&2
+    rc=1
+  fi
+  REPO="${saved_repo}"
+  REPO_ENCODED="${saved_encoded}"
+  ISSUE_NUMBER="${saved_number}"
+  return "${rc}"
+}
 # END bundled: lib/gitlab-triage-ops.lib.sh
     ;;
   jira)
@@ -543,18 +662,33 @@ tracker_create_issue() {
 #
 # Expected env vars:
 #   ISSUE_URL       — HTML URL of the issue (https://<host>.atlassian.net/browse/PROJ-123)
-#   JIRA_USER_EMAIL — Jira account email for Basic auth
-#   JIRA_TOKEN      — Jira Cloud API token
+#   JIRA_TOKEN      — Jira API token (the triage harness maps
+#                     FULLSEND_JIRA_TOKEN to it)
+#   JIRA_USER_EMAIL — (optional) bot-user email (the triage harness maps
+#                     FULLSEND_JIRA_EMAIL to it). When set, requests use
+#                     Basic auth with email and token; when unset or
+#                     empty, Bearer auth with a service-account token.
+#                     See lib/jira-auth.lib.sh.
+#   FULLSEND_DIR    — .fullsend directory whose config.yaml holds
+#                     tracker.jira, for the `fullsend issues` shell-outs
+#   JIRA_API_URL    — (optional) where REST calls go, e.g. the Atlassian
+#                     API gateway https://api.atlassian.com/ex/jira/<cloudId>
+#                     that `fullsend run` resolves and exports. Falls back
+#                     to JIRA_BASE_URL when unset (older fullsend releases).
+#                     Browse links always use JIRA_BASE_URL.
 #
-# These are the same env var names the `fullsend issues` CLI commands read
-# by default (see `fullsend issues post-comment --help`) — using the same
-# names here means one set of credentials covers both the raw REST calls
-# in this file and the `fullsend` shell-outs below.
+# The `fullsend issues` CLI reads its credentials from FULLSEND_JIRA_TOKEN
+# and, for a bot user, FULLSEND_JIRA_EMAIL, and its Jira site and API
+# gateway from tracker.jira in --fullsend-dir. jira_auth_fullsend passes
+# the same token and email to it, so one set of credentials covers both
+# the raw REST calls in this file and the `fullsend` shell-outs below.
 #
 # Optional env vars:
 #   JIRA_DUPLICATE_TRANSITION   — transition name for the "duplicate" action
 #   JIRA_NOT_PLANNED_TRANSITION — transition name for the "not planned" action
-#   JIRA_SPLIT_TRANSITION       — transition name for the "split" action
+#   JIRA_SPLIT_TRANSITION       — transition name for the "split" and
+#                                 "completed" actions (both close with
+#                                 GitHub reason "completed")
 #   JIRA_CREATE_ISSUE_TYPE      — issue type name for cross-project issue
 #                                 creation (default: "Task")
 
@@ -565,13 +699,110 @@ JIRA_TRIAGE_OPS_SH_LOADED=1
 # stderr, before any call site can swallow the diagnostic with 2>/dev/null.
 # Matches the idiom pre-triage.src.sh / post-triage.src.sh already use for
 # ISSUE_URL and FULLSEND_TRACKER.
-: "${JIRA_USER_EMAIL:?JIRA_USER_EMAIL must be set}"
+# JIRA_USER_EMAIL is optional: without it, requests use Bearer auth.
 : "${JIRA_TOKEN:?JIRA_TOKEN must be set}"
+
+# shellcheck source=jira-auth.lib.sh
+# BEGIN bundled: lib/jira-auth.lib.sh
+# shellcheck shell=bash
+# jira-auth.lib.sh — Jira credential-mode selection for host-side scripts.
+#
+# Shared by the Jira triage and scribe ops libraries and post-code.sh, and
+# bundled into each script that sources it. Two credential modes
+# (fullsend#9007):
+#
+#   token + email — bot user: Basic auth with email:token
+#   token only    — service account: Bearer auth with the token
+#
+# An email that is empty or only whitespace counts as absent. A harness
+# that maps an unset FULLSEND_JIRA_EMAIL to JIRA_USER_EMAIL yields an empty
+# string, and that must select Bearer, never an empty-user Basic header.
+#
+# Every helper takes the token and email as arguments, so callers that
+# withhold the credentials from their environment can pass saved copies.
+
+[[ -n "${JIRA_AUTH_SH_LOADED:-}" ]] && return 0
+JIRA_AUTH_SH_LOADED=1
+
+# Print the email with surrounding whitespace removed. Empty output means
+# no email, which selects Bearer auth.
+#
+# Usage: jira_auth_email <email>
+jira_auth_email() {
+  local email="$1"
+  email="${email#"${email%%[![:space:]]*}"}"
+  email="${email%"${email##*[![:space:]]}"}"
+  printf '%s' "${email}"
+}
+
+# Run curl with the Authorization for the selected mode, followed by the
+# caller's arguments. Fails without calling curl when the token is empty.
+#
+# Usage: jira_auth_curl <token> <email> [curl args...]
+jira_auth_curl() {
+  local token="$1"
+  local email
+  email="$(jira_auth_email "$2")"
+  shift 2
+  if [[ -z "${token}" ]]; then
+    echo "ERROR: Jira token is empty" >&2
+    return 1
+  fi
+  if [[ -n "${email}" ]]; then
+    curl --user "${email}:${token}" "$@"
+  else
+    curl --oauth2-bearer "${token}" "$@"
+  fi
+}
+
+# Run the fullsend CLI with the Jira credentials it reads from its
+# environment: FULLSEND_JIRA_TOKEN always, FULLSEND_JIRA_EMAIL only for a
+# bot user. In Bearer mode an inherited FULLSEND_JIRA_EMAIL is removed, so
+# the CLI cannot pick Basic auth. The values go through the environment,
+# never the command line.
+#
+# Usage: jira_auth_fullsend <fullsend-bin> <token> <email> [cli args...]
+jira_auth_fullsend() {
+  local bin="$1"
+  local token="$2"
+  local email
+  email="$(jira_auth_email "$3")"
+  shift 3
+  if [[ -z "${token}" ]]; then
+    echo "ERROR: Jira token is empty" >&2
+    return 1
+  fi
+  if [[ -n "${email}" ]]; then
+    FULLSEND_JIRA_TOKEN="${token}" FULLSEND_JIRA_EMAIL="${email}" "${bin}" "$@"
+  else
+    (
+      unset FULLSEND_JIRA_EMAIL
+      FULLSEND_JIRA_TOKEN="${token}" "${bin}" "$@"
+    )
+  fi
+}
+# END bundled: lib/jira-auth.lib.sh
+# JIRA_API_URL is optional, but the credentials are sent to it, so refuse
+# anything that is not https.
+if [[ -n "${JIRA_API_URL:-}" && "${JIRA_API_URL}" != https://* ]]; then
+  echo "ERROR: JIRA_API_URL must start with https://" >&2
+  exit 1
+fi
 
 # JIRA_BASE_URL is derived at runtime by tracker_parse_issue_url, so it
 # cannot be validated at source time — keep a per-call guard for it.
 _jira_require_vars() {
   if [[ -z "${JIRA_BASE_URL:-}" ]]; then echo "ERROR: JIRA_BASE_URL is not set" >&2; return 1; fi
+}
+
+# Print the base URL for REST calls: JIRA_API_URL when set, else
+# JIRA_BASE_URL, with trailing slash(es) stripped.
+_jira_api_base() {
+  local base="${JIRA_API_URL:-${JIRA_BASE_URL}}"
+  while [[ "${base}" == */ ]]; do
+    base="${base%/}"
+  done
+  printf '%s\n' "${base}"
 }
 
 _jira_api() {
@@ -581,13 +812,15 @@ _jira_api() {
   shift
 
   _jira_require_vars || return 1
+  local api_base
+  api_base=$(_jira_api_base) || return 1
 
-  curl --fail --silent --show-error \
+  jira_auth_curl "${JIRA_TOKEN}" "${JIRA_USER_EMAIL:-}" \
+    --fail --silent --show-error \
     --connect-timeout 10 --max-time 30 \
-    --user "${JIRA_USER_EMAIL}:${JIRA_TOKEN}" \
     --header "Content-Type: application/json" \
     --request "${method}" \
-    "${JIRA_BASE_URL}/rest/api/3${endpoint}" \
+    "${api_base}/rest/api/3${endpoint}" \
     "$@"
 }
 
@@ -598,17 +831,19 @@ _jira_api_with_status() {
   shift
 
   _jira_require_vars || return 1
+  local api_base
+  api_base=$(_jira_api_base) || return 1
 
   local err_file
   err_file=$(mktemp)
   local raw
-  raw=$(curl --silent --show-error \
+  raw=$(jira_auth_curl "${JIRA_TOKEN}" "${JIRA_USER_EMAIL:-}" \
+    --silent --show-error \
     --connect-timeout 10 --max-time 30 \
-    --user "${JIRA_USER_EMAIL}:${JIRA_TOKEN}" \
     --header "Content-Type: application/json" \
     --request "${method}" \
     --write-out '\n%{http_code}' \
-    "${JIRA_BASE_URL}/rest/api/3${endpoint}" \
+    "${api_base}/rest/api/3${endpoint}" \
     "$@" 2>"${err_file}") || {
     echo "Jira API error: curl failed — $(cat "${err_file}")" >&2
     rm -f "${err_file}"
@@ -674,8 +909,13 @@ tracker_add_label() {
 
 tracker_remove_label() {
   local label="$1"
-  _jira_api PUT "/issue/${ISSUE_NUMBER}" \
-    --data "$(jq -cn --arg l "${label}" '{update:{labels:[{remove:$l}]}}')" > /dev/null 2>/dev/null || true
+  # Jira treats removing an absent label as a no-op, so an error here is a
+  # real write failure. Fail the step instead of reporting success.
+  if ! _jira_api PUT "/issue/${ISSUE_NUMBER}" \
+    --data "$(jq -cn --arg l "${label}" '{update:{labels:[{remove:$l}]}}')" > /dev/null; then
+    echo "ERROR: failed to remove label '${label}' from issue ${ISSUE_NUMBER} via PUT /issue/${ISSUE_NUMBER}" >&2
+    return 1
+  fi
 }
 
 tracker_strip_labels() {
@@ -788,32 +1028,50 @@ tracker_post_comment() {
   local body="$1"
   _jira_require_vars || return 1
   # `fullsend issues post-comment` always does marker-based find-and-update;
-  # there is no "always create new" mode. A marker unique to this invocation
-  # guarantees no prior comment matches it, so this always creates a new
-  # comment — matching tracker_post_comment's always-new contract on
-  # GitHub/GitLab.
+  # there is no "always create new" mode. Each triage run gets a new comment,
+  # matching tracker_post_comment's always-new contract on GitHub/GitLab.
+  # The marker is scoped to the CI run (GITHUB_RUN_ID survives a workflow
+  # re-run, CI_PIPELINE_ID a GitLab job retry), so a retried run edits its
+  # own earlier comment instead of posting a duplicate.
   local marker stamp
-  stamp=$(date +%s%N)
-  # BSD date without %N support leaves the literal "N" in place, which would
-  # make the marker identical for every invocation within the same second and
-  # break the always-create-new contract. Fall back to a random suffix.
-  if [[ "${stamp}" == *N* ]]; then
-    stamp="$(date +%s)${RANDOM}${RANDOM}"
+  local run_id="${GITHUB_RUN_ID:-${CI_PIPELINE_ID:-}}"
+  if [[ "${run_id}" =~ ^[0-9]+$ ]]; then
+    marker="<!-- fullsend:triage-run-${run_id} -->"
+  else
+    # No CI run ID: a marker unique to this invocation guarantees no prior
+    # comment matches it.
+    stamp=$(date +%s%N)
+    # BSD date without %N support leaves the literal "N" in place, which would
+    # make the marker identical for every invocation within the same second and
+    # break the always-create-new contract. Fall back to a random suffix.
+    if [[ "${stamp}" == *N* ]]; then
+      stamp="$(date +%s)${RANDOM}${RANDOM}"
+    fi
+    marker="<!-- fullsend:triage-${stamp} -->"
   fi
-  marker="<!-- fullsend:triage-${stamp} -->"
-  printf '%s' "${body}" | fullsend issues post-comment --tracker jira \
-    --project "${REPO}" --number "${JIRA_ISSUE_NUM}" \
-    --jira-url "${JIRA_BASE_URL}" --jira-email "${JIRA_USER_EMAIL}" --token "${JIRA_TOKEN}" \
-    --marker "${marker}" --result -
+  _jira_post_comment "${body}" "${marker}"
 }
 
 tracker_post_sticky_comment() {
   local body="$1"
   local marker="$2"
   _jira_require_vars || return 1
-  printf '%s' "${body}" | fullsend issues post-comment --tracker jira \
+  _jira_post_comment "${body}" "${marker}"
+}
+
+# Post or update the comment carrying <marker> through the fullsend CLI,
+# which takes the Jira site and API gateway from tracker.jira in
+# FULLSEND_DIR's config.yaml and the credentials from its environment.
+_jira_post_comment() {
+  local body="$1"
+  local marker="$2"
+  if [[ -z "${FULLSEND_DIR:-}" ]]; then
+    echo "ERROR: FULLSEND_DIR is not set; the fullsend CLI needs it for the tracker.jira settings" >&2
+    return 1
+  fi
+  printf '%s' "${body}" | jira_auth_fullsend fullsend "${JIRA_TOKEN}" "${JIRA_USER_EMAIL:-}" \
+    issues post-comment --tracker jira --fullsend-dir "${FULLSEND_DIR}" \
     --project "${REPO}" --number "${JIRA_ISSUE_NUM}" \
-    --jira-url "${JIRA_BASE_URL}" --jira-email "${JIRA_USER_EMAIL}" --token "${JIRA_TOKEN}" \
     --marker "${marker}" --result -
 }
 
@@ -920,6 +1178,43 @@ tracker_create_issue() {
   fi
   echo "${JIRA_BASE_URL}/browse/${key}"
 }
+
+# Apply ready-for-triage to a newly created issue so Jira dispatch can
+# pick it up. Failures are non-fatal for the caller.
+#
+# target_project must be the same already-allowlisted project key (checked
+# via is_target_allowed) that created_url's issue was created in. Unlike
+# GitHub/GitLab, the issue key used to address the label PUT (not just a
+# REPO global) has to be derived from created_url, so this validates the
+# URL against the same anchored pattern tracker_validate_issue_url uses and
+# then rebuilds the issue key from target_project plus only the numeric
+# suffix of created_url — rather than trusting the project name parsed out
+# of created_url — before mutating.
+tracker_dispatch_triage() {
+  local created_url="$1"
+  local target_project="$2"
+  local saved_number="${ISSUE_NUMBER}"
+  if [[ ! "${created_url}" =~ ^https://[a-zA-Z0-9.-]+/browse/[A-Z][A-Z0-9]*-[0-9]+$ ]]; then
+    echo "ERROR: created_url does not match expected Jira pattern: $(_gha_sanitize "${created_url}")" >&2
+    return 1
+  fi
+  local parsed_key="${created_url##*/browse/}"
+  if [[ -n "${target_project}" ]]; then
+    # Rebuild the issue key from the already-allowlisted target project
+    # plus only the numeric suffix from created_url, rather than trusting
+    # the project name parsed out of created_url.
+    ISSUE_NUMBER="${target_project}-${parsed_key##*-}"
+  else
+    ISSUE_NUMBER="${parsed_key}"
+  fi
+  local rc=0
+  if ! tracker_add_label "ready-for-triage"; then
+    echo "::warning::Failed to add ready-for-triage label to $(_gha_sanitize "${created_url}")" >&2
+    rc=1
+  fi
+  ISSUE_NUMBER="${saved_number}"
+  return "${rc}"
+}
 # END bundled: lib/jira-triage-ops.lib.sh
     ;;
   *)
@@ -1023,17 +1318,23 @@ COMMENT=$(jq -r '.comment // empty' "${RESULT_FILE}")
 tracker_validate_issue_url
 tracker_parse_issue_url
 
+if [[ "${FULLSEND_TRACKER}" == "jira" && -n "${FULLSEND_WORK_ITEM_KEY:-}" \
+      && "${FULLSEND_WORK_ITEM_KEY}" != "${ISSUE_NUMBER}" ]]; then
+  echo "ERROR: FULLSEND_WORK_ITEM_KEY does not match the Jira issue key in ISSUE_URL" >&2
+  exit 1
+fi
+
 echo "Action: ${ACTION}"
 echo "Repo: ${REPO}"
 echo "Issue: #${ISSUE_NUMBER}"
 
 # Control labels managed by the triage pipeline. The post script refuses to
 # add or remove these via label_actions. pre-triage.sh resets needs-info,
-# ready-to-code, duplicate, feature, question, not-planned, and pr-open
-# before each run; the action handlers below apply the rest. pr-open is
-# also created and applied independently by the code agent's pre-check
-# (scripts/pre-code.sh) when it finds a human PR before dispatching.
-CONTROL_LABELS=("needs-info" "ready-to-code" "duplicate" "feature" "blocked" "triaged" "question" "bug" "documentation" "not-planned" "pr-open")
+# ready-to-code, duplicate, feature, question, not-planned, completed,
+# and pr-open before each run; the action handlers below apply the rest.
+# pr-open is also created and applied independently by the code agent's
+# pre-check (scripts/pre-code.sh) when it finds a human PR before dispatching.
+CONTROL_LABELS=("needs-info" "ready-to-code" "duplicate" "feature" "blocked" "triaged" "question" "bug" "documentation" "not-planned" "completed" "pr-open")
 
 is_control_label() {
   local label="$1"
@@ -1058,45 +1359,111 @@ DEFERRED_LABEL=""
 # handlers themselves, so it must be cleared up front rather than per-branch.
 tracker_remove_label "triaged"
 
+# Classification updates the Jira tracker could not apply. Jira users do not
+# see workflow annotations, so these are also listed in the Jira comment
+# instead of being dropped with only a log warning.
+JIRA_UNAPPLIED=""
+note_jira_unapplied() {
+  [[ "${FULLSEND_TRACKER}" == "jira" ]] || return 0
+  JIRA_UNAPPLIED="${JIRA_UNAPPLIED}
+- $1"
+}
+
 # --- Cross-repo issue creation allowlist ---
 # Used by prerequisites and split actions. Read once before the case
 # statement so both handlers share the same config and helper.
 
 WORKSPACE="${GITHUB_WORKSPACE:-${CI_PROJECT_DIR:-/tmp}}"
 CONFIG_FILE="${WORKSPACE}/config.yaml"
-if [[ ! -f "${CONFIG_FILE}" ]]; then
+if [[ ! -f "${CONFIG_FILE}" && ! -f "${WORKSPACE}/config.base.yaml" ]]; then
   CONFIG_FILE="${WORKSPACE}/.fullsend/config.yaml"
 fi
+# A configuration preset (config.base.yaml) sits beside the overlay. As in
+# fullsend's layered config, an overlay that sets tracker replaces the base
+# tracker as a whole object (an explicit empty target policy included);
+# otherwise tracker is inherited from the base. A null or bare `tracker:` in
+# the overlay counts as unset (it inherits the base), matching that merge.
+BASE_CONFIG_FILE="$(dirname "${CONFIG_FILE}")/config.base.yaml"
+ALLOW_TARGETS_KEY="tracker.${FULLSEND_TRACKER}.allowed_targets"
 
-ALLOWED_ORGS=""
-ALLOWED_REPOS=""
-ALLOWED_JIRA_PROJECTS=""
-if [[ -f "${CONFIG_FILE}" ]] && ! command -v yq &>/dev/null; then
-  echo "::warning::yq not found — cannot read create_issues.allow_targets from config; cross-repo issue creation disabled"
+# ALLOWED_SCOPES holds GitHub orgs or GitLab groups (a scope admits every
+# repository under it, including GitLab subgroups); ALLOWED_TARGETS holds
+# repositories or Jira project keys allowed by exact match.
+ALLOWED_SCOPES=""
+ALLOWED_TARGETS=""
+if [[ -f "${CONFIG_FILE}" || -f "${BASE_CONFIG_FILE}" ]] && ! command -v yq &>/dev/null; then
+  echo "::warning::yq not found — cannot read ${ALLOW_TARGETS_KEY} from config; cross-repo issue creation disabled"
 fi
-if [[ -f "${CONFIG_FILE}" ]] && command -v yq &>/dev/null; then
-  ALLOWED_ORGS=$(yq -r '.create_issues.allow_targets.orgs // [] | .[]' "${CONFIG_FILE}" 2>/dev/null || true)
-  ALLOWED_REPOS=$(yq -r '.create_issues.allow_targets.repos // [] | .[]' "${CONFIG_FILE}" 2>/dev/null || true)
-  ALLOWED_JIRA_PROJECTS=$(yq -r '.create_issues.allow_targets.jira_projects // [] | .[]' "${CONFIG_FILE}" 2>/dev/null || true)
+if command -v yq &>/dev/null; then
+  TRACKER_JSON="null"
+  OVERLAY_TRACKER_NULL="false"
+  for layer_file in "${CONFIG_FILE}" "${BASE_CONFIG_FILE}"; do
+    [[ -f "${layer_file}" ]] || continue
+    # Fail closed: an unparseable layer disables cross-repo issue creation.
+    if ! layer_tracker=$(yq -o=json '.tracker' "${layer_file}" 2>/dev/null); then
+      echo "::warning::cannot parse $(basename "${layer_file}") — cross-repo issue creation disabled"
+      TRACKER_JSON="null"
+      break
+    fi
+    # The old create_issues.allow_targets key is no longer read.
+    if yq -e '.create_issues.allow_targets' "${layer_file}" &>/dev/null; then
+      echo "::warning::$(basename "${layer_file}") sets create_issues.allow_targets, which is no longer read — move its targets to ${ALLOW_TARGETS_KEY}"
+    fi
+    if [[ "${TRACKER_JSON}" == "null" ]]; then
+      # An overlay that sets tracker to null inherits the base targets; say so
+      # when that keeps cross-repo grants the operator may have meant to clear.
+      if [[ "${OVERLAY_TRACKER_NULL}" == "true" ]] && jq -e '[.. | arrays | select(length > 0)] | length > 0' <<<"${layer_tracker}" &>/dev/null; then
+        echo "::warning::config.yaml sets tracker to null, so cross-repo targets from $(basename "${layer_file}") are inherited — set an empty ${ALLOW_TARGETS_KEY} in config.yaml to revoke them"
+      fi
+      TRACKER_JSON="${layer_tracker}"
+    fi
+    if [[ "${layer_file}" == "${CONFIG_FILE}" && "${layer_tracker}" == "null" && "$(yq 'has("tracker")' "${layer_file}" 2>/dev/null)" == "true" ]]; then
+      OVERLAY_TRACKER_NULL="true"
+    fi
+  done
+  # Warn when a tracker mapping selects other or several providers, since it
+  # then grants no cross-repo targets.
+  TRACKER_PROVIDERS=$(jq -r '
+    (if type == "object" then . else {} end) as $t
+    | [("github", "gitlab", "jira") | select($t[.] != null)] | join(",")
+  ' <<<"${TRACKER_JSON}" 2>/dev/null || true)
+  if [[ -n "${TRACKER_PROVIDERS}" && "${TRACKER_PROVIDERS}" != "${FULLSEND_TRACKER}" ]]; then
+    echo "::warning::tracker mapping selects provider(s) '${TRACKER_PROVIDERS}' but FULLSEND_TRACKER requires only '${FULLSEND_TRACKER}' — no cross-repo targets granted"
+  fi
+  # Honor targets only when the tracker selects exactly one provider and it
+  # is the tracker issues are created in; otherwise nothing is granted.
+  ALLOWED_TARGETS_JSON=$(jq -c --arg provider "${FULLSEND_TRACKER}" '
+    (if type == "object" then . else {} end) as $t
+    | [("github", "gitlab", "jira") | select($t[.] != null)] as $providers
+    | if $providers == [$provider] then ($t[$provider].allowed_targets // {}) else {} end
+    | if type == "object" then . else {} end
+  ' <<<"${TRACKER_JSON}" 2>/dev/null || echo '{}')
+  ALLOWED_SCOPES=$(jq -r --arg provider "${FULLSEND_TRACKER}" '
+    (if $provider == "github" then .orgs elif $provider == "gitlab" then .groups else null end)
+    | if type == "array" then .[] | strings else empty end
+  ' <<<"${ALLOWED_TARGETS_JSON}" 2>/dev/null || true)
+  ALLOWED_TARGETS=$(jq -r --arg provider "${FULLSEND_TRACKER}" '
+    (if $provider == "jira" then .projects else .repos end)
+    | if type == "array" then .[] | strings else empty end
+  ' <<<"${ALLOWED_TARGETS_JSON}" 2>/dev/null || true)
 fi
 
 is_target_allowed() {
   local target_repo="$1"
-  local target_org="${target_repo%%/*}"
+  local scope
 
   if [[ "${target_repo}" == "${REPO}" ]]; then
     return 0
   fi
 
-  if [[ -n "${ALLOWED_ORGS}" ]] && echo "${ALLOWED_ORGS}" | grep -qFx "${target_org}"; then
-    return 0
-  fi
+  # Org/group allowlist (a group also covers its subgroups' projects).
+  while IFS= read -r scope; do
+    if [[ -n "${scope}" && "${target_repo}" == "${scope}/"* ]]; then
+      return 0
+    fi
+  done <<<"${ALLOWED_SCOPES}"
 
-  if [[ -n "${ALLOWED_REPOS}" ]] && echo "${ALLOWED_REPOS}" | grep -qFx "${target_repo}"; then
-    return 0
-  fi
-
-  if [[ -n "${ALLOWED_JIRA_PROJECTS}" ]] && echo "${ALLOWED_JIRA_PROJECTS}" | grep -qFx "${target_repo}"; then
+  if [[ -n "${ALLOWED_TARGETS}" ]] && echo "${ALLOWED_TARGETS}" | grep -qFx "${target_repo}"; then
     return 0
   fi
 
@@ -1146,7 +1513,7 @@ case "${ACTION}" in
       ISSUE_BODY=$(jq -r ".prerequisites.create[${i}].body" "${RESULT_FILE}")
 
       if ! is_target_allowed "${TARGET_REPO}"; then
-        echo "::warning::Skipping issue creation in '$(_gha_sanitize "${TARGET_REPO}")' — not in create_issues.allow_targets"
+        echo "::warning::Skipping issue creation in '$(_gha_sanitize "${TARGET_REPO}")' — not in ${ALLOW_TARGETS_KEY}"
         FAILED_CREATES="${FAILED_CREATES}
 <details>
 <summary>Prerequisite: ${TARGET_REPO} — ${ISSUE_TITLE}</summary>
@@ -1199,7 +1566,7 @@ ${ISSUE_BODY}
     if [[ -n "${FAILED_CREATES}" ]]; then
       COMMENT="${COMMENT}
 
-**Could not create automatically** (file manually or update \`create_issues.allow_targets\` in config.yaml):
+**Could not create automatically** (file manually or update \`${ALLOW_TARGETS_KEY}\` in config.yaml):
 ${FAILED_CREATES}"
     fi
 
@@ -1329,9 +1696,17 @@ ${FAILED_CREATES}"
     # else receives the triaged label and waits for human prioritization
     # (per #561, only feature issues should require human review before coding).
     #
-    # TRIAGE_AUTO_CODE (#1754) controls whether auto-promotion happens:
-    #   on (default) — auto-promote categories listed in TRIAGE_AUTO_CODE_CATEGORIES
-    #   off          — never auto-promote; always apply triaged
+    # TRIAGE_AUTO_CODE (#1754, #1250) controls whether auto-promotion happens:
+    #   on / always (default) — auto-promote categories listed in
+    #                           TRIAGE_AUTO_CODE_CATEGORIES
+    #   off / never           — never auto-promote; always apply triaged
+    #   discretionary         — promote only when the agent sets
+    #                           triage_summary.promote_to_ready_to_code=true
+    #                           AND the category is in TRIAGE_AUTO_CODE_CATEGORIES
+    #
+    # on and off remain supported aliases for always and never. The agent's
+    # promote_to_ready_to_code field is consulted only in discretionary mode;
+    # legacy modes ignore its presence or absence.
     #
     # TRIAGE_AUTO_CODE_CATEGORIES is a comma-separated category list with no
     # default baked into this script -- harness/triage.yaml and docs/triage.md
@@ -1345,6 +1720,9 @@ ${FAILED_CREATES}"
     REQUIRES_WORKFLOW=$(jq -r '.triage_summary.requires_workflow_changes // false' "${RESULT_FILE}")
     CATEGORY=$(jq -r '.triage_summary.category // "unknown"' "${RESULT_FILE}")
     echo "Category: ${CATEGORY}"
+    # jq's // treats JSON false as missing, so omitted and false both become
+    # the string "false" — the intended withhold default for discretionary mode.
+    PROMOTE=$(jq -r '.triage_summary.promote_to_ready_to_code // false' "${RESULT_FILE}")
 
     AUTO_CODE="${TRIAGE_AUTO_CODE:-on}"
     AUTO_CODE="$(printf '%s' "${AUTO_CODE}" | tr '[:upper:]' '[:lower:]')"
@@ -1360,8 +1738,14 @@ ${FAILED_CREATES}"
     # Determine whether this category should auto-promote to ready-to-code.
     auto_code_allowed() {
       case "${AUTO_CODE}" in
-        off) return 1 ;;
-        on) category_in_auto_code_list ;;
+        off|never) return 1 ;;
+        on|always) category_in_auto_code_list ;;
+        discretionary)
+          if ! category_in_auto_code_list; then
+            return 1
+          fi
+          [[ "${PROMOTE}" == "true" ]]
+          ;;
         *)
           echo "::warning::Unrecognized TRIAGE_AUTO_CODE value '$(_gha_sanitize "${AUTO_CODE}")' — falling back to 'on'"
           category_in_auto_code_list
@@ -1391,6 +1775,15 @@ ${FAILED_CREATES}"
         WORKFLOW_BLOCKED=true
       fi
     fi
+    # Clear stale category labels from a prior triage run so a re-categorized
+    # issue never carries two conflicting category labels (#1725). These are
+    # control labels, so label_actions cannot remove them. Skip the current
+    # category's own label to avoid remove/re-add churn.
+    for category_label in bug documentation feature; do
+      if [[ "${category_label}" != "${CATEGORY}" ]]; then
+        tracker_remove_label "${category_label}"
+      fi
+    done
     case "${CATEGORY}" in
       bug)
         echo "Applying bug label..."
@@ -1449,6 +1842,7 @@ ${FAILED_CREATES}"
 
     CREATED_URLS=""
     FAILED_CREATES=""
+    FAILED_DISPATCHES=""
     for i in $(seq 0 $((SUB_ISSUE_COUNT - 1))); do
       SUB_TITLE=$(jq -r ".sub_issues[${i}].title" "${RESULT_FILE}")
       SUB_BODY=$(jq -r ".sub_issues[${i}].body" "${RESULT_FILE}")
@@ -1459,7 +1853,7 @@ ${FAILED_CREATES}"
       SAFE_TITLE="${SAFE_TITLE//::/-}"
 
       if ! is_target_allowed "${TARGET_REPO}"; then
-        echo "::warning::Skipping sub-issue creation in '$(_gha_sanitize "${TARGET_REPO}")' — not in create_issues.allow_targets"
+        echo "::warning::Skipping sub-issue creation in '$(_gha_sanitize "${TARGET_REPO}")' — not in ${ALLOW_TARGETS_KEY}"
         FAILED_CREATES="${FAILED_CREATES}
 <details>
 <summary>Sub-issue: ${TARGET_REPO} — ${SUB_TITLE}</summary>
@@ -1485,6 +1879,14 @@ ${SUB_BODY}
       echo "Created: ${CREATED_URL}"
       CREATED_URLS="${CREATED_URLS}
 - ${CREATED_URL}"
+
+      # Queue the sub-issue for triage. A dispatch failure must not
+      # prevent other sub-issues from being created or dispatched (#1123).
+      echo "Dispatching triage for sub-issue: $(_gha_sanitize "${CREATED_URL}")"
+      if ! tracker_dispatch_triage "${CREATED_URL}" "${TARGET_REPO}"; then
+        FAILED_DISPATCHES="${FAILED_DISPATCHES}
+- ${CREATED_URL}"
+      fi
     done
 
     if [[ -z "${CREATED_URLS}" ]] && [[ -n "${FAILED_CREATES}" ]]; then
@@ -1501,8 +1903,15 @@ ${SUB_BODY}
     if [[ -n "${FAILED_CREATES}" ]]; then
       COMMENT="${COMMENT}
 
-**Could not create automatically** (file manually or update \`create_issues.allow_targets\` in config.yaml):
+**Could not create automatically** (file manually or update \`${ALLOW_TARGETS_KEY}\` in config.yaml):
 ${FAILED_CREATES}"
+    fi
+
+    if [[ -n "${FAILED_DISPATCHES}" ]]; then
+      COMMENT="${COMMENT}
+
+**Triage dispatch failed** (run \`/fs-triage\` manually on these issues):
+${FAILED_DISPATCHES}"
     fi
 
     tracker_remove_label "blocked"
@@ -1531,6 +1940,17 @@ ${FAILED_CREATES}"
     tracker_remove_label "needs-info"
     tracker_remove_label "pr-open"
     tracker_add_label "not-planned"
+    ;;
+
+  completed)
+    if [[ -z "${COMMENT}" ]]; then
+      echo "ERROR: action is 'completed' but no comment provided" >&2
+      exit 1
+    fi
+    tracker_remove_label "blocked"
+    tracker_remove_label "needs-info"
+    tracker_remove_label "pr-open"
+    tracker_add_label "completed"
     ;;
 
   *)
@@ -1575,6 +1995,7 @@ if [[ "${HAS_LABEL_ACTIONS}" == "true" ]]; then
       add)
         if ! label_exists "${LA_LABEL}"; then
           echo "::warning::Skipping label '$(_gha_sanitize "${LA_LABEL}")' -- does not exist in repo (will not auto-create)"
+          note_jira_unapplied "Label \`${LA_LABEL}\` was not added: it is not in use on this Jira site, and labels are not auto-created."
           continue
         fi
         echo "Adding label '$(_gha_sanitize "${LA_LABEL}")'..."
@@ -1616,6 +2037,7 @@ if [[ "${HAS_COMPONENT_ACTIONS}" == "true" ]]; then
     # full replacement via PUT) to silently delete pre-existing components.
     if ! CURRENT_COMPONENTS=$(tracker_get_components); then
       echo "::warning::Failed to fetch current components — skipping component mutations to avoid data loss"
+      note_jira_unapplied "Component changes were not applied: the current components could not be read, and replacing them blindly could delete existing ones."
     else
       # Build the new component list by applying add/remove actions.
       NEW_COMPONENTS="${CURRENT_COMPONENTS}"
@@ -1680,6 +2102,13 @@ if [[ -n "${DEFERRED_LABEL}" ]]; then
   tracker_add_label "${DEFERRED_LABEL}"
 fi
 
+if [[ -n "${JIRA_UNAPPLIED}" ]]; then
+  COMMENT="${COMMENT}
+
+---
+**Not applied in Jira:**${JIRA_UNAPPLIED}"
+fi
+
 # --- Append action-hints footer (sufficient only) ---
 
 if [[ "${ACTION}" == "sufficient" ]]; then
@@ -1710,6 +2139,10 @@ fi
 
 if [[ "${ACTION}" == "not-planned" ]]; then
   tracker_close_issue "not planned"
+fi
+
+if [[ "${ACTION}" == "completed" ]]; then
+  tracker_close_issue "completed"
 fi
 
 if [[ "${ACTION}" == "split" ]]; then

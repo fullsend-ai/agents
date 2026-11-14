@@ -60,6 +60,33 @@
           "minLength": 1,
           "maxLength": 8192,
           "description": "How to know the change had the desired effect. Measurable or observable outcomes."
+        },
+        "related_issues": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Receipt that the pre-filing duplicate search ran. Optional at the schema level so a missing or quantity-deficient receipt skips only its own proposal in post-retro rather than failing whole-result validation and dropping valid siblings and the summary (the retro validation loop is all-or-nothing with no feedback). The post-retro receipt gate is the enforcement: it requires searched to be an array of at least two distinct non-empty phrases on both the validated and fallback paths. See the retro-analysis skill's 'Before proposing' section.",
+          "properties": {
+            "searched": {
+              "type": "array",
+              "items": { "type": "string" },
+              "description": "Search phrases actually executed against the target repo — at least one fix-keyed and one root-cause/subsystem-keyed phrase. The post-retro gate enforces at-least-two-distinct-non-empty; quantity is intentionally not constrained here (no maxItems) so a weak or large receipt skips its own proposal instead of poisoning whole-result validation."
+            },
+            "found": {
+              "type": "array",
+              "items": {
+                "oneOf": [
+                  { "type": "integer" },
+                  { "type": "string", "pattern": "^[a-zA-Z0-9._-]+(/[a-zA-Z0-9._-]+)+#[0-9]+$" }
+                ]
+              },
+              "description": "Candidate issues considered and judged not to cover (or to be refined by) this proposal. A bare integer is an issue in the proposal's target_repo; a cross-repo candidate (e.g. a root cause tracked in another layer, including a nested GitLab group/subgroup/project) must be the fully-qualified string 'owner/repo#N' so it renders as a correct link rather than a bare #N pointing at the wrong repo. No maxItems — a large receipt must not fail whole-result validation."
+            },
+            "note": {
+              "type": "string",
+              "maxLength": 2048,
+              "description": "One line per candidate: why it does not cover this proposal, or how this proposal refines or regresses it. Omit when found is empty."
+            }
+          }
         }
       }
     }

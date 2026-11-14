@@ -6,17 +6,23 @@
 #
 # Skip signalling uses the pre-script output protocol
 # (fullsend docs/normative/prescript-output/v1, fullsend-ai/fullsend#4718):
-# when an open human PR already addresses the issue, this script writes
-# skipped=true to the file named by FULLSEND_PRESCRIPT_OUTPUT and
-# fullsend run stops before creating the sandbox. Under a CLI that
-# predates the protocol the variable is unset and the write is skipped —
-# the run proceeds, which matches the pre-protocol behavior.
+# when an open human PR already addresses the issue, or the issue has
+# sub-issues (a tracking/parent issue), this script writes skipped=true
+# to the file named by FULLSEND_PRESCRIPT_OUTPUT and fullsend run stops
+# before creating the sandbox. Under a CLI that predates the protocol
+# the variable is unset and the write is skipped — the run proceeds,
+# which matches the pre-protocol behavior.
 #
 # Required environment variables (set by the workflow):
 #   ISSUE_NUMBER       — must be a positive integer
 #   REPO_FULL_NAME     — must be owner/repo format
 #   ISSUE_URL          — must be a valid issue URL for the forge
 #   FULLSEND_FORGE     — "github" or "gitlab"
+#
+# Optional environment variables:
+#   FULLSEND_APP_SET   — GitHub App identity prefix (default "fullsend-ai").
+#                         Used to derive the bot/coder bot logins excluded
+#                         from the existing-PR check.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -25,22 +31,40 @@ source "${SCRIPT_DIR}/lib/prescript-output.lib.sh"
 # shellcheck source=lib/code-ops.lib.sh
 source "${SCRIPT_DIR}/lib/code-ops.lib.sh"
 
-echo "::notice::🔗 Code target: ${ISSUE_URL:-}"
+# Sanitize a value for safe interpolation into logged output. Strips ANSI
+# escapes, control chars, and newlines, and escapes :: and % so an
+# attacker-controlled value can't inject a workflow command via a line break.
+#
+# Named distinctly from _gha_sanitize since code-ops.lib.sh transitively
+# loads an older, weaker _gha_sanitize that a `declare -F` guard would keep.
+_pre_code_sanitize_log() {
+  printf '%s' "$1" | tr -d '\n\r' \
+    | sed -E 's/\x1b\][^\x1b\x07]*(\x07|\x1b\\)?//g; s/\x1b\[[0-9;]*[a-zA-Z]//g; s/\x1b.?//g' \
+    | tr -d '\000-\037\177' \
+    | sed 's/%/%25/g; s/::/%3A%3A/g'
+}
+
+echo "::notice::🔗 Code target: $(_pre_code_sanitize_log "${ISSUE_URL:-}")"
 
 errors=0
 
+# These are unvalidated workflow inputs, so every echo of a raw value below
+# goes through _pre_code_sanitize_log to prevent workflow-command injection
+# via an embedded newline.
 if [[ ! "${ISSUE_NUMBER:-}" =~ ^[1-9][0-9]*$ ]]; then
-  echo "::error::ISSUE_NUMBER must be a positive integer, got: '${ISSUE_NUMBER:-}'"
+  echo "::error::ISSUE_NUMBER must be a positive integer, got: '$(_pre_code_sanitize_log "${ISSUE_NUMBER:-}")'"
   errors=$((errors + 1))
 fi
 
 if [[ ! "${REPO_FULL_NAME:-}" =~ ^[a-zA-Z0-9._-]+(/[a-zA-Z0-9._-]+)+$ ]]; then
-  echo "::error::REPO_FULL_NAME must be owner/repo (or group/subgroup/project) format, got: '${REPO_FULL_NAME:-}'"
+  echo "::error::REPO_FULL_NAME must be owner/repo (or group/subgroup/project) format, got: '$(_pre_code_sanitize_log "${REPO_FULL_NAME:-}")'"
   errors=$((errors + 1))
 fi
 
-if ! forge_validate_issue_url "${ISSUE_URL:-}"; then
-  echo "::error::ISSUE_URL format invalid, got: '${ISSUE_URL:-}'"
+# Suppress the function's own stderr diagnostic — it echoes the raw,
+# unsanitized ISSUE_URL; the sanitized "::error::" below covers it.
+if ! forge_validate_issue_url "${ISSUE_URL:-}" 2>/dev/null; then
+  echo "::error::ISSUE_URL format invalid, got: '$(_pre_code_sanitize_log "${ISSUE_URL:-}")'"
   errors=$((errors + 1))
 fi
 
@@ -48,11 +72,11 @@ URL_REPO="$(forge_extract_repo_from_url "${ISSUE_URL:-}" 2>/dev/null || true)"
 URL_ISSUE="$(forge_extract_issue_from_url "${ISSUE_URL:-}" 2>/dev/null || true)"
 
 if [[ -n "${URL_REPO}" && "${URL_REPO}" != "${REPO_FULL_NAME:-}" ]]; then
-  echo "::error::REPO_FULL_NAME does not match issue URL repo ('${REPO_FULL_NAME:-}' vs '${URL_REPO}')"
+  echo "::error::REPO_FULL_NAME does not match issue URL repo ('$(_pre_code_sanitize_log "${REPO_FULL_NAME:-}")' vs '$(_pre_code_sanitize_log "${URL_REPO}")')"
   errors=$((errors + 1))
 fi
 if [[ -n "${URL_ISSUE}" && "${URL_ISSUE}" != "${ISSUE_NUMBER:-}" ]]; then
-  echo "::error::ISSUE_NUMBER does not match issue URL number ('${ISSUE_NUMBER:-}' vs '${URL_ISSUE}')"
+  echo "::error::ISSUE_NUMBER does not match issue URL number ('$(_pre_code_sanitize_log "${ISSUE_NUMBER:-}")' vs '$(_pre_code_sanitize_log "${URL_ISSUE}")')"
   errors=$((errors + 1))
 fi
 
@@ -86,77 +110,120 @@ if [ "${FULLSEND_FORGE}" = "gitlab" ]; then
 fi
 
 # ---------------------------------------------------------------------------
-# Check for existing human PRs linked to this issue
+# Check for existing human PRs and tracking issues, unless bypassed
 # ---------------------------------------------------------------------------
+# Best-effort checks, bypassable via --force or a missing forge token. A
+# bypass must not exit the script — runner setup below still needs to run.
+SKIP_EXISTING_CHECKS=0
+
 # Skip if the forge-specific token is not available (best-effort check).
 if { [ "${FULLSEND_FORGE}" = "github" ] && [ -z "${GH_TOKEN:-}" ]; } || \
    { [ "${FULLSEND_FORGE}" = "gitlab" ] && [ -z "${GITLAB_TOKEN:-}" ]; }; then
   echo "No ${FULLSEND_FORGE} token set — skipping existing-PR check"
-  exit 0
+  SKIP_EXISTING_CHECKS=1
 fi
 
 # Allow override when the trigger comment is `/fs-code --force` or CODE_FORCE
 # is set. --force counts only as the command's flag token on the first line —
 # the same first-line tokenization the dispatch router uses — so a comment
 # merely mentioning --force (or a pasted log containing it) cannot bypass
-# the existing-PR check.
+# the existing-PR or tracking-issue checks.
 FORCE_WORD=""
 if [[ -n "${COMMENT_BODY:-}" ]]; then
-  FORCE_WORD="$(printf '%s\n' "${COMMENT_BODY}" | head -1 | tr -d '\r' | awk '{print $2}')"
+  # Use parameter expansion instead of piping into `head -1`: a large
+  # COMMENT_BODY can trigger SIGPIPE on the upstream `printf`, which
+  # `set -euo pipefail` would turn into a script-ending error.
+  _COMMENT_FIRST_LINE="${COMMENT_BODY%%$'\n'*}"
+  FORCE_WORD="$(printf '%s' "${_COMMENT_FIRST_LINE}" | tr -d '\r' | awk '{print $2}')"
 fi
-echo "Evaluating force override: CODE_FORCE='${CODE_FORCE:-}' COMMENT_BODY='${COMMENT_BODY:-}'"
-if [[ "${CODE_FORCE:-}" == "true" ]] || [[ "${FORCE_WORD}" == "--force" ]]; then
-  echo "Force override — skipping existing-PR check"
-  exit 0
+echo "Evaluating force override: CODE_FORCE='$(_pre_code_sanitize_log "${CODE_FORCE:-}")' COMMENT_BODY='$(_pre_code_sanitize_log "${COMMENT_BODY:-}")'"
+if [[ "${SKIP_EXISTING_CHECKS}" -eq 0 ]] \
+   && { [[ "${CODE_FORCE:-}" == "true" ]] || [[ "${FORCE_WORD}" == "--force" ]]; }; then
+  echo "Force override — skipping existing-PR and tracking-issue checks"
+  SKIP_EXISTING_CHECKS=1
 fi
 
-BOT_LOGIN="fullsend-ai[bot]"
-CODER_BOT_LOGIN="fullsend-ai-coder[bot]"
+if [[ "${SKIP_EXISTING_CHECKS}" -eq 0 ]]; then
+  # Derive bot identities from FULLSEND_APP_SET so custom app sets (e.g.
+  # "custom-app" -> "custom-app[bot]" / "custom-app-coder[bot]") are
+  # recognized as bot-authored PRs instead of being misclassified as human.
+  # Defaults to "fullsend-ai" to preserve the prior hardcoded identities.
+  APP_SET="${FULLSEND_APP_SET:-fullsend-ai}"
+  BOT_LOGIN="${APP_SET}[bot]"
+  CODER_BOT_LOGIN="${APP_SET}-coder[bot]"
 
-echo "Checking for existing open PRs linked to issue #${ISSUE_NUMBER}..."
+  echo "Checking for existing open PRs linked to issue #${ISSUE_NUMBER}..."
 
-HUMAN_PR_LINES="$(forge_list_prs_for_issue "${ISSUE_NUMBER}" "${BOT_LOGIN}" "${CODER_BOT_LOGIN}")"
+  HUMAN_PR_LINES="$(forge_list_prs_for_issue "${ISSUE_NUMBER}" "${BOT_LOGIN}" "${CODER_BOT_LOGIN}")"
 
-if [[ -n "${HUMAN_PR_LINES}" ]]; then
-  # Parse the first PR for the notice.
-  FIRST_PR_NUM="$(echo "${HUMAN_PR_LINES}" | head -1 | cut -f1)"
-  FIRST_PR_AUTHOR="$(echo "${HUMAN_PR_LINES}" | head -1 | cut -f2)"
+  if [[ -n "${HUMAN_PR_LINES}" ]]; then
+    # Parse the first PR for the notice.
+    FIRST_PR_NUM="$(echo "${HUMAN_PR_LINES}" | head -1 | cut -f1)"
+    FIRST_PR_AUTHOR="$(echo "${HUMAN_PR_LINES}" | head -1 | cut -f2)"
 
-  # GitLab uses ! for MR references; GitHub uses #.
-  _pr_prefix="#"
-  if [ "${FULLSEND_FORGE}" = "gitlab" ]; then
-    _pr_prefix="!"
-  fi
+    # GitLab uses ! for MR references; GitHub uses #.
+    _pr_prefix="#"
+    if [ "${FULLSEND_FORGE}" = "gitlab" ]; then
+      _pr_prefix="!"
+    fi
 
-  echo "::notice::Found existing human PR ${_pr_prefix}${FIRST_PR_NUM} by @${FIRST_PR_AUTHOR}"
+    echo "::notice::Found existing human PR ${_pr_prefix}${FIRST_PR_NUM} by @${FIRST_PR_AUTHOR}"
 
-  # Apply pr-open label to signal work is already underway.
-  forge_create_label "pr-open" "An open PR already addresses this issue" "D4C5F9"
-  forge_add_label "pr-open"
+    # Apply pr-open label to signal work is already underway.
+    forge_create_label "pr-open" "An open PR already addresses this issue" "D4C5F9"
+    forge_add_label "pr-open"
 
-  # Build a markdown list of existing PRs.
-  PR_LIST_MD=""
-  while IFS=$'\t' read -r pr_num pr_author _pr_url; do
-    PR_LIST_MD="${PR_LIST_MD}
+    # Build a markdown list of existing PRs.
+    PR_LIST_MD=""
+    while IFS=$'\t' read -r pr_num pr_author _pr_url; do
+      PR_LIST_MD="${PR_LIST_MD}
 - ${_pr_prefix}${pr_num} by @${pr_author}"
-  done <<< "${HUMAN_PR_LINES}"
+    done <<< "${HUMAN_PR_LINES}"
 
-  SKIP_COMMENT="An open PR already addresses this issue — skipping automated implementation.
+    SKIP_COMMENT="An open PR already addresses this issue — skipping automated implementation.
 ${PR_LIST_MD}
 
 To override, comment \`/fs-code --force\` on this issue.
 
 <sub>Posted by <a href=\"https://github.com/fullsend-ai/fullsend\">fullsend</a> pre-code check</sub>"
 
-  forge_post_issue_comment "${SKIP_COMMENT}" || true
+    forge_retry_transient forge_post_issue_comment "${SKIP_COMMENT}" || true
 
-  echo "Skipping code agent — existing PR(s) found for issue #${ISSUE_NUMBER}"
-  prescript_output "skipped" "true"
-  prescript_output "reason" "open PR ${_pr_prefix}${FIRST_PR_NUM} by @${FIRST_PR_AUTHOR} already addresses issue #${ISSUE_NUMBER}"
-  exit 0
+    echo "Skipping code agent — existing PR(s) found for issue #${ISSUE_NUMBER}"
+    prescript_output "skipped" "true"
+    prescript_output "reason" "open PR ${_pr_prefix}${FIRST_PR_NUM} by @${FIRST_PR_AUTHOR} already addresses issue #${ISSUE_NUMBER}"
+    exit 0
+  fi
+
+  echo "No existing human PRs found — proceeding with code agent"
+
+  # ---------------------------------------------------------------------------
+  # Skip tracking/parent issues that have sub-issues (child work items)
+  # ---------------------------------------------------------------------------
+  # GitHub native sub-issues (and GitLab work-item children) mean this is a
+  # tracking issue: implementation belongs on the children, not the parent.
+  echo "Checking for sub-issues on issue #${ISSUE_NUMBER}..."
+  HAS_SUB_ISSUES="$(forge_has_sub_issues "${ISSUE_NUMBER}")"
+
+  if [[ "${HAS_SUB_ISSUES}" =~ ^[1-9][0-9]*$ ]]; then
+    echo "::notice::Issue #${ISSUE_NUMBER} has sub-issue(s) — skipping code agent"
+
+    SKIP_COMMENT="This issue has sub-issues — skipping automated implementation.
+
+The code agent implements leaf work items. Use the child issues for implementation, or comment \`/fs-code --force\` to implement this parent issue anyway.
+
+<sub>Posted by <a href=\"https://github.com/fullsend-ai/fullsend\">fullsend</a> pre-code check</sub>"
+
+    forge_retry_transient forge_post_issue_comment "${SKIP_COMMENT}" || true
+
+    echo "Skipping code agent — issue #${ISSUE_NUMBER} is a tracking issue with sub-issue(s)"
+    prescript_output "skipped" "true"
+    prescript_output "reason" "issue #${ISSUE_NUMBER} has sub-issue(s); implement the child issues instead"
+    exit 0
+  fi
+
+  echo "No sub-issues found — proceeding with code agent"
 fi
-
-echo "No existing human PRs found — proceeding with code agent"
 
 # ---------------------------------------------------------------------------
 # Auto-detect and install pre-commit tool dependencies

@@ -25,6 +25,53 @@ else
   echo "PASS: bundled-script-has-failure-reporting"
 fi
 
+if ! grep -q 'forge_push_branch' "${POST_SCRIPT}"; then
+  echo "FAIL: bundled-script-has-signed-push"
+  echo "  ${POST_SCRIPT} missing forge_push_branch"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: bundled-script-has-signed-push"
+fi
+
+# The Authored-by trailer the signed publish adds must not reach the PR body.
+if ! grep -qF "sed '/^Authored-by:/d'" "${POST_SCRIPT}"; then
+  echo "FAIL: bundled-script-strips-authored-by"
+  echo "  ${POST_SCRIPT} does not drop Authored-by from the commit body"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: bundled-script-strips-authored-by"
+fi
+
+# The switch that keeps the publish on git push unless enabled.
+if ! grep -q 'GITHUB_SIGNED_COMMITS' "${SCRIPT_DIR}/post-code.sh"; then
+  echo "FAIL: bundled-script-has-signed-commits-switch"
+  echo "  scripts/post-code.sh does not carry the GITHUB_SIGNED_COMMITS switch"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: bundled-script-has-signed-commits-switch"
+fi
+
+# harness/code.yaml ships GITHUB_SIGNED_COMMITS off, in its GitHub overlay
+# only; the eval overlay the root config.yaml registers turns it on so the
+# functional evals keep exercising the API path.
+CODE_HARNESS="${SCRIPT_DIR}/../harness/code.yaml"
+CODE_EVAL_HARNESS="${SCRIPT_DIR}/../eval/harness/code.yaml"
+ROOT_CONFIG="${SCRIPT_DIR}/../config.yaml"
+if [ "$(yq -r '[.overlays[] | select(.when == "runtime.forge == \"github\"") | .env.runner.GITHUB_SIGNED_COMMITS] | join(",")' "${CODE_HARNESS}")" = "false" ] \
+   && [ "$(yq -r '[.env.runner.GITHUB_SIGNED_COMMITS, .env.sandbox.GITHUB_SIGNED_COMMITS, (.overlays[] | select(.when != "runtime.forge == \"github\"") | .env.runner.GITHUB_SIGNED_COMMITS, .env.sandbox.GITHUB_SIGNED_COMMITS)] | map(select(. != null)) | length' "${CODE_HARNESS}")" = "0" ]; then
+  echo "PASS: code-harness-signed-commits-default-off"
+else
+  echo "FAIL: code-harness-signed-commits-default-off — GITHUB_SIGNED_COMMITS must be \"false\" in the GitHub overlay of harness/code.yaml and set nowhere else"
+  FAILURES=$((FAILURES + 1))
+fi
+if yq -e '.base == "../../harness/code.yaml" and .env.runner.GITHUB_SIGNED_COMMITS == "true"' "${CODE_EVAL_HARNESS}" >/dev/null \
+   && yq -e '.agents[] | select(.source == "eval/harness/code.yaml")' "${ROOT_CONFIG}" >/dev/null; then
+  echo "PASS: eval-code-harness-signed-commits-on"
+else
+  echo "FAIL: eval-code-harness-signed-commits-on — eval/harness/code.yaml must extend harness/code.yaml with GITHUB_SIGNED_COMMITS \"true\" and be registered in config.yaml"
+  FAILURES=$((FAILURES + 1))
+fi
+
 if ! grep -q 'install_gitleaks' "${POST_SCRIPT}"; then
   echo "FAIL: bundled-script-has-gitleaks-install"
   echo "  ${POST_SCRIPT} missing install_gitleaks"
@@ -57,6 +104,32 @@ else
   echo "PASS: bundled-script-has-ensure-label"
 fi
 
+# Lib-defined code is only inlined into the bundle: in bundled mode check the
+# bundle (so a stale bundle is caught), in source mode check the lib itself.
+if [[ "${SCRIPT_TEST_TARGET:-source}" == "bundled" ]]; then
+  CODE_OPS_TARGET="${POST_SCRIPT}"
+  FAILURE_LIB_TARGET="${POST_SCRIPT}"
+else
+  CODE_OPS_TARGET="${SCRIPT_DIR}/lib/github-code-ops.lib.sh"
+  FAILURE_LIB_TARGET="${SCRIPT_DIR}/lib/post-failure-report.lib.sh"
+fi
+
+if ! grep -q 'forge_retry_transient gh pr create' "${CODE_OPS_TARGET}"; then
+  echo "FAIL: create-pr-wrapped-in-transient-retry"
+  echo "  ${CODE_OPS_TARGET} does not wrap gh pr create with forge_retry_transient"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: create-pr-wrapped-in-transient-retry"
+fi
+
+if ! grep -q 'code-agent-failed' "${FAILURE_LIB_TARGET}"; then
+  echo "FAIL: post-failure-has-last-resort-label"
+  echo "  ${FAILURE_LIB_TARGET} missing code-agent-failed last-resort label"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: post-failure-has-last-resort-label"
+fi
+
 # ---------------------------------------------------------------------------
 # Test helper — reimplements the title-rewriting logic from post-code.sh
 # so we can test it without a git repo or network access.
@@ -65,11 +138,14 @@ rewrite_title() {
   local commit_subject="$1"
   local issue_number="$2"
   local identity_mode="${3:-forge-native}"
+  local inject_issue_scope="${4:-true}"
 
   if echo "${commit_subject}" | grep -qE '^[a-z]+\('; then
     echo "${commit_subject}"
   elif echo "${commit_subject}" | grep -qE '^[a-z]+: '; then
-    if [ "${identity_mode}" = "external" ]; then
+    if [ "${inject_issue_scope}" = "false" ]; then
+      echo "${commit_subject}"
+    elif [ "${identity_mode}" = "external" ]; then
       echo "${commit_subject}" | sed "s/^\([a-z]*\): /\1(${issue_number}): /"
     else
       echo "${commit_subject}" | sed "s/^\([a-z]*\): /\1(#${issue_number}): /"
@@ -177,6 +253,143 @@ if [ "${actual_external_title}" != "fix(FSENDAI-4804): handle cross-forge work" 
   FAILURES=$((FAILURES + 1))
 else
   echo "PASS: external-tracker-title-uses-work-item-key"
+fi
+
+# inject_issue_scope=false — leave a conventional-commit subject unchanged
+actual_no_inject="$(rewrite_title "feat: add copy buttons" "2854" forge-native false)"
+if [ "${actual_no_inject}" != "feat: add copy buttons" ]; then
+  echo "FAIL: inject-issue-scope-false-skips-injection"
+  echo "  expected: 'feat: add copy buttons'"
+  echo "  actual:   '${actual_no_inject}'"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: inject-issue-scope-false-skips-injection"
+fi
+
+actual_no_inject_area="$(rewrite_title "feat(ui): add copy buttons" "2854" forge-native false)"
+if [ "${actual_no_inject_area}" != "feat(ui): add copy buttons" ]; then
+  echo "FAIL: inject-issue-scope-false-preserves-area-scope"
+  echo "  expected: 'feat(ui): add copy buttons'"
+  echo "  actual:   '${actual_no_inject_area}'"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: inject-issue-scope-false-preserves-area-scope"
+fi
+
+actual_no_inject_external="$(rewrite_title "fix: handle cross-forge work" "FSENDAI-4804" external false)"
+if [ "${actual_no_inject_external}" != "fix: handle cross-forge work" ]; then
+  echo "FAIL: inject-issue-scope-false-skips-external-injection"
+  echo "  expected: 'fix: handle cross-forge work'"
+  echo "  actual:   '${actual_no_inject_external}'"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: inject-issue-scope-false-skips-external-injection"
+fi
+
+# Default (unset / true) still injects — covered by fix-without-scope above.
+# Reading the flag from agent-result.json mirrors post-code.src.sh.
+resolve_inject_issue_scope() {
+  local result_json="$1"
+  local value
+  value="$(printf '%s' "${result_json}" | jq -r '.inject_issue_scope')"
+  if [ "${value}" = "false" ]; then
+    echo "false"
+  else
+    echo "true"
+  fi
+}
+
+if [ "$(resolve_inject_issue_scope '{"target_branch":"main"}')" != "true" ]; then
+  echo "FAIL: inject-issue-scope-absent-defaults-true"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: inject-issue-scope-absent-defaults-true"
+fi
+
+if [ "$(resolve_inject_issue_scope '{"target_branch":"main","inject_issue_scope":true}')" != "true" ]; then
+  echo "FAIL: inject-issue-scope-true-stays-true"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: inject-issue-scope-true-stays-true"
+fi
+
+if [ "$(resolve_inject_issue_scope '{"target_branch":"main","inject_issue_scope":false}')" != "false" ]; then
+  echo "FAIL: inject-issue-scope-false-reads-false"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: inject-issue-scope-false-reads-false"
+fi
+
+# closes_issue is read the same way: jq `//` would turn JSON false into
+# "empty", so a partial implementation's opt-out would be lost.
+resolve_closes_issue() {
+  local value
+  value="$(printf '%s' "$1" | jq -r '.closes_issue')"
+  if [ "${value}" = "false" ]; then echo "false"; else echo "true"; fi
+}
+
+if [ "$(resolve_closes_issue '{"target_branch":"main"}')" != "true" ]; then
+  echo "FAIL: closes-issue-absent-defaults-true"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: closes-issue-absent-defaults-true"
+fi
+
+if [ "$(resolve_closes_issue '{"target_branch":"main","closes_issue":false}')" != "false" ]; then
+  echo "FAIL: closes-issue-false-reads-false"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: closes-issue-false-reads-false"
+fi
+
+if grep -q "closes_issue // empty" "${POST_SCRIPT}"; then
+  echo "FAIL: bundled-script-reads-closes-issue-without-jq-alternative"
+  echo "  ${POST_SCRIPT} still parses closes_issue with jq //, which drops JSON false"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: bundled-script-reads-closes-issue-without-jq-alternative"
+fi
+
+if ! grep -q 'inject_issue_scope' "${POST_SCRIPT}"; then
+  echo "FAIL: bundled-script-has-inject-issue-scope"
+  echo "  ${POST_SCRIPT} missing inject_issue_scope"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: bundled-script-has-inject-issue-scope"
+fi
+
+SKILL_FILE="${SCRIPT_DIR}/../skills/code-implementation/SKILL.md"
+if grep -q 'Always include the issue number as a scope' "${SKILL_FILE}"; then
+  echo "FAIL: skill-no-longer-always-injects-issue-scope"
+  echo "  ${SKILL_FILE} still always injects the issue number as scope"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: skill-no-longer-always-injects-issue-scope"
+fi
+
+if ! grep -q 'inject_issue_scope: false' "${SKILL_FILE}"; then
+  echo "FAIL: skill-documents-inject-issue-scope-opt-out"
+  echo "  ${SKILL_FILE} missing inject_issue_scope: false guidance"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: skill-documents-inject-issue-scope-opt-out"
+fi
+
+if ! grep -q 'A scope MUST consist of a noun' "${SKILL_FILE}" \
+  || ! grep -q 'describing a section of the codebase' "${SKILL_FILE}"; then
+  echo "FAIL: skill-quotes-cc-v1-item-4-scope"
+  echo "  ${SKILL_FILE} missing Conventional Commits v1.0.0 item 4 quote"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: skill-quotes-cc-v1-item-4-scope"
+fi
+
+if ! grep -q 'fix(parser):' "${SKILL_FILE}" || ! grep -q 'feat(#1234):' "${SKILL_FILE}"; then
+  echo "FAIL: skill-has-cc-scope-examples"
+  echo "  ${SKILL_FILE} missing area-scope/ticket-scope examples"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: skill-has-cc-scope-examples"
 fi
 
 # ---------------------------------------------------------------------------
@@ -767,9 +980,10 @@ count_related_to_commit_body_test() {
   local processed
   processed="$(printf '%s\n' "${raw_commit_body}" \
     | sed '/^Signed-off-by:/d' \
+    | sed '/^Authored-by:/d' \
     | sed '/^Closes #/d' \
     | sed '/^Related to #/d' \
-    | sed -e :a -e '/^\n*$/{ $d; N; ba; }')"
+    | sed -e ':a' -e '/^\n*$/{' -e '$d' -e 'N' -e 'ba' -e '}')"
   processed="$(echo "${processed}" | awk '
     /^$/           { if (buf) print buf; print; buf=""; next }
     /^[-*#>]|^  /  { if (buf) print buf; buf=""; print; next }
@@ -910,6 +1124,157 @@ run_noop_test "noop-on-main-with-changes" \
   "main" "src/widget.go" "noop:branch"
 
 # ---------------------------------------------------------------------------
+# Test helper — reimplements uncommitted-work detection from post-code.src.sh
+# so we can test porcelain filtering without a git repo.
+# ---------------------------------------------------------------------------
+AGENT_ARTIFACT_PATTERNS=".agentready/ .fullsend-workspace/"
+
+is_agent_artifact_path() {
+  local file="$1"
+  local pattern dir
+  for pattern in ${AGENT_ARTIFACT_PATTERNS}; do
+    dir="${pattern%/}"
+    case "${file}" in
+      "${dir}"/*|"${dir}") return 0 ;;
+      */"${dir}"/*|*/"${dir}") return 0 ;;
+    esac
+  done
+  return 1
+}
+
+filter_uncommitted_work() {
+  local porcelain="$1"
+  if [ -z "${porcelain}" ]; then
+    printf ''
+    return 0
+  fi
+
+  local filtered="" line path
+  while IFS= read -r line || [ -n "${line}" ]; do
+    [ -z "${line}" ] && continue
+    path="${line#???}"
+    case "${path}" in
+      *" -> "*) path="${path##* -> }" ;;
+    esac
+    path="${path#\"}"
+    path="${path%\"}"
+    if is_agent_artifact_path "${path}"; then
+      continue
+    fi
+    if [ -n "${filtered}" ]; then
+      filtered="${filtered}"$'\n'"${line}"
+    else
+      filtered="${line}"
+    fi
+  done <<< "${porcelain}"
+  printf '%s' "${filtered}"
+}
+
+decide_uncommitted_work() {
+  local branch="$1"
+  local changed_files="$2"
+  local porcelain="$3"
+
+  local dirty
+  dirty="$(filter_uncommitted_work "${porcelain}")"
+
+  if [ -z "${branch}" ] || [ "${branch}" = "main" ] || [ "${branch}" = "master" ]; then
+    if [ -n "${dirty}" ]; then
+      echo "fail:uncommitted:${dirty}"
+      return 1
+    fi
+    echo "noop:branch"
+    return 0
+  fi
+
+  if [ -z "${changed_files}" ]; then
+    if [ -n "${dirty}" ]; then
+      echo "fail:uncommitted:${dirty}"
+      return 1
+    fi
+    echo "noop:files"
+    return 0
+  fi
+
+  echo "proceed"
+  return 0
+}
+
+run_uncommitted_work_test() {
+  local test_name="$1"
+  local branch="$2"
+  local changed_files="$3"
+  local porcelain="$4"
+  local expected_prefix="$5"
+  local expect_rc="$6"
+
+  local actual rc=0
+  actual="$(decide_uncommitted_work "${branch}" "${changed_files}" "${porcelain}")" || rc=$?
+
+  if [ "${rc}" -ne "${expect_rc}" ]; then
+    echo "FAIL: ${test_name}"
+    echo "  expected rc: ${expect_rc}"
+    echo "  actual rc:   ${rc}"
+    echo "  actual:      ${actual}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  if [[ "${actual}" != ${expected_prefix}* ]]; then
+    echo "FAIL: ${test_name}"
+    echo "  expected prefix: '${expected_prefix}'"
+    echo "  actual:          '${actual}'"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
+# Staged files on a feature branch with no commits → fail, not no-op
+run_uncommitted_work_test "uncommitted-staged-on-feature-fails" \
+  "agent/42-fix-widget" "" $'M  src/widget.go' \
+  "fail:uncommitted" 1
+
+# Untracked files on a feature branch with no commits → fail
+run_uncommitted_work_test "uncommitted-untracked-on-feature-fails" \
+  "agent/42-fix-widget" "" $'?? scripts/openshell_job.sh' \
+  "fail:uncommitted" 1
+
+# Staged files on main (no feature branch) → fail, not no-op
+run_uncommitted_work_test "uncommitted-staged-on-main-fails" \
+  "main" "" $'A  src/widget.go' \
+  "fail:uncommitted" 1
+
+# Clean tree on a feature branch with no commits → still a genuine no-op
+run_uncommitted_work_test "clean-feature-branch-still-noop" \
+  "agent/42-fix-widget" "" "" \
+  "noop:files" 0
+
+# Agent working-dir artifacts only → still a genuine no-op
+run_uncommitted_work_test "agent-artifact-untracked-still-noop" \
+  "agent/42-fix-widget" "" $'?? .agentready/scratch.txt' \
+  "noop:files" 0
+
+# Mixed real files + artifacts → fail and keep the real file in the listing
+run_uncommitted_work_test "mixed-real-and-artifact-fails" \
+  "agent/42-fix-widget" "" $'M  src/widget.go\n?? .fullsend-workspace/tmp' \
+  "fail:uncommitted:M  src/widget.go" 1
+
+# Renames in porcelain use "old -> new"; the destination must be checked
+run_uncommitted_work_test "rename-to-real-file-fails" \
+  "agent/42-fix-widget" "" $'R  old.go -> src/new.go' \
+  "fail:uncommitted" 1
+
+run_uncommitted_work_test "rename-to-artifact-still-noop" \
+  "agent/42-fix-widget" "" $'R  scratch.txt -> .agentready/scratch.txt' \
+  "noop:files" 0
+
+# Feature branch WITH commits proceeds even if the tree is also dirty
+run_uncommitted_work_test "committed-changes-proceed" \
+  "agent/42-fix-widget" "src/widget.go" $' M src/widget.go' \
+  "proceed" 0
+
+# ---------------------------------------------------------------------------
 # Test helper — reimplements the stale branch cleanup decision logic from
 # post-code.sh section 7a. Given whether a remote branch exists and whether
 # an open PR references it, returns the action the script would take.
@@ -967,68 +1332,6 @@ run_stale_branch_test "stale-branch-no-pr" \
 # Remote branch exists, open PR → keep branch (push will update PR)
 run_stale_branch_test "branch-with-open-pr" \
   "abc123 refs/heads/agent/42-fix-widget" "99" "keep:open-pr"
-
-# ---------------------------------------------------------------------------
-# Test helper — reimplements the push retry logic from post-code.sh
-# section 7b. Given a push exit code and output, returns the action.
-# ---------------------------------------------------------------------------
-decide_push_retry() {
-  local push_rc="$1"
-  local push_output="$2"
-
-  if [ "${push_rc}" -eq 0 ]; then
-    echo "success"
-    return 0
-  fi
-
-  if echo "${push_output}" | grep -qi "non-fast-forward\|rejected\|fetch first"; then
-    echo "retry:force-with-lease"
-    return 0
-  fi
-
-  echo "fail:unexpected-error"
-  return 0
-}
-
-run_push_retry_test() {
-  local test_name="$1"
-  local push_rc="$2"
-  local push_output="$3"
-  local expected_prefix="$4"
-
-  local actual
-  actual="$(decide_push_retry "${push_rc}" "${push_output}")"
-
-  if [[ "${actual}" != ${expected_prefix}* ]]; then
-    echo "FAIL: ${test_name}"
-    echo "  push_rc:         '${push_rc}'"
-    echo "  push_output:     '${push_output}'"
-    echo "  expected prefix: '${expected_prefix}'"
-    echo "  actual:          '${actual}'"
-    FAILURES=$((FAILURES + 1))
-    return
-  fi
-
-  echo "PASS: ${test_name}"
-}
-
-# --- Push retry test cases ---
-
-# Successful push → no retry needed
-run_push_retry_test "push-success" \
-  "0" "Everything up-to-date" "success"
-
-# Non-fast-forward error → retry with --force-with-lease
-run_push_retry_test "push-non-fast-forward" \
-  "1" "error: failed to push some refs: non-fast-forward" "retry:force-with-lease"
-
-# Rejected error → retry with --force-with-lease
-run_push_retry_test "push-rejected" \
-  "1" "! [rejected] agent/42 -> agent/42 (fetch first)" "retry:force-with-lease"
-
-# Unknown error → fail
-run_push_retry_test "push-unexpected-error" \
-  "1" "fatal: repository not found" "fail:unexpected-error"
 
 # ---------------------------------------------------------------------------
 # Test helper — reimplements the agent artifact stripping logic from
@@ -1517,6 +1820,23 @@ else
   echo "PASS: script-has-noop-comment"
 fi
 
+# Verify timeout-kill / uncommitted-work detection is present
+if ! grep -q 'fail_if_uncommitted_work' "${POST_SCRIPT}"; then
+  echo "FAIL: script-has-uncommitted-work-guard"
+  echo "  ${POST_SCRIPT} missing fail_if_uncommitted_work"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: script-has-uncommitted-work-guard"
+fi
+
+if ! grep -q 'uncommitted-work' "${POST_SCRIPT}"; then
+  echo "FAIL: script-has-uncommitted-work-category"
+  echo "  ${POST_SCRIPT} missing uncommitted-work category"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: script-has-uncommitted-work-category"
+fi
+
 # --- Branch validation test cases ---
 
 # Auto-correct: agent writes main, default is master, no allowed list → corrected
@@ -1547,7 +1867,7 @@ run_branch_validation_test "explicit-list-accepts-match" \
 run_branch_validation_test "explicit-list-includes-default" \
   "main" "main" "main,develop" "accept:main"
 
-# No agent target with explicit list still uses default
+# No agent target with explicit list still uses default.
 run_branch_validation_test "no-agent-target-ignores-allowed-list" \
   "" "main" "release-1,release-2" "default:main"
 
@@ -1778,6 +2098,8 @@ run_numeric_validation_test "issue-number-shell-injection" "1;echo pwned" "false
 SEC_CODE_TMPDIR="$(mktemp -d)"
 SEC_CODE_MOCK_BIN="${SEC_CODE_TMPDIR}/bin"
 mkdir -p "${SEC_CODE_MOCK_BIN}"
+# Git Data API calls from forge_push_branch are served from the bare remote.
+export FAKE_GH_GIT_API="${SCRIPT_DIR}/test-fixtures/fake-gh-git-api.sh"
 
 cat > "${SEC_CODE_MOCK_BIN}/sleep" <<'MOCKEOF'
 #!/usr/bin/env bash
@@ -1787,6 +2109,7 @@ chmod +x "${SEC_CODE_MOCK_BIN}/sleep"
 
 cat > "${SEC_CODE_MOCK_BIN}/gitleaks" <<'MOCKEOF'
 #!/usr/bin/env bash
+if [ "${1:-}" = version ]; then echo 8.30.1; exit 0; fi
 exit 0
 MOCKEOF
 chmod +x "${SEC_CODE_MOCK_BIN}/gitleaks"
@@ -1828,6 +2151,7 @@ setup_sec_code_repo() {
 cat > "${SEC_CODE_MOCK_BIN}/gh" <<'MOCKEOF'
 #!/usr/bin/env bash
 case "$1 $2" in
+  "api -X")      exec bash "${FAKE_GH_GIT_API}" "$@" ;;
   "api repos/"*) echo "main"; exit 0 ;;
   "pr list")     echo ""; exit 0 ;;
   "pr create")   echo "https://github.com/test-org/test-repo/pull/1"; exit 0 ;;
@@ -1851,22 +2175,176 @@ _sec_ns_rc=0
   export ISSUE_NUMBER="99"
   export REPO_DIR="repo"
   export FULLSEND_FORGE="github"
+  export GITHUB_SIGNED_COMMITS="true"
   bash "${POST_SCRIPT}"
 ) > "${SEC_CODE_TMPDIR}/stdout-namespace.log" 2>&1 || _sec_ns_rc=$?
 
 _sec_ns_safe="$(${REAL_GIT} -C "${_sec_ns_dir}/remote.git" branch --list "agent/99-evil-branch" 2>/dev/null)"
 _sec_ns_evil="$(${REAL_GIT} -C "${_sec_ns_dir}/remote.git" branch --list "evil-branch" 2>/dev/null)"
+# The fake API authors every commit it creates as the App bot, so the
+# author of the remote tip proves the publish went through the API path.
+_sec_ns_author="$(${REAL_GIT} -C "${_sec_ns_dir}/remote.git" log -1 --format=%an refs/heads/agent/99-evil-branch 2>/dev/null || true)"
 
-if [ -n "${_sec_ns_safe}" ] && [ -z "${_sec_ns_evil}" ]; then
+if [ -n "${_sec_ns_safe}" ] && [ -z "${_sec_ns_evil}" ] && [ "${_sec_ns_author}" = "fullsend-ai-coder[bot]" ]; then
   echo "PASS: security-namespace-enforcement"
 else
   echo "FAIL: security-namespace-enforcement"
   echo "  exit code:      ${_sec_ns_rc}"
   echo "  agent/99-*:     '${_sec_ns_safe}'"
   echo "  evil-branch:    '${_sec_ns_evil}'"
+  echo "  tip author:     '${_sec_ns_author}' (want fullsend-ai-coder[bot])"
   echo "  remote refs:    $(${REAL_GIT} -C "${_sec_ns_dir}/remote.git" branch --list)"
   cat "${SEC_CODE_TMPDIR}/stdout-namespace.log"
   FAILURES=$((FAILURES + 1))
+fi
+
+# --- GITHUB_SIGNED_COMMITS off (the harness default): plain git push -----
+# Any Git Data API call on this path fails the run.
+cat > "${SEC_CODE_MOCK_BIN}/gh" <<'MOCKEOF'
+#!/usr/bin/env bash
+case "$1 $2" in
+  "api -X")      echo "unexpected Git Data API call on the plain-push path: $*" >&2; exit 99 ;;
+  "api repos/"*) echo "main"; exit 0 ;;
+  "pr list")     echo ""; exit 0 ;;
+  "pr create")   echo "https://github.com/test-org/test-repo/pull/1"; exit 0 ;;
+  "issue comment"|"pr comment") printf '%s\n' "$@"; exit 0 ;;
+  *)             exit 0 ;;
+esac
+MOCKEOF
+chmod +x "${SEC_CODE_MOCK_BIN}/gh"
+
+_sec_off_dir="${SEC_CODE_TMPDIR}/run-signed-commits-off"
+setup_sec_code_repo "${_sec_off_dir}" "agent/99-test-fix"
+
+_sec_off_rc=0
+# shellcheck disable=SC2030,SC2031
+(
+  cd "${_sec_off_dir}"
+  export HOME="${SEC_CODE_TMPDIR}"
+  export PATH="${SEC_CODE_MOCK_BIN}:${PATH}"
+  export PUSH_TOKEN="fake-token"
+  export REPO_FULL_NAME="test-org/test-repo"
+  export ISSUE_NUMBER="99"
+  export REPO_DIR="repo"
+  export FULLSEND_FORGE="github"
+  export GITHUB_SIGNED_COMMITS="false"
+  bash "${POST_SCRIPT}"
+) > "${SEC_CODE_TMPDIR}/stdout-signed-commits-off.log" 2>&1 || _sec_off_rc=$?
+
+# The remote tip is the sandbox commit itself, with its own author, not a
+# commit rebuilt under the App bot.
+_sec_off_remote="$(${REAL_GIT} -C "${_sec_off_dir}/remote.git" rev-parse --verify --quiet refs/heads/agent/99-test-fix || true)"
+_sec_off_local="$(${REAL_GIT} -C "${_sec_off_dir}/repo" rev-parse HEAD)"
+_sec_off_author="$(${REAL_GIT} -C "${_sec_off_dir}/remote.git" log -1 --format=%an refs/heads/agent/99-test-fix 2>/dev/null || true)"
+if [ "${_sec_off_rc}" -eq 0 ] && [ -n "${_sec_off_remote}" ] && [ "${_sec_off_remote}" = "${_sec_off_local}" ] \
+   && [ "${_sec_off_author}" = "Test" ]; then
+  echo "PASS: signed-commits-off-plain-push"
+else
+  echo "FAIL: signed-commits-off-plain-push"
+  echo "  exit code:  ${_sec_off_rc}"
+  echo "  remote tip: '${_sec_off_remote}' local HEAD: '${_sec_off_local}'"
+  echo "  tip author: '${_sec_off_author}' (want Test)"
+  cat "${SEC_CODE_TMPDIR}/stdout-signed-commits-off.log"
+  FAILURES=$((FAILURES + 1))
+fi
+
+# --- A sandbox-written object-graph rewrite must not hide the agent's delta --
+# The checkout comes from the agent's sandbox, so it can carry refs/replace/*,
+# info/grafts or a forged commit-graph; Git honours all three by default, and
+# every diff or history walk here would then read the forged graph. Replacing
+# the agent's last commit with a copy that keeps its parent but not its tree
+# makes the changed-files list and the commit secret scan see nothing, while
+# the push (which sends objects, not diffs) publishes the secret. The graph
+# policy must expose the real patch and fail closed before anything is pushed.
+# Fixture commits carry a synthetic secret on purpose; the host's global Git
+# config (and any host-level pre-commit secret hook) must not block them.
+sec_fixture_git() {
+  GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null \
+    ${REAL_GIT} -c core.hooksPath=/dev/null "$@"
+}
+
+# The planted secret is a synthetic, non-credential GitHub-token shape ("ghp_"
+# plus four repeats of a digit cycle), built at runtime so this file holds no
+# credential-shaped literal. The bytes planted in the fixture are unchanged.
+_GRAPH_TOKEN_DIGITS="0123456789"
+export GRAPH_SECRET_MARKER="ghp_${_GRAPH_TOKEN_DIGITS}${_GRAPH_TOKEN_DIGITS}${_GRAPH_TOKEN_DIGITS}${_GRAPH_TOKEN_DIGITS}"
+
+CODE_GRAPH_BIN="${SEC_CODE_TMPDIR}/bin-graph-policy"
+mkdir -p "${CODE_GRAPH_BIN}"
+cat > "${CODE_GRAPH_BIN}/gitleaks" <<'MOCKEOF'
+#!/usr/bin/env bash
+if [ "${1:-}" = version ]; then echo 8.30.1; exit 0; fi
+range=""
+for arg in "$@"; do
+  case "${arg}" in
+    --log-opts=*) range="${arg#--log-opts=}" ;;
+  esac
+done
+if git log -p --no-color "${range}" 2>/dev/null \
+   | grep -q "${GRAPH_SECRET_MARKER:?GRAPH_SECRET_MARKER is required}"; then
+  echo "leaks found: 1"
+  exit 1
+fi
+exit 0
+MOCKEOF
+chmod +x "${CODE_GRAPH_BIN}/gitleaks"
+
+_code_graph_dir="${SEC_CODE_TMPDIR}/run-graph-policy"
+setup_sec_code_repo "${_code_graph_dir}" "agent/99-test-fix"
+_code_repo="${_code_graph_dir}/repo"
+echo "token = ${GRAPH_SECRET_MARKER}" > "${_code_repo}/leak.txt"
+sec_fixture_git -C "${_code_repo}" add leak.txt
+sec_fixture_git -C "${_code_repo}" commit -q -m "fix: follow-up"
+_code_last="$(${REAL_GIT} -C "${_code_repo}" rev-parse HEAD)"
+_code_parent="$(${REAL_GIT} -C "${_code_repo}" rev-parse HEAD^)"
+# The forged copy keeps the parent and takes the parent's tree: an empty patch.
+_code_fake="$(printf '%s\n' "$(${REAL_GIT} -C "${_code_repo}" cat-file commit "${_code_last}" \
+    | sed -e "s/^tree .*/tree $(${REAL_GIT} -C "${_code_repo}" rev-parse "${_code_parent}^{tree}")/")" \
+  | ${REAL_GIT} -C "${_code_repo}" hash-object -t commit -w --stdin)"
+${REAL_GIT} -C "${_code_repo}" replace "${_code_last}" "${_code_fake}"
+if ${REAL_GIT} -C "${_code_repo}" log -p "${_code_parent}..HEAD" \
+     | grep -q "${GRAPH_SECRET_MARKER}"; then
+  echo "FAIL: graph-policy-replaced-agent-commit-scanned — fixture does not hide the secret"
+  FAILURES=$((FAILURES + 1))
+else
+  _code_graph_rc=0
+  # shellcheck disable=SC2030,SC2031
+  (
+    cd "${_code_graph_dir}"
+    export HOME="${SEC_CODE_TMPDIR}"
+    export PATH="${CODE_GRAPH_BIN}:${SEC_CODE_MOCK_BIN}:${PATH}"
+    export PUSH_TOKEN="fake-token"
+    export REPO_FULL_NAME="test-org/test-repo"
+    export ISSUE_NUMBER="99"
+    export REPO_DIR="repo"
+    export FULLSEND_FORGE="github"
+    export GITHUB_SIGNED_COMMITS="false"
+    bash "${POST_SCRIPT}"
+  ) > "${SEC_CODE_TMPDIR}/stdout-graph-policy.log" 2>&1 || _code_graph_rc=$?
+
+  _code_graph_log="${SEC_CODE_TMPDIR}/stdout-graph-policy.log"
+  _code_graph_pushed="yes"
+  ${REAL_GIT} -C "${_code_graph_dir}/remote.git" show-ref --verify --quiet \
+    refs/heads/agent/99-test-fix || _code_graph_pushed="no"
+  if [ "${_code_graph_rc}" -eq 0 ]; then
+    echo "FAIL: graph-policy-replaced-agent-commit-scanned — secret-scan rejection expected, run exited 0"
+    cat "${_code_graph_log}"
+    FAILURES=$((FAILURES + 1))
+  elif ! grep -q 'leak.txt' "${_code_graph_log}"; then
+    echo "FAIL: graph-policy-replaced-agent-commit-scanned — changed files omit the hidden leak.txt"
+    cat "${_code_graph_log}"
+    FAILURES=$((FAILURES + 1))
+  elif ! grep -q 'leaks found' "${_code_graph_log}"; then
+    echo "FAIL: graph-policy-replaced-agent-commit-scanned — rejected but not by the secret scan"
+    cat "${_code_graph_log}"
+    FAILURES=$((FAILURES + 1))
+  elif [ "${_code_graph_pushed}" = "yes" ]; then
+    echo "FAIL: graph-policy-replaced-agent-commit-scanned — branch published despite the blocked scan"
+    cat "${_code_graph_log}"
+    FAILURES=$((FAILURES + 1))
+  else
+    echo "PASS: graph-policy-replaced-agent-commit-scanned"
+  fi
 fi
 
 # --- gh pr list API failure → fail closed (not delete branch and proceed) ---
@@ -1896,6 +2374,7 @@ _sec_api_rc=0
   export ISSUE_NUMBER="99"
   export REPO_DIR="repo"
   export FULLSEND_FORGE="github"
+  export GITHUB_SIGNED_COMMITS="true"
   bash "${POST_SCRIPT}"
 ) > "${SEC_CODE_TMPDIR}/stdout-api-failure.log" 2>&1 || _sec_api_rc=$?
 
@@ -1910,6 +2389,509 @@ else
   cat "${SEC_CODE_TMPDIR}/stdout-api-failure.log"
   FAILURES=$((FAILURES + 1))
 fi
+
+# --- Timeout-kill: staged files, no commit → fail (not Success / no-op) ---
+cat > "${SEC_CODE_MOCK_BIN}/gh" <<'MOCKEOF'
+#!/usr/bin/env bash
+case "$1 $2" in
+  "api repos/"*) echo "main"; exit 0 ;;
+  "pr list")     echo ""; exit 0 ;;
+  "issue comment"|"pr comment")
+    printf '%s\n' "$@"
+    cat 2>/dev/null || true
+    exit 0 ;;
+  *)             exit 0 ;;
+esac
+MOCKEOF
+chmod +x "${SEC_CODE_MOCK_BIN}/gh"
+
+_sec_kill_dir="${SEC_CODE_TMPDIR}/run-killed-before-commit"
+setup_sec_code_repo "${_sec_kill_dir}" "agent/99-timeout-kill"
+# Drop the committed change and leave it staged instead — the timeout-kill
+# fingerprint from #1256 (git add, then killed before git commit).
+${REAL_GIT} -C "${_sec_kill_dir}/repo" reset --soft HEAD~1
+
+_sec_kill_rc=0
+# shellcheck disable=SC2030,SC2031
+(
+  cd "${_sec_kill_dir}"
+  export HOME="${SEC_CODE_TMPDIR}"
+  export PATH="${SEC_CODE_MOCK_BIN}:${PATH}"
+  export PUSH_TOKEN="fake-token"
+  export REPO_FULL_NAME="test-org/test-repo"
+  export ISSUE_NUMBER="99"
+  export REPO_DIR="repo"
+  export FULLSEND_FORGE="github"
+  export GITHUB_SIGNED_COMMITS="true"
+  bash "${POST_SCRIPT}"
+) > "${SEC_CODE_TMPDIR}/stdout-killed.log" 2>&1 || _sec_kill_rc=$?
+
+_sec_kill_log="${SEC_CODE_TMPDIR}/stdout-killed.log"
+if [ "${_sec_kill_rc}" -eq 0 ]; then
+  echo "FAIL: killed-before-commit-staged-exits-nonzero — expected non-zero exit"
+  cat "${_sec_kill_log}"
+  FAILURES=$((FAILURES + 1))
+elif ! grep -q "killed before committing" "${_sec_kill_log}"; then
+  echo "FAIL: killed-before-commit-staged-exits-nonzero — missing failure heading"
+  cat "${_sec_kill_log}"
+  FAILURES=$((FAILURES + 1))
+elif grep -q "agent determined no changes needed" "${_sec_kill_log}"; then
+  echo "FAIL: killed-before-commit-staged-exits-nonzero — posted no-op comment"
+  cat "${_sec_kill_log}"
+  FAILURES=$((FAILURES + 1))
+elif ! grep -q "file.txt" "${_sec_kill_log}"; then
+  echo "FAIL: killed-before-commit-staged-exits-nonzero — staged file not listed"
+  cat "${_sec_kill_log}"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: killed-before-commit-staged-exits-nonzero (exit ${_sec_kill_rc})"
+fi
+
+# --- Genuine no-op: feature branch, no commits, clean tree → exit 0 ---
+_sec_noop_dir="${SEC_CODE_TMPDIR}/run-genuine-noop"
+setup_sec_code_repo "${_sec_noop_dir}" "agent/99-already-fixed"
+${REAL_GIT} -C "${_sec_noop_dir}/repo" reset --hard HEAD~1
+
+_sec_noop_rc=0
+# shellcheck disable=SC2030,SC2031
+(
+  cd "${_sec_noop_dir}"
+  export HOME="${SEC_CODE_TMPDIR}"
+  export PATH="${SEC_CODE_MOCK_BIN}:${PATH}"
+  export PUSH_TOKEN="fake-token"
+  export REPO_FULL_NAME="test-org/test-repo"
+  export ISSUE_NUMBER="99"
+  export REPO_DIR="repo"
+  export FULLSEND_FORGE="github"
+  export GITHUB_SIGNED_COMMITS="true"
+  bash "${POST_SCRIPT}"
+) > "${SEC_CODE_TMPDIR}/stdout-genuine-noop.log" 2>&1 || _sec_noop_rc=$?
+
+_sec_noop_log="${SEC_CODE_TMPDIR}/stdout-genuine-noop.log"
+if [ "${_sec_noop_rc}" -ne 0 ]; then
+  echo "FAIL: genuine-noop-clean-tree-exits-zero — expected exit 0, got ${_sec_noop_rc}"
+  cat "${_sec_noop_log}"
+  FAILURES=$((FAILURES + 1))
+elif ! grep -q "agent determined no changes needed" "${_sec_noop_log}"; then
+  echo "FAIL: genuine-noop-clean-tree-exits-zero — missing no-op comment"
+  cat "${_sec_noop_log}"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: genuine-noop-clean-tree-exits-zero"
+fi
+
+# --- git status failure: swallowed error must not look like a clean tree ---
+# Regression for the false "Success"/no-op this PR closes: if `git status`
+# itself fails, the script must fail closed, not report a genuine no-op.
+cat > "${SEC_CODE_MOCK_BIN}/git" <<MOCKEOF
+#!/usr/bin/env bash
+# Skip leading "-c NAME=VALUE" pairs (uncommitted_work_status pins trusted
+# git config ahead of the subcommand) before matching on the subcommand.
+_args=("\$@")
+_i=0
+while [[ "\${_args[\$_i]:-}" == "-c" ]]; do
+  _i=\$((_i + 2))
+done
+if [[ "\${_args[\$_i]:-}" == "status" ]]; then
+  echo "fatal: index file smaller than expected" >&2
+  exit 128
+fi
+if [[ "\${_args[\$_i]:-}" == "remote" && "\${_args[\$((_i + 1))]:-}" == "set-url" ]]; then
+  exit 0
+fi
+exec ${REAL_GIT} "\$@"
+MOCKEOF
+chmod +x "${SEC_CODE_MOCK_BIN}/git"
+
+_sec_gitstatus_dir="${SEC_CODE_TMPDIR}/run-git-status-fails"
+setup_sec_code_repo "${_sec_gitstatus_dir}" "agent/99-status-fails"
+${REAL_GIT} -C "${_sec_gitstatus_dir}/repo" reset --hard HEAD~1
+
+_sec_gitstatus_rc=0
+# shellcheck disable=SC2030,SC2031
+(
+  cd "${_sec_gitstatus_dir}"
+  export HOME="${SEC_CODE_TMPDIR}"
+  export PATH="${SEC_CODE_MOCK_BIN}:${PATH}"
+  export PUSH_TOKEN="fake-token"
+  export REPO_FULL_NAME="test-org/test-repo"
+  export ISSUE_NUMBER="99"
+  export REPO_DIR="repo"
+  export FULLSEND_FORGE="github"
+  export GITHUB_SIGNED_COMMITS="true"
+  bash "${POST_SCRIPT}"
+) > "${SEC_CODE_TMPDIR}/stdout-git-status-fails.log" 2>&1 || _sec_gitstatus_rc=$?
+
+_sec_gitstatus_log="${SEC_CODE_TMPDIR}/stdout-git-status-fails.log"
+if [ "${_sec_gitstatus_rc}" -eq 0 ]; then
+  echo "FAIL: git-status-failure-exits-nonzero — expected non-zero exit"
+  cat "${_sec_gitstatus_log}"
+  FAILURES=$((FAILURES + 1))
+elif grep -q "agent determined no changes needed" "${_sec_gitstatus_log}"; then
+  echo "FAIL: git-status-failure-exits-nonzero — posted no-op comment despite git status failure"
+  cat "${_sec_gitstatus_log}"
+  FAILURES=$((FAILURES + 1))
+elif ! grep -qi "git status failed" "${_sec_gitstatus_log}"; then
+  echo "FAIL: git-status-failure-exits-nonzero — missing git-status-failure diagnostic"
+  cat "${_sec_gitstatus_log}"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: git-status-failure-exits-nonzero (exit ${_sec_gitstatus_rc})"
+fi
+
+# ---------------------------------------------------------------------------
+# Push retry (post-code.sh §7b) against the real script.
+#
+# GITHUB_SIGNED_COMMITS=false so forge_push_branch is git push. A git
+# wrapper supplies the first-push failure text so each wording of the
+# production grep is hit; the retry is the real `git push --force-with-lease`.
+# A retry case first gives the branch an earlier code agent commit on the
+# remote and an open PR, as a rerun has.
+# ---------------------------------------------------------------------------
+RERUN_BOT_EMAIL="123+fullsend-ai-coder[bot]@users.noreply.github.com"
+
+run_code_push_retry_test() {
+  local test_name="$1"
+  local first_push_fail="${2:-}"
+  local expect_retry="$3"
+  local expect_exit="$4"
+
+  local run_dir="${SEC_CODE_TMPDIR}/run-${test_name}"
+  setup_sec_code_repo "${run_dir}" "agent/99-push-retry"
+  local open_pr=""
+  if [[ "${expect_retry}" == "true" ]]; then
+    local earlier
+    earlier="$(cd "${run_dir}/repo" && GIT_AUTHOR_NAME=fullsend-code GIT_AUTHOR_EMAIL="${RERUN_BOT_EMAIL}" \
+      GIT_COMMITTER_NAME=fullsend-code GIT_COMMITTER_EMAIL="${RERUN_BOT_EMAIL}" \
+      ${REAL_GIT} commit-tree -p main -m "fix: earlier run" "main^{tree}")"
+    ${REAL_GIT} -C "${run_dir}/repo" push -q origin "${earlier}:refs/heads/agent/99-push-retry"
+    open_pr="7"
+  fi
+  local mock_bin="${run_dir}/mock-bin"
+  local push_log="${run_dir}/push-calls.log"
+  mkdir -p "${mock_bin}"
+  : > "${push_log}"
+  # gitleaks-install prepends the directory it found gitleaks in to PATH.
+  # Keep gitleaks in this same mock-bin as the git wrapper so that prepend
+  # cannot resurrect SEC_CODE_MOCK_BIN/git (which execs the real git).
+  cp "${SEC_CODE_MOCK_BIN}/gitleaks" "${SEC_CODE_MOCK_BIN}/sleep" "${mock_bin}/"
+
+  cat > "${mock_bin}/gh" <<'MOCKEOF'
+#!/usr/bin/env bash
+case "$1 $2" in
+  "api -X")      echo "unexpected Git Data API call on the plain-push path: $*" >&2; exit 99 ;;
+  "api repos/"*) echo "main"; exit 0 ;;
+  "pr list")     echo "${MOCK_OPEN_PR:-}"; exit 0 ;;
+  "pr create")   echo "https://github.com/test-org/test-repo/pull/1"; exit 0 ;;
+  "pr view")
+    if printf '%s\n' "$@" | grep -qx body; then echo '{"body":"Closes #99"}'; exit 0; fi
+    echo "https://github.com/test-org/test-repo/pull/1"; exit 0 ;;
+  "issue comment"|"pr comment")
+    printf '%s\n' "$@"
+    cat 2>/dev/null || true
+    exit 0 ;;
+  *)             exit 0 ;;
+esac
+MOCKEOF
+  chmod +x "${mock_bin}/gh"
+
+  cat > "${mock_bin}/git" <<MOCKEOF
+#!/usr/bin/env bash
+if [[ "\$1" == "remote" && "\$2" == "set-url" ]]; then
+  exit 0
+fi
+if [[ "\$1" == "push" ]]; then
+  printf 'git %s\n' "\$*" >> "${push_log}"
+  _force=false
+  for _a in "\$@"; do
+    if [[ "\$_a" == --force-with-lease* ]]; then
+      _force=true
+    fi
+  done
+  if [[ "\${_force}" == true ]]; then
+    exec ${REAL_GIT} "\$@"
+  fi
+  if [[ -n "\${MOCK_PUSH_FAIL:-}" ]]; then
+    echo "\${MOCK_PUSH_FAIL}" >&2
+    exit 1
+  fi
+  exec ${REAL_GIT} "\$@"
+fi
+exec ${REAL_GIT} "\$@"
+MOCKEOF
+  chmod +x "${mock_bin}/git"
+
+  local exit_code=0
+  # shellcheck disable=SC2030,SC2031
+  (
+    cd "${run_dir}"
+    export HOME="${SEC_CODE_TMPDIR}"
+    export PATH="${mock_bin}:${PATH}"
+    export PUSH_TOKEN="fake-token"
+    export REPO_FULL_NAME="test-org/test-repo"
+    export ISSUE_NUMBER="99"
+    export REPO_DIR="repo"
+    export FULLSEND_FORGE="github"
+    export GITHUB_SIGNED_COMMITS="false"
+    export GIT_BOT_EMAIL="${RERUN_BOT_EMAIL}"
+    export MOCK_OPEN_PR="${open_pr}"
+    if [[ -n "${first_push_fail}" ]]; then
+      export MOCK_PUSH_FAIL="${first_push_fail}"
+    else
+      unset MOCK_PUSH_FAIL
+    fi
+    bash "${POST_SCRIPT}"
+  ) > "${SEC_CODE_TMPDIR}/stdout-${test_name}.log" 2>&1 || exit_code=$?
+
+  local log="${SEC_CODE_TMPDIR}/stdout-${test_name}.log"
+  local retried=false
+  if [[ -s "${push_log}" ]] && grep -q -- '--force-with-lease' "${push_log}"; then
+    retried=true
+  fi
+
+  if [[ "${exit_code}" -ne "${expect_exit}" ]]; then
+    echo "FAIL: ${test_name} — exit ${exit_code}, want ${expect_exit}"
+    cat "${log}"
+    echo "push calls:"; cat "${push_log}" 2>/dev/null || true
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  # The script must have attempted a plain push first (a line without
+  # --force-with-lease); otherwise these tests could pass without any push.
+  local plain_push_line force_push_line
+  plain_push_line="$(grep -n -- '^git push' "${push_log}" \
+    | grep -v -e '--force-with-lease' -e '--delete' \
+    | head -n1 | cut -d: -f1 || true)"
+  force_push_line="$(grep -n -- '--force-with-lease' "${push_log}" \
+    | head -n1 | cut -d: -f1 || true)"
+  if [[ -z "${plain_push_line}" ]]; then
+    echo "FAIL: ${test_name} — expected a plain git push in the push log"
+    cat "${log}"
+    echo "push calls:"; cat "${push_log}" 2>/dev/null || true
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  if [[ "${expect_retry}" == "true" ]] \
+    && [[ -n "${force_push_line}" ]] \
+    && (( plain_push_line >= force_push_line )); then
+    echo "FAIL: ${test_name} — plain git push must precede --force-with-lease retry"
+    cat "${log}"
+    echo "push calls:"; cat "${push_log}" 2>/dev/null || true
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if [[ "${expect_retry}" == "true" ]]; then
+    if [[ "${retried}" != true ]]; then
+      echo "FAIL: ${test_name} — expected --force-with-lease retry"
+      cat "${log}"
+      echo "push calls:"; cat "${push_log}" 2>/dev/null || true
+      FAILURES=$((FAILURES + 1))
+      return
+    fi
+    if ! grep -qF "retrying with --force-with-lease" "${log}"; then
+      echo "FAIL: ${test_name} — missing retry warning"
+      cat "${log}"
+      FAILURES=$((FAILURES + 1))
+      return
+    fi
+  else
+    if [[ "${retried}" == true ]]; then
+      echo "FAIL: ${test_name} — unexpected --force-with-lease"
+      cat "${log}"
+      echo "push calls:"; cat "${push_log}"
+      FAILURES=$((FAILURES + 1))
+      return
+    fi
+    if grep -qF "retrying with --force-with-lease" "${log}"; then
+      echo "FAIL: ${test_name} — unexpected retry warning"
+      cat "${log}"
+      FAILURES=$((FAILURES + 1))
+      return
+    fi
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
+run_code_push_retry_test "push-success" \
+  "" "false" 0
+run_code_push_retry_test "push-non-fast-forward" \
+  "error: failed to push some refs: non-fast-forward" "true" 0
+run_code_push_retry_test "push-rejected" \
+  "! [rejected] agent/42 -> agent/42 (fetch first)" "true" 0
+run_code_push_retry_test "push-api-not-a-fast-forward" \
+  "gh: Update is not a fast forward (HTTP 422)" "true" 0
+run_code_push_retry_test "push-unexpected-error" \
+  "fatal: repository not found" "false" 1
+
+# ---------------------------------------------------------------------------
+# Rerun onto a branch that backs an open PR (#409, #342), against the real
+# script and a local bare remote.
+#
+# seed_rerun_repo RUN_DIR CLONE AUTHOR — the remote branch holds an earlier
+# code agent commit, then one by AUTHOR (code, fix or human); main has moved
+# on. CLONE "full" clones before AUTHOR's commit lands, so the tracking ref is
+# stale; "shallow" is a depth-1 single-branch clone of main, as Jira-sourced
+# runs check out, with no tracking ref for the branch; "checkout" is the same
+# depth-1 fetch in a repo set up as actions/checkout does (init, remote add
+# with the default fetch refspec), which the signed path's upstream step
+# needs. The clone then holds a
+# fresh code agent commit on agent/99-rerun. Sets RERUN_BEFORE (remote branch
+# tip) and RERUN_OLD_MAIN (a main commit a depth-1 clone does not have).
+# ---------------------------------------------------------------------------
+_rerun_commit() {
+  local dir="$1" file="$2" name="$3" email="$4" msg="$5"
+  local cname="${6:-$3}" cemail="${7:-$4}"
+  echo "${msg}" > "${dir}/${file}"
+  sec_fixture_git -C "${dir}" add "${file}"
+  GIT_AUTHOR_NAME="${name}" GIT_AUTHOR_EMAIL="${email}" \
+    GIT_COMMITTER_NAME="${cname}" GIT_COMMITTER_EMAIL="${cemail}" \
+    sec_fixture_git -C "${dir}" commit -q -m "${msg}"
+}
+
+seed_rerun_repo() {
+  local run_dir="$1" clone="$2" author="$3"
+  local bare="${run_dir}/remote.git" seed="${run_dir}/seed" repo="${run_dir}/repo"
+  local branch="agent/99-rerun" bot="${RERUN_BOT_EMAIL}"
+  mkdir -p "${run_dir}"
+  sec_fixture_git init -q --bare -b main "${bare}"
+  sec_fixture_git init -q -b main "${seed}"
+  sec_fixture_git -C "${seed}" remote add origin "${bare}"
+  _rerun_commit "${seed}" README.md Dev dev@example.com "init"
+  RERUN_OLD_MAIN="$(sec_fixture_git -C "${seed}" rev-parse HEAD)"
+  sec_fixture_git -C "${seed}" push -q origin main
+  sec_fixture_git -C "${seed}" checkout -q -b "${branch}"
+  _rerun_commit "${seed}" run1.txt fullsend-code "${bot}" "fix: first run"
+  sec_fixture_git -C "${seed}" push -q origin "${branch}"
+  sec_fixture_git -C "${seed}" checkout -q main
+  _rerun_commit "${seed}" main2.txt Dev dev@example.com "main moves on"
+  sec_fixture_git -C "${seed}" push -q origin main
+  if [[ "${clone}" == "full" ]]; then
+    sec_fixture_git clone -q "${bare}" "${repo}"
+  fi
+  sec_fixture_git -C "${seed}" checkout -q "${branch}"
+  case "${author}" in
+    code)  _rerun_commit "${seed}" more.txt fullsend-code "${bot}" "fix: follow-up run" ;;
+    fix)   _rerun_commit "${seed}" more.txt fullsend-fix "${bot}" "fix: address review" ;;
+    human) _rerun_commit "${seed}" more.txt "Human Dev" human@example.com "fix: human change" ;;
+    amended)
+      _rerun_commit "${seed}" more.txt fullsend-code "${bot}" "fix: follow-up run" \
+        "Human Dev" human@example.com ;;
+    signed)
+      _rerun_commit "${seed}" more.txt "fullsend-ai-coder[bot]" "${bot}" \
+        "fix: follow-up run
+
+Authored-by: fullsend-code <${bot}>" GitHub noreply@github.com ;;
+  esac
+  sec_fixture_git -C "${seed}" push -q origin "${branch}"
+  RERUN_BEFORE="$(sec_fixture_git -C "${bare}" rev-parse "refs/heads/${branch}")"
+  if [[ "${clone}" == "shallow" ]]; then
+    sec_fixture_git clone -q --depth 1 --single-branch --branch main "file://${bare}" "${repo}"
+  elif [[ "${clone}" == "checkout" ]]; then
+    sec_fixture_git init -q "${repo}"
+    sec_fixture_git -C "${repo}" remote add origin "file://${bare}"
+    sec_fixture_git -C "${repo}" fetch -q --depth=1 origin "+refs/heads/main:refs/remotes/origin/main"
+  fi
+  sec_fixture_git -C "${repo}" checkout -q -b "${branch}" origin/main
+  _rerun_commit "${repo}" file.txt fullsend-code "${bot}" "fix: rerun"
+}
+
+# check_rerun_result NAME RUN_DIR CLONE EXPECT EXIT LOG [TIP_AUTHOR]
+# EXPECT "publish": the remote branch is the clone's HEAD and no longer holds
+# the earlier commits; a shallow clone gained no old main history.
+# EXPECT "refuse": the remote branch is unchanged and the failure names the
+# commit and its author.
+check_rerun_result() {
+  local name="$1" run_dir="$2" clone="$3" expect="$4" rc="$5" log="$6" tip_author="${7:-}"
+  local after head problem=""
+  after="$(${REAL_GIT} -C "${run_dir}/remote.git" rev-parse refs/heads/agent/99-rerun)"
+  head="$(${REAL_GIT} -C "${run_dir}/repo" rev-parse HEAD)"
+  if [[ "${expect}" == "publish" ]]; then
+    if [[ "${rc}" -ne 0 ]]; then
+      problem="exit ${rc}, want 0"
+    elif [[ "${after}" != "${head}" ]]; then
+      problem="remote tip ${after} is not the clone's HEAD ${head}"
+    elif ${REAL_GIT} -C "${run_dir}/remote.git" merge-base --is-ancestor "${RERUN_BEFORE}" "${after}"; then
+      problem="the earlier commits were kept"
+    elif [[ -n "${tip_author}" ]] \
+      && [[ "$(${REAL_GIT} -C "${run_dir}/remote.git" log -1 --format=%an "${after}")" != "${tip_author}" ]]; then
+      problem="remote tip not authored by ${tip_author}"
+    elif [[ "${clone}" != "full" ]] \
+      && ${REAL_GIT} -C "${run_dir}/repo" cat-file -e "${RERUN_OLD_MAIN}^{commit}" 2>/dev/null; then
+      problem="the shallow clone fetched old main history"
+    fi
+  else
+    local refused_author
+    refused_author="$(${REAL_GIT} -C "${run_dir}/remote.git" log -1 --format=%an "${RERUN_BEFORE}")"
+    if [[ "${rc}" -eq 0 ]]; then
+      problem="exit 0, want a refusal"
+    elif [[ "${after}" != "${RERUN_BEFORE}" ]]; then
+      problem="remote branch moved from ${RERUN_BEFORE} to ${after}"
+    elif ! grep -qF "commit ${RERUN_BEFORE:0:7} by ${refused_author}" "${log}"; then
+      problem="failure does not name commit ${RERUN_BEFORE:0:7} by ${refused_author}"
+    fi
+  fi
+  if [[ -n "${problem}" ]]; then
+    echo "FAIL: ${name} — ${problem}"
+    cat "${log}"
+    echo
+    FAILURES=$((FAILURES + 1))
+  else
+    echo "PASS: ${name}"
+  fi
+}
+
+RERUN_BIN="${SEC_CODE_TMPDIR}/bin-rerun"
+mkdir -p "${RERUN_BIN}"
+cp "${SEC_CODE_MOCK_BIN}/gitleaks" "${SEC_CODE_MOCK_BIN}/sleep" "${SEC_CODE_MOCK_BIN}/git" "${RERUN_BIN}/"
+cat > "${RERUN_BIN}/gh" <<'MOCKEOF'
+#!/usr/bin/env bash
+case "$1 $2" in
+  "api -X")      exec bash "${FAKE_GH_GIT_API}" "$@" ;;
+  "api repos/"*) echo "main"; exit 0 ;;
+  "pr list")     echo "7"; exit 0 ;;
+  "pr view")
+    if printf '%s\n' "$@" | grep -qx body; then echo '{"body":"Closes #99"}'; exit 0; fi
+    echo "https://github.com/test-org/test-repo/pull/7"; exit 0 ;;
+  "issue comment"|"pr comment") printf '%s\n' "$@"; cat 2>/dev/null || true; exit 0 ;;
+  *)             exit 0 ;;
+esac
+MOCKEOF
+chmod +x "${RERUN_BIN}/gh"
+
+# run_code_rerun_test NAME CLONE AUTHOR SIGNED EXPECT [TIP_AUTHOR]
+run_code_rerun_test() {
+  local test_name="$1" clone="$2" author="$3" signed="$4" expect="$5" tip_author="${6:-}"
+  local run_dir="${SEC_CODE_TMPDIR}/run-${test_name}"
+  local log="${SEC_CODE_TMPDIR}/stdout-${test_name}.log"
+  seed_rerun_repo "${run_dir}" "${clone}" "${author}"
+  local exit_code=0
+  # shellcheck disable=SC2030,SC2031
+  (
+    cd "${run_dir}"
+    export HOME="${SEC_CODE_TMPDIR}"
+    export PATH="${RERUN_BIN}:${PATH}"
+    export PUSH_TOKEN="fake..."
+    export REPO_FULL_NAME="test-org/test-repo"
+    export ISSUE_NUMBER="99"
+    export REPO_DIR="repo"
+    export FULLSEND_FORGE="github"
+    export GITHUB_SIGNED_COMMITS="${signed}"
+    export GIT_BOT_EMAIL="${RERUN_BOT_EMAIL}"
+    bash "${POST_SCRIPT}"
+  ) > "${log}" 2>&1 < /dev/null || exit_code=$?
+  check_rerun_result "${test_name}" "${run_dir}" "${clone}" "${expect}" "${exit_code}" "${log}" "${tip_author}"
+}
+
+run_code_rerun_test "rerun-full-clone-stale-tracking-ref" full code false publish
+run_code_rerun_test "rerun-shallow-agent-commits-replaced" shallow code false publish
+run_code_rerun_test "rerun-shallow-human-commit-refused" shallow human false refuse
+run_code_rerun_test "rerun-shallow-fix-agent-commit-refused" shallow fix false refuse
+run_code_rerun_test "rerun-shallow-amended-agent-commit-refused" shallow amended false refuse
+run_code_rerun_test "rerun-shallow-signed-agent-commits-replaced" checkout signed true publish \
+  "fullsend-ai-coder[bot]"
 
 rm -rf "${SEC_CODE_TMPDIR}"
 
@@ -2433,6 +3415,7 @@ chmod +x "${GL_INT_MOCK_BIN}/sleep"
 
 cat > "${GL_INT_MOCK_BIN}/gitleaks" <<'MOCKEOF'
 #!/usr/bin/env bash
+if [ "${1:-}" = version ]; then echo 8.30.1; exit 0; fi
 exit 0
 MOCKEOF
 chmod +x "${GL_INT_MOCK_BIN}/gitleaks"
@@ -2543,7 +3526,511 @@ else
   FAILURES=$((FAILURES + 1))
 fi
 
+# --- GitLab rerun onto an open MR from a depth-1 clone (#342) ---
+# The single-branch clone has no fetch refspec for the branch, so only the
+# explicit lease on the fetched tracking ref lets the forced retry through.
+GL_RERUN_BIN="${GL_INT_TMPDIR}/bin-rerun"
+mkdir -p "${GL_RERUN_BIN}"
+cp "${GL_INT_MOCK_BIN}/sleep" "${GL_INT_MOCK_BIN}/gitleaks" "${GL_INT_MOCK_BIN}/git" "${GL_RERUN_BIN}/"
+cat > "${GL_RERUN_BIN}/curl" <<'MOCKEOF'
+#!/usr/bin/env bash
+url=""
+for arg in "$@"; do
+  case "${arg}" in
+    https://*) url="${arg}" ;;
+  esac
+done
+mr_url="https://gitlab.com/test-group/test-project/-/merge_requests/5"
+case "${url}" in
+  *merge_requests\?state=opened*)
+    echo "[{\"iid\":5,\"source_project_id\":1,\"web_url\":\"${mr_url}\"}]" ;;
+  */merge_requests/5)
+    echo "{\"iid\":5,\"description\":\"Closes #99\",\"web_url\":\"${mr_url}\"}" ;;
+  *projects/*)
+    echo '{"id":1,"default_branch":"main","merge_method":"merge"}' ;;
+  *)
+    echo '{}' ;;
+esac
+MOCKEOF
+chmod +x "${GL_RERUN_BIN}/curl"
+
+_gl_rerun_dir="${GL_INT_TMPDIR}/run-gl-rerun"
+_gl_rerun_log="${GL_INT_TMPDIR}/stdout-gl-rerun.log"
+seed_rerun_repo "${_gl_rerun_dir}" shallow code
+_gl_rerun_rc=0
+# shellcheck disable=SC2030,SC2031
+(
+  cd "${_gl_rerun_dir}"
+  export HOME="${GL_INT_TMPDIR}"
+  export PATH="${GL_RERUN_BIN}:${PATH}"
+  export PUSH_TOKEN="glpa..."
+  export REPO_FULL_NAME="test-group/test-project"
+  export ISSUE_NUMBER="99"
+  export ISSUE_URL="https://gitlab.com/test-group/test-project/-/issues/99"
+  export REPO_DIR="repo"
+  export FULLSEND_FORGE="gitlab"
+  export GITLAB_TOKEN="${PUSH_TOKEN}"
+  export GITLAB_HOST="gitlab.com"
+  export CI_SERVER_HOST="gitlab.com"
+  export GIT_BOT_EMAIL="${RERUN_BOT_EMAIL}"
+  bash "${POST_SCRIPT}"
+) > "${_gl_rerun_log}" 2>&1 < /dev/null || _gl_rerun_rc=$?
+check_rerun_result "gitlab-rerun-shallow-explicit-lease" "${_gl_rerun_dir}" shallow publish \
+  "${_gl_rerun_rc}" "${_gl_rerun_log}"
+
 rm -rf "${GL_INT_TMPDIR}"
+
+# =============================================================================
+# Jira-sourced code runs (#1841)
+#
+# The PR/MR is created on the code host (GitHub or GitLab) and the code-stage
+# update with its URL is written to the Jira issue through
+# `fullsend issues post-comment --tracker jira`. Covers both code hosts, the
+# existing-PR (retry) path, write-failure visibility, bot identity, and that
+# forge-originated runs never write to Jira.
+# =============================================================================
+
+JIRA_INT_TMPDIR="$(mktemp -d)"
+JIRA_INT_MOCK_BIN="${JIRA_INT_TMPDIR}/bin"
+JIRA_INT_FULLSEND_LOG="${JIRA_INT_TMPDIR}/fullsend.log"
+JIRA_INT_FORGE_LOG="${JIRA_INT_TMPDIR}/forge.log"
+JIRA_INT_PRECOMMIT_LOG="${JIRA_INT_TMPDIR}/precommit.log"
+JIRA_INT_FULLSEND_DIR="${JIRA_INT_TMPDIR}/dot-fullsend"
+mkdir -p "${JIRA_INT_MOCK_BIN}"
+JIRA_REAL_GIT="$(which git)"
+
+for _tool in sleep gitleaks; do
+  cat > "${JIRA_INT_MOCK_BIN}/${_tool}" <<'MOCKEOF'
+#!/usr/bin/env bash
+if [ "${1:-}" = version ]; then echo 8.30.1; fi
+exit 0
+MOCKEOF
+  chmod +x "${JIRA_INT_MOCK_BIN}/${_tool}"
+done
+
+cat > "${JIRA_INT_MOCK_BIN}/git" <<MOCKEOF
+#!/usr/bin/env bash
+if [[ "\$1" == "remote" && "\$2" == "set-url" ]]; then
+  exit 0
+fi
+exec ${JIRA_REAL_GIT} "\$@"
+MOCKEOF
+chmod +x "${JIRA_INT_MOCK_BIN}/git"
+
+# GitHub code host. MOCK_EXISTING_PR=1 reports an open PR for the branch.
+cat > "${JIRA_INT_MOCK_BIN}/gh" <<MOCKEOF
+#!/usr/bin/env bash
+echo "gh \$*" >> "${JIRA_INT_FORGE_LOG}"
+case "\$1 \$2" in
+  "api -X")      echo "unexpected Git Data API call: \$*" >&2; exit 99 ;;
+  "api repos/"*) echo "main"; exit 0 ;;
+  "pr list")     if [[ -n "\${MOCK_EXISTING_PR:-}" ]]; then echo "7"; fi; exit 0 ;;
+  "pr view")     echo "https://github.com/test-org/test-repo/pull/7"; exit 0 ;;
+  "pr create")   echo "https://github.com/test-org/test-repo/pull/1"; exit 0 ;;
+  *)             exit 0 ;;
+esac
+MOCKEOF
+chmod +x "${JIRA_INT_MOCK_BIN}/gh"
+
+# GitLab code host.
+cat > "${JIRA_INT_MOCK_BIN}/curl" <<MOCKEOF
+#!/usr/bin/env bash
+echo "curl \$*" >> "${JIRA_INT_FORGE_LOG}"
+url=""
+method="GET"
+prev=""
+for arg in "\$@"; do
+  case "\${arg}" in
+    https://*) url="\${arg}" ;;
+  esac
+  if [[ "\${prev}" == "--request" || "\${prev}" == "-X" ]]; then
+    method="\${arg}"
+  fi
+  prev="\${arg}"
+done
+case "\${method} \${url}" in
+  *merge_requests\?state=opened*) echo '[]' ;;
+  POST*merge_requests) echo '{"iid":1,"web_url":"https://gitlab.com/test-group/test-project/-/merge_requests/1"}' ;;
+  *projects/*) echo '{"id":1,"default_branch":"main","merge_method":"merge"}' ;;
+  *users*) echo '[]' ;;
+  *) echo '{}' ;;
+esac
+# Callers using --write-out read the HTTP status from the last line.
+if [[ " \$* " == *" --write-out "* ]]; then
+  printf '\n201'
+fi
+exit 0
+MOCKEOF
+chmod +x "${JIRA_INT_MOCK_BIN}/curl"
+
+# Tracker CLI. Records args and the comment body; also records whether the
+# token reached it through the environment. MOCK_FULLSEND_FAIL=1 fails it.
+cat > "${JIRA_INT_MOCK_BIN}/fullsend" <<MOCKEOF
+#!/usr/bin/env bash
+BODY=""
+PREV=""
+for arg in "\$@"; do
+  if [[ "\${arg}" == "-" && "\${PREV}" == "--result" ]]; then
+    BODY=\$(cat)
+  fi
+  PREV="\${arg}"
+done
+echo "fullsend \$* env-token=\${FULLSEND_JIRA_TOKEN:-unset} env-email=\${FULLSEND_JIRA_EMAIL-unset} <<BODY:\${BODY}:BODY>>" >> "${JIRA_INT_FULLSEND_LOG}"
+if [[ -n "\${MOCK_FULLSEND_FAIL:-}" ]]; then
+  echo "Error: Jira API returned 401" >&2
+  exit 1
+fi
+MOCKEOF
+chmod +x "${JIRA_INT_MOCK_BIN}/fullsend"
+
+# pre-commit stand-in. Records whether the Jira credentials are visible to
+# hooks (it runs repo-controlled code in the real tool).
+cat > "${JIRA_INT_MOCK_BIN}/pre-commit" <<MOCKEOF
+#!/usr/bin/env bash
+echo "pre-commit jira-token=\${JIRA_TOKEN:-unset} jira-email=\${JIRA_USER_EMAIL:-unset} fullsend-token=\${FULLSEND_JIRA_TOKEN:-unset} fullsend-email=\${FULLSEND_JIRA_EMAIL:-unset}" >> "${JIRA_INT_PRECOMMIT_LOG}"
+exit 0
+MOCKEOF
+chmod +x "${JIRA_INT_MOCK_BIN}/pre-commit"
+
+setup_jira_int_repo() {
+  local run_dir="$1"
+  local branch_name="$2"
+  local repo_dir="${run_dir}/repo"
+  ${JIRA_REAL_GIT} init -q --bare -b main "${run_dir}/remote.git"
+  ${JIRA_REAL_GIT} clone -q "${run_dir}/remote.git" "${repo_dir}" 2>/dev/null
+  ${JIRA_REAL_GIT} -C "${repo_dir}" config user.email "test@example.com"
+  ${JIRA_REAL_GIT} -C "${repo_dir}" config user.name "Test"
+  echo "init" > "${repo_dir}/README.md"
+  ${JIRA_REAL_GIT} -C "${repo_dir}" add README.md
+  ${JIRA_REAL_GIT} -C "${repo_dir}" commit -q -m "init"
+  ${JIRA_REAL_GIT} -C "${repo_dir}" push -q origin main
+  if [ -n "${JIRA_INT_WITH_PRECOMMIT:-}" ]; then
+    printf 'repos: []\n' > "${repo_dir}/.pre-commit-config.yaml"
+    ${JIRA_REAL_GIT} -C "${repo_dir}" add .pre-commit-config.yaml
+    ${JIRA_REAL_GIT} -C "${repo_dir}" commit -q -m "chore: pre-commit config"
+    ${JIRA_REAL_GIT} -C "${repo_dir}" push -q origin main
+  fi
+  ${JIRA_REAL_GIT} -C "${repo_dir}" checkout -q -b "${branch_name}"
+  echo "changed content" > "${repo_dir}/file.txt"
+  ${JIRA_REAL_GIT} -C "${repo_dir}" add -f file.txt
+  ${JIRA_REAL_GIT} -C "${repo_dir}" commit -q -m "fix: test change"
+  if [ -n "${JIRA_INT_PREPUSH_HOOK:-}" ]; then
+    write_jira_int_hook "${repo_dir}/.git/hooks/pre-push" pre-push "${JIRA_INT_PREPUSH_HOOK}"
+  fi
+  if [ -n "${JIRA_INT_REFTX_HOOK:-}" ]; then
+    # Runs when `git branch -M` renames the agent branch.
+    write_jira_int_hook "${repo_dir}/.git/hooks/reference-transaction" reference-transaction "${JIRA_INT_REFTX_HOOK}"
+  fi
+}
+
+# Write a repo-controlled hook that records whether the Jira credentials are
+# visible to it: in its environment, and in the initial environment
+# (/proc/<pid>/environ) of its parent and grandparent, the way a hostile hook
+# would look for them.
+write_jira_int_hook() {
+  local hook_path="$1" hook_name="$2" log_path="$3"
+  cat > "${hook_path}" <<HOOKEOF
+#!/usr/bin/env bash
+# The reference-transaction hook reads its stdin; drain it.
+cat > /dev/null
+read -r _ _ _ gp _ < "/proc/\${PPID}/stat"
+leak=no
+for pid in "\${PPID}" "\${gp}"; do
+  if tr '\\0' '\\n' < "/proc/\${pid}/environ" 2>/dev/null | grep -qE '^(JIRA_TOKEN|JIRA_USER_EMAIL|FULLSEND_JIRA_TOKEN|FULLSEND_JIRA_EMAIL)=.'; then
+    leak=yes
+  fi
+done
+echo "${hook_name} jira-token=\${JIRA_TOKEN:-unset} jira-email=\${JIRA_USER_EMAIL:-unset} fullsend-token=\${FULLSEND_JIRA_TOKEN:-unset} fullsend-email=\${FULLSEND_JIRA_EMAIL:-unset} proc-environ-leak=\${leak}" >> "${log_path}"
+exit 0
+HOOKEOF
+  chmod +x "${hook_path}"
+}
+
+# Run post-code for a Jira-sourced work item on the given code host. Extra
+# NAME=VALUE arguments are exported last. Leaves the exit code in
+# JIRA_INT_RC and the output in JIRA_INT_OUT.
+run_jira_int() {
+  local test_name="$1"
+  local forge="$2"
+  shift 2
+  local run_dir="${JIRA_INT_TMPDIR}/run-${test_name}"
+  setup_jira_int_repo "${run_dir}" "${JIRA_INT_BRANCH:-agent/TESTPROJ-42-fix}"
+  : > "${JIRA_INT_FULLSEND_LOG}"
+  : > "${JIRA_INT_FORGE_LOG}"
+  JIRA_INT_OUT="${JIRA_INT_TMPDIR}/stdout-${test_name}.log"
+  JIRA_INT_RC=0
+  # shellcheck disable=SC2030,SC2031
+  (
+    cd "${run_dir}"
+    unset GITLAB_HOST CI_SERVER_URL GH_TOKEN GITLAB_TOKEN
+    export HOME="${JIRA_INT_TMPDIR}"
+    export PATH="${JIRA_INT_MOCK_BIN}:${PATH}"
+    export PUSH_TOKEN="fake-token"
+    export REPO_DIR="repo"
+    export ISSUE_NUMBER=""
+    export FULLSEND_FORGE="${forge}"
+    export FULLSEND_TRACKER="jira"
+    export FULLSEND_WORK_ITEM_SOURCE="jira"
+    export FULLSEND_WORK_ITEM_KEY="TESTPROJ-42"
+    export FULLSEND_WORK_ITEM_URL="https://test.atlassian.net/browse/TESTPROJ-42"
+    export ISSUE_URL="${FULLSEND_WORK_ITEM_URL}"
+    export JIRA_BASE_URL="https://test.atlassian.net/"
+    export JIRA_USER_EMAIL="fullsend-bot@example.com"
+    export JIRA_TOKEN="fake-jira-token"
+    # The harness also leaves the source secrets in the runner environment.
+    export FULLSEND_JIRA_EMAIL="${JIRA_USER_EMAIL}"
+    export FULLSEND_JIRA_TOKEN="${JIRA_TOKEN}"
+    export FULLSEND_DIR="${JIRA_INT_FULLSEND_DIR}"
+    if [ "${forge}" = "gitlab" ]; then
+      export REPO_FULL_NAME="test-group/test-project"
+      export GITLAB_TOKEN="${PUSH_TOKEN}"
+      export CI_SERVER_HOST="gitlab.com"
+    else
+      export REPO_FULL_NAME="test-org/test-repo"
+      export GITHUB_SIGNED_COMMITS="false"
+    fi
+    local kv
+    for kv in "$@"; do
+      export "${kv?}"
+    done
+    bash "${POST_SCRIPT}"
+  ) > "${JIRA_INT_OUT}" 2>&1 || JIRA_INT_RC=$?
+}
+
+jira_int_fail() {
+  echo "FAIL: $1 — $2"
+  echo "  exit code: ${JIRA_INT_RC}"
+  cat "${JIRA_INT_OUT}"
+  echo "  fullsend calls:"; cat "${JIRA_INT_FULLSEND_LOG}"
+  FAILURES=$((FAILURES + 1))
+}
+
+JIRA_CODE_MARKER="--marker <!-- fullsend:code-agent -->"
+
+# GitHub target: PR on GitHub, stage update with the PR URL on the Jira issue.
+run_jira_int "jira-github-target" github
+if [ "${JIRA_INT_RC}" -ne 0 ]; then
+  jira_int_fail "jira-github-target-pr-url-to-jira" "post-code failed"
+elif ! grep -q "^gh pr create" "${JIRA_INT_FORGE_LOG}"; then
+  jira_int_fail "jira-github-target-pr-url-to-jira" "PR not created on GitHub"
+elif ! grep -qF -- "--tracker jira --fullsend-dir ${JIRA_INT_FULLSEND_DIR} --project TESTPROJ --number 42" "${JIRA_INT_FULLSEND_LOG}" \
+     || ! grep -qF -- "${JIRA_CODE_MARKER}" "${JIRA_INT_FULLSEND_LOG}" \
+     || ! grep -qF "opened pull request https://github.com/test-org/test-repo/pull/1 for TESTPROJ-42" "${JIRA_INT_FULLSEND_LOG}"; then
+  jira_int_fail "jira-github-target-pr-url-to-jira" "Jira stage update missing or malformed"
+elif grep -q "^gh issue comment" "${JIRA_INT_FORGE_LOG}"; then
+  jira_int_fail "jira-github-target-pr-url-to-jira" "commented on a GitHub issue for a Jira work item"
+else
+  echo "PASS: jira-github-target-pr-url-to-jira"
+fi
+
+# Bot identity: the write uses the configured fullsend Jira account (the
+# identity the Jira poller classifies as its own). The token and email reach
+# the config-backed CLI through FULLSEND_JIRA_TOKEN and FULLSEND_JIRA_EMAIL
+# rather than the command line.
+if ! grep -qF "env-token=fake-jira-token env-email=fullsend-bot@example.com" "${JIRA_INT_FULLSEND_LOG}" \
+   || grep -qE -- "--(token|jira-email|jira-url)" "${JIRA_INT_FULLSEND_LOG}"; then
+  jira_int_fail "jira-stage-update-bot-identity" "write did not use the configured Jira account, or credentials or URLs were passed on the command line"
+else
+  echo "PASS: jira-stage-update-bot-identity"
+fi
+
+# Service account (#1900): an empty or blank email still writes the stage
+# update, with no FULLSEND_JIRA_EMAIL for the CLI (Bearer auth), even when
+# one is inherited.
+for _jira_email_case in "empty|" "blank|  "; do
+  _jira_email_name="${_jira_email_case%%|*}"
+  run_jira_int "jira-service-account-${_jira_email_name}" github \
+    "JIRA_USER_EMAIL=${_jira_email_case#*|}" FULLSEND_JIRA_EMAIL=inherited@example.com
+  if [ "${JIRA_INT_RC}" -ne 0 ]; then
+    jira_int_fail "jira-service-account-${_jira_email_name}-email" "post-code failed"
+  elif ! grep -qF "env-token=fake-jira-token env-email=unset" "${JIRA_INT_FULLSEND_LOG}" \
+       || ! grep -qF -- "${JIRA_CODE_MARKER}" "${JIRA_INT_FULLSEND_LOG}"; then
+    jira_int_fail "jira-service-account-${_jira_email_name}-email" "stage update missing, or the CLI got an email"
+  else
+    echo "PASS: jira-service-account-${_jira_email_name}-email"
+  fi
+done
+
+# Jira credentials are withheld from pre-commit hooks (repo-controlled code)
+# but still reach the Jira stage update afterwards.
+: > "${JIRA_INT_PRECOMMIT_LOG}"
+JIRA_INT_WITH_PRECOMMIT=1 run_jira_int "jira-precommit-hidden" github
+if [ "${JIRA_INT_RC}" -ne 0 ]; then
+  jira_int_fail "jira-token-hidden-from-precommit" "post-code failed"
+elif ! grep -q "^pre-commit " "${JIRA_INT_PRECOMMIT_LOG}"; then
+  jira_int_fail "jira-token-hidden-from-precommit" "pre-commit did not run"
+elif ! grep -qF "pre-commit jira-token=unset jira-email=unset fullsend-token=unset fullsend-email=unset" "${JIRA_INT_PRECOMMIT_LOG}"; then
+  jira_int_fail "jira-token-hidden-from-precommit" "Jira credentials visible to pre-commit hooks"
+elif ! grep -qF "env-token=fake-jira-token" "${JIRA_INT_FULLSEND_LOG}"; then
+  jira_int_fail "jira-token-hidden-from-precommit" "Jira credentials not restored for the stage update"
+else
+  echo "PASS: jira-token-hidden-from-precommit"
+fi
+
+# A pre-push hook (repo-controlled code that runs during the plain git push)
+# does not see the Jira credentials either, and a `fullsend` binary dropped in
+# ${HOME}/.local/bin (put first on PATH by the script) does not shadow the
+# trusted CLI used for the Jira write.
+JIRA_INT_PREPUSH_LOG="${JIRA_INT_TMPDIR}/prepush.log"
+JIRA_INT_SHADOW_LOG="${JIRA_INT_TMPDIR}/shadow.log"
+: > "${JIRA_INT_PREPUSH_LOG}"
+: > "${JIRA_INT_SHADOW_LOG}"
+mkdir -p "${JIRA_INT_TMPDIR}/.local/bin"
+cat > "${JIRA_INT_TMPDIR}/.local/bin/fullsend" <<SHADOWEOF
+#!/usr/bin/env bash
+echo "shadow fullsend called token=\${JIRA_TOKEN:-unset}" >> "${JIRA_INT_SHADOW_LOG}"
+exit 0
+SHADOWEOF
+chmod +x "${JIRA_INT_TMPDIR}/.local/bin/fullsend"
+JIRA_INT_PREPUSH_HOOK="${JIRA_INT_PREPUSH_LOG}" run_jira_int "jira-prepush-hidden" github
+rm -rf "${JIRA_INT_TMPDIR}/.local"
+if [ "${JIRA_INT_RC}" -ne 0 ]; then
+  jira_int_fail "jira-token-hidden-from-prepush-hook" "post-code failed"
+elif ! grep -q "^pre-push " "${JIRA_INT_PREPUSH_LOG}"; then
+  jira_int_fail "jira-token-hidden-from-prepush-hook" "pre-push hook did not run"
+elif ! grep -qF "pre-push jira-token=unset jira-email=unset fullsend-token=unset fullsend-email=unset proc-environ-leak=no" "${JIRA_INT_PREPUSH_LOG}"; then
+  jira_int_fail "jira-token-hidden-from-prepush-hook" "Jira credentials visible to a pre-push hook"
+elif [ -s "${JIRA_INT_SHADOW_LOG}" ]; then
+  jira_int_fail "jira-path-shadowed-fullsend-not-used" "a binary from the repo-controlled PATH entry received the Jira write"
+elif ! grep -qF "env-token=fake-jira-token" "${JIRA_INT_FULLSEND_LOG}"; then
+  jira_int_fail "jira-path-shadowed-fullsend-not-used" "trusted fullsend CLI was not used for the Jira write"
+else
+  echo "PASS: jira-token-hidden-from-prepush-hook"
+  echo "PASS: jira-path-shadowed-fullsend-not-used"
+fi
+
+# Renaming a non-conforming agent branch runs `git branch -M`, which triggers
+# the repo's reference-transaction hook. That hook must not see the Jira
+# credentials, neither in its environment nor in the initial environment of
+# its parent processes (/proc/$PPID/environ), and the credentials must still
+# reach the Jira write afterwards.
+JIRA_INT_REFTX_LOG="${JIRA_INT_TMPDIR}/reftx.log"
+: > "${JIRA_INT_REFTX_LOG}"
+JIRA_INT_BRANCH="feature/rename-me" JIRA_INT_REFTX_HOOK="${JIRA_INT_REFTX_LOG}" \
+  run_jira_int "jira-rename-hook-hidden" github
+if [ "${JIRA_INT_RC}" -ne 0 ]; then
+  jira_int_fail "jira-token-hidden-from-rename-hook" "post-code failed"
+elif ! grep -qF "Renaming agent branch 'feature/rename-me' to 'agent/TESTPROJ-42-rename-me'" "${JIRA_INT_OUT}"; then
+  jira_int_fail "jira-token-hidden-from-rename-hook" "agent branch was not renamed"
+elif grep -q "^reference-transaction " "${JIRA_INT_REFTX_LOG}" \
+     && ! grep -qF "reference-transaction jira-token=unset jira-email=unset fullsend-token=unset fullsend-email=unset proc-environ-leak=no" "${JIRA_INT_REFTX_LOG}"; then
+  jira_int_fail "jira-token-hidden-from-rename-hook" "Jira credentials visible to a hook during the branch rename"
+elif grep -qF "proc-environ-leak=yes" "${JIRA_INT_REFTX_LOG}"; then
+  jira_int_fail "jira-token-hidden-from-rename-hook" "Jira credentials readable from a parent's /proc environ"
+elif ! grep -qF "env-token=fake-jira-token" "${JIRA_INT_FULLSEND_LOG}"; then
+  jira_int_fail "jira-token-hidden-from-rename-hook" "Jira credentials not passed to the stage update"
+else
+  echo "PASS: jira-token-hidden-from-rename-hook"
+fi
+
+# GitLab target: MR on GitLab (host from CI_SERVER_HOST, since ISSUE_URL is the
+# Jira URL), stage update with the MR URL on the Jira issue.
+run_jira_int "jira-gitlab-target" gitlab
+if [ "${JIRA_INT_RC}" -ne 0 ]; then
+  jira_int_fail "jira-gitlab-target-mr-url-to-jira" "post-code failed"
+elif ! grep -qE "^curl .*--request POST .*https://gitlab.com/api/v4/projects/test-group%2Ftest-project/merge_requests" "${JIRA_INT_FORGE_LOG}"; then
+  jira_int_fail "jira-gitlab-target-mr-url-to-jira" "MR not created on GitLab"
+elif grep -qF "atlassian.net/api/v4" "${JIRA_INT_FORGE_LOG}"; then
+  jira_int_fail "jira-gitlab-target-mr-url-to-jira" "GitLab API call went to the Jira host"
+elif ! grep -qF -- "${JIRA_CODE_MARKER}" "${JIRA_INT_FULLSEND_LOG}" \
+     || ! grep -qF "opened merge request https://gitlab.com/test-group/test-project/-/merge_requests/1 for TESTPROJ-42" "${JIRA_INT_FULLSEND_LOG}"; then
+  jira_int_fail "jira-gitlab-target-mr-url-to-jira" "Jira stage update missing or malformed"
+else
+  echo "PASS: jira-gitlab-target-mr-url-to-jira"
+fi
+
+# GitLab target without a trusted CI server host fails before any API call.
+run_jira_int "jira-gitlab-target-no-ci-host" gitlab CI_SERVER_HOST=
+if [ "${JIRA_INT_RC}" -eq 0 ]; then
+  jira_int_fail "jira-gitlab-target-requires-ci-server-host" "expected failure but got success"
+elif [ -s "${JIRA_INT_FORGE_LOG}" ] || [ -s "${JIRA_INT_FULLSEND_LOG}" ]; then
+  jira_int_fail "jira-gitlab-target-requires-ci-server-host" "API calls made without a trusted GitLab host"
+else
+  echo "PASS: jira-gitlab-target-requires-ci-server-host (expected failure, got exit ${JIRA_INT_RC})"
+fi
+
+# Retry: the PR already exists, so the run updates it and rewrites the same
+# sticky Jira comment (same marker) instead of adding a second one.
+run_jira_int "jira-existing-pr" github MOCK_EXISTING_PR=1
+if [ "${JIRA_INT_RC}" -ne 0 ]; then
+  jira_int_fail "jira-retry-existing-pr-reuses-marker" "post-code failed"
+elif grep -q "^gh pr create" "${JIRA_INT_FORGE_LOG}"; then
+  jira_int_fail "jira-retry-existing-pr-reuses-marker" "created a second PR"
+elif [ "$(grep -c "^fullsend issues post-comment" "${JIRA_INT_FULLSEND_LOG}")" -ne 1 ] \
+     || ! grep -qF -- "${JIRA_CODE_MARKER}" "${JIRA_INT_FULLSEND_LOG}" \
+     || ! grep -qF "pushed new commits to pull request https://github.com/test-org/test-repo/pull/7" "${JIRA_INT_FULLSEND_LOG}"; then
+  jira_int_fail "jira-retry-existing-pr-reuses-marker" "expected one sticky Jira update for the existing PR"
+else
+  echo "PASS: jira-retry-existing-pr-reuses-marker"
+fi
+
+# Write-failure visibility: a failed Jira write fails the step on both paths.
+for _jira_fail_case in "jira-write-failure-new-pr|" "jira-write-failure-existing-pr|MOCK_EXISTING_PR=1"; do
+  _jira_fail_name="${_jira_fail_case%%|*}"
+  _jira_fail_extra="${_jira_fail_case#*|}"
+  run_jira_int "${_jira_fail_name}" github MOCK_FULLSEND_FAIL=1 ${_jira_fail_extra:+"${_jira_fail_extra}"}
+  if [ "${JIRA_INT_RC}" -eq 0 ]; then
+    jira_int_fail "${_jira_fail_name}-fails-step" "expected failure but got success"
+  elif ! grep -qF "Failed to write the code-stage update to Jira issue TESTPROJ-42" "${JIRA_INT_OUT}"; then
+    jira_int_fail "${_jira_fail_name}-fails-step" "missing Jira write-failure error"
+  else
+    echo "PASS: ${_jira_fail_name}-fails-step (expected failure, got exit ${JIRA_INT_RC})"
+  fi
+done
+
+# Missing runner-side Jira credentials fail visibly instead of skipping.
+run_jira_int "jira-missing-token" github JIRA_TOKEN=
+if [ "${JIRA_INT_RC}" -eq 0 ]; then
+  jira_int_fail "jira-missing-token-fails-step" "expected failure but got success"
+elif ! grep -qF "JIRA_TOKEN is required" "${JIRA_INT_OUT}" || [ -s "${JIRA_INT_FULLSEND_LOG}" ]; then
+  jira_int_fail "jira-missing-token-fails-step" "missing credential error, or a write was attempted"
+else
+  echo "PASS: jira-missing-token-fails-step (expected failure, got exit ${JIRA_INT_RC})"
+fi
+
+# The config-backed CLI needs FULLSEND_DIR for tracker.jira.
+run_jira_int "jira-missing-fullsend-dir" github FULLSEND_DIR=
+if [ "${JIRA_INT_RC}" -eq 0 ]; then
+  jira_int_fail "jira-missing-fullsend-dir-fails-step" "expected failure but got success"
+elif ! grep -qF "FULLSEND_DIR is required" "${JIRA_INT_OUT}" || [ -s "${JIRA_INT_FULLSEND_LOG}" ]; then
+  jira_int_fail "jira-missing-fullsend-dir-fails-step" "missing FULLSEND_DIR error, or a write was attempted"
+else
+  echo "PASS: jira-missing-fullsend-dir-fails-step (expected failure, got exit ${JIRA_INT_RC})"
+fi
+
+# A work-item key that disagrees with the URL is not written anywhere in Jira.
+run_jira_int "jira-key-mismatch" github FULLSEND_WORK_ITEM_KEY=TESTPROJ-7
+if [ "${JIRA_INT_RC}" -eq 0 ] || [ -s "${JIRA_INT_FULLSEND_LOG}" ]; then
+  jira_int_fail "jira-key-mismatch-not-written" "expected failure with no Jira write"
+else
+  echo "PASS: jira-key-mismatch-not-written (expected failure, got exit ${JIRA_INT_RC})"
+fi
+
+# Forge-originated run (fullsend run still exports FULLSEND_WORK_ITEM_SOURCE):
+# GitHub issue flow, no Jira write.
+run_jira_int "forge-originated" github FULLSEND_TRACKER= FULLSEND_WORK_ITEM_SOURCE=github \
+  FULLSEND_WORK_ITEM_KEY= FULLSEND_WORK_ITEM_URL= ISSUE_NUMBER=42 \
+  ISSUE_URL=https://github.com/test-org/test-repo/issues/42 JIRA_TOKEN= JIRA_USER_EMAIL=
+if [ "${JIRA_INT_RC}" -ne 0 ]; then
+  jira_int_fail "forge-originated-run-no-jira-write" "post-code failed"
+elif [ -s "${JIRA_INT_FULLSEND_LOG}" ]; then
+  jira_int_fail "forge-originated-run-no-jira-write" "wrote to Jira for a GitHub issue"
+elif ! grep -q "^gh pr create" "${JIRA_INT_FORGE_LOG}"; then
+  jira_int_fail "forge-originated-run-no-jira-write" "PR not created"
+else
+  echo "PASS: forge-originated-run-no-jira-write"
+fi
+
+# An explicit tracker that disagrees with the exported work-item source stops
+# the run before anything is pushed.
+run_jira_int "jira-tracker-source-conflict" github FULLSEND_WORK_ITEM_SOURCE=github
+if [ "${JIRA_INT_RC}" -eq 0 ] || [ -s "${JIRA_INT_FORGE_LOG}" ]; then
+  jira_int_fail "jira-tracker-source-conflict-fails" "expected failure before any forge call"
+else
+  echo "PASS: jira-tracker-source-conflict-fails (expected failure, got exit ${JIRA_INT_RC})"
+fi
+
+rm -rf "${JIRA_INT_TMPDIR}"
 
 # =============================================================================
 # GitLab auto-merge unit tests
@@ -2572,6 +4059,7 @@ run_am_test() {
     # shellcheck disable=SC2317
     sleep() { :; }
 
+    # shellcheck disable=SC2030
     export REPO_ENCODED="test-group%2Ftest-project"
     forge_enable_auto_merge "1" "--squash"
   ) 2>&1
@@ -2756,7 +4244,7 @@ run_workflow_url_test() {
     # shellcheck disable=SC1091
     source "${SCRIPT_DIR}/lib/gitlab-code-ops.lib.sh"
     eval "${env_setup}"
-    # shellcheck disable=SC2031
+    # shellcheck disable=SC2030,SC2031
     export REPO_FULL_NAME="test-group/test-project"
     forge_get_workflow_run_url
   ) 2>&1
@@ -2790,6 +4278,507 @@ run_workflow_url_test "gitlab-workflow-url-gha-fallback" \
 run_workflow_url_test "gitlab-workflow-url-gha-precedence" \
   'export GITHUB_RUN_ID="111"; export GITHUB_REPOSITORY="org/repo"; export CI_SERVER_URL="https://gitlab.com"; export CI_JOB_ID="999"' \
   "https://github.com/org/repo/actions/runs/111"
+
+# =============================================================================
+# forge_create_pr transient retry (issue #1361)
+# =============================================================================
+
+run_gh_create_pr_retry_test() {
+  # shellcheck disable=SC2030,SC2031,SC2317
+  local test_name="$1"
+  local fail_times="$2"
+  local error_msg="$3"
+  local expect_attempts="$4"
+  local expect_rc="$5"
+
+  local tmp mock_bin call_log rc=0 output attempts
+  tmp=$(mktemp -d)
+  mock_bin="${tmp}/bin"
+  call_log="${tmp}/calls"
+  mkdir -p "${mock_bin}"
+  : > "${call_log}"
+
+  cat > "${mock_bin}/gh" <<'MOCK'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "${CALL_LOG}"
+n=$(grep -c 'pr create' "${CALL_LOG}" 2>/dev/null || true)
+if printf '%s' " $*" | grep -q ' pr create '; then
+  if [ "${n}" -le "${FAIL_TIMES}" ]; then
+    echo "${ERROR_MSG}" >&2
+    exit 1
+  fi
+  echo "https://github.com/org/repo/pull/1"
+  exit 0
+fi
+exit 0
+MOCK
+  chmod +x "${mock_bin}/gh"
+
+  output=$(
+    # shellcheck disable=SC2030,SC2031,SC2317
+    {
+      unset GITHUB_CODE_OPS_SH_LOADED
+      unset FORGE_TRANSIENT_RETRY_SH_LOADED
+      # shellcheck disable=SC1091
+      source "${SCRIPT_DIR}/lib/github-code-ops.lib.sh"
+      sleep() { :; }
+      export REPO_FULL_NAME="org/repo"
+      export FORGE_TRANSIENT_RETRY_BASE_DELAY=0
+      export CALL_LOG="${call_log}"
+      export FAIL_TIMES="${fail_times}"
+      export ERROR_MSG="${error_msg}"
+      export PATH="${mock_bin}:${PATH}"
+      forge_create_pr "main" "agent/1-x" "title" "body"
+    } 2>&1
+  ) || rc=$?
+
+  attempts=$(grep -c 'pr create' "${call_log}" || true)
+
+  if [ "${rc}" -ne "${expect_rc}" ]; then
+    echo "FAIL: ${test_name}"
+    echo "  expected rc ${expect_rc}, got ${rc}"
+    echo "  output: ${output}"
+    FAILURES=$((FAILURES + 1))
+    rm -rf "${tmp}"
+    return
+  fi
+  if [ "${attempts}" -ne "${expect_attempts}" ]; then
+    echo "FAIL: ${test_name}"
+    echo "  expected ${expect_attempts} gh pr create attempts, got ${attempts}"
+    echo "  calls:"
+    cat "${call_log}"
+    echo "  output: ${output}"
+    FAILURES=$((FAILURES + 1))
+    rm -rf "${tmp}"
+    return
+  fi
+  if [ "${expect_rc}" -eq 0 ]; then
+    if ! echo "${output}" | grep -q 'https://github.com/org/repo/pull/1'; then
+      echo "FAIL: ${test_name}"
+      echo "  expected PR URL on success"
+      echo "  output: ${output}"
+      FAILURES=$((FAILURES + 1))
+      rm -rf "${tmp}"
+      return
+    fi
+  fi
+
+  echo "PASS: ${test_name}"
+  rm -rf "${tmp}"
+}
+
+run_gh_create_pr_retry_test "create-pr-retries-transient-503" \
+  2 "HTTP 503: Internal Server Error" 3 0
+run_gh_create_pr_retry_test "create-pr-gives-up-after-3" \
+  99 "HTTP 503: Internal Server Error" 3 1
+run_gh_create_pr_retry_test "create-pr-no-retry-on-422" \
+  99 "HTTP 422: Validation Failed" 1 1
+run_gh_create_pr_retry_test "create-pr-succeeds-first-try" \
+  0 "HTTP 503: Internal Server Error" 1 0
+
+run_gl_create_pr_retry_test() {
+  # shellcheck disable=SC2030,SC2031,SC2317
+  local test_name="$1"
+  local fail_times="$2"
+  local error_msg="$3"
+  local expect_attempts="$4"
+  local expect_rc="$5"
+
+  local tmp call_log rc=0 output attempts
+  tmp=$(mktemp -d)
+  call_log="${tmp}/calls"
+  : > "${call_log}"
+
+  output=$(
+    # shellcheck disable=SC2030,SC2031,SC2317
+    {
+      unset GITLAB_CODE_OPS_SH_LOADED
+      unset GITLAB_HOST_VALIDATION_SH_LOADED
+      unset FORGE_TRANSIENT_RETRY_SH_LOADED
+      # shellcheck disable=SC1091
+      source "${SCRIPT_DIR}/lib/gitlab-code-ops.lib.sh"
+      sleep() { :; }
+      export CALL_LOG="${call_log}"
+      export FAIL_TIMES="${fail_times}"
+      export ERROR_MSG="${error_msg}"
+      export FORGE_TRANSIENT_RETRY_BASE_DELAY=0
+      export REPO_ENCODED="group%2Fproject"
+      _gitlab_code_api_with_status() {
+        printf '%s\n' "called" >> "${CALL_LOG}"
+        local n
+        n=$(wc -l < "${CALL_LOG}" | tr -d ' ')
+        if [ "${n}" -le "${FAIL_TIMES}" ]; then
+          echo "${ERROR_MSG}" >&2
+          return 1
+        fi
+        echo '{"web_url":"https://gitlab.com/group/project/-/merge_requests/1"}'
+        return 0
+      }
+      forge_create_pr "main" "agent/1-x" "title" "body"
+    } 2>&1
+  ) || rc=$?
+
+  attempts=$(wc -l < "${call_log}" | tr -d ' ')
+
+  if [ "${rc}" -ne "${expect_rc}" ]; then
+    echo "FAIL: ${test_name}"
+    echo "  expected rc ${expect_rc}, got ${rc}"
+    echo "  output: ${output}"
+    FAILURES=$((FAILURES + 1))
+    rm -rf "${tmp}"
+    return
+  fi
+  if [ "${attempts}" -ne "${expect_attempts}" ]; then
+    echo "FAIL: ${test_name}"
+    echo "  expected ${expect_attempts} GitLab create attempts, got ${attempts}"
+    echo "  output: ${output}"
+    FAILURES=$((FAILURES + 1))
+    rm -rf "${tmp}"
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+  rm -rf "${tmp}"
+}
+
+run_gl_create_pr_retry_test "gitlab-create-pr-retries-transient-503" \
+  2 "GitLab API error (HTTP 503): no available server" 3 0
+run_gl_create_pr_retry_test "gitlab-create-pr-gives-up-after-3" \
+  99 "GitLab API error (HTTP 503): no available server" 3 1
+run_gl_create_pr_retry_test "gitlab-create-pr-no-retry-on-400" \
+  99 "GitLab API error (HTTP 400): invalid source branch" 1 1
+
+# =============================================================================
+# forge_create_pr already-exists recovery
+# =============================================================================
+
+run_already_exists_matcher_test() {
+  local test_name="$1"
+  local text="$2"
+  local expect_rc="$3"
+  local rc=0
+  (
+    unset FORGE_TRANSIENT_RETRY_SH_LOADED
+    # shellcheck disable=SC1091
+    source "${SCRIPT_DIR}/lib/forge-transient-retry.lib.sh"
+    forge_is_already_exists_error "${text}"
+  ) || rc=$?
+  if [ "${rc}" -ne "${expect_rc}" ]; then
+    echo "FAIL: ${test_name}"
+    echo "  expected rc ${expect_rc}, got ${rc}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  echo "PASS: ${test_name}"
+}
+
+run_already_exists_matcher_test "already-exists-matches-gh-cli" \
+  'a pull request for branch "agent/1-x" into branch "main" already exists:
+https://github.com/org/repo/pull/99' 0
+run_already_exists_matcher_test "already-exists-matches-graphql" \
+  "GraphQL: A pull request already exists for org:agent/1-x. (createPullRequest)" 0
+run_already_exists_matcher_test "already-exists-matches-gitlab-409" \
+  'GitLab API error (HTTP 409): Another open merge request already exists for this source branch: !1' 0
+run_already_exists_matcher_test "already-exists-rejects-plain-422" \
+  "HTTP 422: Validation Failed" 1
+run_already_exists_matcher_test "already-exists-rejects-400" \
+  "GitLab API error (HTTP 400): invalid source branch" 1
+
+run_gh_create_pr_recover_test() {
+  # shellcheck disable=SC2030,SC2031,SC2317
+  local test_name="$1"
+  local expect_rc="$2"
+  local expect_url="$3"
+  local expect_create_attempts="$4"
+  local expect_list_attempts="$5"
+  local list_json="$6"
+  local create_errs="$7"
+  local repo_full_name="${8:-org/repo}"
+
+  local tmp mock_bin call_log rc=0 output create_attempts list_attempts
+  tmp=$(mktemp -d)
+  mock_bin="${tmp}/bin"
+  call_log="${tmp}/calls"
+  mkdir -p "${mock_bin}"
+  : > "${call_log}"
+  printf '%s\n' "${create_errs}" > "${tmp}/create_errs"
+
+  cat > "${mock_bin}/gh" <<'MOCK'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "${CALL_LOG}"
+if printf '%s' " $*" | grep -q ' pr create '; then
+  n=$(grep -c 'pr create' "${CALL_LOG}" 2>/dev/null || true)
+  err=$(sed -n "${n}p" "${CREATE_ERRS_FILE}" 2>/dev/null || true)
+  if [ -n "${err}" ]; then
+    echo "${err}" >&2
+    exit 1
+  fi
+  echo "https://github.com/org/repo/pull/1"
+  exit 0
+fi
+if printf '%s' " $*" | grep -q ' pr list '; then
+  printf '%s\n' "${LIST_JSON}"
+  exit 0
+fi
+exit 0
+MOCK
+  chmod +x "${mock_bin}/gh"
+
+  output=$(
+    # shellcheck disable=SC2030,SC2031,SC2317
+    {
+      unset GITHUB_CODE_OPS_SH_LOADED
+      unset FORGE_TRANSIENT_RETRY_SH_LOADED
+      # shellcheck disable=SC1091
+      source "${SCRIPT_DIR}/lib/github-code-ops.lib.sh"
+      sleep() { :; }
+      export REPO_FULL_NAME="${repo_full_name}"
+      export FORGE_TRANSIENT_RETRY_BASE_DELAY=0
+      export CALL_LOG="${call_log}"
+      export CREATE_ERRS_FILE="${tmp}/create_errs"
+      export LIST_JSON="${list_json}"
+      export PATH="${mock_bin}:${PATH}"
+      forge_create_pr "main" "agent/1-x" "title" "body"
+    } 2>&1
+  ) || rc=$?
+
+  create_attempts=$(grep -c 'pr create' "${call_log}" || true)
+  list_attempts=$(grep -c 'pr list' "${call_log}" || true)
+
+  if [ "${rc}" -ne "${expect_rc}" ]; then
+    echo "FAIL: ${test_name}"
+    echo "  expected rc ${expect_rc}, got ${rc}"
+    echo "  output: ${output}"
+    echo "  calls:"
+    cat "${call_log}"
+    FAILURES=$((FAILURES + 1))
+    rm -rf "${tmp}"
+    return
+  fi
+  if [ "${create_attempts}" -ne "${expect_create_attempts}" ]; then
+    echo "FAIL: ${test_name}"
+    echo "  expected ${expect_create_attempts} gh pr create attempts, got ${create_attempts}"
+    echo "  calls:"
+    cat "${call_log}"
+    echo "  output: ${output}"
+    FAILURES=$((FAILURES + 1))
+    rm -rf "${tmp}"
+    return
+  fi
+  if [ "${list_attempts}" -ne "${expect_list_attempts}" ]; then
+    echo "FAIL: ${test_name}"
+    echo "  expected ${expect_list_attempts} gh pr list attempts, got ${list_attempts}"
+    echo "  calls:"
+    cat "${call_log}"
+    echo "  output: ${output}"
+    FAILURES=$((FAILURES + 1))
+    rm -rf "${tmp}"
+    return
+  fi
+  if [ -n "${expect_url}" ]; then
+    if ! echo "${output}" | grep -qF "${expect_url}"; then
+      echo "FAIL: ${test_name}"
+      echo "  expected URL '${expect_url}'"
+      echo "  output: ${output}"
+      FAILURES=$((FAILURES + 1))
+      rm -rf "${tmp}"
+      return
+    fi
+  fi
+  if [ "${expect_list_attempts}" -gt 0 ]; then
+    if ! grep -q -- '--head agent/1-x' "${call_log}" || ! grep -q -- '--base main' "${call_log}"; then
+      echo "FAIL: ${test_name}"
+      echo "  expected gh pr list --head agent/1-x --base main"
+      echo "  calls:"
+      cat "${call_log}"
+      FAILURES=$((FAILURES + 1))
+      rm -rf "${tmp}"
+      return
+    fi
+  fi
+
+  echo "PASS: ${test_name}"
+  rm -rf "${tmp}"
+}
+
+GH_MATCHING_PR='[{"number":99,"url":"https://github.com/org/repo/pull/99","headRepositoryOwner":{"login":"org"},"headRefName":"agent/1-x","baseRefName":"main"}]'
+GH_WRONG_HEAD='[{"number":99,"url":"https://github.com/org/repo/pull/99","headRepositoryOwner":{"login":"org"},"headRefName":"agent/other","baseRefName":"main"}]'
+GH_WRONG_BASE='[{"number":99,"url":"https://github.com/org/repo/pull/99","headRepositoryOwner":{"login":"org"},"headRefName":"agent/1-x","baseRefName":"develop"}]'
+GH_FORK_PR='[{"number":99,"url":"https://github.com/org/repo/pull/99","headRepositoryOwner":{"login":"forker"},"headRefName":"agent/1-x","baseRefName":"main"}]'
+GH_TWO_PRS='[{"number":98,"url":"https://github.com/org/repo/pull/98","headRepositoryOwner":{"login":"org"},"headRefName":"agent/1-x","baseRefName":"main"},{"number":99,"url":"https://github.com/org/repo/pull/99","headRepositoryOwner":{"login":"org"},"headRefName":"agent/1-x","baseRefName":"main"}]'
+
+run_gh_create_pr_recover_test "create-pr-timeout-then-already-exists-recovers" \
+  0 "https://github.com/org/repo/pull/99" 2 1 \
+  "${GH_MATCHING_PR}" \
+  $'operation timed out\na pull request already exists for org:agent/1-x'
+
+# Issue URL owner spelling flows into REPO_FULL_NAME; the API returns the
+# canonical login. Owner logins are case-insensitive, so this must recover.
+run_gh_create_pr_recover_test "create-pr-already-exists-owner-case-mismatch-recovers" \
+  0 "https://github.com/org/repo/pull/99" 1 1 \
+  "${GH_MATCHING_PR}" \
+  'a pull request already exists for org:agent/1-x' \
+  "Org/repo"
+
+run_gh_create_pr_recover_test "create-pr-already-exists-no-match-fails" \
+  1 "could not be resolved" 1 1 \
+  "[]" \
+  'a pull request already exists for org:agent/1-x'
+
+run_gh_create_pr_recover_test "create-pr-already-exists-wrong-head-not-adopted" \
+  1 "could not be resolved" 1 1 \
+  "${GH_WRONG_HEAD}" \
+  'a pull request already exists for org:agent/1-x'
+
+run_gh_create_pr_recover_test "create-pr-already-exists-wrong-base-not-adopted" \
+  1 "could not be resolved" 1 1 \
+  "${GH_WRONG_BASE}" \
+  'a pull request already exists for org:agent/1-x'
+
+run_gh_create_pr_recover_test "create-pr-already-exists-fork-not-adopted" \
+  1 "could not be resolved" 1 1 \
+  "${GH_FORK_PR}" \
+  'a pull request already exists for org:agent/1-x'
+
+run_gh_create_pr_recover_test "create-pr-already-exists-multiple-fails" \
+  1 "could not be resolved" 1 1 \
+  "${GH_TWO_PRS}" \
+  'a pull request already exists for org:agent/1-x'
+
+run_gh_create_pr_recover_test "create-pr-plain-422-does-not-list" \
+  1 "" 1 0 \
+  "${GH_MATCHING_PR}" \
+  "HTTP 422: Validation Failed"
+
+run_gl_create_pr_recover_test() {
+  # shellcheck disable=SC2030,SC2031,SC2317
+  local test_name="$1"
+  local expect_rc="$2"
+  local expect_url="$3"
+  local expect_post_attempts="$4"
+  local expect_get_attempts="$5"
+  local list_json="$6"
+  local error_msg="$7"
+
+  local tmp call_log rc=0 output post_attempts get_attempts
+  tmp=$(mktemp -d)
+  call_log="${tmp}/calls"
+  : > "${call_log}"
+
+  output=$(
+    # shellcheck disable=SC2030,SC2031,SC2317
+    {
+      unset GITLAB_CODE_OPS_SH_LOADED
+      unset GITLAB_HOST_VALIDATION_SH_LOADED
+      unset FORGE_TRANSIENT_RETRY_SH_LOADED
+      # shellcheck disable=SC1091
+      source "${SCRIPT_DIR}/lib/gitlab-code-ops.lib.sh"
+      sleep() { :; }
+      export CALL_LOG="${call_log}"
+      export ERROR_MSG="${error_msg}"
+      export LIST_JSON="${list_json}"
+      export FORGE_TRANSIENT_RETRY_BASE_DELAY=0
+      export REPO_ENCODED="group%2Fproject"
+      _gitlab_code_api_with_status() {
+        local method="$1"
+        local endpoint="$2"
+        printf '%s %s\n' "${method}" "${endpoint}" >> "${CALL_LOG}"
+        if [ "${method}" = "POST" ]; then
+          echo "${ERROR_MSG}" >&2
+          return 1
+        fi
+        if [[ "${endpoint}" == *"/merge_requests?"* ]]; then
+          printf '%s\n' "${LIST_JSON}"
+          return 0
+        fi
+        if [ "${endpoint}" = "/projects/${REPO_ENCODED}" ]; then
+          echo '{"id":42}'
+          return 0
+        fi
+        echo "unexpected GitLab endpoint ${endpoint}" >&2
+        return 1
+      }
+      forge_create_pr "main" "agent/1-x" "title" "body"
+    } 2>&1
+  ) || rc=$?
+
+  post_attempts=$(grep -c '^POST ' "${call_log}" || true)
+  get_attempts=$(grep -c '^GET ' "${call_log}" || true)
+
+  if [ "${rc}" -ne "${expect_rc}" ]; then
+    echo "FAIL: ${test_name}"
+    echo "  expected rc ${expect_rc}, got ${rc}"
+    echo "  output: ${output}"
+    echo "  calls:"
+    cat "${call_log}"
+    FAILURES=$((FAILURES + 1))
+    rm -rf "${tmp}"
+    return
+  fi
+  if [ "${post_attempts}" -ne "${expect_post_attempts}" ]; then
+    echo "FAIL: ${test_name}"
+    echo "  expected ${expect_post_attempts} GitLab POSTs, got ${post_attempts}"
+    echo "  calls:"
+    cat "${call_log}"
+    echo "  output: ${output}"
+    FAILURES=$((FAILURES + 1))
+    rm -rf "${tmp}"
+    return
+  fi
+  if [ "${get_attempts}" -ne "${expect_get_attempts}" ]; then
+    echo "FAIL: ${test_name}"
+    echo "  expected ${expect_get_attempts} GitLab GETs, got ${get_attempts}"
+    echo "  calls:"
+    cat "${call_log}"
+    echo "  output: ${output}"
+    FAILURES=$((FAILURES + 1))
+    rm -rf "${tmp}"
+    return
+  fi
+  if [ -n "${expect_url}" ]; then
+    if ! echo "${output}" | grep -qF "${expect_url}"; then
+      echo "FAIL: ${test_name}"
+      echo "  expected '${expect_url}'"
+      echo "  output: ${output}"
+      FAILURES=$((FAILURES + 1))
+      rm -rf "${tmp}"
+      return
+    fi
+  fi
+
+  echo "PASS: ${test_name}"
+  rm -rf "${tmp}"
+}
+
+GL_MATCHING_MR='[{"iid":1,"web_url":"https://gitlab.com/group/project/-/merge_requests/1","source_project_id":42,"source_branch":"agent/1-x","target_branch":"main"}]'
+GL_WRONG_TARGET='[{"iid":1,"web_url":"https://gitlab.com/group/project/-/merge_requests/1","source_project_id":42,"source_branch":"agent/1-x","target_branch":"develop"}]'
+GL_FORK_MR='[{"iid":1,"web_url":"https://gitlab.com/group/project/-/merge_requests/1","source_project_id":99,"source_branch":"agent/1-x","target_branch":"main"}]'
+GL_409='GitLab API error (HTTP 409): Another open merge request already exists for this source branch: !1'
+
+run_gl_create_pr_recover_test "gitlab-create-pr-409-recovers" \
+  0 "https://gitlab.com/group/project/-/merge_requests/1" 1 2 \
+  "${GL_MATCHING_MR}" \
+  "${GL_409}"
+
+run_gl_create_pr_recover_test "gitlab-create-pr-409-no-match-fails" \
+  1 "could not be resolved" 1 2 \
+  "[]" \
+  "${GL_409}"
+
+run_gl_create_pr_recover_test "gitlab-create-pr-409-wrong-target-not-adopted" \
+  1 "could not be resolved" 1 2 \
+  "${GL_WRONG_TARGET}" \
+  "${GL_409}"
+
+run_gl_create_pr_recover_test "gitlab-create-pr-409-fork-not-adopted" \
+  1 "could not be resolved" 1 2 \
+  "${GL_FORK_MR}" \
+  "${GL_409}"
+
+run_gl_create_pr_recover_test "gitlab-create-pr-400-does-not-list" \
+  1 "" 1 0 \
+  "${GL_MATCHING_MR}" \
+  "GitLab API error (HTTP 400): invalid source branch"
 
 # --- Summary ---
 

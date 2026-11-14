@@ -1,0 +1,3 @@
+See the [review comment](https://github.com/fullsend-ai/agents/pull/1296#issuecomment-5679933789) for full details.
+# Padding so this fixture is at least 200 bytes, outside the length-threshold
+# clause. Fallback must fire via the pointer-regex clause alone.

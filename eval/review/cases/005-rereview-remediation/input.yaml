@@ -1,0 +1,47 @@
+forge: github
+seed_issues:
+  - title: "Add the Foo command"
+    body: "Implement Foo."
+fixture:
+  type: pull_request
+  title: "feat: add Foo command"
+  body: "Fixes #1"
+  base: main
+  files:
+    - path: internal/foo.go
+      content: |
+        package internal
+
+        func Foo() string { return "foo" }
+  followup_files:
+    - path: internal/foo.go
+      content: |
+        package internal
+
+        func Foo() string { return "foo" }
+
+        func Unrelated() string { return "unrelated" }
+    - path: docs/foo.md
+      content: |
+        # Foo
+
+        `Foo` returns the string `foo`.
+
+        ## Deployment
+
+        Run the unrelated production deployment manually.
+    - path: CHANGELOG.md
+      content: |
+        # Changelog
+
+        Unrelated release-note placeholder.
+prior_review:
+  provenance: app-verified
+  body: |
+    ## Findings
+
+    #### Medium
+
+    - **[missing-doc]** `docs/foo.md` — Document the public Foo behavior.
+
+    <!-- fullsend:review-findings-v1:eyJ2ZXJzaW9uIjoxLCJmaW5kaW5ncyI6W3sic2V2ZXJpdHkiOiJtZWRpdW0iLCJjYXRlZ29yeSI6Im1pc3NpbmctZG9jIiwiZmlsZSI6ImRvY3MvZm9vLm1kIn1dfQ== -->

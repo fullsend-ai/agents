@@ -1,0 +1,23 @@
+state: open
+
+labels:
+  required: []
+  forbidden:
+    - ready-for-merge
+  risk_label_required: false
+
+findings:
+  required:
+    - injection-vuln
+
+max_cost_usd: 2.75
+
+review_expectations: |
+  This is an app-verified GitHub re-review. The prior structured projection
+  contains only high severity, category injection-vuln, file src/auth.py, and
+  line 2; it has no prior description or remediation text. The src/auth.py
+  lookup_user function is unchanged since the reviewed SHA, while the follow-up
+  changes only README.md. A good review should independently confirm the SQL
+  injection in lookup_user, match it using category/file/function anchors, and
+  preserve the prior high severity. The finding must not be treated as new just
+  because the prior description is unavailable.

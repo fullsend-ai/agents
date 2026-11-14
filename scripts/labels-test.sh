@@ -92,6 +92,58 @@ run_test "explicit-overrides-default" \
   "ready-for-review Custom desc FF0000" \
   "$(get_forge_call 0)"
 
+# ---------------------------------------------------------------------------
+# forge_add_label tests (github-code-ops.lib.sh)
+# ---------------------------------------------------------------------------
+
+# Build a mock gh binary that logs every invocation and exits 0 by default.
+MOCK_BIN=$(mktemp -d)
+GH_CALL_LOG=$(mktemp)
+GHA_WARNINGS_LOG=$(mktemp)
+trap 'rm -rf "${MOCK_BIN}" "${GH_CALL_LOG}" "${GHA_WARNINGS_LOG}" "${FORGE_CALLS_FILE}"' EXIT
+
+cat > "${MOCK_BIN}/gh" <<'MOCKEOF'
+#!/usr/bin/env bash
+echo "$*" >> "GH_LOG_PLACEHOLDER"
+exit "${MOCK_GH_EXIT:-0}"
+MOCKEOF
+perl -pi -e "s|GH_LOG_PLACEHOLDER|${GH_CALL_LOG}|g" "${MOCK_BIN}/gh"
+chmod +x "${MOCK_BIN}/gh"
+export PATH="${MOCK_BIN}:${PATH}"
+
+# Stub gha_echo to capture warnings.
+gha_echo() { echo "$*" >> "${GHA_WARNINGS_LOG}"; }
+export -f gha_echo 2>/dev/null || true
+
+# Source the lib under test.
+export GITHUB_CODE_OPS_SH_LOADED=""
+export REPO_FULL_NAME="test-org/test-repo"
+export ISSUE_NUMBER="42"
+# shellcheck source=lib/github-code-ops.lib.sh
+source "${SCRIPT_DIR}/lib/github-code-ops.lib.sh"
+
+# Test 5: PR target calls gh api with correct endpoint and field encoding.
+true > "${GH_CALL_LOG}"
+forge_add_label "ready-for-review" "pr" "123"
+run_test "add-label-pr-uses-gh-api" \
+  "api repos/test-org/test-repo/issues/123/labels -f labels[]=ready-for-review --silent" \
+  "$(cat "${GH_CALL_LOG}")"
+
+# Test 6: Issue target (default) calls gh api with ISSUE_NUMBER.
+true > "${GH_CALL_LOG}"
+forge_add_label "pr-open"
+run_test "add-label-issue-uses-gh-api" \
+  "api repos/test-org/test-repo/issues/42/labels -f labels[]=pr-open --silent" \
+  "$(cat "${GH_CALL_LOG}")"
+
+# Test 7: PR target logs gha_echo warning on gh failure.
+true > "${GH_CALL_LOG}"
+true > "${GHA_WARNINGS_LOG}"
+MOCK_GH_EXIT=1 forge_add_label "ready-for-review" "pr" "456"
+run_test "add-label-pr-warns-on-failure" \
+  "warning Failed to apply ready-for-review label to PR #456" \
+  "$(cat "${GHA_WARNINGS_LOG}")"
+
 echo ""
 if [ ${FAILURES} -gt 0 ]; then
   echo "${FAILURES} test(s) failed"

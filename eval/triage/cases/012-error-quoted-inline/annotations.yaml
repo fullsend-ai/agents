@@ -1,0 +1,47 @@
+# The exact error message is quoted inline in the prose of the issue
+# body rather than under an "Error" heading or in a code block. The
+# agent must find it and must not ask the reporter for information the
+# issue already contains (fullsend-ai/agents#1939).
+state: open
+
+labels:
+  required:
+    - ready-to-code
+    - bug
+  forbidden:
+    - needs-info
+
+max_turns: 35
+max_cost_usd: 0.50
+
+triage_expectations: |
+  The issue is written as a single paragraph with no headings, but it
+  already contains everything needed to triage it: the exact error
+  (`ValueError: invalid email format`), the function that raises it
+  (validate_email in src/auth/validators.py), the caller
+  (login_handler), reproduction steps (submit an email without a
+  domain), the expected behavior (a validation message on the form),
+  and the environment (current main, Python 3.12).
+
+  The claim checks out against the code: login_handler in
+  src/auth/views.py calls validate_email with no try/except, so the
+  ValueError reaches the framework and becomes a 500.
+
+  A good triage should:
+
+  1. Recognize that the error message, reproduction steps, expected
+     behavior, and environment are already in the issue body.
+  2. Not choose "insufficient", and not ask the reporter for the exact
+     error message, a log, reproduction steps, or their environment.
+  3. Verify the cause against the code and recommend handling the
+     ValueError in login_handler so it returns a validation error
+     instead of a 500.
+  4. Choose "sufficient" and propose a concrete test case.
+
+  A score of 1 means the agent asked for the error message or any
+  other detail that the issue already contains.
+  A score of 3 means it did not ask, but it did not verify the cause
+  against login_handler.
+  A score of 5 means it used the inline error, verified the missing
+  error handling in login_handler, chose sufficient, and proposed a
+  test case.
