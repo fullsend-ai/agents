@@ -1,0 +1,5 @@
+---
+validation_loop:
+  script: scripts/validate-output-schema.sh
+  schema: schemas/review-result.schema.json
+invalid: [unclosed
