@@ -165,6 +165,47 @@ check_validation_loop_at_path() {
   return 0
 }
 
+# Helper: iterate over forge and overlay validation_loop locations
+# Used to avoid duplication in test_no_hardcoded_schema and test_schema_files_exist_and_valid
+for_each_forge_and_overlay_location() {
+  local harness="$1"
+  local callback="$2"
+  local resolve_root="${3:-}"
+  local harness_name
+  harness_name="$(basename "${harness}")"
+
+  # Iterate forge-specific locations
+  local has_forge
+  has_forge="$(yq 'has("forge")' "${harness}")" || {
+    echo "${harness_name}: yq failed to check forge"
+    return 1
+  }
+  if [[ "${has_forge}" == "true" ]]; then
+    local platforms
+    platforms="$(yq '.forge | keys | .[]' "${harness}")" || {
+      echo "${harness_name}: yq failed to get forge keys"
+      return 1
+    }
+    while IFS= read -r platform; do
+      [[ -z "${platform}" ]] && continue
+      "${callback}" "${harness}" ".forge.${platform}" "forge.${platform}" "${resolve_root}"
+    done <<< "${platforms}"
+  fi
+
+  # Iterate overlay locations
+  local overlay_count
+  overlay_count="$(yq '.overlays | length' "${harness}")" || {
+    echo "${harness_name}: yq failed to get overlay count"
+    return 1
+  }
+  if [[ ${overlay_count} -gt 0 ]]; then
+    local i
+    for ((i=0; i<overlay_count; i++)); do
+      "${callback}" "${harness}" ".overlays[${i}]" "overlays[${i}]" "${resolve_root}"
+    done
+  fi
+}
+
 # Test 1: Every validation_loop with script must have schema
 test_validation_loop_schema() {
   local found_error=0
@@ -202,39 +243,12 @@ test_validation_loop_schema() {
       fi
     fi
 
-    # Check forge-specific validation_loops
-    local has_forge
-    has_forge="$(yq 'has("forge")' "${harness}")" || {
-      echo "${harness_name}: yq failed to check forge"
-      found_error=1
-      continue
+    # Check forge and overlay validation_loops via callback
+    _check_validation_loop_callback() {
+      local h="$1" p="$2" loc="$3" top_script="$4"
+      check_validation_loop_at_path "${h}" "${p}" "${loc}" "${top_script}" || return 1
     }
-    if [[ "${has_forge}" == "true" ]]; then
-      local platforms
-      platforms="$(yq '.forge | keys | .[]' "${harness}")" || {
-        echo "${harness_name}: yq failed to get forge keys"
-        found_error=1
-        continue
-      }
-      while IFS= read -r platform; do
-        [[ -z "${platform}" ]] && continue
-        check_validation_loop_at_path "${harness}" ".forge.${platform}" "forge.${platform}" "${top_level_script}" || found_error=1
-      done <<< "${platforms}"
-    fi
-
-    # Check overlay validation_loops
-    local overlay_count
-    overlay_count="$(yq '.overlays | length' "${harness}")" || {
-      echo "${harness_name}: yq failed to get overlay count"
-      found_error=1
-      continue
-    }
-    if [[ ${overlay_count} -gt 0 ]]; then
-      local i
-      for ((i=0; i<overlay_count; i++)); do
-        check_validation_loop_at_path "${harness}" ".overlays[${i}]" "overlays[${i}]" "${top_level_script}" || found_error=1
-      done
-    fi
+    for_each_forge_and_overlay_location "${harness}" _check_validation_loop_callback "${top_level_script}" || found_error=1
   done
   if [[ ${file_count} -eq 0 ]]; then
     echo "no harness files found in ${HARNESS_DIR}, examples, or eval/harness"
@@ -277,77 +291,30 @@ test_no_hardcoded_schema() {
       found_hardcoded=1
     fi
 
-    local has_forge
-    has_forge="$(yq 'has("forge")' "${harness}")" || {
-      echo "${harness_name}: yq failed to check forge"
-      found_hardcoded=1
-      continue
-    }
-    if [[ "${has_forge}" == "true" ]]; then
-      local platforms
-      platforms="$(yq '.forge | keys | .[]' "${harness}")" || {
-        echo "${harness_name}: yq failed to get forge keys"
-        found_hardcoded=1
-        continue
+    # Check forge and overlay for hardcoded schema via callback
+    _check_hardcoded_callback() {
+      local h="$1" p="$2" loc="$3"
+      local has_env_runner
+      has_env_runner="$(yq "${p}.env.runner | has(\"FULLSEND_OUTPUT_SCHEMA\")" "${h}")" || {
+        echo "${harness_name}: yq failed to check ${loc}.env.runner"
+        return 1
       }
-      while IFS= read -r platform; do
-        [[ -z "${platform}" ]] && continue
-        local has_forge_schema
-        has_forge_schema="$(yq ".forge.${platform}.env.runner | has(\"FULLSEND_OUTPUT_SCHEMA\")" "${harness}")" || {
-          echo "${harness_name}: yq failed to check forge.${platform}.env.runner"
-          found_hardcoded=1
-          continue
-        }
-        if [[ "${has_forge_schema}" == "true" ]]; then
-          echo "${harness_name}: forge.${platform}.env.runner contains hardcoded FULLSEND_OUTPUT_SCHEMA"
-          found_hardcoded=1
-        fi
+      if [[ "${has_env_runner}" == "true" ]]; then
+        echo "${harness_name}: ${loc}.env.runner contains hardcoded FULLSEND_OUTPUT_SCHEMA"
+        return 1
+      fi
 
-        local has_forge_runner_env
-        has_forge_runner_env="$(yq ".forge.${platform}.runner_env | has(\"FULLSEND_OUTPUT_SCHEMA\")" "${harness}")" || {
-          echo "${harness_name}: yq failed to check forge.${platform}.runner_env"
-          found_hardcoded=1
-          continue
-        }
-        if [[ "${has_forge_runner_env}" == "true" ]]; then
-          echo "${harness_name}: forge.${platform}.runner_env (deprecated) contains hardcoded FULLSEND_OUTPUT_SCHEMA"
-          found_hardcoded=1
-        fi
-      done <<< "${platforms}"
-    fi
-
-    local overlay_count
-    overlay_count="$(yq '.overlays | length' "${harness}")" || {
-      echo "${harness_name}: yq failed to get overlay count"
-      found_hardcoded=1
-      continue
+      local has_runner_env
+      has_runner_env="$(yq "${p}.runner_env | has(\"FULLSEND_OUTPUT_SCHEMA\")" "${h}")" || {
+        echo "${harness_name}: yq failed to check ${loc}.runner_env"
+        return 1
+      }
+      if [[ "${has_runner_env}" == "true" ]]; then
+        echo "${harness_name}: ${loc}.runner_env (deprecated) contains hardcoded FULLSEND_OUTPUT_SCHEMA"
+        return 1
+      fi
     }
-    if [[ ${overlay_count} -gt 0 ]]; then
-      local i
-      for ((i=0; i<overlay_count; i++)); do
-        local has_overlay_env_runner
-        has_overlay_env_runner="$(yq ".overlays[${i}].env.runner | has(\"FULLSEND_OUTPUT_SCHEMA\")" "${harness}")" || {
-          echo "${harness_name}: yq failed to check overlays[${i}].env.runner"
-          found_hardcoded=1
-          continue
-        }
-        if [[ "${has_overlay_env_runner}" == "true" ]]; then
-          echo "${harness_name}: overlays[${i}].env.runner contains hardcoded FULLSEND_OUTPUT_SCHEMA"
-          found_hardcoded=1
-        fi
-
-        local has_overlay_runner_env
-        has_overlay_runner_env="$(yq ".overlays[${i}].runner_env | has(\"FULLSEND_OUTPUT_SCHEMA\")" "${harness}")" || {
-          echo "${harness_name}: yq failed to check overlays[${i}].runner_env"
-          found_hardcoded=1
-          continue
-        }
-        if [[ "${has_overlay_runner_env}" == "true" ]]; then
-          echo "${harness_name}: overlays[${i}].runner_env (deprecated) contains hardcoded FULLSEND_OUTPUT_SCHEMA"
-          found_hardcoded=1
-        fi
-      done
-    fi
+    for_each_forge_and_overlay_location "${harness}" _check_hardcoded_callback || found_hardcoded=1
   done
 
   if [[ ${found_hardcoded} -eq 0 ]]; then
@@ -443,6 +410,12 @@ test_schema_files_exist_and_valid() {
   local found_error=0
   local file_count=0
 
+  # Callback for schema validation
+  _check_schema_callback() {
+    local h="$1" p="$2" loc="$3" root="$4"
+    check_schema_files_at_path "${h}" "${p}" "${loc}" "${root}" || return 1
+  }
+
   # Process harness/ and eval/harness/ with REPO_ROOT as resolve root
   for harness in "${HARNESS_DIR}"/*.yaml "${REPO_ROOT}"/eval/harness/*.yaml; do
     [[ -f "${harness}" ]] || continue
@@ -451,41 +424,10 @@ test_schema_files_exist_and_valid() {
     harness_name="$(basename "${harness}")"
 
     # Check top-level schema
-    check_schema_files_at_path "${harness}" "." "top-level" "${REPO_ROOT}" || found_error=1
+    _check_schema_callback "${harness}" "." "top-level" "${REPO_ROOT}" || found_error=1
 
-    # Check forge-specific schemas
-    local has_forge
-    has_forge="$(yq 'has("forge")' "${harness}")" || {
-      echo "${harness_name}: yq failed to check forge"
-      found_error=1
-      continue
-    }
-    if [[ "${has_forge}" == "true" ]]; then
-      local platforms
-      platforms="$(yq '.forge | keys | .[]' "${harness}")" || {
-        echo "${harness_name}: yq failed to get forge keys"
-        found_error=1
-        continue
-      }
-      while IFS= read -r platform; do
-        [[ -z "${platform}" ]] && continue
-        check_schema_files_at_path "${harness}" ".forge.${platform}" "forge.${platform}" "${REPO_ROOT}" || found_error=1
-      done <<< "${platforms}"
-    fi
-
-    # Check overlay schemas
-    local overlay_count
-    overlay_count="$(yq '.overlays | length' "${harness}")" || {
-      echo "${harness_name}: yq failed to get overlay count"
-      found_error=1
-      continue
-    }
-    if [[ ${overlay_count} -gt 0 ]]; then
-      local i
-      for ((i=0; i<overlay_count; i++)); do
-        check_schema_files_at_path "${harness}" ".overlays[${i}]" "overlays[${i}]" "${REPO_ROOT}" || found_error=1
-      done
-    fi
+    # Check forge and overlay schemas via callback
+    for_each_forge_and_overlay_location "${harness}" _check_schema_callback "${REPO_ROOT}" || found_error=1
   done
 
   # Process examples/*/harness/ with dirname(dirname(harness)) as resolve root
@@ -498,41 +440,10 @@ test_schema_files_exist_and_valid() {
     resolve_root="$(dirname "$(dirname "${harness}")")"
 
     # Check top-level schema
-    check_schema_files_at_path "${harness}" "." "top-level" "${resolve_root}" || found_error=1
+    _check_schema_callback "${harness}" "." "top-level" "${resolve_root}" || found_error=1
 
-    # Check forge-specific schemas
-    local has_forge
-    has_forge="$(yq 'has("forge")' "${harness}")" || {
-      echo "${harness_name}: yq failed to check forge"
-      found_error=1
-      continue
-    }
-    if [[ "${has_forge}" == "true" ]]; then
-      local platforms
-      platforms="$(yq '.forge | keys | .[]' "${harness}")" || {
-        echo "${harness_name}: yq failed to get forge keys"
-        found_error=1
-        continue
-      }
-      while IFS= read -r platform; do
-        [[ -z "${platform}" ]] && continue
-        check_schema_files_at_path "${harness}" ".forge.${platform}" "forge.${platform}" "${resolve_root}" || found_error=1
-      done <<< "${platforms}"
-    fi
-
-    # Check overlay schemas
-    local overlay_count
-    overlay_count="$(yq '.overlays | length' "${harness}")" || {
-      echo "${harness_name}: yq failed to get overlay count"
-      found_error=1
-      continue
-    }
-    if [[ ${overlay_count} -gt 0 ]]; then
-      local i
-      for ((i=0; i<overlay_count; i++)); do
-        check_schema_files_at_path "${harness}" ".overlays[${i}]" "overlays[${i}]" "${resolve_root}" || found_error=1
-      done
-    fi
+    # Check forge and overlay schemas via callback
+    for_each_forge_and_overlay_location "${harness}" _check_schema_callback "${resolve_root}" || found_error=1
   done
 
   if [[ ${file_count} -eq 0 ]]; then
