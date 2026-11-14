@@ -9,7 +9,7 @@ model: opus
 # effort is unset (internal/runtime/pi_run.go piDefaultThinking). Revisit
 # when the model: above moves to a generation with a different default.
 effort: high
-image: ghcr.io/fullsend-ai/fullsend-code@sha256:9fbdce1a04f74c2c6c06b63fdc88991fd2cdefd7925801ec9286427486044803
+image: ghcr.io/fullsend-ai/fullsend-code@sha256:c9c384db0f2790226364788a1504c6e49fa7e857c03b74b11f0c931835d7ae50
 policy: policies/base.yaml
 readonly_repo: true
 providers:
