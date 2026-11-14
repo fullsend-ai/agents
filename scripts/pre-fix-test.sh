@@ -428,6 +428,15 @@ expect_origin_url "${ORIGIN_URL}"
 finish
 
 make_target_repo
+run_pre_fix "conflict-push-remote-uses-configured-host" 0 \
+  REPO_DIR="${TARGET_REPO}" PUSH_TOKEN="${PUSH_TOKEN_VALUE}" \
+  GITHUB_SERVER_URL="https://ghe.example.internal"
+expect_log "${GIT_LOG}" "remote set-url origin https://x-access-token:${PUSH_TOKEN_VALUE}@ghe.example.internal/test-org/test-repo.git"
+expect_no_log "${GIT_LOG}" "@github.com/"
+expect_origin_url "${ORIGIN_URL}"
+finish
+
+make_target_repo
 touch "${DATA}/git-fetch.fail"
 run_pre_fix "conflict-fetch-failure-redacts-token" 0 \
   REPO_DIR="${TARGET_REPO}" PUSH_TOKEN="${PUSH_TOKEN_VALUE}"

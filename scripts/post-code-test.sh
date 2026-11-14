@@ -3349,6 +3349,62 @@ run_gitlab_push_url_test "gitlab-push-url-nested-group" \
   "https://oauth2:token123@gitlab.cee.redhat.com/org/sub/project.git" # gitleaks:allow
 
 # ---------------------------------------------------------------------------
+# GitHub forge_set_push_remote — origin must use the host from
+# GITHUB_SERVER_URL (default github.com), not a hardcoded github.com.
+# ---------------------------------------------------------------------------
+run_github_push_remote_test() {
+  local test_name="$1"
+  local server_url="$2"  # "UNSET" leaves GITHUB_SERVER_URL unset
+  local expected="$3"
+
+  local tmp actual rc=0
+  tmp="$(mktemp -d)"
+  git -C "${tmp}" init -q
+  git -C "${tmp}" remote add origin "https://example.invalid/placeholder.git"
+
+  actual=$(
+    # shellcheck disable=SC2030,SC2031
+    {
+      unset GITHUB_CODE_OPS_SH_LOADED
+      unset FORGE_TRANSIENT_RETRY_SH_LOADED
+      unset GITHUB_SERVER_URL
+      # shellcheck disable=SC1091
+      source "${SCRIPT_DIR}/lib/github-code-ops.lib.sh"
+      if [ "${server_url}" != "UNSET" ]; then
+        export GITHUB_SERVER_URL="${server_url}"
+      fi
+      export REPO_FULL_NAME="acme/widgets"
+      cd "${tmp}" && forge_set_push_remote "TOKEN" && git remote get-url origin
+    } 2>&1
+  ) || rc=$?
+  rm -rf "${tmp}"
+
+  if [ "${rc}" -ne 0 ] || [ "${actual}" != "${expected}" ]; then
+    echo "FAIL: ${test_name}"
+    echo "  expected: '${expected}'"
+    echo "  actual:   '${actual}' (rc=${rc})"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
+run_github_push_remote_test "github-push-remote-default-host" \
+  "UNSET" "https://x-access-token:TOKEN@github.com/acme/widgets.git" # gitleaks:allow
+run_github_push_remote_test "github-push-remote-public-host" \
+  "https://github.com" "https://x-access-token:TOKEN@github.com/acme/widgets.git" # gitleaks:allow
+run_github_push_remote_test "github-push-remote-configured-host" \
+  "https://ghe.example.internal" \
+  "https://x-access-token:TOKEN@ghe.example.internal/acme/widgets.git" # gitleaks:allow
+run_github_push_remote_test "github-push-remote-host-with-port" \
+  "https://ghe.example.internal:8443" \
+  "https://x-access-token:TOKEN@ghe.example.internal:8443/acme/widgets.git" # gitleaks:allow
+run_github_push_remote_test "github-push-remote-trailing-slash" \
+  "https://ghe.example.internal/" \
+  "https://x-access-token:TOKEN@ghe.example.internal/acme/widgets.git" # gitleaks:allow
+
+# ---------------------------------------------------------------------------
 # Forge dispatch pattern — tests that the declare -F dispatch pattern used
 # in post-failure-report.lib.sh and pr-assignee.lib.sh works correctly.
 # ---------------------------------------------------------------------------
