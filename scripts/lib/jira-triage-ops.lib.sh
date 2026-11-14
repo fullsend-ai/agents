@@ -67,7 +67,7 @@ JIRA_TRIAGE_OPS_SH_LOADED=1
 # JIRA_USER_EMAIL is optional: without it, requests use Bearer auth.
 # shellcheck source=jira-auth.lib.sh
 source "${SCRIPT_DIR}/lib/jira-auth.lib.sh"
-jira_auth_select "${JIRA_TOKEN:-}" "${FULLSEND_JIRA_CLIENT_ID:-}" "${FULLSEND_JIRA_CLIENT_SECRET:-}" || exit 1
+jira_auth_select "${JIRA_TOKEN:-}" FULLSEND_JIRA_CLIENT_ID FULLSEND_JIRA_CLIENT_SECRET || exit 1
 if [[ "${JIRA_AUTH_MODE}" == "none" ]]; then
   echo "ERROR: JIRA_TOKEN must be set, or FULLSEND_JIRA_CLIENT_ID and FULLSEND_JIRA_CLIENT_SECRET" >&2
   exit 1

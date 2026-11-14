@@ -1802,9 +1802,11 @@ JIRA_TRIAGE_OPS_SH_LOADED=1
 # use the token and email they are given (the token modes).
 #
 # The client secret is kept in shell variables only. It never reaches a
-# command line, a file, the output, or an xtrace line: jq builds the token
-# request body from its environment and sends it to curl on stdin, and a
-# failed request reports its HTTP status, never the response body.
+# command line, a file, the output, or an xtrace line: jira_auth_select
+# takes the names of the client ID and secret variables and reads them
+# with xtrace off, jq builds the token request body from its environment
+# and sends it to curl on stdin, and a failed request reports its HTTP
+# status, never the response body.
 
 [[ -n "${JIRA_AUTH_SH_LOADED:-}" ]] && return 0
 JIRA_AUTH_SH_LOADED=1
@@ -1839,46 +1841,57 @@ jira_auth_email() {
 #   token  — a token is set (the email decides Basic or Bearer per call)
 #   client — the client ID and secret are both set and no token is
 #   none   — nothing is set
+# The client ID and secret are passed as variable names, never values, so
+# a traced call line shows only the names; they are read with xtrace off.
 # Fails, naming the variables but never their values, when a token and
-# client credentials are both set or only one client variable is. Values
-# are trimmed, so one that is only whitespace counts as unset. Runs with
-# xtrace off.
+# client credentials are both set, only one client variable is, or a name
+# is not a shell identifier. Values are trimmed, so one that is only
+# whitespace counts as unset.
 #
-# Usage: jira_auth_select <token> <client-id> <client-secret>
+# Usage: jira_auth_select <token> <client-id-var> <client-secret-var>
 jira_auth_select() {
-  local xtrace=0 rc=0
+  local _jas_xtrace=0 _jas_rc=0
   if [[ $- == *x* ]]; then
-    xtrace=1
+    _jas_xtrace=1
     set +x
   fi
-  _jira_auth_select_now "$@" || rc=$?
-  if [[ "${xtrace}" -eq 1 ]]; then
+  _jira_auth_select_now "$@" || _jas_rc=$?
+  if [[ "${_jas_xtrace}" -eq 1 ]]; then
     set -x
   fi
-  return "${rc}"
+  return "${_jas_rc}"
 }
 
+# Locals use a _jas_ prefix, and such names are refused, so the indirect
+# reads see the caller's variables, not these.
 _jira_auth_select_now() {
-  local token client_id client_secret
-  token="$(_jira_auth_trim "$1")"
-  client_id="$(_jira_auth_trim "$2")"
-  client_secret="$(_jira_auth_trim "$3")"
-  if [[ -n "${token}" && ( -n "${client_id}" || -n "${client_secret}" ) ]]; then
+  local _jas_name
+  for _jas_name in "$2" "$3"; do
+    if [[ ! "${_jas_name}" =~ ^[A-Za-z_][A-Za-z0-9_]*$ || "${_jas_name}" == _jas_* ]]; then
+      echo "ERROR: jira_auth_select needs the names of the client ID and secret variables" >&2
+      return 1
+    fi
+  done
+  local _jas_token _jas_id _jas_secret
+  _jas_token="$(_jira_auth_trim "$1")"
+  _jas_id="$(_jira_auth_trim "${!2:-}")"
+  _jas_secret="$(_jira_auth_trim "${!3:-}")"
+  if [[ -n "${_jas_token}" && ( -n "${_jas_id}" || -n "${_jas_secret}" ) ]]; then
     echo "ERROR: set either FULLSEND_JIRA_TOKEN (JIRA_TOKEN) or FULLSEND_JIRA_CLIENT_ID and FULLSEND_JIRA_CLIENT_SECRET, not both" >&2
     return 1
   fi
-  if [[ -n "${client_id}" && -z "${client_secret}" ]] || [[ -z "${client_id}" && -n "${client_secret}" ]]; then
+  if [[ -n "${_jas_id}" && -z "${_jas_secret}" ]] || [[ -z "${_jas_id}" && -n "${_jas_secret}" ]]; then
     echo "ERROR: FULLSEND_JIRA_CLIENT_ID and FULLSEND_JIRA_CLIENT_SECRET must be set together" >&2
     return 1
   fi
   _JIRA_AUTH_ACCESS_TOKEN=""
   _JIRA_AUTH_EXPIRES_AT=0
-  if [[ -n "${token}" ]]; then
+  if [[ -n "${_jas_token}" ]]; then
     JIRA_AUTH_MODE="token"
-  elif [[ -n "${client_id}" ]]; then
+  elif [[ -n "${_jas_id}" ]]; then
     JIRA_AUTH_MODE="client"
-    _JIRA_AUTH_CLIENT_ID="${client_id}"
-    _JIRA_AUTH_CLIENT_SECRET="${client_secret}"
+    _JIRA_AUTH_CLIENT_ID="${_jas_id}"
+    _JIRA_AUTH_CLIENT_SECRET="${_jas_secret}"
   else
     JIRA_AUTH_MODE="none"
   fi
@@ -1953,7 +1966,9 @@ _jira_auth_mint_now() {
   local token expires_in
   token="$(printf '%s' "${body}" | jq -r '.access_token // empty' 2>/dev/null)" || token=""
   expires_in="$(printf '%s' "${body}" | jq -r '.expires_in // empty' 2>/dev/null)" || expires_in=""
-  if [[ -z "${token}" || "${token}" =~ [[:space:]] ]]; then
+  # Atlassian access tokens are JWTs. Anything outside this charset could
+  # break or inject into the ::add-mask:: line, so it is refused unprinted.
+  if [[ ! "${token}" =~ ^[A-Za-z0-9._~+/=-]+$ ]]; then
     echo "ERROR: Jira OAuth token response has no usable access_token" >&2
     return 1
   fi
@@ -2049,7 +2064,7 @@ jira_auth_fullsend() {
   fi
 }
 # END bundled: lib/jira-auth.lib.sh
-jira_auth_select "${JIRA_TOKEN:-}" "${FULLSEND_JIRA_CLIENT_ID:-}" "${FULLSEND_JIRA_CLIENT_SECRET:-}" || exit 1
+jira_auth_select "${JIRA_TOKEN:-}" FULLSEND_JIRA_CLIENT_ID FULLSEND_JIRA_CLIENT_SECRET || exit 1
 if [[ "${JIRA_AUTH_MODE}" == "none" ]]; then
   echo "ERROR: JIRA_TOKEN must be set, or FULLSEND_JIRA_CLIENT_ID and FULLSEND_JIRA_CLIENT_SECRET" >&2
   exit 1

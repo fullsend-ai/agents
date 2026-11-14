@@ -59,6 +59,10 @@ if [[ "${url}" == "https://auth.atlassian.com/oauth/token" ]]; then
   case "${FAKE_MINT:-ok}" in
     ok) printf '{"access_token":"minted-token-%s","expires_in":%s,"token_type":"Bearer"}\n200' "${n}" "${FAKE_EXPIRES_IN:-3600}" ;;
     deny) printf '{"error":"access_denied","error_description":"leaky-response-body"}\n401' ;;
+    bad-colons) printf '{"access_token":"bad-tok::warning::x","expires_in":3600}\n200' ;;
+    bad-newline) printf '{"access_token":"bad-tok\\n::warning::x","expires_in":3600}\n200' ;;
+    bad-encoded) printf '{"access_token":"bad-tok%%0A::warning::x","expires_in":3600}\n200' ;;
+    bad-control) printf '{"access_token":"bad-tok\\u001bx","expires_in":3600}\n200' ;;
   esac
   exit 0
 fi
@@ -127,7 +131,7 @@ assert_secret_hidden() {
 
 # --- Case 1: token + email — Basic auth, unchanged ---
 run_case token-email '
-  jira_auth_select "tok-1" "" ""
+  jira_auth_select "tok-1" FULLSEND_JIRA_CLIENT_ID FULLSEND_JIRA_CLIENT_SECRET
   echo "mode=${JIRA_AUTH_MODE}"
   jira_auth_curl "tok-1" " bot@example.com " "https://site.atlassian.net/rest/api/3/myself" >/dev/null
   jira_auth_fullsend fullsend "tok-1" "bot@example.com" issues get
@@ -154,7 +158,7 @@ fi
 # --- Case 2: token only — Bearer auth, unchanged ---
 run_case token-only '
   export FULLSEND_JIRA_EMAIL=inherited@example.com
-  jira_auth_select "tok-2" "" ""
+  jira_auth_select "tok-2" FULLSEND_JIRA_CLIENT_ID FULLSEND_JIRA_CLIENT_SECRET
   jira_auth_curl "tok-2" "  " "https://site.atlassian.net/rest/api/3/myself" >/dev/null
   jira_auth_fullsend fullsend "tok-2" "" issues get
 '
@@ -168,7 +172,7 @@ else
 fi
 
 run_case token-empty '
-  jira_auth_select "" "" ""
+  jira_auth_select "" FULLSEND_JIRA_CLIENT_ID FULLSEND_JIRA_CLIENT_SECRET
   echo "mode=${JIRA_AUTH_MODE}"
 '
 if [[ "${CASE_RC}" -eq 0 ]] && grep -qx "mode=none" "${CASE_OUT}"; then
@@ -181,7 +185,7 @@ fi
 run_case client '
   export JIRA_API_URL="${TEST_API_URL}"
   export FULLSEND_JIRA_TOKEN=inherited-token FULLSEND_JIRA_EMAIL=inherited@example.com
-  jira_auth_select "" "${TEST_CLIENT_ID}" "${TEST_SECRET}"
+  jira_auth_select "" TEST_CLIENT_ID TEST_SECRET
   echo "mode=${JIRA_AUTH_MODE}"
   jira_auth_require_api_url
   jira_auth_mint
@@ -244,7 +248,7 @@ assert_secret_hidden "client"
 # xtrace on: the mint still prints no secret.
 run_case client-xtrace '
   export JIRA_API_URL="${TEST_API_URL}"
-  jira_auth_select "" "${TEST_CLIENT_ID}" "${TEST_SECRET}"
+  jira_auth_select "" TEST_CLIENT_ID TEST_SECRET
   set -x
   jira_auth_curl "" "" "${JIRA_API_URL}/rest/api/3/myself" >/dev/null
   set +x
@@ -256,19 +260,19 @@ else
 fi
 assert_secret_hidden "client-xtrace"
 
-# xtrace on through select, mint and the fullsend call: no trace line
-# carries the secret. The call line of jira_auth_select is traced by the
-# caller before the function runs, so it is left out of the check.
+# xtrace on through select, mint and the fullsend call: no stderr line,
+# including the traced jira_auth_select call line, carries the secret.
 run_case client-xtrace-all '
   export JIRA_API_URL="${TEST_API_URL}"
   set -x
-  jira_auth_select "" "${TEST_CLIENT_ID}" "${TEST_SECRET}"
+  jira_auth_select "" TEST_CLIENT_ID TEST_SECRET
   jira_auth_curl "" "" "${JIRA_API_URL}/rest/api/3/myself" >/dev/null
   printf "body" | jira_auth_fullsend fullsend "" "" issues post-comment --result -
   set +x
 '
 if [[ "${CASE_RC}" -eq 0 ]] && grep -q "secret=ok" "${CASE_DIR}/fullsend-env.log" \
-  && ! grep -v "^+* jira_auth_select " "${CASE_ERR}" | grep -qF -- "${SECRET}" \
+  && ! grep -qF -- "${SECRET}" "${CASE_ERR}" \
+  && grep -q "^+* jira_auth_select '' TEST_CLIENT_ID TEST_SECRET$" "${CASE_ERR}" \
   && grep -q "^+* jira_auth_curl " "${CASE_ERR}"; then
   pass "client-xtrace-select-and-fullsend-hide-secret"
 else
@@ -279,7 +283,7 @@ fi
 # the captured value.
 run_case client-mint-in-substitution '
   export JIRA_API_URL="${TEST_API_URL}"
-  jira_auth_select "" "${TEST_CLIENT_ID}" "${TEST_SECRET}"
+  jira_auth_select "" TEST_CLIENT_ID TEST_SECRET
   captured="$(jira_auth_curl "" "" "${JIRA_API_URL}/rest/api/3/myself")"
   printf "%s" "${captured}" > "${LOG_DIR}/captured"
 '
@@ -298,7 +302,7 @@ fi
 # token in that file; the mask goes to stderr instead.
 run_case client-mint-redirected '
   export JIRA_API_URL="${TEST_API_URL}"
-  jira_auth_select "" "${TEST_CLIENT_ID}" "${TEST_SECRET}"
+  jira_auth_select "" TEST_CLIENT_ID TEST_SECRET
   g() { r="$(jira_auth_curl "" "" "${JIRA_API_URL}/rest/api/3/myself")"; echo "r=${r}"; }
   g > "${LOG_DIR}/redirected"
   g > /dev/null
@@ -329,7 +333,9 @@ SAVED_SECRET="${SECRET}"
 SECRET=$'sec\tret-inner-DO-NOT-LEAK'
 run_case client-whitespace '
   export JIRA_API_URL="${TEST_API_URL}"
-  jira_auth_select "" "  ${TEST_CLIENT_ID} " $'"'"'\t '"'"'"${TEST_SECRET}"$'"'"' \t'"'"'
+  ws_id="  ${TEST_CLIENT_ID} "
+  ws_secret=$'"'"'\t '"'"'"${TEST_SECRET}"$'"'"' \t'"'"'
+  jira_auth_select "" ws_id ws_secret
   jira_auth_mint
   printf "body" | jira_auth_fullsend fullsend "" "" issues get
 '
@@ -345,7 +351,7 @@ SECRET="${SAVED_SECRET}"
 
 # A token that is only whitespace counts as unset.
 run_case token-whitespace '
-  jira_auth_select " 	 " "" ""
+  jira_auth_select " 	 " FULLSEND_JIRA_CLIENT_ID FULLSEND_JIRA_CLIENT_SECRET
   echo "mode=${JIRA_AUTH_MODE}"
 '
 if [[ "${CASE_RC}" -eq 0 ]] && grep -qx "mode=none" "${CASE_OUT}"; then
@@ -357,7 +363,7 @@ fi
 # A token within 5 minutes of expiry is minted again.
 FAKE_EXPIRES_IN=200 run_case client-expiring '
   export JIRA_API_URL="${TEST_API_URL}"
-  jira_auth_select "" "${TEST_CLIENT_ID}" "${TEST_SECRET}"
+  jira_auth_select "" TEST_CLIENT_ID TEST_SECRET
   jira_auth_curl "" "" "${JIRA_API_URL}/a" >/dev/null
   jira_auth_curl "" "" "${JIRA_API_URL}/b" >/dev/null
 '
@@ -372,7 +378,7 @@ fi
 # REST call is made.
 FAKE_MINT=deny run_case client-denied '
   export JIRA_API_URL="${TEST_API_URL}"
-  jira_auth_select "" "${TEST_CLIENT_ID}" "${TEST_SECRET}"
+  jira_auth_select "" TEST_CLIENT_ID TEST_SECRET
   jira_auth_curl "" "" "${JIRA_API_URL}/rest/api/3/myself"
 '
 if [[ "${CASE_RC}" -ne 0 ]] && grep -qF "HTTP 401" "${CASE_ERR}" \
@@ -386,7 +392,7 @@ assert_secret_hidden "client-denied"
 
 # Client credentials need JIRA_API_URL; there is no JIRA_BASE_URL fallback.
 run_case client-no-api-url '
-  jira_auth_select "" "${TEST_CLIENT_ID}" "${TEST_SECRET}"
+  jira_auth_select "" TEST_CLIENT_ID TEST_SECRET
   jira_auth_require_api_url
 '
 if [[ "${CASE_RC}" -ne 0 ]] && grep -qF "JIRA_API_URL" "${CASE_ERR}"; then
@@ -395,7 +401,7 @@ else
   fail "client-requires-api-url" "rc=${CASE_RC}"
 fi
 run_case token-no-api-url '
-  jira_auth_select "tok" "" ""
+  jira_auth_select "tok" FULLSEND_JIRA_CLIENT_ID FULLSEND_JIRA_CLIENT_SECRET
   jira_auth_require_api_url
 '
 if [[ "${CASE_RC}" -eq 0 ]]; then
@@ -403,6 +409,39 @@ if [[ "${CASE_RC}" -eq 0 ]]; then
 else
   fail "token-does-not-require-api-url" "rc=${CASE_RC}"
 fi
+
+# A minted token outside the JWT charset is refused like a failed request:
+# no mask line, no token printed, no REST call.
+for bad in colons newline encoded control; do
+  FAKE_MINT="bad-${bad}" run_case "client-bad-token-${bad}" '
+    export JIRA_API_URL="${TEST_API_URL}"
+    jira_auth_select "" TEST_CLIENT_ID TEST_SECRET
+    jira_auth_curl "" "" "${JIRA_API_URL}/rest/api/3/myself"
+  '
+  if [[ "${CASE_RC}" -ne 0 ]] && grep -qF "no usable access_token" "${CASE_ERR}" \
+    && ! grep -qF "add-mask" "${CASE_OUT}" "${CASE_ERR}" \
+    && ! grep -qF "bad-tok" "${CASE_OUT}" "${CASE_ERR}" \
+    && ! grep -qF "/rest/api/3/myself" "${CASE_DIR}/curl-argv.log"; then
+    pass "client-bad-token-${bad}-refused"
+  else
+    fail "client-bad-token-${bad}-refused" "rc=${CASE_RC}; $(cat "${CASE_OUT}" "${CASE_ERR}")"
+  fi
+done
+
+# The client ID and secret are variable names; a value or a name that
+# would collide with the function's locals is refused without echoing it.
+for badname in "${CLIENT_ID}" '_jas_secret' ''; do
+  run_case "bad-name" "
+    jira_auth_select '' '${badname}' TEST_SECRET
+  "
+  if [[ "${CASE_RC}" -ne 0 ]] && grep -qF "names of the client ID and secret variables" "${CASE_ERR}" \
+    && ! grep -qF -- "${CLIENT_ID}" "${CASE_ERR}"; then
+    pass "select-refuses-bad-name-'${badname}'"
+  else
+    fail "select-refuses-bad-name-'${badname}'" "rc=${CASE_RC}; $(cat "${CASE_ERR}")"
+  fi
+  assert_secret_hidden "bad-name"
+done
 
 # --- Case 4: conflicting settings fail, naming variables, not values ---
 for conflict in "both|tok-4|${CLIENT_ID}|${SECRET}" "token-and-id|tok-4|${CLIENT_ID}|" \
@@ -413,9 +452,9 @@ for conflict in "both|tok-4|${CLIENT_ID}|${SECRET}" "token-and-id|tok-4|${CLIENT
   CASE_OUT="${CASE_DIR}/stdout"
   CASE_ERR="${CASE_DIR}/stderr"
   CASE_RC=0
-  # The secret goes through the environment, not the bash -c body.
-  env PATH="${MOCK_BIN}:${PATH}" LOG_DIR="${CASE_DIR}" TEST_SECRET_ARG="${csecret}" \
-    bash -c "source '${LIB}'; jira_auth_select '${ctoken}' '${cid}' \"\${TEST_SECRET_ARG}\"" \
+  # The ID and secret go through the environment, not the bash -c body.
+  env PATH="${MOCK_BIN}:${PATH}" LOG_DIR="${CASE_DIR}" TEST_ID_ARG="${cid}" TEST_SECRET_ARG="${csecret}" \
+    bash -c "source '${LIB}'; jira_auth_select '${ctoken}' TEST_ID_ARG TEST_SECRET_ARG" \
     > "${CASE_OUT}" 2> "${CASE_ERR}" || CASE_RC=$?
   if [[ "${CASE_RC}" -ne 0 ]] && grep -qF "FULLSEND_JIRA_CLIENT_" "${CASE_ERR}" \
     && ! grep -qF "tok-4" "${CASE_ERR}" && ! grep -qF "${CLIENT_ID}" "${CASE_ERR}"; then

@@ -558,7 +558,7 @@ post_jira_stage_update() {
   # uses service-account Bearer auth. Client credentials replace the token,
   # and the CLI mints its own access token from them.
   if ! jira_auth_select "${_jira_token_saved:-}" \
-    "${_jira_client_id_saved:-}" "${_jira_client_secret_saved:-}"; then
+    _jira_client_id_saved _jira_client_secret_saved; then
     gha_echo error "Conflicting Jira credentials; cannot write to Jira"
     return 1
   fi
