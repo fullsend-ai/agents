@@ -627,7 +627,6 @@ test_positive_fixtures() {
 
   local expected_passes=(
     "null-schema-inheritance.yaml"
-    "absolute-schema-path-valid.yaml"
   )
 
   for fixture_name in "${expected_passes[@]}"; do

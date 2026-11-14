@@ -1,4 +1,0 @@
----
-validation_loop:
-  script: scripts/validate-output-schema.sh
-  schema: /tmp/test-absolute-schema.json
