@@ -118,7 +118,13 @@ source "${SCRIPT_DIR}/lib/code-ops.lib.sh"
 # when both modes are set, or only one client variable. JIRA_USER_EMAIL is
 # optional.
 JIRA_CREDS_OK=0
-if [[ -n "${JIRA_TOKEN:-}${FULLSEND_JIRA_CLIENT_ID:-}${FULLSEND_JIRA_CLIENT_SECRET:-}" ]]; then
+# Test the credentials with xtrace off so the secret is not traced.
+_jira_xtrace_was_on=0; [[ $- == *x* ]] && _jira_xtrace_was_on=1; set +x
+_jira_creds_set=0
+[[ -n "${JIRA_TOKEN:-}${FULLSEND_JIRA_CLIENT_ID:-}${FULLSEND_JIRA_CLIENT_SECRET:-}" ]] && _jira_creds_set=1
+(( _jira_xtrace_was_on )) && set -x
+unset _jira_xtrace_was_on
+if (( _jira_creds_set )); then
   # shellcheck source=lib/jira-triage-ops.lib.sh
   source "${SCRIPT_DIR}/lib/jira-triage-ops.lib.sh"
   JIRA_CREDS_OK=1

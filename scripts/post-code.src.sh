@@ -92,6 +92,8 @@ _jira_token_saved=""
 _jira_email_saved=""
 _jira_client_id_saved=""
 _jira_client_secret_saved=""
+# Keep credentials off the trace: xtrace off for the stash, restored after.
+_jira_xtrace_was_on=0; [[ $- == *x* ]] && _jira_xtrace_was_on=1; set +x
 if [[ -n "${_POST_CODE_JIRA_FD:-}" ]]; then
   _jira_stash_fd="${_POST_CODE_JIRA_FD}"
   unset _POST_CODE_JIRA_FD
@@ -110,6 +112,8 @@ elif [[ -n "${JIRA_TOKEN:-}${JIRA_USER_EMAIL:-}${FULLSEND_JIRA_TOKEN:-}${FULLSEN
     -u FULLSEND_JIRA_CLIENT_ID -u FULLSEND_JIRA_CLIENT_SECRET \
     _POST_CODE_JIRA_FD="${_jira_stash_fd}" "${BASH}" "${BASH_SOURCE[0]}" "$@"
 fi
+(( _jira_xtrace_was_on )) && set -x
+unset _jira_xtrace_was_on
 
 SCRIPT_DIR_POST="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/git-graph-policy.lib.sh

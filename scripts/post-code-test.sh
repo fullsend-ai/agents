@@ -3793,7 +3793,12 @@ run_jira_int() {
     for kv in "$@"; do
       export "${kv?}"
     done
-    bash "${POST_SCRIPT}"
+    # JIRA_INT_XTRACE=1 traces the script and its re-exec via SHELLOPTS.
+    if [ -n "${JIRA_INT_XTRACE:-}" ]; then
+      env SHELLOPTS=xtrace bash "${POST_SCRIPT}"
+    else
+      bash "${POST_SCRIPT}"
+    fi
   ) > "${JIRA_INT_OUT}" 2>&1 || JIRA_INT_RC=$?
 }
 
@@ -4013,6 +4018,21 @@ elif grep -qF "${JIRA_CLIENT_SECRET_VALUE}" "${JIRA_INT_OUT}" "${JIRA_INT_FULLSE
   jira_int_fail "jira-client-credentials-stage-update" "client secret in output or on a command line"
 else
   echo "PASS: jira-client-credentials-stage-update"
+fi
+
+# Under xtrace, the client secret must not appear on any traced line.
+JIRA_XTRACE_SECRET_VALUE="xtrace-secret-Q7Zk9wPv"
+JIRA_INT_XTRACE=1 run_jira_int "jira-client-credentials-xtrace" github \
+  "${JIRA_CLIENT_ENV[@]}" "FULLSEND_JIRA_CLIENT_SECRET=${JIRA_XTRACE_SECRET_VALUE}"
+if [ "${JIRA_INT_RC}" -ne 0 ]; then
+  jira_int_fail "jira-client-credentials-xtrace-no-secret" "post-code failed"
+elif ! grep -q '^+' "${JIRA_INT_OUT}"; then
+  jira_int_fail "jira-client-credentials-xtrace-no-secret" "no xtrace output"
+elif grep -qF "${JIRA_XTRACE_SECRET_VALUE}" "${JIRA_INT_OUT}" "${JIRA_INT_FULLSEND_LOG}" "${JIRA_INT_FORGE_LOG}"; then
+  grep -nF "${JIRA_XTRACE_SECRET_VALUE}" "${JIRA_INT_OUT}" | head -5 || true
+  jira_int_fail "jira-client-credentials-xtrace-no-secret" "client secret on a traced line"
+else
+  echo "PASS: jira-client-credentials-xtrace-no-secret"
 fi
 
 # A token and client credentials together, or one client variable alone,

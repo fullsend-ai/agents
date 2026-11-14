@@ -176,7 +176,8 @@ run_script() {
   fi
 
   RUN_EXIT=0
-  "${env_cmd[@]}" bash "${PRE_SCRIPT}" > "${TMPDIR}/stdout.log" 2>&1 || RUN_EXIT=$?
+  # RUN_XTRACE=1 runs the script under bash -x.
+  "${env_cmd[@]}" bash ${RUN_XTRACE:+-x} "${PRE_SCRIPT}" > "${TMPDIR}/stdout.log" 2>&1 || RUN_EXIT=$?
 }
 
 run_test() {
@@ -530,6 +531,28 @@ if grep -F -- "--oauth2-bearer minted-access-token " "${CURL_ARGV_LOG}" \
 else
   echo "FAIL: client-credentials-minted-token-and-cli-env — expected minted Bearer to JIRA_API_URL, a mask, client vars for the CLI, and no secret in argv or output"
   cat "${CURL_ARGV_LOG}" "${FULLSEND_CALLS}" "${TMPDIR}/stdout.log" 2>/dev/null || true
+  FAILURES=$((FAILURES + 1))
+fi
+
+# Under bash -x, the client secret must not appear on any traced line.
+XTRACE_SECRET_VALUE="xtrace-secret-Q7Zk9wPv"
+RUN_XTRACE=1 run_skip_test "client-credentials-xtrace-runs-child-check" \
+  true \
+  "reason=PROJ-42 has child issue(s)" \
+  "MOCK_JIRA_CHILDREN=${HAS_CHILDREN}
+MOCK_JIRA_EXPECT_BEARER=1
+MOCK_JIRA_EXPECT_API_URL=${GATEWAY_URL}
+JIRA_TOKEN=
+JIRA_USER_EMAIL=
+JIRA_API_URL=${GATEWAY_URL}
+FULLSEND_JIRA_CLIENT_ID=client-id-1
+FULLSEND_JIRA_CLIENT_SECRET=${XTRACE_SECRET_VALUE}"
+if grep -q '^+' "${TMPDIR}/stdout.log" \
+   && ! grep -qF "${XTRACE_SECRET_VALUE}" "${TMPDIR}/stdout.log" "${CURL_ARGV_LOG}" "${FULLSEND_CALLS}"; then
+  echo "PASS: client-credentials-xtrace-no-secret"
+else
+  echo "FAIL: client-credentials-xtrace-no-secret — expected a trace and no client secret in it"
+  grep -nF "${XTRACE_SECRET_VALUE}" "${TMPDIR}/stdout.log" 2>/dev/null | head -5 || true
   FAILURES=$((FAILURES + 1))
 fi
 
