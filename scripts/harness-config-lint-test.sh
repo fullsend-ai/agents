@@ -693,7 +693,8 @@ test_positive_fixtures() {
   )
 
   # Test absolute-schema-path-valid: create a temporary fixture with an absolute path
-  local abs_test_dir="$(mktemp -d)"
+  local abs_test_dir
+  abs_test_dir="$(mktemp -d)"
   local abs_schema_path="${SCRIPT_DIR}/test-fixtures/schemas/review-result.schema.json"
   cat > "${abs_test_dir}/absolute-schema-path-valid.yaml" << EOF
 ---
