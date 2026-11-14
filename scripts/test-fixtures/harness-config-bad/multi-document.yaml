@@ -1,0 +1,8 @@
+---
+validation_loop:
+  script: scripts/validate-output-schema.sh
+---
+# Second document - harness files must be single-document only
+validation_loop:
+  script: scripts/other-script.sh
+  schema: schemas/other.schema.json

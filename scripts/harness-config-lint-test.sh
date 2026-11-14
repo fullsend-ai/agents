@@ -218,6 +218,26 @@ for_each_forge_and_overlay_location() {
   return "${rc}"
 }
 
+# Helper: check that a YAML file contains exactly one document
+check_single_document() {
+  local harness="$1"
+  local harness_name
+  harness_name="$(basename "${harness}")"
+
+  local doc_count
+  doc_count="$(yq ea '[.] | length' "${harness}")" || {
+    echo "${harness_name}: yq failed to count documents"
+    return 1
+  }
+
+  if [[ ${doc_count} -ne 1 ]]; then
+    echo "${harness_name}: harness must contain exactly one YAML document, found ${doc_count}"
+    return 1
+  fi
+
+  return 0
+}
+
 # Test 1: Every validation_loop with script must have schema
 test_validation_loop_schema() {
   local found_error=0
@@ -227,6 +247,9 @@ test_validation_loop_schema() {
     file_count=$((file_count + 1))
     local harness_name
     harness_name="$(basename "${harness}")"
+
+    # Reject multi-document YAML files
+    check_single_document "${harness}" || found_error=1
 
     # Check top-level validation_loop
     check_validation_loop_at_path "${harness}" "." "top-level" || found_error=1
@@ -280,6 +303,9 @@ test_no_hardcoded_schema() {
     [[ -f "${harness}" ]] || continue
     local harness_name
     harness_name="$(basename "${harness}")"
+
+    # Reject multi-document YAML files
+    check_single_document "${harness}" || found_hardcoded=1
 
     local has_top_schema
     has_top_schema="$(yq '.env.runner | has("FULLSEND_OUTPUT_SCHEMA")' "${harness}")" || {
@@ -435,6 +461,9 @@ test_schema_files_exist_and_valid() {
     local harness_name
     harness_name="$(basename "${harness}")"
 
+    # Reject multi-document YAML files
+    check_single_document "${harness}" || found_error=1
+
     # Check top-level schema
     _check_schema_callback "${harness}" "." "top-level" "${REPO_ROOT}" || found_error=1
 
@@ -450,6 +479,9 @@ test_schema_files_exist_and_valid() {
     harness_name="$(basename "${harness}")"
     local resolve_root
     resolve_root="$(dirname "$(dirname "${harness}")")"
+
+    # Reject multi-document YAML files
+    check_single_document "${harness}" || found_error=1
 
     # Check top-level schema
     _check_schema_callback "${harness}" "." "top-level" "${resolve_root}" || found_error=1
@@ -519,6 +551,7 @@ test_negative_fixtures() {
     "hardcoded-overlay-runner-env.yaml:test_no_hardcoded_schema:^hardcoded-overlay-runner-env.yaml.*overlays\[0\].runner_env.*contains hardcoded"
     "bad-json-schema.yaml:test_schema_files_exist_and_valid:^bad-json-schema.yaml.*schema file is not valid JSON"
     "invalid-yaml.yaml:test_harness_yaml_valid:invalid YAML syntax"
+    "multi-document.yaml:test_validation_loop_schema:^multi-document.yaml.*harness must contain exactly one YAML document"
   )
 
   for fixture_spec in "${expected_failures[@]}"; do
