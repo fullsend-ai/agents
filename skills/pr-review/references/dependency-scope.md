@@ -11,9 +11,11 @@ diff is reviewed.
 ## 1. Find declared dependencies
 
 Candidates come only from the PR author: the PR body and the author's
-own comments on the PR (forge skill "Issue context" comments command
-with the PR number and `--paginate --slurp` so every page is read, then
-filtered to the PR author's login). A candidate is
+own comments on the PR (`gh api` on the PR's
+`issues/<number>/comments?per_page=100` with `--paginate --slurp` so
+every page is read, then filtered to the PR author's `.user.login`;
+the forge skill's "Issue context" comments command keeps bodies only).
+A candidate is
 another PR **in the same repository** that the text names as a
 dependency, for example "depends on #N", "stacked on #N", "based on
 #N", "requires #N", "cherry-picked from #N", or the same wording with
