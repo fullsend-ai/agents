@@ -21,12 +21,15 @@ source "${BASH_SOURCE[0]%/*}/forge-transient-retry.lib.sh"
 # API publish that gets the commits signed by GitHub.
 # shellcheck source=github-signed-push.lib.sh
 source "${BASH_SOURCE[0]%/*}/github-signed-push.lib.sh"
+# shellcheck source=github-host.lib.sh
+source "${BASH_SOURCE[0]%/*}/github-host.lib.sh"
 
 # --- URL handling ---
 
 forge_validate_issue_url() {
-  local url="${1:-${ISSUE_URL:-}}"
-  if [[ ! "${url}" =~ ^https://github\.com/[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+/issues/[0-9]+$ ]]; then
+  local url="${1:-${ISSUE_URL:-}}" path
+  if ! path=$(_github_url_path "${url}") \
+    || [[ ! "${path}" =~ ^[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+/issues/[0-9]+$ ]]; then
     echo "ERROR: ISSUE_URL does not match expected GitHub pattern: ${url}" >&2
     return 1
   fi
@@ -34,13 +37,13 @@ forge_validate_issue_url() {
 
 forge_parse_issue_url() {
   local url="${1:-${ISSUE_URL:-}}"
-  REPO_FULL_NAME=$(echo "${url}" | sed 's|https://github.com/||; s|/issues/.*||')
+  REPO_FULL_NAME=$(_github_url_path "${url}" | sed 's|/issues/.*||')
   ISSUE_NUMBER=$(basename "${url}")
 }
 
 forge_extract_repo_from_url() {
   local url="$1"
-  echo "${url}" | sed -E 's|https://github.com/([^/]+/[^/]+)/issues/.*|\1|'
+  _github_url_path "${url}" | sed -E 's|^([^/]+/[^/]+)/issues/.*|\1|'
 }
 
 forge_extract_issue_from_url() {
@@ -236,9 +239,10 @@ forge_get_default_branch() {
 }
 
 forge_set_push_remote() {
-  local token="$1"
+  local token="$1" server
+  server=$(_github_server_url) || return 1
   git remote set-url origin \
-    "https://x-access-token:${token}@github.com/${REPO_FULL_NAME}.git"
+    "https://x-access-token:${token}@${server#https://}/${REPO_FULL_NAME}.git"
 }
 
 forge_check_remote_branch() {

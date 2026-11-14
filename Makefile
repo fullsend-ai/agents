@@ -83,6 +83,7 @@ script-test:
 	$(call run-timed,bash scripts/provider-credentials-test.sh)
 	$(call run-timed,bash scripts/signoff-strip-test.sh)
 	$(call run-timed,bash scripts/github-signed-push-test.sh)
+	$(call run-timed,bash scripts/github-host-test.sh)
 	$(call run-timed,bash scripts/fix-authorized-range-test.sh)
 	$(call run-timed,bash scripts/post-code-test.sh)
 	$(call run-timed,bash scripts/public-text-scan-test.sh)
