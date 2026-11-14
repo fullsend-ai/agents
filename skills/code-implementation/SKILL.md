@@ -246,7 +246,8 @@ derive it from `ISSUE_URL`; do not assume a target-forge issue
 number exists.
 
 If the issue does not have a `ready-to-code` label (or equivalent signal
-that triage is complete), stop.
+that triage is complete), follow "Stopping without a commit" in `agents/code.md`
+to initialize output, set `no_pr_reason`, validate, and stop.
 
 ### 2. Gather context
 
@@ -395,11 +396,9 @@ using the forge-appropriate command from your forge skill (e.g.,
 `curl` on GitLab).
 
 - **Open PR/MR exists for this branch:** The work is already done and under
-  review. Validate structured output — step 3 already wrote it, but on a
-  validation retry the output directory was cleared, so write it again
-  before validating — then **stop.** Do not add more commits on top of a
-  working implementation — that causes scope creep and timeouts. Your exit
-  state (no new commit) tells the post-script there is nothing new to push.
+  review. Recreate step 3's result file if a validation retry cleared it, then
+  set `no_pr_reason` (see `agents/code.md`), validate, and **stop**. Do not add
+  commits to a working implementation; no new commit signals no new work.
 
   ```bash
   fullsend-check-output "${FULLSEND_OUTPUT_DIR}/agent-result.json"
@@ -467,12 +466,12 @@ Before planning, determine what kind of work this issue requires:
 - **Test-only** — the issue asks for tests, not production code changes. Write
   tests that cover the described behavior. Do not modify production code unless
   tests require it (e.g., exporting a function for testability).
-- **Already-fixed** — if step 7 reveals the bug no longer exists, validate
-  structured output and stop cleanly. Do not implement a fix for a resolved
-  issue.
+- **Already-fixed** — if step 7 reveals the bug no longer exists, set
+  `no_pr_reason` (agents/code.md), validate, and stop. Do not implement a fix for
+  a resolved issue.
 - **Label-gated** — if the issue has a label like `do-not-implement` or a gate
-  label that signals no work should be done, validate structured output and
-  stop cleanly:
+  label that signals no work should be done, set `no_pr_reason`, validate, and
+  stop:
 
   ```bash
   fullsend-check-output "${FULLSEND_OUTPUT_DIR}/agent-result.json"
@@ -487,7 +486,7 @@ Before implementing, confirm the reported behavior is still present:
 2. If there is a quick way to verify — run a targeted test, check a return
    value, trace the logic — do it.
 3. If the bug has already been fixed (by a recent commit, a dependency update,
-   or another PR), validate structured output and **stop**. Do not implement
+   or another PR), set `no_pr_reason`, validate, and **stop**. Do not implement
    a fix for a resolved issue. Your exit state (no commit) tells the
    post-script to report accordingly.
 
@@ -1158,8 +1157,7 @@ echo "::notice::STEP 11: Validate structured output"
 cat "${FULLSEND_OUTPUT_DIR}/agent-result.json"
 ```
 
-The file must be valid JSON with `target_branch` (required) and
-optionally `pr_body`, `closes_issue`, and `inject_issue_scope`:
+Write valid JSON with required `target_branch` and optional `pr_body`, `no_pr_reason`, `closes_issue`, and `inject_issue_scope`:
 
 ```json
 {
@@ -1169,9 +1167,7 @@ optionally `pr_body`, `closes_issue`, and `inject_issue_scope`:
 }
 ```
 
-**Schema compliance:** The schema uses `additionalProperties: false`.
-Only `target_branch`, `pr_body`, `closes_issue`, and `inject_issue_scope`
-are allowed. Any other fields will cause validation to fail.
+**Schema:** `additionalProperties: false`; only the fields listed above are allowed.
 
 Validate the output against the schema:
 

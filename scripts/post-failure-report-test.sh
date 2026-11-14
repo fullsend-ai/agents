@@ -517,6 +517,11 @@ run_transient_detector_test() {
   fi
 }
 
+run_transient_detector_test "transient-jira-503" \
+  "posting comment: jira api: 503 temporary upstream failure" "yes"
+run_transient_detector_test "non-transient-jira-401" \
+  "posting comment: jira api: 401 unauthorized" "no"
+
 run_transient_detector_test "transient-http-503" \
   "HTTP 503: Server Error" "yes"
 run_transient_detector_test "transient-internal-server-error" \
@@ -1248,6 +1253,42 @@ run_last_resort_warning_escapes_number_test() {
 
 run_last_resort_warning_escapes_number_test \
   "last-resort-warning-escapes-crafted-number"
+
+# External reporting works without a hook and keeps the fixed secret-scan
+# body. A second report in the same process must not invoke the hook again.
+for hook_mode in absent success failure; do
+  # The sourced reporter reads these globals and invokes the hook indirectly.
+  # shellcheck disable=SC2030,SC2031,SC2034,SC2317
+  hook_output="$(
+    export EXTERNAL_WORK_ITEM=true WORK_ITEM_KEY=TESTPROJ-42 REPO_FULL_NAME=test-org/test-repo
+    POST_FAILURE_REPORTED=false
+    unset -f post_external_failure_comment
+    if [ "${hook_mode}" != absent ]; then
+      post_external_failure_comment() {
+        printf 'HOOK:%s\n' "$1"
+        [ "${hook_mode}" = success ]
+      }
+    fi
+    set_post_failure secret-scan 'RAW SCANNER DETAIL MUST NOT BE POSTED'
+    report_post_failure_to_issue 1
+    report_post_failure_to_issue 1
+  )"
+  if [ "${hook_mode}" = absent ]; then expected_calls=0; else expected_calls=1; fi
+  actual_calls="$(printf '%s\n' "${hook_output}" | grep -c '^HOOK:' || true)"
+  if [ "${actual_calls}" -ne "${expected_calls}" ] \
+     || { [ "${hook_mode}" = success ] && printf '%s' "${hook_output}" | grep -q 'see workflow logs'; } \
+     || { [ "${hook_mode}" != success ] && ! printf '%s' "${hook_output}" | grep -q 'see workflow logs'; } \
+     || printf '%s' "${hook_output}" | grep -q 'RAW SCANNER DETAIL MUST NOT BE POSTED'; then
+    echo "FAIL: external-failure-hook-${hook_mode}"
+    FAILURES=$((FAILURES + 1))
+  elif [ "${hook_mode}" != absent ] \
+       && ! printf '%s' "${hook_output}" | grep -qF "${POST_FAILURE_SECRET_SCAN_MESSAGE}"; then
+    echo "FAIL: external-failure-hook-${hook_mode}-safe-body"
+    FAILURES=$((FAILURES + 1))
+  else
+    echo "PASS: external-failure-hook-${hook_mode}"
+  fi
+done
 
 echo ""
 if [ ${FAILURES} -gt 0 ]; then

@@ -148,7 +148,7 @@ forge_is_transient_error() {
   lower=$(printf '%s' "${text}" | tr '[:upper:]' '[:lower:]')
 
   if echo "${lower}" | grep -qE \
-    'http[[:space:]]*5[0-9][0-9]|status([:]|[[:space:]]+code:?)[[:space:]]*5[0-9][0-9]|error:[[:space:]]*5[0-9][0-9]|\(http 5[0-9][0-9]\)'; then
+    'jira api:[[:space:]]*5[0-9][0-9]([[:space:]]|$)|http[[:space:]]*5[0-9][0-9]|status([:]|[[:space:]]+code:?)[[:space:]]*5[0-9][0-9]|error:[[:space:]]*5[0-9][0-9]|\(http 5[0-9][0-9]\)'; then
     return 0
   fi
   if echo "${lower}" | grep -qE \

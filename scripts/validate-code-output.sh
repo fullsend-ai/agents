@@ -71,7 +71,7 @@ forge_is_transient_error() {
   lower=$(printf '%s' "${text}" | tr '[:upper:]' '[:lower:]')
 
   if echo "${lower}" | grep -qE \
-    'http[[:space:]]*5[0-9][0-9]|status([:]|[[:space:]]+code:?)[[:space:]]*5[0-9][0-9]|error:[[:space:]]*5[0-9][0-9]|\(http 5[0-9][0-9]\)'; then
+    'jira api:[[:space:]]*5[0-9][0-9]([[:space:]]|$)|http[[:space:]]*5[0-9][0-9]|status([:]|[[:space:]]+code:?)[[:space:]]*5[0-9][0-9]|error:[[:space:]]*5[0-9][0-9]|\(http 5[0-9][0-9]\)'; then
     return 0
   fi
   if echo "${lower}" | grep -qE \
@@ -280,31 +280,10 @@ _redact_literal_token() {
     return 0
   fi
 
-  export REDACT_LITERAL_TOKEN="${token}"
-  awk '
-    BEGIN {
-      token = ENVIRON["REDACT_LITERAL_TOKEN"]
-      repl = "[REDACTED]"
-    }
-    {
-      s = $0
-      while ((i = index(s, token)) > 0) {
-        s = substr(s, 1, i - 1) repl substr(s, i + length(token))
-      }
-      print s
-    }
-  ' <<< "${detail}" | {
-    local line result=""
-    while IFS= read -r line || [ -n "${line}" ]; do
-      if [ -n "${result}" ]; then
-        result="${result}"$'\n'"${line}"
-      else
-        result="${line}"
-      fi
-    done
-    printf '%s' "${result}"
-  }
-  unset REDACT_LITERAL_TOKEN
+  # Keep credentials inside Bash: PATH may include repo-installed tools by
+  # the time a failure is reported. Quoting the pattern makes glob characters
+  # in tokens literal, and replacement text is not scanned again.
+  printf '%s' "${detail//"${token}"/[REDACTED]}"
 }
 
 # Strip tokens and truncate noisy command output before posting publicly.
@@ -611,26 +590,38 @@ report_post_failure_to_issue() {
   fi
   POST_FAILURE_REPORTED=true
 
+  local category="${POST_FAILURE_CATEGORY:-post-script-error}"
+  local detail="${POST_FAILURE_DETAIL:-Post-code script failed before push or PR creation completed.}"
+  local body
+  # REPO_FULL_NAME is required by post-code.src.sh setup.
+  # Reporting must not replace the original failure, even if rendering fails.
+  # shellcheck disable=SC2153
+  if ! body="$(build_post_failure_comment \
+    "code" "${exit_code}" "${category}" "${detail}" \
+    "${REPO_FULL_NAME}" "/fs-code")"; then
+    gha_echo warning "Could not build the post-code failure comment; see workflow logs"
+    return 0
+  fi
+
   # An external tracker may have no corresponding target-forge issue. The
   # workflow status notification remains the source-of-truth; do not guess a
-  # target issue number and risk commenting on unrelated work.
+  # target issue number and risk commenting on unrelated work. A caller that
+  # can write to the tracker defines post_external_failure_comment
+  # (post-code does, for Jira); its result never changes this exit path.
   if [ "${EXTERNAL_WORK_ITEM:-false}" = "true" ]; then
+    if declare -F post_external_failure_comment >/dev/null 2>&1 \
+       && post_external_failure_comment "${body}"; then
+      return 0
+    fi
     gha_echo warning "Post-code failure for ${WORK_ITEM_KEY:-external work item}; see workflow logs"
     return 0
   fi
 
   _post_failure_ensure_token
 
-  local category="${POST_FAILURE_CATEGORY:-post-script-error}"
-  local detail="${POST_FAILURE_DETAIL:-Post-code script failed before push or PR creation completed.}"
-  local body
+  # ISSUE_NUMBER is required by post-code.src.sh for forge work items.
   # shellcheck disable=SC2153
   safe_issue_number="$(_sanitize_workflow_value "${ISSUE_NUMBER}")"
-  # ISSUE_NUMBER and REPO_FULL_NAME are required by post-code.src.sh before sourcing.
-  # shellcheck disable=SC2153
-  body="$(build_post_failure_comment \
-    "code" "${exit_code}" "${category}" "${detail}" \
-    "${REPO_FULL_NAME}" "/fs-code")"
 
   gha_echo warning "Posting failure comment to issue #${safe_issue_number}..."
   if declare -F forge_post_issue_comment >/dev/null 2>&1; then

@@ -1024,6 +1024,16 @@ run_test "retro-related-issues-unknown-key-rejected" \
   '{"summary":"s","proposals":[{"target_repo":"org/repo","title":"T","what_happened":"w","what_could_go_better":"b","proposed_change":"p","validation_criteria":"v","related_issues":{"searched":["a","b"],"bogus":1}}]}' \
   "false"
 
+# Code no-op reasons are optional, bounded strings; older outputs stay valid.
+SCHEMA="${SCRIPT_DIR}/../schemas/code-result.schema.json"
+run_test "code-no-pr-reason" '{"target_branch":"main","no_pr_reason":"Already fixed."}' true
+run_test "code-legacy-pr-body" '{"target_branch":"main","pr_body":"Already fixed."}' true
+run_test "code-no-reason" '{"target_branch":"main"}' true
+run_test "code-empty-reason" '{"target_branch":"main","no_pr_reason":""}' false
+run_test "code-nonstring-reason" '{"target_branch":"main","no_pr_reason":42}' false
+run_test "code-reason-limit" "$(python3 -c 'import json; print(json.dumps({"target_branch":"main","no_pr_reason":"x"*4000}))')" true
+run_test "code-reason-too-long" "$(python3 -c 'import json; print(json.dumps({"target_branch":"main","no_pr_reason":"x"*4001}))')" false
+
 # --- Summary ---
 
 echo ""
