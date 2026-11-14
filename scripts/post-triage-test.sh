@@ -2248,7 +2248,7 @@ for arg in "$@"; do
 done
 
 # List transitions available on the issue.
-if [[ "${URL}" =~ /transitions$ ]] && [[ "${METHOD}" == "GET" ]]; then
+if [[ "${URL}" =~ /transitions(\?|$) ]] && [[ "${METHOD}" == "GET" ]]; then
   if [[ -n "${MOCK_JIRA_TRANSITIONS:-}" ]]; then
     echo "${MOCK_JIRA_TRANSITIONS}"
   else
@@ -2257,16 +2257,23 @@ if [[ "${URL}" =~ /transitions$ ]] && [[ "${METHOD}" == "GET" ]]; then
   exit 0
 fi
 
-# Return status for the issue (used by idempotency check).
+# Return status and resolution for the issue (used by idempotency check).
 if [[ "${URL}" =~ /issue/[A-Z]+-[0-9]+\?fields=status ]] && [[ "${METHOD}" == "GET" ]]; then
   if [[ -n "${MOCK_JIRA_STATUS_OBSOLETE:-}" ]]; then
-    echo '{"fields":{"status":{"name":"Obsolete","statusCategory":{"key":"done","name":"Done"}}}}'
+    echo '{"fields":{"status":{"name":"Obsolete","statusCategory":{"key":"done","name":"Done"}},"resolution":null}}'
   elif [[ -n "${MOCK_JIRA_STATUS_REJECTED:-}" ]]; then
-    echo '{"fields":{"status":{"name":"Won'\''t Do","statusCategory":{"key":"done","name":"Done"}}}}'
+    echo '{"fields":{"status":{"name":"Won'\''t Do","statusCategory":{"key":"done","name":"Done"}},"resolution":{"name":"Won'\''t Do"}}}'
   elif [[ -n "${MOCK_JIRA_STATUS_DONE:-}" ]]; then
-    echo '{"fields":{"status":{"name":"Done","statusCategory":{"key":"done","name":"Done"}}}}'
+    status_name="${MOCK_JIRA_STATUS_NAME:-Done}"
+    if [[ -n "${MOCK_JIRA_ISSUE_RESOLUTION:-}" ]]; then
+      jq -nc --arg s "${status_name}" --arg r "${MOCK_JIRA_ISSUE_RESOLUTION}" \
+        '{fields:{status:{name:$s,statusCategory:{key:"done",name:"Done"}},resolution:{name:$r}}}'
+    else
+      jq -nc --arg s "${status_name}" \
+        '{fields:{status:{name:$s,statusCategory:{key:"done",name:"Done"}},resolution:null}}'
+    fi
   else
-    echo '{"fields":{"status":{"name":"In Progress","statusCategory":{"key":"indeterminate","name":"In Progress"}}}}'
+    echo '{"fields":{"status":{"name":"In Progress","statusCategory":{"key":"indeterminate","name":"In Progress"}},"resolution":null}}'
   fi
   exit 0
 fi
@@ -2448,6 +2455,33 @@ run_jira_test "jira-completed-fallback-resolve-issue" \
   '{"action":"completed","reasoning":"all child issues are closed","comment":"All tracked work is done."}' \
   '{"transition":{"id":"71"}}'
 
+# Jira completed fallback prefers screenless transitions (hasScreen: false) over hasScreen: true within the same tier.
+MOCK_JIRA_TRANSITIONS='{"transitions":[{"id":"70","name":"Resolve Issue","hasScreen":true,"fields":{"resolution":{"required":true,"allowedValues":[{"name":"Done"}]}},"to":{"name":"Resolved","statusCategory":{"key":"done"}}},{"id":"51","name":"Done","hasScreen":false,"to":{"name":"Done","statusCategory":{"key":"done"}}}]}' \
+JIRA_COMPLETED_TRANSITION="NonExistent" \
+run_jira_test "jira-completed-fallback-prefers-screenless" \
+  '{"action":"completed","reasoning":"all child issues are closed","comment":"All tracked work is done."}' \
+  '{"transition":{"id":"51"}}'
+
+# Jira completed fallback populates fields.resolution.name when the only eligible transition has hasScreen: true with required resolution.
+MOCK_JIRA_TRANSITIONS='{"transitions":[{"id":"31","name":"Duplicate","to":{"name":"Duplicate","statusCategory":{"key":"done"}}},{"id":"71","name":"Resolve Issue","hasScreen":true,"fields":{"resolution":{"required":true,"allowedValues":[{"name":"Won'\''t Fix"},{"name":"Done"}]}},"to":{"name":"Resolved","statusCategory":{"key":"done"}}}]}' \
+JIRA_COMPLETED_TRANSITION="NonExistent" \
+run_jira_test "jira-completed-fallback-screen-sets-resolution" \
+  '{"action":"completed","reasoning":"all child issues are closed","comment":"All tracked work is done."}' \
+  '{"transition":{"id":"71"},"fields":{"resolution":{"name":"Done"}}}'
+
+# Jira completed fallback refuses hasScreen: true transitions requiring non-resolution custom fields or having empty fields metadata.
+MOCK_JIRA_TRANSITIONS='{"transitions":[{"id":"72","name":"Resolve With Note","hasScreen":true,"fields":{"customfield_10010":{"required":true},"resolution":{"required":true}},"to":{"name":"Resolved","statusCategory":{"key":"done"}}},{"id":"73","name":"Empty Screen","hasScreen":true,"fields":{},"to":{"name":"Done","statusCategory":{"key":"done"}}}]}' \
+JIRA_COMPLETED_TRANSITION="NonExistent" \
+run_jira_test "jira-completed-fallback-screen-required-customfield-skipped" \
+  '{"action":"completed","reasoning":"all child issues are closed","comment":"All tracked work is done."}' \
+  "" true
+if ! grep -qF "is not available on issue" "${TMPDIR}/stdout.log"; then
+  echo "FAIL: jira-completed-fallback-screen-required-customfield-skipped — expected error message in stderr"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: jira-completed-fallback-screen-required-customfield-skipped-error"
+fi
+
 # Jira duplicate action does NOT skip when issue is in a different rejection status (Won't Do).
 MOCK_JIRA_STATUS_REJECTED=1 \
 run_jira_test "jira-duplicate-on-wont-do-transitions" \
@@ -2490,6 +2524,14 @@ MOCK_JIRA_STATUS_DONE=1 \
 run_jira_test_stdout "jira-completed-idempotent-done" \
   '{"action":"completed","reasoning":"all child issues are closed","comment":"All tracked work is done."}' \
   "is already in status 'Done' (done); skipping transition"
+
+# Jira completed action does not skip if issue is currently in Done status "Closed" with a rejection resolution (e.g. "Won't Fix").
+MOCK_JIRA_STATUS_DONE=1 \
+MOCK_JIRA_STATUS_NAME="Closed" \
+MOCK_JIRA_ISSUE_RESOLUTION="Won't Fix" \
+run_jira_test "jira-completed-preflight-closed-wont-fix-not-satisfied" \
+  '{"action":"completed","reasoning":"re-completing closed wont-fix issue","comment":"All tracked work is done."}' \
+  '{"transition":{"id":"61"}}'
 
 # Jira completed action does not skip if issue is currently in a rejection status (e.g. Won't Do).
 MOCK_JIRA_STATUS_REJECTED=1 \
@@ -2817,7 +2859,7 @@ if [[ "${URL}" =~ /issue/ ]] && [[ "${METHOD}" == "PUT" ]]; then
   exit 1
 fi
 # Transitions listing still works.
-if [[ "${URL}" =~ /transitions$ ]] && [[ "${METHOD}" == "GET" ]]; then
+if [[ "${URL}" =~ /transitions(\?|$) ]] && [[ "${METHOD}" == "GET" ]]; then
   echo '{"transitions":[{"id":"31","name":"Duplicate"},{"id":"41","name":"Not Planned"},{"id":"51","name":"Done"}]}'
   exit 0
 fi
@@ -2852,7 +2894,7 @@ for arg in "$@"; do
       ;;
   esac
 done
-if [[ "${URL}" =~ /transitions$ ]] && [[ "${METHOD}" == "GET" ]]; then
+if [[ "${URL}" =~ /transitions(\?|$) ]] && [[ "${METHOD}" == "GET" ]]; then
   echo '{"transitions":[{"id":"31","name":"Duplicate"},{"id":"41","name":"Not Planned"},{"id":"51","name":"Done"}]}'
   exit 0
 fi
