@@ -105,7 +105,7 @@ _scribe_jira_api() {
   shift
   local endpoint="$1"
   shift
-  jira_auth_curl "${JIRA_TOKEN}" "${JIRA_USER_EMAIL:-}" \
+  jira_auth_curl "${JIRA_TOKEN:-}" "${JIRA_USER_EMAIL:-}" \
     --fail --silent --show-error \
     --connect-timeout 10 --max-time 30 \
     --header "Content-Type: application/json" \
@@ -125,7 +125,7 @@ _scribe_jira_api_with_status() {
   shift
   local err_file raw http_code body
   err_file=$(mktemp)
-  raw=$(jira_auth_curl "${JIRA_TOKEN}" "${JIRA_USER_EMAIL:-}" \
+  raw=$(jira_auth_curl "${JIRA_TOKEN:-}" "${JIRA_USER_EMAIL:-}" \
     --silent --show-error \
     --connect-timeout 10 --max-time 30 \
     --header "Content-Type: application/json" \
@@ -134,7 +134,7 @@ _scribe_jira_api_with_status() {
     --write-out '\n%{http_code}' \
     "${SCRIBE_JIRA_API_BASE}/rest/api/3${endpoint}" \
     "$@" 2>"${err_file}") || {
-    echo "Jira API error: curl failed — $(_gha_sanitize "$(cat "${err_file}")")" >&2
+    echo "Jira API error: curl failed — $(_gha_sanitize "$(grep -v '^::add-mask::' "${err_file}")")" >&2
     rm -f "${err_file}"
     return 1
   }
@@ -478,7 +478,7 @@ forge_create_issue() {
     echo "ERROR: forge_create_issue: FULLSEND_DIR is not set; the fullsend CLI needs it for the tracker.jira settings" >&2
     return 1
   fi
-  response=$(printf '%s' "${body}" | jira_auth_fullsend fullsend "${JIRA_TOKEN}" "${JIRA_USER_EMAIL:-}" \
+  response=$(printf '%s' "${body}" | jira_auth_fullsend fullsend "${JIRA_TOKEN:-}" "${JIRA_USER_EMAIL:-}" \
     issues create \
     --tracker jira \
     --fullsend-dir "${FULLSEND_DIR}" \

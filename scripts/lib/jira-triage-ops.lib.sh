@@ -111,7 +111,7 @@ _jira_api() {
   local api_base
   api_base=$(_jira_api_base) || return 1
 
-  jira_auth_curl "${JIRA_TOKEN}" "${JIRA_USER_EMAIL:-}" \
+  jira_auth_curl "${JIRA_TOKEN:-}" "${JIRA_USER_EMAIL:-}" \
     --fail --silent --show-error \
     --connect-timeout 10 --max-time 30 \
     --header "Content-Type: application/json" \
@@ -133,7 +133,7 @@ _jira_api_with_status() {
   local err_file
   err_file=$(mktemp)
   local raw
-  raw=$(jira_auth_curl "${JIRA_TOKEN}" "${JIRA_USER_EMAIL:-}" \
+  raw=$(jira_auth_curl "${JIRA_TOKEN:-}" "${JIRA_USER_EMAIL:-}" \
     --silent --show-error \
     --connect-timeout 10 --max-time 30 \
     --header "Content-Type: application/json" \
@@ -141,7 +141,7 @@ _jira_api_with_status() {
     --write-out '\n%{http_code}' \
     "${api_base}/rest/api/3${endpoint}" \
     "$@" 2>"${err_file}") || {
-    echo "Jira API error: curl failed — $(cat "${err_file}")" >&2
+    echo "Jira API error: curl failed — $(grep -v '^::add-mask::' "${err_file}")" >&2
     rm -f "${err_file}"
     return 1
   }
@@ -365,7 +365,7 @@ _jira_post_comment() {
     echo "ERROR: FULLSEND_DIR is not set; the fullsend CLI needs it for the tracker.jira settings" >&2
     return 1
   fi
-  printf '%s' "${body}" | jira_auth_fullsend fullsend "${JIRA_TOKEN}" "${JIRA_USER_EMAIL:-}" \
+  printf '%s' "${body}" | jira_auth_fullsend fullsend "${JIRA_TOKEN:-}" "${JIRA_USER_EMAIL:-}" \
     issues post-comment --tracker jira --fullsend-dir "${FULLSEND_DIR}" \
     --project "${REPO}" --number "${JIRA_ISSUE_NUM}" \
     --marker "${marker}" --result -

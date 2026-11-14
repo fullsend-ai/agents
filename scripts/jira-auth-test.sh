@@ -18,6 +18,9 @@ if [[ "${SCRIPT_TEST_TARGET:-source}" == "bundled" ]]; then
 fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Tests set exactly the Jira credentials they need.
+unset FULLSEND_JIRA_TOKEN FULLSEND_JIRA_EMAIL FULLSEND_JIRA_CLIENT_ID \
+  FULLSEND_JIRA_CLIENT_SECRET JIRA_TOKEN JIRA_USER_EMAIL JIRA_API_URL
 LIB="${SCRIPT_DIR}/lib/jira-auth.lib.sh"
 
 TMPDIR_ROOT="$(mktemp -d)"
@@ -87,7 +90,8 @@ fail() {
 }
 
 # run_case NAME BODY — run BODY (bash code) in a fresh bash with the library
-# sourced and the fakes first on PATH. Sets CASE_DIR, CASE_RC, CASE_OUT and
+# sourced and the fakes first on PATH. Its stdout is a pipe, as on a CI
+# runner. Sets CASE_DIR, CASE_RC, CASE_OUT and
 # CASE_ERR (paths to the captured stdout and stderr).
 run_case() {
   local name="$1"
@@ -103,7 +107,7 @@ run_case() {
     TEST_SECRET="${SECRET}" TEST_CLIENT_ID="${CLIENT_ID}" TEST_API_URL="${API_URL}" \
     FAKE_MINT="${FAKE_MINT:-ok}" FAKE_EXPIRES_IN="${FAKE_EXPIRES_IN:-3600}" \
     bash -c "set -euo pipefail; source '${LIB}'; ${body}" \
-    > "${CASE_OUT}" 2> "${CASE_ERR}" || CASE_RC=$?
+    2> "${CASE_ERR}" | cat > "${CASE_OUT}" || CASE_RC=$?
 }
 
 # Assert the secret is in no argv of any curl or fullsend call and in no
@@ -199,6 +203,11 @@ if grep -c "https://auth.atlassian.com/oauth/token" "${CASE_DIR}/curl-argv.log" 
 else
   fail "client-mints-once-with-body-on-stdin" "$(cat "${CASE_DIR}/curl-argv.log")"
 fi
+if grep -F "https://auth.atlassian.com/oauth/token" "${CASE_DIR}/curl-argv.log" | grep -q -- "^-q --proto =https "; then
+  pass "client-mint-ignores-curl-config-https-only"
+else
+  fail "client-mint-ignores-curl-config-https-only" "$(cat "${CASE_DIR}/curl-argv.log")"
+fi
 if jq -e --arg id "${CLIENT_ID}" --arg secret "${SECRET}" \
   '.grant_type == "client_credentials" and .client_id == $id and .client_secret == $secret' \
   "${CASE_DIR}/curl-stdin.log" >/dev/null 2>&1; then
@@ -246,6 +255,104 @@ else
   fail "client-xtrace-mints" "rc=${CASE_RC}; $(cat "${CASE_ERR}")"
 fi
 assert_secret_hidden "client-xtrace"
+
+# xtrace on through select, mint and the fullsend call: no trace line
+# carries the secret. The call line of jira_auth_select is traced by the
+# caller before the function runs, so it is left out of the check.
+run_case client-xtrace-all '
+  export JIRA_API_URL="${TEST_API_URL}"
+  set -x
+  jira_auth_select "" "${TEST_CLIENT_ID}" "${TEST_SECRET}"
+  jira_auth_curl "" "" "${JIRA_API_URL}/rest/api/3/myself" >/dev/null
+  printf "body" | jira_auth_fullsend fullsend "" "" issues post-comment --result -
+  set +x
+'
+if [[ "${CASE_RC}" -eq 0 ]] && grep -q "secret=ok" "${CASE_DIR}/fullsend-env.log" \
+  && ! grep -v "^+* jira_auth_select " "${CASE_ERR}" | grep -qF -- "${SECRET}" \
+  && grep -q "^+* jira_auth_curl " "${CASE_ERR}"; then
+  pass "client-xtrace-select-and-fullsend-hide-secret"
+else
+  fail "client-xtrace-select-and-fullsend-hide-secret" "rc=${CASE_RC}"
+fi
+
+# A first mint inside a command substitution keeps the mask line out of
+# the captured value.
+run_case client-mint-in-substitution '
+  export JIRA_API_URL="${TEST_API_URL}"
+  jira_auth_select "" "${TEST_CLIENT_ID}" "${TEST_SECRET}"
+  captured="$(jira_auth_curl "" "" "${JIRA_API_URL}/rest/api/3/myself")"
+  printf "%s" "${captured}" > "${LOG_DIR}/captured"
+'
+# With /proc (Linux), the mask reaches the main shell's stdout pipe;
+# without it, stderr.
+MASK_FILE="${CASE_ERR}"
+[[ -e /proc/self/fd/1 ]] && MASK_FILE="${CASE_OUT}"
+if [[ "${CASE_RC}" -eq 0 ]] && [[ "$(cat "${CASE_DIR}/captured")" == '{"ok":true}' ]] \
+  && grep -qx "::add-mask::minted-token-1" "${MASK_FILE}"; then
+  pass "client-subshell-mint-mask-not-captured"
+else
+  fail "client-subshell-mint-mask-not-captured" "rc=${CASE_RC}; $(cat "${CASE_DIR}/captured" 2>/dev/null)"
+fi
+
+# A caller that redirects stdout to a file around a subshell mint gets no
+# token in that file; the mask goes to stderr instead.
+run_case client-mint-redirected '
+  export JIRA_API_URL="${TEST_API_URL}"
+  jira_auth_select "" "${TEST_CLIENT_ID}" "${TEST_SECRET}"
+  g() { r="$(jira_auth_curl "" "" "${JIRA_API_URL}/rest/api/3/myself")"; echo "r=${r}"; }
+  g > "${LOG_DIR}/redirected"
+  g > /dev/null
+'
+if [[ "${CASE_RC}" -eq 0 ]] && grep -qx 'r={"ok":true}' "${CASE_DIR}/redirected" \
+  && ! grep -qF "minted-token" "${CASE_DIR}/redirected" \
+  && [[ "$(grep -c "^::add-mask::minted-token-" "${CASE_ERR}")" -eq 2 ]]; then
+  pass "client-subshell-mint-redirected-stdout-gets-no-token"
+else
+  fail "client-subshell-mint-redirected-stdout-gets-no-token" "rc=${CASE_RC}"
+fi
+
+# Loading the library leaves no extra file descriptor open for child
+# processes to inherit.
+CASE_RC=0
+fd_out="$(env -u FULLSEND_JIRA_TOKEN -u FULLSEND_JIRA_CLIENT_ID -u FULLSEND_JIRA_CLIENT_SECRET -u JIRA_TOKEN \
+  bash -c "before=\"\$(cd /dev/fd && echo *)\"; source '${LIB}'; after=\"\$(cd /dev/fd && echo *)\"; echo \"before=\${before} after=\${after}\"" \
+  2>&1)" || CASE_RC=$?
+if [[ "${CASE_RC}" -eq 0 && "${fd_out}" =~ ^before=(.*)\ after=(.*)$ && "${BASH_REMATCH[1]}" == "${BASH_REMATCH[2]}" ]]; then
+  pass "library-load-opens-no-fd"
+else
+  fail "library-load-opens-no-fd" "${fd_out}"
+fi
+
+# Surrounding whitespace in the client ID and secret is trimmed, as fullsend
+# does; a tab inside the secret is kept and JSON-escaped.
+SAVED_SECRET="${SECRET}"
+SECRET=$'sec\tret-inner-DO-NOT-LEAK'
+run_case client-whitespace '
+  export JIRA_API_URL="${TEST_API_URL}"
+  jira_auth_select "" "  ${TEST_CLIENT_ID} " $'"'"'\t '"'"'"${TEST_SECRET}"$'"'"' \t'"'"'
+  jira_auth_mint
+  printf "body" | jira_auth_fullsend fullsend "" "" issues get
+'
+if [[ "${CASE_RC}" -eq 0 ]] && jq -e --arg id "${CLIENT_ID}" --arg secret "${SECRET}" \
+  '.client_id == $id and .client_secret == $secret' "${CASE_DIR}/curl-stdin.log" >/dev/null 2>&1 \
+  && grep -qx "token=unset email=unset id=${CLIENT_ID} secret=ok" "${CASE_DIR}/fullsend-env.log"; then
+  pass "client-credentials-trimmed"
+else
+  fail "client-credentials-trimmed" "rc=${CASE_RC}; $(cat "${CASE_ERR}")"
+fi
+assert_secret_hidden "client-whitespace"
+SECRET="${SAVED_SECRET}"
+
+# A token that is only whitespace counts as unset.
+run_case token-whitespace '
+  jira_auth_select " 	 " "" ""
+  echo "mode=${JIRA_AUTH_MODE}"
+'
+if [[ "${CASE_RC}" -eq 0 ]] && grep -qx "mode=none" "${CASE_OUT}"; then
+  pass "whitespace-token-selects-none"
+else
+  fail "whitespace-token-selects-none" "rc=${CASE_RC}"
+fi
 
 # A token within 5 minutes of expiry is minted again.
 FAKE_EXPIRES_IN=200 run_case client-expiring '

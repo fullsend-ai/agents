@@ -1723,9 +1723,9 @@ classify_branch_vs_pr_head() {
 # use the token and email they are given (the token modes).
 #
 # The client secret is kept in shell variables only. It never reaches a
-# command line, a file, or the output: the token request body is built with
-# the printf builtin and sent to curl on stdin, and a failed request reports
-# its HTTP status, never the response body.
+# command line, a file, the output, or an xtrace line: jq builds the token
+# request body from its environment and sends it to curl on stdin, and a
+# failed request reports its HTTP status, never the response body.
 
 [[ -n "${JIRA_AUTH_SH_LOADED:-}" ]] && return 0
 JIRA_AUTH_SH_LOADED=1
@@ -1736,10 +1736,14 @@ _JIRA_AUTH_CLIENT_ID=""
 _JIRA_AUTH_CLIENT_SECRET=""
 _JIRA_AUTH_ACCESS_TOKEN=""
 _JIRA_AUTH_EXPIRES_AT=0
-# The stdout the script started with. A token minted inside a command
-# substitution still gets its ::add-mask:: line to the runner log instead of
-# into the captured output.
-exec {_JIRA_AUTH_OUT_FD}>&1
+
+# Print the argument with surrounding whitespace removed.
+_jira_auth_trim() {
+  local s="$1"
+  s="${s#"${s%%[![:space:]]*}"}"
+  s="${s%"${s##*[![:space:]]}"}"
+  printf '%s' "${s}"
+}
 
 # Print the email with surrounding whitespace removed. Empty output means
 # no email, which selects Bearer auth.
@@ -1757,13 +1761,29 @@ jira_auth_email() {
 #   client — the client ID and secret are both set and no token is
 #   none   — nothing is set
 # Fails, naming the variables but never their values, when a token and
-# client credentials are both set or only one client variable is.
+# client credentials are both set or only one client variable is. Values
+# are trimmed, so one that is only whitespace counts as unset. Runs with
+# xtrace off.
 #
 # Usage: jira_auth_select <token> <client-id> <client-secret>
 jira_auth_select() {
-  local token="$1"
-  local client_id="$2"
-  local client_secret="$3"
+  local xtrace=0 rc=0
+  if [[ $- == *x* ]]; then
+    xtrace=1
+    set +x
+  fi
+  _jira_auth_select_now "$@" || rc=$?
+  if [[ "${xtrace}" -eq 1 ]]; then
+    set -x
+  fi
+  return "${rc}"
+}
+
+_jira_auth_select_now() {
+  local token client_id client_secret
+  token="$(_jira_auth_trim "$1")"
+  client_id="$(_jira_auth_trim "$2")"
+  client_secret="$(_jira_auth_trim "$3")"
   if [[ -n "${token}" && ( -n "${client_id}" || -n "${client_secret}" ) ]]; then
     echo "ERROR: set either FULLSEND_JIRA_TOKEN (JIRA_TOKEN) or FULLSEND_JIRA_CLIENT_ID and FULLSEND_JIRA_CLIENT_SECRET, not both" >&2
     return 1
@@ -1801,8 +1821,9 @@ jira_auth_require_api_url() {
 # In client-credentials mode, make sure a usable access token is held:
 # mint one when there is none or it expires within 5 minutes. A no-op in
 # the other modes. The token is kept in a shell variable only and masked
-# before anything else is printed. Mint once in the script's own shell so
-# later calls, including those in command substitutions, reuse it.
+# before anything else is printed. Mint once in the script's own shell,
+# with stdout not redirected, so the mask line reaches the log and later
+# calls, including those in command substitutions, reuse the token.
 #
 # Usage: jira_auth_mint
 jira_auth_mint() {
@@ -1826,17 +1847,15 @@ jira_auth_mint() {
 
 # Request an access token the way fullsend does
 # (internal/forge/jira/oauth.go). Called by jira_auth_mint with xtrace off.
+# jq builds the body from the trimmed ID and secret in its environment and
+# curl reads it on stdin; curl -q ignores curl config files.
 _jira_auth_mint_now() {
   local now="$1"
-  local id="${_JIRA_AUTH_CLIENT_ID}"
-  local secret="${_JIRA_AUTH_CLIENT_SECRET}"
-  id="${id//\\/\\\\}"
-  id="${id//\"/\\\"}"
-  secret="${secret//\\/\\\\}"
-  secret="${secret//\"/\\\"}"
   local raw rc=0
-  raw="$(printf '{"grant_type":"client_credentials","client_id":"%s","client_secret":"%s"}' "${id}" "${secret}" \
-    | curl --silent --connect-timeout 10 --max-time 30 \
+  raw="$(_JIRA_AUTH_ID="${_JIRA_AUTH_CLIENT_ID}" \
+    _JIRA_AUTH_SECRET="${_JIRA_AUTH_CLIENT_SECRET}" \
+    jq -cn '{grant_type: "client_credentials", client_id: env._JIRA_AUTH_ID, client_secret: env._JIRA_AUTH_SECRET}' \
+    | curl -q --proto =https --silent --connect-timeout 10 --max-time 30 \
       --header "Content-Type: application/json" \
       --data @- \
       --write-out '\n%{http_code}' \
@@ -1859,7 +1878,20 @@ _jira_auth_mint_now() {
     echo "ERROR: Jira OAuth token response has no usable access_token" >&2
     return 1
   fi
-  printf '::add-mask::%s\n' "${token}" >&"${_JIRA_AUTH_OUT_FD}"
+  # In the script's own shell the mask goes to stdout. In a subshell, such
+  # as a command substitution, stdout may be captured, so it goes to the
+  # main shell's current stdout through /proc when that is a pipe or a
+  # terminal (the runner log), else to stderr. A file or /dev/null there
+  # means the caller redirected stdout around the call.
+  local main_out="/proc/$$/fd/1"
+  if (( BASH_SUBSHELL == 0 )); then
+    printf '::add-mask::%s\n' "${token}"
+  elif [[ -w "${main_out}" ]] && [[ -p "${main_out}" || -c "${main_out}" ]] \
+    && ! [[ "${main_out}" -ef /dev/null ]]; then
+    printf '::add-mask::%s\n' "${token}" >> "${main_out}"
+  else
+    printf '::add-mask::%s\n' "${token}" >&2
+  fi
   [[ "${expires_in}" =~ ^[0-9]+$ ]] || expires_in=3600
   _JIRA_AUTH_ACCESS_TOKEN="${token}"
   _JIRA_AUTH_EXPIRES_AT=$((now + expires_in))
@@ -1898,7 +1930,8 @@ jira_auth_curl() {
 # the CLI cannot pick Basic auth. In client-credentials mode the CLI gets
 # FULLSEND_JIRA_CLIENT_ID and FULLSEND_JIRA_CLIENT_SECRET, with
 # FULLSEND_JIRA_TOKEN and FULLSEND_JIRA_EMAIL removed, and mints for
-# itself. The values go through the environment, never the command line.
+# itself, with xtrace off. The values go through the environment, never
+# the command line.
 #
 # Usage: jira_auth_fullsend <fullsend-bin> <token> <email> [cli args...]
 jira_auth_fullsend() {
@@ -1908,12 +1941,20 @@ jira_auth_fullsend() {
   email="$(jira_auth_email "$3")"
   shift 3
   if [[ "${JIRA_AUTH_MODE}" == "client" ]]; then
+    local xtrace=0 rc=0
+    if [[ $- == *x* ]]; then
+      xtrace=1
+      set +x
+    fi
     (
       unset FULLSEND_JIRA_TOKEN FULLSEND_JIRA_EMAIL
       FULLSEND_JIRA_CLIENT_ID="${_JIRA_AUTH_CLIENT_ID}" \
         FULLSEND_JIRA_CLIENT_SECRET="${_JIRA_AUTH_CLIENT_SECRET}" "${bin}" "$@"
-    )
-    return
+    ) || rc=$?
+    if [[ "${xtrace}" -eq 1 ]]; then
+      set -x
+    fi
+    return "${rc}"
   fi
   if [[ -z "${token}" ]]; then
     echo "ERROR: Jira token is empty" >&2
