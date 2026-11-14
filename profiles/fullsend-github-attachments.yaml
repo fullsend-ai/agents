@@ -1,0 +1,22 @@
+---
+# No credentials — GitHub issue/comment attachment downloads only.
+# GitHub serves user-attachments images from these hosts. Private
+# attachments use short-lived signed (jwt=) URLs taken from the issue's
+# rendered body_html, so no forge token is needed or forwarded here.
+id: fullsend-github-attachments
+display_name: Fullsend GitHub Attachments (read-only)
+description: Read-only download of images attached to GitHub issues and comments
+category: source_control
+endpoints:
+  - host: private-user-images.githubusercontent.com
+    port: 443
+    protocol: rest
+    access: read-only
+    enforcement: enforce
+  - host: user-images.githubusercontent.com
+    port: 443
+    protocol: rest
+    access: read-only
+    enforcement: enforce
+binaries:
+  - "**/curl"

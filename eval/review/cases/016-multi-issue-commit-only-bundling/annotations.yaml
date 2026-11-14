@@ -1,0 +1,32 @@
+state: open
+
+labels:
+  required: []
+  forbidden:
+    - ready-for-merge
+
+findings:
+  required:
+    - scope-bundling
+  forbidden:
+    - missing-authorization
+
+max_cost_usd: 3.75
+
+review_expectations: |
+  The PR title and body do not reference any issue numbers — both
+  `Closes #1` and `Closes #2` appear only in the commit message, not in
+  the PR description. The PR bundles an issue-specific design doc
+  (docs/plans/rate-limiter-design.md, closing #1) with a
+  general-purpose workflow skill (skills/changelog-draft/SKILL.md,
+  closing #2) that is reusable infrastructure unrelated to the rate
+  limiter doc.
+
+  A good review retrieves the PR's commit messages, recognizes the two
+  issue references there even though the PR title/body carries none,
+  and flags this as a `[scope-bundling]` finding at **medium** severity
+  (not low/info), explains the mixed-domain risk pattern, and
+  recommends splitting the PR into two domain-focused submissions, one
+  per issue. A review that misses the bundling because it only checked
+  the PR title/body, or that notes it without a medium-or-higher
+  severity and a split recommendation, misses the point of this case.

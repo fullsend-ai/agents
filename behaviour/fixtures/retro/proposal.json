@@ -1,0 +1,19 @@
+{
+  "summary": "Behaviour smoke: retro filed one proposal.",
+  "proposals": [
+    {
+      "target_repo": "<repo>",
+      "title": "Behaviour retro proposal for #<issue>",
+      "what_happened": "A behaviour scenario dispatched retro on issue #<issue>.",
+      "what_could_go_better": "Nothing; this proposal is emitted by the scripted retro run.",
+      "proposed_change": "None. The behaviour suite closes this issue at cleanup.",
+      "validation_criteria": "The behaviour scenario finds this issue labeled ready-for-triage.",
+      "related_issues": {
+        "searched": [
+          "behaviour retro proposal",
+          "scripted retro run"
+        ]
+      }
+    }
+  ]
+}

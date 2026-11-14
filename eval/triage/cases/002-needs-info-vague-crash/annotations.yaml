@@ -10,7 +10,7 @@ labels:
     - triaged
 
 max_turns: 35
-max_cost_usd: 2.00
+max_cost_usd: 0.50
 
 triage_expectations: |
   This issue is deliberately vague. A good triage should:

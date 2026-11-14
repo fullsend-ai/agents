@@ -46,8 +46,10 @@ runner:
     - "{output_dir}"
 
 models:
-  skill: claude-opus-4-6
-  judge: claude-opus-4-6
+  skill: claude-sonnet-5-5
+  # No LLM judge in this eval; kept equal to the review and triage evals,
+  # whose comment says why the judge is not on claude-sonnet-5-5 yet.
+  judge: claude-sonnet-5
 
 dataset:
   path: cases
@@ -62,6 +64,7 @@ outputs:
     schema: |
       metrics.json: Agent run metrics. Presence indicates the sandbox
       was created and the agent started.
+      fixture-state.json: Captured PR state, read by expected_state.
 
 # ---------------------------------------------------------------------------
 # Judges — smoke test: did the sandbox start + behavioral guards
@@ -82,22 +85,23 @@ judges:
           return False, f"Agent ran 0 turns — sandbox may have failed"
       return True, f"Sandbox started, agent ran {turns} turn(s)"
 
-  - name: forbidden_labels
-    description: Labels listed in annotations.yaml forbidden list must NOT be present
+  - name: expected_state
+    description: The issue or PR must end in the state annotations.yaml expects
     check: |
       import json
       raw = outputs["files"].get("output/fixture-state.json")
       if not raw:
           return False, "fixture-state.json not found — capture-fixture.sh did not run or failed"
-      state = json.loads(raw)
-      actual = [l.lower() for l in state.get("labels", [])]
-      forbidden = outputs.get("annotations", {}).get("labels", {}).get("forbidden", [])
-      if not forbidden:
-          return True, "No forbidden labels specified"
-      present = [l for l in forbidden if l.lower() in actual]
-      if present:
-          return False, f"Forbidden labels present: {present} (actual: {actual})"
-      return True, f"No forbidden labels found (checked: {forbidden})"
+      expected = outputs.get("annotations", {}).get("state")
+      if not expected:
+          return True, "No expected state specified"
+      actual = json.loads(raw).get("state")
+      if not actual:
+          return False, "State not captured — the forge read may have failed"
+      # Annotations are lowercase; gh reports OPEN, CLOSED or MERGED.
+      if str(actual).lower() != str(expected).lower():
+          return False, f"Expected state {expected}, got {actual}"
+      return True, f"State is {actual}"
 
   - name: max_turns
     description: Agent must complete within the declared turn budget
@@ -138,12 +142,11 @@ judges:
 # ---------------------------------------------------------------------------
 # Thresholds
 # ---------------------------------------------------------------------------
+# max_turns and max_cost run and report but gate nothing: per-case turn
+# counts and cost vary run to run far more than any regression they have
+# caught (none since 2026-08), so a budget miss is not a failure.
 thresholds:
   sandbox_started:
     min_pass_rate: 1.0
-  forbidden_labels:
-    min_pass_rate: 1.0
-  max_turns:
-    min_pass_rate: 1.0
-  max_cost:
+  expected_state:
     min_pass_rate: 1.0

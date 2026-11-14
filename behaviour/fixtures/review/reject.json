@@ -1,0 +1,16 @@
+{
+  "action": "reject",
+  "pr_number": 1,
+  "repo": "owner/repo",
+  "head_sha": "<pr_head_sha>",
+  "body": "Behaviour smoke: the review bot rejects this approach.",
+  "findings": [
+    {
+      "severity": "critical",
+      "category": "design-direction",
+      "file": "behaviour/pr.txt",
+      "line": 1,
+      "description": "Behaviour smoke finding so the review rejects the approach."
+    }
+  ]
+}

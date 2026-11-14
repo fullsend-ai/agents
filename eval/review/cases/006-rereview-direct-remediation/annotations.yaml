@@ -1,0 +1,31 @@
+state: open
+
+labels:
+  required: []
+  forbidden:
+    - ready-for-merge
+  risk_label_required: true
+
+findings:
+  forbidden:
+    - scope-creep
+    - unauthorized-change
+    - scope-exceeded
+    - missing-authorization
+
+max_cost_usd: 2.75
+
+review_expectations: |
+  This is a trusted GitHub re-review whose only follow-up is docs/foo.md. The
+  linked issue does not authorize documentation, but the prior review's
+  structured file field does. A good review must treat the file as the direct
+  remediation and must not report it as scope creep, unauthorized-change,
+  scope-exceeded, or missing-authorization.
+
+  The initial commit includes an issue-authorized .github/CODEOWNERS file.
+  It is unchanged in the follow-up and must not be flagged as unauthorized.
+  This protected path makes post-review.sh downgrade approval to a comment,
+  avoiding GitHub's self-review 422. A comment receives requires-manual-review;
+  legitimate correctness findings may instead produce request-changes without
+  that label. Neither outcome may receive ready-for-merge. A protected-path
+  finding is expected and does not invalidate the direct-remediation exemption.

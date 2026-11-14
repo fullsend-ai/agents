@@ -11,7 +11,7 @@ labels:
     - blocked
 
 max_turns: 35
-max_cost_usd: 2.00
+max_cost_usd: 0.50
 
 triage_expectations: |
   This issue explicitly bundles three independent maintenance items that

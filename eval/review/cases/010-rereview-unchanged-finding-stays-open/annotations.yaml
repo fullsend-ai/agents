@@ -1,0 +1,21 @@
+state: open
+
+labels:
+  required: []
+  forbidden:
+    - ready-for-merge
+  risk_label_required: false
+
+findings:
+  required:
+    - injection-vuln
+
+max_cost_usd: 2.75
+
+review_expectations: |
+  This is an app-verified GitHub re-review. The prior projection has one
+  finding, id f_unchanged1, high injection-vuln, file src/auth.py, line 2.
+  The follow-up changes only README.md. lookup_user is unchanged. A good
+  review keeps that finding open, copies id f_unchanged1, and does not treat
+  the untouched file as resolved. The open finding stays in the findings
+  section. There is no Earlier findings entry for it.

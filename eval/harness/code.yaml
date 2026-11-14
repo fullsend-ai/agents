@@ -1,0 +1,13 @@
+# Eval-only overlay of the code harness. The repo-root config.yaml
+# registers this file instead of harness/code.yaml, so it applies to the
+# functional evals and to local `--fullsend-dir .` runs only; consumers
+# compose harness/code.yaml and never see it.
+#
+# The fleet default publishes with git push (GITHUB_SIGNED_COMMITS "false"
+# in harness/code.yaml). The evals publish through the Git Data API so
+# every PR keeps exercising that path end to end. The eval token is not an
+# App installation token, so the commits come back unsigned with a warning.
+base: ../../harness/code.yaml
+env:
+  runner:
+    GITHUB_SIGNED_COMMITS: "true"

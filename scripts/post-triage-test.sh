@@ -19,6 +19,7 @@ trap 'rm -rf "${TMPDIR}"' EXIT
 
 # Mock gh: record all calls to a log file.
 GH_LOG="${TMPDIR}/gh-calls.log"
+FULLSEND_ENV_LOG="${TMPDIR}/fullsend-env.log"
 MOCK_BIN="${TMPDIR}/bin"
 mkdir -p "${MOCK_BIN}"
 cat > "${MOCK_BIN}/gh" <<MOCKEOF
@@ -36,6 +37,21 @@ if [[ "\$1" == "issue" ]] && [[ "\$2" == "create" ]]; then
   echo "https://github.com/mock-org/mock-repo/issues/999"
   exit 0
 fi
+# Optionally fail the first N ready-for-triage label adds so tests can
+# verify dispatch failure isolation (#1123).
+if echo "\$*" | grep -qF -- "labels[]=ready-for-triage"; then
+  FAIL_FILE="${TMPDIR}/mock-dispatch-fail-remaining"
+  if [[ -f "\$FAIL_FILE" ]]; then
+    remaining=\$(cat "\$FAIL_FILE")
+    echo "gh \$*" >> "${GH_LOG}"
+    if [[ "\$remaining" -gt 0 ]]; then
+      echo \$((remaining - 1)) > "\$FAIL_FILE"
+      echo "HTTP 422: Label does not exist" >&2
+      exit 1
+    fi
+    exit 0
+  fi
+fi
 # Capture stdin when --body-file - is used (e.g., gh issue comment).
 if echo "\$*" | grep -q -- "--body-file -"; then
   BODY=\$(cat)
@@ -48,6 +64,8 @@ chmod +x "${MOCK_BIN}/gh"
 
 cat > "${MOCK_BIN}/fullsend" <<MOCKEOF
 #!/usr/bin/env bash
+# Record the Jira credentials the CLI reads from its environment.
+echo "token=\${FULLSEND_JIRA_TOKEN-unset} email=\${FULLSEND_JIRA_EMAIL-unset}" >> "${FULLSEND_ENV_LOG}"
 BODY=""
 PREV=""
 for arg in "\$@"; do
@@ -64,36 +82,13 @@ fi
 MOCKEOF
 chmod +x "${MOCK_BIN}/fullsend"
 
-# Mock yq: parse the test config.yaml for create_issues.allow_targets.
-# Handles the two queries used by post-triage.sh's is_target_allowed().
-cat > "${MOCK_BIN}/yq" <<'YQEOF'
-#!/usr/bin/env bash
-FILTER="$2"
-FILE="$3"
-if [[ ! -f "${FILE}" ]]; then
+# The tracker allowlist is read with the real yq (mikefarah v4), as in
+# post-retro-test.sh: the layered tracker.<provider>.allowed_targets mapping
+# needs a YAML parser, and invalid-YAML tests need real parse errors.
+if ! command -v yq &>/dev/null; then
+  echo "ERROR: yq (mikefarah v4) is required to run post-triage tests" >&2
   exit 1
 fi
-case "${FILTER}" in
-  # Each block selects the key's range, then strips the "      - " prefix in a
-  # second pass. Nested `{ ... { ... } }` blocks are a GNU sed extension that
-  # BSD/macOS sed rejects outright ("extra characters at the end of } command"),
-  # which silently yielded an empty allowlist and failed every allow_targets
-  # test on macOS — keep these single-level.
-  '.create_issues.allow_targets.orgs // [] | .[]')
-    sed -n '/^    orgs:/,/^    [^ ]/p' "${FILE}" | sed -n 's/^      - //p'
-    ;;
-  '.create_issues.allow_targets.repos // [] | .[]')
-    sed -n '/^    repos:/,/^    [^ ]/p' "${FILE}" | sed -n 's/^      - //p'
-    ;;
-  '.create_issues.allow_targets.jira_projects // [] | .[]')
-    sed -n '/^    jira_projects:/,/^    [^ ]/p' "${FILE}" | sed -n 's/^      - //p'
-    ;;
-  *)
-    exit 1
-    ;;
-esac
-YQEOF
-chmod +x "${MOCK_BIN}/yq"
 
 export PATH="${MOCK_BIN}:${PATH}"
 export ISSUE_URL="https://github.com/test-org/test-repo/issues/42"
@@ -108,17 +103,49 @@ export TRIAGE_AUTO_CODE_CATEGORIES="bug,documentation,performance"
 # both the allowed and disallowed paths.
 WORKSPACE="${TMPDIR}/workspace"
 mkdir -p "${WORKSPACE}"
-cat > "${WORKSPACE}/config.yaml" <<CFGEOF
+
+# write_tracker_config PROVIDER — write the shared workspace config.yaml with
+# allowed targets for PROVIDER (github, gitlab, or jira). Only the selected
+# tracker's targets are honored, so each tracker section rewrites it.
+write_tracker_config() {
+  case "$1" in
+    github)
+      cat > "${WORKSPACE}/config.yaml" <<CFGEOF
 version: "1"
-create_issues:
-  allow_targets:
-    orgs:
-      - test-org
-    repos:
-      - allowed-org/allowed-repo
-    jira_projects:
-      - ALLOWEDPROJ
+tracker:
+  github:
+    allowed_targets:
+      orgs:
+        - test-org
+      repos:
+        - allowed-org/allowed-repo
 CFGEOF
+      ;;
+    gitlab)
+      cat > "${WORKSPACE}/config.yaml" <<CFGEOF
+version: "1"
+tracker:
+  gitlab:
+    allowed_targets:
+      groups:
+        - test-org
+      repos:
+        - allowed-org/allowed-repo
+CFGEOF
+      ;;
+    jira)
+      cat > "${WORKSPACE}/config.yaml" <<CFGEOF
+version: "1"
+tracker:
+  jira:
+    allowed_targets:
+      projects:
+        - ALLOWEDPROJ
+CFGEOF
+      ;;
+  esac
+}
+write_tracker_config github
 export GITHUB_WORKSPACE="${WORKSPACE}"
 
 run_test() {
@@ -605,6 +632,38 @@ run_test_no_pattern() {
 run_test_no_pattern "label-actions-all-refused-no-reason" \
   '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_crash"},"comment":"## Triage Summary\n\nReady.","label_actions":{"reason":"Should not appear.","actions":[{"action":"add","label":"ready-to-code"}]}}' \
   "Should not appear."
+
+# Re-categorization must clear stale category labels from a prior triage run,
+# since label_actions cannot remove control labels (#1725). The current
+# category's own label must not be removed.
+CATEGORY_BUG_FIXTURE='{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash on save","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_save_crash"},"comment":"## Triage Summary\n\nThis is ready."}'
+CATEGORY_DOCS_FIXTURE='{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Update docs","severity":"low","category":"documentation","problem":"Outdated docs","root_cause_hypothesis":"Not updated","reproduction_steps":["step 1"],"environment":"Linux","impact":"Contributors","recommended_fix":"Update README","proposed_test_case":"test_docs"},"comment":"## Triage Summary\n\nThis is a documentation issue."}'
+CATEGORY_FEATURE_FIXTURE='{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Add dark mode","severity":"medium","category":"feature","problem":"No dark mode","root_cause_hypothesis":"Not implemented","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Add theme toggle","proposed_test_case":"test_dark_mode"},"comment":"## Triage Summary\n\nThis is a feature.","label_actions":{"reason":"Reporter asked for bug label removal.","actions":[{"action":"remove","label":"bug"},{"action":"add","label":"feature"}]}}'
+CATEGORY_PERF_FIXTURE='{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Slow query","severity":"medium","category":"performance","problem":"Slow","root_cause_hypothesis":"Missing index","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Add index","proposed_test_case":"test_query_speed"},"comment":"## Triage Summary\n\nThis is a performance issue."}'
+CATEGORY_OTHER_FIXTURE='{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Misc","severity":"low","category":"other","problem":"Misc","root_cause_hypothesis":"Unclear","reproduction_steps":["step 1"],"environment":"Linux","impact":"Some","recommended_fix":"Investigate","proposed_test_case":"test_misc"},"comment":"## Triage Summary\n\nMisc."}'
+CATEGORY_LABEL_DELETE="gh api repos/test-org/test-repo/issues/42/labels"
+
+for pair in "bug:${CATEGORY_BUG_FIXTURE}" "documentation:${CATEGORY_DOCS_FIXTURE}" "feature:${CATEGORY_FEATURE_FIXTURE}" "performance:${CATEGORY_PERF_FIXTURE}" "other:${CATEGORY_OTHER_FIXTURE}"; do
+  category="${pair%%:*}"
+  fixture="${pair#*:}"
+  for label in bug documentation feature; do
+    if [[ "${label}" == "${category}" ]]; then
+      run_test_no_pattern "sufficient-${category}-keeps-${label}-label" \
+        "${fixture}" \
+        "${CATEGORY_LABEL_DELETE}/${label} -X DELETE --silent"
+    else
+      run_test "sufficient-${category}-clears-stale-${label}-label" \
+        "${fixture}" \
+        "${CATEGORY_LABEL_DELETE}/${label} -X DELETE --silent"
+    fi
+  done
+done
+
+# The control-label guard still refuses agent label_actions on category labels;
+# the post-script performs the cleanup itself.
+run_test_stdout "sufficient-feature-label-actions-remove-bug-still-refused" \
+  "${CATEGORY_FEATURE_FIXTURE}" \
+  "::warning::Refused to remove control label 'bug' -- control labels are managed by the triage pipeline"
 
 # run_test_label_order verifies that a pattern appears AFTER another pattern
 # in the gh call log (i.e., ordering of API calls).
@@ -1337,6 +1396,15 @@ run_test "split-creates-allowed-cross-repo-issue" \
   '{"action":"split","reasoning":"spans repos","sub_issues":[{"title":"Local fix","body":"Fix here."},{"repo":"allowed-org/allowed-repo","title":"Upstream fix","body":"Fix upstream."}],"comment":"Split across repos."}' \
   "gh issue create --repo allowed-org/allowed-repo --title Upstream fix --body Fix upstream."
 
+# Cross-repo split: triage dispatch must mutate the already-allowlisted
+# target repo, not a repo re-derived by parsing the created-issue URL
+# (the mock always returns a fixed mock-org/mock-repo URL regardless of
+# --repo, so this fails if dispatch trusts that parse instead of the
+# allowlisted target).
+run_test "split-dispatches-triage-to-target-repo-not-parsed-url" \
+  '{"action":"split","reasoning":"spans repos","sub_issues":[{"title":"Local fix","body":"Fix here."},{"repo":"allowed-org/allowed-repo","title":"Upstream fix","body":"Fix upstream."}],"comment":"Split across repos."}' \
+  "gh api repos/allowed-org/allowed-repo/issues/999/labels -f labels[]=ready-for-triage --silent"
+
 # Cross-repo split: sub-issue targeting a disallowed repo should be skipped.
 run_test_stdout "split-skips-disallowed-cross-repo-issue" \
   '{"action":"split","reasoning":"spans repos","sub_issues":[{"title":"Local fix","body":"Fix here."},{"repo":"disallowed-org/other-repo","title":"Remote fix","body":"Fix remote."}],"comment":"Split across repos."}' \
@@ -1346,6 +1414,81 @@ run_test_stdout "split-skips-disallowed-cross-repo-issue" \
 run_test "split-defaults-to-source-repo" \
   '{"action":"split","reasoning":"no repo field","sub_issues":[{"title":"First","body":"a"},{"title":"Second","body":"b"}],"comment":"Split."}' \
   "gh issue create --repo test-org/test-repo --title First --body a"
+
+# --- Split triage dispatch tests (#1123) ---
+
+# Verify triage dispatch is issued for each created sub-issue via
+# the ready-for-triage label on the created issue URL, applied against
+# the allowlisted target repo (test-org/test-repo — the sub-issue has no
+# repo field, so it defaults to REPO).
+run_test "split-dispatches-triage-for-sub-issues" \
+  "${SPLIT_FIXTURE}" \
+  "gh api repos/test-org/test-repo/issues/999/labels -f labels[]=ready-for-triage --silent"
+
+# Verify the ready-for-triage label is created in the target repo
+# before it is applied (required for cross-repo splits).
+run_test "split-ensures-ready-for-triage-label" \
+  "${SPLIT_FIXTURE}" \
+  "gh label create ready-for-triage --repo test-org/test-repo"
+
+# Verify triage dispatch is ordered after issue creation.
+run_test_label_order "split-dispatch-after-creation" \
+  "${SPLIT_FIXTURE}" \
+  "gh issue create --repo test-org/test-repo --title Fix crash on save" \
+  "gh api repos/test-org/test-repo/issues/999/labels -f labels[]=ready-for-triage --silent"
+
+# Verify dispatch stdout message appears.
+run_test_stdout "split-dispatch-triage-logged" \
+  "${SPLIT_FIXTURE}" \
+  "Dispatching triage for sub-issue:"
+
+# Verify one dispatch failure does not block other sub-issues from being
+# created, dispatched, or from closing the original issue.
+echo "1" > "${TMPDIR}/mock-dispatch-fail-remaining"
+DISPATCH_FAIL_NAME="split-dispatch-failure-does-not-block-others"
+DISPATCH_FAIL_DIR="${TMPDIR}/run-${DISPATCH_FAIL_NAME}"
+mkdir -p "${DISPATCH_FAIL_DIR}/iteration-1/output"
+echo "${SPLIT_FIXTURE}" > "${DISPATCH_FAIL_DIR}/iteration-1/output/agent-result.json"
+: > "${GH_LOG}"
+DISPATCH_FAIL_EXIT=0
+(cd "${DISPATCH_FAIL_DIR}" && bash "${POST_SCRIPT}") > "${TMPDIR}/dispatch-fail-stdout.log" 2>&1 || DISPATCH_FAIL_EXIT=$?
+rm -f "${TMPDIR}/mock-dispatch-fail-remaining"
+DISPATCH_FAIL_FAILURES=0
+if [[ ${DISPATCH_FAIL_EXIT} -ne 0 ]]; then
+  echo "FAIL: ${DISPATCH_FAIL_NAME} — script exited with code ${DISPATCH_FAIL_EXIT}"
+  cat "${TMPDIR}/dispatch-fail-stdout.log"
+  DISPATCH_FAIL_FAILURES=$((DISPATCH_FAIL_FAILURES + 1))
+else
+  if ! grep -qF "gh issue create --repo test-org/test-repo --title Fix crash on save" "${GH_LOG}"; then
+    echo "FAIL: ${DISPATCH_FAIL_NAME} — first sub-issue not created"
+    DISPATCH_FAIL_FAILURES=$((DISPATCH_FAIL_FAILURES + 1))
+  fi
+  if ! grep -qF "gh issue create --repo test-org/test-repo --title Update error messages" "${GH_LOG}"; then
+    echo "FAIL: ${DISPATCH_FAIL_NAME} — second sub-issue not created"
+    DISPATCH_FAIL_FAILURES=$((DISPATCH_FAIL_FAILURES + 1))
+  fi
+  DISPATCH_COUNT=$(grep -cF "labels[]=ready-for-triage" "${GH_LOG}" || true)
+  if [[ "${DISPATCH_COUNT}" -lt 2 ]]; then
+    echo "FAIL: ${DISPATCH_FAIL_NAME} — expected 2 dispatch attempts, got ${DISPATCH_COUNT}"
+    DISPATCH_FAIL_FAILURES=$((DISPATCH_FAIL_FAILURES + 1))
+  fi
+  if ! grep -qF "Triage dispatch failed" "${GH_LOG}"; then
+    echo "FAIL: ${DISPATCH_FAIL_NAME} — dispatch failure not disclosed in comment"
+    DISPATCH_FAIL_FAILURES=$((DISPATCH_FAIL_FAILURES + 1))
+  fi
+  if ! grep -qF "gh issue close 42 --repo test-org/test-repo --reason completed" "${GH_LOG}"; then
+    echo "FAIL: ${DISPATCH_FAIL_NAME} — original issue not closed after dispatch failure"
+    DISPATCH_FAIL_FAILURES=$((DISPATCH_FAIL_FAILURES + 1))
+  fi
+fi
+if [[ ${DISPATCH_FAIL_FAILURES} -gt 0 ]]; then
+  echo "FAIL: ${DISPATCH_FAIL_NAME} — ${DISPATCH_FAIL_FAILURES} assertion(s) failed"
+  echo "Actual gh calls:"
+  cat "${GH_LOG}"
+  FAILURES=$((FAILURES + DISPATCH_FAIL_FAILURES))
+else
+  echo "PASS: ${DISPATCH_FAIL_NAME}"
+fi
 
 # --- Split functional test: end-to-end flow (#756) ---
 # Runs the split action once and verifies the complete flow in a single test:
@@ -1424,6 +1567,28 @@ else
     echo "FAIL: ${FUNC_TEST_NAME} — comment should be posted before issue is closed"
     FUNC_FAILURES=$((FUNC_FAILURES + 1))
   fi
+
+  # 8. Triage dispatch: ready-for-triage label is added to created sub-issues (#1123).
+  if ! grep -qF "gh api repos/test-org/test-repo/issues/999/labels -f labels[]=ready-for-triage --silent" "${GH_LOG}"; then
+    echo "FAIL: ${FUNC_TEST_NAME} — triage dispatch (ready-for-triage label) not applied to sub-issue"
+    FUNC_FAILURES=$((FUNC_FAILURES + 1))
+  fi
+  DISPATCH_COUNT=$(grep -cF "labels[]=ready-for-triage" "${GH_LOG}" || true)
+  if [[ "${DISPATCH_COUNT}" -lt 2 ]]; then
+    echo "FAIL: ${FUNC_TEST_NAME} — expected dispatch for each sub-issue, got ${DISPATCH_COUNT}"
+    FUNC_FAILURES=$((FUNC_FAILURES + 1))
+  fi
+
+  # 9. Triage dispatch happens AFTER sub-issue creation but BEFORE comment posting.
+  DISPATCH_LINE=$(grep -nF "labels[]=ready-for-triage" "${GH_LOG}" | head -1 | cut -d: -f1)
+  if [[ -n "${CREATE_LINE}" ]] && [[ -n "${DISPATCH_LINE}" ]] && [[ "${CREATE_LINE}" -ge "${DISPATCH_LINE}" ]]; then
+    echo "FAIL: ${FUNC_TEST_NAME} — triage dispatch should happen after sub-issue creation"
+    FUNC_FAILURES=$((FUNC_FAILURES + 1))
+  fi
+  if [[ -n "${DISPATCH_LINE}" ]] && [[ -n "${COMMENT_LINE}" ]] && [[ "${DISPATCH_LINE}" -ge "${COMMENT_LINE}" ]]; then
+    echo "FAIL: ${FUNC_TEST_NAME} — triage dispatch should happen before comment posting"
+    FUNC_FAILURES=$((FUNC_FAILURES + 1))
+  fi
 fi
 
 if [[ ${FUNC_FAILURES} -gt 0 ]]; then
@@ -1434,6 +1599,168 @@ if [[ ${FUNC_FAILURES} -gt 0 ]]; then
 else
   echo "PASS: ${FUNC_TEST_NAME}"
 fi
+
+# ---------------------------------------------------------------------------
+# Layered config tests (config.base.yaml beneath config.yaml)
+# tracker is replaced as a whole object when the overlay sets it and
+# inherited from the base otherwise; an unparseable layer fails closed.
+# ---------------------------------------------------------------------------
+
+# layered_workspace NAME BASE OVERLAY — point GITHUB_WORKSPACE at a fresh
+# workspace holding BASE as config.base.yaml and OVERLAY as config.yaml.
+# An empty BASE or OVERLAY leaves that file absent.
+layered_workspace() {
+  local ws="${TMPDIR}/layered-$1"
+  mkdir -p "${ws}"
+  if [[ -n "$2" ]]; then
+    printf '%s\n' "$2" > "${ws}/config.base.yaml"
+  fi
+  if [[ -n "$3" ]]; then
+    printf '%s\n' "$3" > "${ws}/config.yaml"
+  fi
+  export GITHUB_WORKSPACE="${ws}"
+}
+
+LAYERED_BASE_ORG='version: "1"
+tracker:
+  github:
+    allowed_targets:
+      orgs:
+        - test-org'
+LAYERED_SPARSE_OVERLAY='version: "1"'
+LAYERED_OVERLAY_REPO='version: "1"
+tracker:
+  github:
+    allowed_targets:
+      repos:
+        - allowed-org/allowed-repo'
+LAYERED_OVERLAY_EMPTY='version: "1"
+tracker:
+  github:
+    allowed_targets:
+      orgs: []
+      repos: []'
+LAYERED_INVALID='version: "1"
+tracker: [unclosed'
+PREREQ_ORG_TARGET='{"action":"prerequisites","reasoning":"needs upstream fix","prerequisites":{"existing":[],"create":[{"repo":"test-org/other-repo","title":"Need X","body":"We need X."}]},"comment":"Blocked on upstream work."}'
+PREREQ_REPO_TARGET='{"action":"prerequisites","reasoning":"needs upstream fix","prerequisites":{"existing":[],"create":[{"repo":"allowed-org/allowed-repo","title":"Need X","body":"We need X."}]},"comment":"Blocked on upstream work."}'
+PREREQ_SOURCE_TARGET='{"action":"prerequisites","reasoning":"needs upstream fix","prerequisites":{"existing":[],"create":[{"repo":"test-org/test-repo","title":"Need X","body":"We need X."}]},"comment":"Blocked on upstream work."}'
+SPLIT_ORG_TARGET='{"action":"split","reasoning":"spans repos","sub_issues":[{"title":"Local fix","body":"Fix here."},{"repo":"test-org/other-repo","title":"Upstream fix","body":"Fix upstream."}],"comment":"Split across repos."}'
+
+layered_workspace "base-sparse" "${LAYERED_BASE_ORG}" "${LAYERED_SPARSE_OVERLAY}"
+run_test "layered-base-only-prerequisite-allowed" \
+  "${PREREQ_ORG_TARGET}" \
+  "gh issue create --repo test-org/other-repo"
+run_test "layered-base-only-split-allowed" \
+  "${SPLIT_ORG_TARGET}" \
+  "gh issue create --repo test-org/other-repo"
+
+layered_workspace "base-no-overlay" "${LAYERED_BASE_ORG}" ""
+run_test "layered-base-only-no-overlay-allowed" \
+  "${PREREQ_ORG_TARGET}" \
+  "gh issue create --repo test-org/other-repo"
+
+# Per-repo layout: both layers live under .fullsend/.
+LAYERED_PER_REPO="${TMPDIR}/layered-per-repo"
+mkdir -p "${LAYERED_PER_REPO}/.fullsend"
+printf '%s\n' "${LAYERED_BASE_ORG}" > "${LAYERED_PER_REPO}/.fullsend/config.base.yaml"
+printf '%s\n' "${LAYERED_SPARSE_OVERLAY}" > "${LAYERED_PER_REPO}/.fullsend/config.yaml"
+export GITHUB_WORKSPACE="${LAYERED_PER_REPO}"
+run_test "layered-per-repo-base-only-allowed" \
+  "${PREREQ_ORG_TARGET}" \
+  "gh issue create --repo test-org/other-repo"
+
+layered_workspace "overlay-wins" "${LAYERED_BASE_ORG}" "${LAYERED_OVERLAY_REPO}"
+run_test_stdout "layered-overlay-tracker-replaces-base" \
+  "${PREREQ_ORG_TARGET}" \
+  "::warning::Skipping issue creation in 'test-org/other-repo'"
+run_test_stdout "layered-overlay-tracker-replaces-base-split" \
+  "${SPLIT_ORG_TARGET}" \
+  "::warning::Skipping sub-issue creation in 'test-org/other-repo'"
+run_test "layered-overlay-tracker-target-allowed" \
+  "${PREREQ_REPO_TARGET}" \
+  "gh issue create --repo allowed-org/allowed-repo"
+
+layered_workspace "overlay-empty" "${LAYERED_BASE_ORG}" "${LAYERED_OVERLAY_EMPTY}"
+run_test_stdout "layered-overlay-explicit-empty-not-inherited" \
+  "${PREREQ_ORG_TARGET}" \
+  "::warning::Skipping issue creation in 'test-org/other-repo'"
+
+# An explicit null tracker inherits the base grants and warns about it; a
+# sparse overlay (no tracker key) does not.
+layered_workspace "overlay-null" "${LAYERED_BASE_ORG}" 'version: "1"
+tracker:'
+run_test_stdout "layered-overlay-null-tracker-warns" \
+  "${PREREQ_ORG_TARGET}" \
+  "::warning::config.yaml sets tracker to null, so cross-repo targets from config.base.yaml are inherited"
+run_test "layered-overlay-null-tracker-inherits" \
+  "${PREREQ_ORG_TARGET}" \
+  "gh issue create --repo test-org/other-repo"
+
+layered_workspace "no-base" "" "${LAYERED_SPARSE_OVERLAY}"
+run_test_stdout "layered-no-base-sparse-overlay-skipped" \
+  "${PREREQ_ORG_TARGET}" \
+  "::warning::Skipping issue creation in 'test-org/other-repo'"
+
+layered_workspace "invalid-base" "${LAYERED_INVALID}" "${LAYERED_OVERLAY_REPO}"
+run_test_stdout "layered-invalid-base-warns" \
+  "${PREREQ_REPO_TARGET}" \
+  "::warning::cannot parse config.base.yaml"
+run_test_stdout "layered-invalid-base-fails-closed" \
+  "${PREREQ_REPO_TARGET}" \
+  "::warning::Skipping issue creation in 'allowed-org/allowed-repo'"
+
+layered_workspace "invalid-overlay" "${LAYERED_BASE_ORG}" "${LAYERED_INVALID}"
+run_test_stdout "layered-invalid-overlay-warns" \
+  "${PREREQ_ORG_TARGET}" \
+  "::warning::cannot parse config.yaml"
+run_test_stdout "layered-invalid-overlay-fails-closed" \
+  "${PREREQ_ORG_TARGET}" \
+  "::warning::Skipping issue creation in 'test-org/other-repo'"
+
+# The source repository stays allowed even when config cannot be parsed.
+run_test "layered-invalid-overlay-source-repo-allowed" \
+  "${PREREQ_SOURCE_TARGET}" \
+  "gh issue create --repo test-org/test-repo"
+
+# Only the selected tracker's targets are honored: GitLab groups do not admit
+# GitHub repositories, and an ambiguous multi-provider mapping grants nothing.
+layered_workspace "other-provider" "" 'tracker:
+  gitlab:
+    allowed_targets:
+      groups:
+        - test-org'
+run_test_stdout "tracker-other-provider-not-honored" \
+  "${PREREQ_ORG_TARGET}" \
+  "::warning::Skipping issue creation in 'test-org/other-repo'"
+
+layered_workspace "multi-provider" "" 'tracker:
+  github:
+    allowed_targets:
+      orgs:
+        - test-org
+  jira:
+    allowed_targets:
+      projects:
+        - ALLOWEDPROJ'
+run_test_stdout "tracker-multiple-providers-grant-nothing" \
+  "${PREREQ_ORG_TARGET}" \
+  "::warning::Skipping issue creation in 'test-org/other-repo'"
+run_test_stdout "tracker-multiple-providers-warns" \
+  "${PREREQ_ORG_TARGET}" \
+  "::warning::tracker mapping selects provider(s) 'github,jira'"
+
+# A leftover create_issues.allow_targets key is no longer read and is named
+# in a warning.
+layered_workspace "old-key" "" 'create_issues:
+  allow_targets:
+    orgs:
+      - test-org'
+run_test_stdout "old-allow-targets-key-warns" \
+  "${PREREQ_ORG_TARGET}" \
+  "::warning::config.yaml sets create_issues.allow_targets, which is no longer read"
+
+export GITHUB_WORKSPACE="${WORKSPACE}"
 
 # ---------------------------------------------------------------------------
 # FULLSEND_FORGE backward-compat fallback test
@@ -1456,6 +1783,7 @@ export FULLSEND_TRACKER="github"
 
 # Switch to GitLab tracker. Replace mock curl to handle GitLab API patterns.
 export FULLSEND_TRACKER="gitlab"
+write_tracker_config gitlab
 export ISSUE_URL="https://gitlab.com/test-group/test-project/-/issues/42"
 export GITLAB_TOKEN="fake-gitlab-token"
 export CI_SERVER_HOST="gitlab.com"
@@ -1795,7 +2123,31 @@ rm -f "${MOCK_CURL_LABEL_FAIL}"
 
 run_gitlab_test_stdout "gitlab-prerequisites-skips-disallowed-target" \
   '{"action":"prerequisites","reasoning":"needs upstream fix","prerequisites":{"existing":[],"create":[{"repo":"disallowed-org/other-repo","title":"Need Y","body":"We need Y."}]},"comment":"Blocked on upstream work."}' \
-  "not in create_issues.allow_targets"
+  "not in tracker.gitlab.allowed_targets"
+
+# GitLab: a group in allowed_targets.groups also covers its subgroups' projects.
+run_gitlab_test "gitlab-prerequisites-group-covers-subgroup" \
+  '{"action":"prerequisites","reasoning":"needs upstream fix","prerequisites":{"existing":[],"create":[{"repo":"test-org/sub/project","title":"Need Z","body":"We need Z."}]},"comment":"Blocked on upstream work."}' \
+  "projects/test-org%2Fsub%2Fproject/issues"
+
+# GitLab: a project listed in allowed_targets.repos is allowed.
+run_gitlab_test "gitlab-prerequisites-repo-target-allowed" \
+  '{"action":"prerequisites","reasoning":"needs upstream fix","prerequisites":{"existing":[],"create":[{"repo":"allowed-org/allowed-repo","title":"Need Z","body":"We need Z."}]},"comment":"Blocked on upstream work."}' \
+  "projects/allowed-org%2Fallowed-repo/issues"
+
+# GitLab: a group name is matched by path segment, not by string prefix.
+run_gitlab_test_stdout "gitlab-prerequisites-group-prefix-not-matched" \
+  '{"action":"prerequisites","reasoning":"needs upstream fix","prerequisites":{"existing":[],"create":[{"repo":"test-org-other/project","title":"Need Z","body":"We need Z."}]},"comment":"Blocked on upstream work."}' \
+  "::warning::Skipping issue creation in 'test-org-other/project'"
+
+# GitLab split: triage dispatch adds ready-for-triage label to created sub-issues (#1123).
+run_gitlab_test "gitlab-split-dispatches-triage" \
+  '{"action":"split","reasoning":"bundles two concerns","sub_issues":[{"title":"Fix A","body":"a"},{"title":"Fix B","body":"b"}],"comment":"Splitting."}' \
+  "add_labels=ready-for-triage"
+
+run_gitlab_test_stdout "gitlab-split-dispatch-logged" \
+  '{"action":"split","reasoning":"bundles two concerns","sub_issues":[{"title":"Fix A","body":"a"},{"title":"Fix B","body":"b"}],"comment":"Splitting."}' \
+  "Dispatching triage for sub-issue:"
 
 touch "${MOCK_CURL_CLOSE_FAIL}"
 run_gitlab_test "gitlab-close-issue-api-error-fails" \
@@ -1803,6 +2155,50 @@ run_gitlab_test "gitlab-close-issue-api-error-fails" \
   "" \
   "true"
 rm -f "${MOCK_CURL_CLOSE_FAIL}"
+
+# --- GitLab self-managed origin with a non-default HTTPS port (#1732) ---
+
+export CI_SERVER_URL="https://ce.example.test:34881"
+export CI_SERVER_HOST="ce.example.test"
+export ISSUE_URL="https://ce.example.test:34881/test-group/test-project/-/issues/42"
+run_gitlab_test "gitlab-custom-port-api-url-keeps-port" \
+  '{"action":"question","reasoning":"issue is asking a question","comment":"Based on the docs, this is not currently supported."}' \
+  "https://ce.example.test:34881/api/v4/projects/test-group%2Ftest-project/issues/42/notes"
+
+gitlab_origin_rejected() {
+  local test_name="$1" issue_url="$2" expected_error="$3"
+  ISSUE_URL="${issue_url}" run_gitlab_test "${test_name}" \
+    '{"action":"question","reasoning":"issue is asking a question","comment":"Based on the docs, this is not currently supported."}' \
+    "" "true"
+  if ! grep -qF -- "${expected_error}" "${TMPDIR}/stdout.log"; then
+    echo "FAIL: ${test_name} — expected error '${expected_error}' not found"
+    cat "${TMPDIR}/stdout.log"
+    FAILURES=$((FAILURES + 1))
+  elif [[ -s "${CURL_LOG}" ]]; then
+    echo "FAIL: ${test_name} — curl was called before origin validation"
+    cat "${CURL_LOG}"
+    FAILURES=$((FAILURES + 1))
+  fi
+}
+
+gitlab_origin_rejected "gitlab-custom-port-mismatched-port-fails" \
+  "https://ce.example.test:8443/test-group/test-project/-/issues/42" \
+  "does not match CI server origin"
+gitlab_origin_rejected "gitlab-custom-port-missing-port-fails" \
+  "https://ce.example.test/test-group/test-project/-/issues/42" \
+  "does not match CI server origin"
+gitlab_origin_rejected "gitlab-custom-port-http-scheme-fails" \
+  "http://ce.example.test:34881/test-group/test-project/-/issues/42" \
+  "does not match expected GitLab pattern"
+
+export CI_SERVER_URL="http://ce.example.test:34881"
+gitlab_origin_rejected "gitlab-non-https-ci-server-url-fails" \
+  "https://ce.example.test:34881/test-group/test-project/-/issues/42" \
+  "CI_SERVER_URL is not an HTTPS origin"
+
+unset CI_SERVER_URL
+export CI_SERVER_HOST="gitlab.com"
+export ISSUE_URL="https://gitlab.com/test-group/test-project/-/issues/42"
 
 # ---------------------------------------------------------------------------
 # Jira tracker tests
@@ -1814,13 +2210,15 @@ rm -f "${MOCK_CURL_CLOSE_FAIL}"
 # ---------------------------------------------------------------------------
 
 export FULLSEND_TRACKER="jira"
+write_tracker_config jira
 export ISSUE_URL="https://test.atlassian.net/browse/TESTPROJ-42"
 export JIRA_USER_EMAIL="triage@example.com"
 export JIRA_TOKEN="fake-jira-token"
+export FULLSEND_DIR="${TMPDIR}/dot-fullsend"
 export JIRA_DUPLICATE_TRANSITION="Duplicate"
 export JIRA_NOT_PLANNED_TRANSITION="Not Planned"
 export JIRA_SPLIT_TRANSITION="Done"
-unset GH_TOKEN CI_SERVER_HOST
+unset GH_TOKEN CI_SERVER_HOST JIRA_API_URL
 
 # Jira mock curl: record calls and return appropriate responses.
 JIRA_CURL_LOG="${TMPDIR}/jira-curl-calls.log"
@@ -2010,6 +2408,15 @@ run_jira_test "jira-split-closes-via-transition" \
   '{"action":"split","reasoning":"bundles two independent features","sub_issues":[{"title":"Feature A","body":"Do A"},{"title":"Feature B","body":"Do B"}],"comment":"Splitting into two sub-issues."}' \
   '{"transition":{"id":"51"}}'
 
+# Jira split: triage dispatch adds ready-for-triage label to created sub-issues (#1123).
+run_jira_test "jira-split-dispatches-triage" \
+  '{"action":"split","reasoning":"bundles two independent features","sub_issues":[{"title":"Feature A","body":"Do A"},{"title":"Feature B","body":"Do B"}],"comment":"Splitting into two sub-issues."}' \
+  '"add":"ready-for-triage"'
+
+run_jira_test_stdout "jira-split-dispatch-logged" \
+  '{"action":"split","reasoning":"bundles two independent features","sub_issues":[{"title":"Feature A","body":"Do A"},{"title":"Feature B","body":"Do B"}],"comment":"Splitting into two sub-issues."}' \
+  "Dispatching triage for sub-issue:"
+
 # Jira split with multi-paragraph body produces ADF with separate paragraph nodes.
 # Verifies that newlines in sub-issue bodies are converted to hardBreak / separate
 # paragraphs in the ADF payload, not flattened into a single text node.
@@ -2058,7 +2465,45 @@ unset MOCK_JIRA_CREATE_NO_KEY
 # Jira prerequisites: cross-project creation in a disallowed target project is skipped.
 run_jira_test_stdout "jira-prerequisites-skips-disallowed-target" \
   '{"action":"prerequisites","reasoning":"needs upstream fix","prerequisites":{"existing":[],"create":[{"repo":"DISALLOWEDPROJ","title":"Need Y","body":"We need Y."}]},"comment":"Blocked on upstream work."}' \
-  "not in create_issues.allow_targets"
+  "not in tracker.jira.allowed_targets"
+
+# --- JIRA_API_URL routing (#1876) ---
+# With JIRA_API_URL set (as `fullsend run` exports it), the curl helpers send
+# REST calls to the API gateway — trailing slash stripped — while
+# created-issue links keep the site URL. The comment goes through the
+# config-backed fullsend CLI, which takes the site and gateway from
+# tracker.jira in --fullsend-dir (#1900).
+JIRA_GATEWAY="https://api.atlassian.com/ex/jira/11111111-2222-3333-4444-555555555555"
+export JIRA_API_URL="${JIRA_GATEWAY}/"
+run_jira_test "jira-api-url-routes-label-writes" \
+  '{"action":"insufficient","reasoning":"missing repro","clarity_scores":{"symptom":0.6,"cause":0.3,"reproduction":0.1,"impact":0.5,"overall":0.39},"comment":"Could you share the exact steps to reproduce this?"}' \
+  "${JIRA_GATEWAY}/rest/api/3/issue/TESTPROJ-42"
+if grep -qF "atlassian.net/rest/api/3" "${JIRA_CURL_LOG}"; then
+  echo "FAIL: jira-api-url-no-site-rest-calls — REST call sent to the site URL"
+  cat "${JIRA_CURL_LOG}"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: jira-api-url-no-site-rest-calls"
+fi
+if grep -qF -- "--fullsend-dir ${FULLSEND_DIR} " "${GH_LOG}" \
+  && ! grep -qE -- "--(jira-url|jira-email|token)" "${GH_LOG}"; then
+  echo "PASS: jira-comment-uses-config-backed-cli"
+else
+  echo "FAIL: jira-comment-uses-config-backed-cli — expected --fullsend-dir and no --jira-url/--jira-email/--token"
+  cat "${GH_LOG}"
+  FAILURES=$((FAILURES + 1))
+fi
+run_jira_test_stdout "jira-api-url-created-link-uses-site-url" \
+  '{"action":"prerequisites","reasoning":"needs upstream fix","prerequisites":{"existing":[],"create":[{"repo":"ALLOWEDPROJ","title":"Need X","body":"We need X for downstream."}]},"comment":"Blocked on upstream work."}' \
+  "Created: https://test.atlassian.net/browse/ALLOWEDPROJ-999"
+if grep -qF "${JIRA_GATEWAY}/rest/api/3/issue " "${JIRA_CURL_LOG}"; then
+  echo "PASS: jira-api-url-routes-issue-create"
+else
+  echo "FAIL: jira-api-url-routes-issue-create — create did not go to JIRA_API_URL"
+  cat "${JIRA_CURL_LOG}"
+  FAILURES=$((FAILURES + 1))
+fi
+unset JIRA_API_URL
 
 # On a date(1) without %N support (BSD/macOS before nanosecond support), the
 # comment marker must still be unique to this invocation — a literal "N" would
@@ -2083,7 +2528,9 @@ mkdir -p "${marker_dir}/iteration-1/output"
 echo "${marker_json}" > "${marker_dir}/iteration-1/output/agent-result.json"
 : > "${GH_LOG}"
 marker_exit=0
-(cd "${marker_dir}" && bash "${POST_SCRIPT}") > "${TMPDIR}/stdout.log" 2>&1 || marker_exit=$?
+# A CI run ID selects the run-scoped marker instead; clear it so the
+# timestamp fallback is what gets exercised when this suite runs in CI.
+(unset GITHUB_RUN_ID CI_PIPELINE_ID; cd "${marker_dir}" && bash "${POST_SCRIPT}") > "${TMPDIR}/stdout.log" 2>&1 || marker_exit=$?
 rm -f "${MOCK_BIN}/date"
 if [[ ${marker_exit} -ne 0 ]]; then
   echo "FAIL: jira-comment-marker-without-nanoseconds — post script exited ${marker_exit}"
@@ -2318,14 +2765,16 @@ export FULLSEND_TRACKER="jira"
 export ISSUE_URL="https://test.atlassian.net/browse/TESTPROJ-42"
 export JIRA_USER_EMAIL="triage@example.com"
 export JIRA_TOKEN="fake-jira-token"
+export FULLSEND_DIR="${TMPDIR}/dot-fullsend"
 export JIRA_DUPLICATE_TRANSITION="Duplicate"
 export JIRA_NOT_PLANNED_TRANSITION="Not Planned"
 export JIRA_SPLIT_TRANSITION="Done"
 unset GH_TOKEN
 
-# --- Jira credential guard tests (#876) ---
-# Verify that source-time :? guards reject unset/empty JIRA_TOKEN and
-# JIRA_USER_EMAIL before any API call is made.
+# --- Jira credential guard tests (#876, #1900) ---
+# Verify that the source-time :? guard rejects an unset/empty JIRA_TOKEN
+# before any API call is made. JIRA_USER_EMAIL is optional and selects the
+# auth mode.
 
 unset JIRA_TOKEN
 run_jira_test "jira-missing-token-fails" \
@@ -2341,23 +2790,324 @@ run_jira_test "jira-empty-token-fails" \
   "true"
 export JIRA_TOKEN="fake-jira-token"
 
-unset JIRA_USER_EMAIL
-run_jira_test "jira-missing-email-fails" \
+# Bot user: Basic auth for REST calls, and the CLI gets FULLSEND_JIRA_EMAIL.
+: > "${FULLSEND_ENV_LOG}"
+run_jira_test "jira-email-uses-basic-auth" \
   '{"action":"insufficient","reasoning":"missing repro","clarity_scores":{"symptom":0.6,"cause":0.3,"reproduction":0.1,"impact":0.5,"overall":0.39},"comment":"Could you share the exact steps to reproduce this?"}' \
-  "" \
-  "true"
+  "--user triage@example.com:fake-jira-token"
+if grep -qF "token=fake-jira-token email=triage@example.com" "${FULLSEND_ENV_LOG}" \
+  && ! grep -qF -- "--oauth2-bearer" "${JIRA_CURL_LOG}"; then
+  echo "PASS: jira-email-cli-gets-email"
+else
+  echo "FAIL: jira-email-cli-gets-email — CLI did not get FULLSEND_JIRA_EMAIL, or Bearer was sent"
+  cat "${FULLSEND_ENV_LOG}" "${JIRA_CURL_LOG}"
+  FAILURES=$((FAILURES + 1))
+fi
+
+# Service account: an unset, empty, or blank email selects Bearer auth for
+# the REST calls and gives the CLI no FULLSEND_JIRA_EMAIL, even when one is
+# inherited; never an empty-user Basic header.
+for email_case in unset empty blank; do
+  case "${email_case}" in
+    unset) unset JIRA_USER_EMAIL ;;
+    empty) export JIRA_USER_EMAIL="" ;;
+    blank) export JIRA_USER_EMAIL="  " ;;
+  esac
+  : > "${FULLSEND_ENV_LOG}"
+  FULLSEND_JIRA_EMAIL="inherited@example.com" run_jira_test "jira-email-${email_case}-uses-bearer-auth" \
+    '{"action":"insufficient","reasoning":"missing repro","clarity_scores":{"symptom":0.6,"cause":0.3,"reproduction":0.1,"impact":0.5,"overall":0.39},"comment":"Could you share the exact steps to reproduce this?"}' \
+    "--oauth2-bearer fake-jira-token"
+  if grep -qF -- "--user" "${JIRA_CURL_LOG}" \
+    || ! grep -qF "token=fake-jira-token email=unset" "${FULLSEND_ENV_LOG}" \
+    || grep -qF "email=inherited" "${FULLSEND_ENV_LOG}"; then
+    echo "FAIL: jira-email-${email_case}-no-basic-auth — Basic auth or a CLI email without a configured email"
+    cat "${FULLSEND_ENV_LOG}" "${JIRA_CURL_LOG}"
+    FAILURES=$((FAILURES + 1))
+  else
+    echo "PASS: jira-email-${email_case}-no-basic-auth"
+  fi
+done
 export JIRA_USER_EMAIL="triage@example.com"
 
-export JIRA_USER_EMAIL=""
-run_jira_test "jira-empty-email-fails" \
+# The config-backed CLI needs FULLSEND_DIR for tracker.jira.
+unset FULLSEND_DIR
+run_jira_test "jira-missing-fullsend-dir-fails" \
   '{"action":"insufficient","reasoning":"missing repro","clarity_scores":{"symptom":0.6,"cause":0.3,"reproduction":0.1,"impact":0.5,"overall":0.39},"comment":"Could you share the exact steps to reproduce this?"}' \
   "" \
   "true"
-export JIRA_USER_EMAIL="triage@example.com"
+export FULLSEND_DIR="${TMPDIR}/dot-fullsend"
+
+# --- Jira work-item output tests (#1841) ---
+# Jira-sourced runs get their identity from FULLSEND_WORK_ITEM_SOURCE/KEY/URL.
+# These cover routing, retry idempotency, bot identity, write-failure
+# visibility, and reporting of updates Jira could not apply.
+
+# Mocks with failure switches: MOCK_JIRA_FAIL_LABEL_REMOVE fails label-remove
+# PUTs, MOCK_JIRA_FAIL_COMPONENTS fails the components GET, and
+# MOCK_FULLSEND_FAIL fails comment posting.
+cat > "${MOCK_BIN}/curl" <<CURLMOCK
+#!/usr/bin/env bash
+echo "curl \$*" >> "${JIRA_CURL_LOG}"
+URL=""
+METHOD="GET"
+DATA=""
+PREV=""
+for arg in "\$@"; do
+  case "\${PREV}" in
+    --request) METHOD="\${arg}" ;;
+    --data) DATA="\${arg}" ;;
+  esac
+  if [[ "\${arg}" =~ ^https:// ]]; then
+    URL="\${arg}"
+  fi
+  PREV="\${arg}"
+done
+if [[ -n "\${MOCK_JIRA_FAIL_LABEL_REMOVE:-}" && "\${METHOD}" == "PUT" && "\${DATA}" == *'"remove"'* ]]; then
+  echo "curl: (22) The requested URL returned error: 403" >&2
+  exit 22
+fi
+if [[ "\${URL}" == *"fields=components"* ]]; then
+  if [[ -n "\${MOCK_JIRA_FAIL_COMPONENTS:-}" ]]; then
+    echo "curl: (22) The requested URL returned error: 500" >&2
+    exit 22
+  fi
+  echo '{"fields":{"components":[{"name":"existing-component"}]}}'
+fi
+exit 0
+CURLMOCK
+chmod +x "${MOCK_BIN}/curl"
+
+cat > "${MOCK_BIN}/fullsend" <<MOCKEOF
+#!/usr/bin/env bash
+# Record the Jira credentials the CLI reads from its environment.
+echo "token=\${FULLSEND_JIRA_TOKEN-unset} email=\${FULLSEND_JIRA_EMAIL-unset}" >> "${FULLSEND_ENV_LOG}"
+BODY=""
+PREV=""
+for arg in "\$@"; do
+  if [[ "\${arg}" == "-" ]] && [[ "\${PREV}" == "--result" ]]; then
+    BODY=\$(cat)
+  fi
+  PREV="\${arg}"
+done
+echo "fullsend \$* <<BODY:\${BODY}:BODY>>" >> "${GH_LOG}"
+if [[ -n "\${MOCK_FULLSEND_FAIL:-}" ]]; then
+  echo "Error: Jira API returned 401" >&2
+  exit 1
+fi
+MOCKEOF
+chmod +x "${MOCK_BIN}/fullsend"
+
+JIRA_INSUFFICIENT_JSON='{"action":"insufficient","reasoning":"missing repro","clarity_scores":{"symptom":0.6,"cause":0.3,"reproduction":0.1,"impact":0.5,"overall":0.39},"comment":"Could you share the exact steps to reproduce this?"}'
+
+# Run post-triage once with the given result JSON. Leaves the exit code in
+# JIRA_CASE_RC and the call logs in GH_LOG / JIRA_CURL_LOG.
+run_jira_case() {
+  local test_name="$1"
+  local json_content="$2"
+  local run_dir="${TMPDIR}/run-${test_name}"
+  mkdir -p "${run_dir}/iteration-1/output"
+  echo "${json_content}" > "${run_dir}/iteration-1/output/agent-result.json"
+  : > "${JIRA_CURL_LOG}"
+  : > "${GH_LOG}"
+  JIRA_CASE_RC=0
+  (cd "${run_dir}" && bash "${POST_SCRIPT}") > "${TMPDIR}/stdout.log" 2>&1 || JIRA_CASE_RC=$?
+}
+
+# Cases that change env run in subshells, so failures are recorded in a file
+# and added to FAILURES after the last case.
+JIRA_CASE_FAILURES="${TMPDIR}/jira-case-failures"
+: > "${JIRA_CASE_FAILURES}"
+jira_case_fail() {
+  echo "FAIL: $1 — $2"
+  echo "stdout:"; cat "${TMPDIR}/stdout.log"
+  echo "fullsend/gh calls:"; cat "${GH_LOG}"
+  echo "$1" >> "${JIRA_CASE_FAILURES}"
+}
+
+# Identity comes only from the FULLSEND_WORK_ITEM_* contract: no tracker,
+# no ISSUE_URL, no ISSUE_NUMBER.
+WI_URL="https://test.atlassian.net/browse/TESTPROJ-42"
+# shellcheck disable=SC2030
+(
+  unset FULLSEND_TRACKER ISSUE_URL ISSUE_NUMBER
+  export FULLSEND_WORK_ITEM_SOURCE=jira FULLSEND_WORK_ITEM_KEY=TESTPROJ-42 FULLSEND_WORK_ITEM_URL="${WI_URL}"
+  run_jira_case "jira-work-item-source-routes-to-jira" "${JIRA_INSUFFICIENT_JSON}"
+  if [[ ${JIRA_CASE_RC} -ne 0 ]]; then
+    jira_case_fail "jira-work-item-source-routes-to-jira" "exit code ${JIRA_CASE_RC}"
+  elif ! grep -qF -- "--tracker jira --fullsend-dir ${FULLSEND_DIR} --project TESTPROJ --number 42" "${GH_LOG}" \
+       || grep -q "^gh " "${GH_LOG}"; then
+    jira_case_fail "jira-work-item-source-routes-to-jira" "comment not posted to TESTPROJ-42 via the Jira tracker"
+  else
+    echo "PASS: jira-work-item-source-routes-to-jira"
+  fi
+)
+
+# A key that disagrees with the URL, an explicit non-Jira tracker, or an
+# ISSUE_URL for a different issue must stop the run before any write.
+for case_spec in \
+  "jira-work-item-key-mismatch-fails|FULLSEND_WORK_ITEM_KEY=TESTPROJ-7" \
+  "jira-work-item-tracker-conflict-fails|FULLSEND_TRACKER=github" \
+  "jira-work-item-issue-url-conflict-fails|ISSUE_URL=https://test.atlassian.net/browse/TESTPROJ-43" \
+  "jira-work-item-empty-key-fails|FULLSEND_WORK_ITEM_KEY=" \
+  "jira-work-item-empty-url-fails|FULLSEND_WORK_ITEM_URL="; do
+  case_name="${case_spec%%|*}"
+  case_env="${case_spec#*|}"
+  # shellcheck disable=SC2030,SC2031
+  (
+    unset FULLSEND_TRACKER ISSUE_URL
+    export FULLSEND_WORK_ITEM_SOURCE=jira FULLSEND_WORK_ITEM_KEY=TESTPROJ-42 FULLSEND_WORK_ITEM_URL="${WI_URL}"
+    export "${case_env?}"
+    run_jira_case "${case_name}" "${JIRA_INSUFFICIENT_JSON}"
+    if [[ ${JIRA_CASE_RC} -eq 0 ]]; then
+      jira_case_fail "${case_name}" "expected failure but got success"
+    elif [[ -s "${GH_LOG}" || -s "${JIRA_CURL_LOG}" ]]; then
+      jira_case_fail "${case_name}" "a tracker write happened before the identity check failed"
+    else
+      echo "PASS: ${case_name} (expected failure, got exit code ${JIRA_CASE_RC})"
+    fi
+  )
+done
+
+# Extract the --marker value of the single comment write in GH_LOG.
+jira_comment_marker() {
+  grep -o -- '--marker <!-- fullsend:[^ ]* -->' "${GH_LOG}"
+}
+
+# Retry idempotency: re-running the same CI run reuses the run-scoped marker,
+# so `fullsend issues post-comment` edits the earlier comment instead of
+# posting a duplicate.
+(
+  export GITHUB_RUN_ID=424242
+  unset CI_PIPELINE_ID
+  run_jira_case "jira-retry-same-run-first" "${JIRA_INSUFFICIENT_JSON}"
+  first_marker="$(jira_comment_marker)"
+  run_jira_case "jira-retry-same-run-second" "${JIRA_INSUFFICIENT_JSON}"
+  second_marker="$(jira_comment_marker)"
+  if [[ "${first_marker}" != "--marker <!-- fullsend:triage-run-424242 -->" || "${second_marker}" != "${first_marker}" ]]; then
+    jira_case_fail "jira-retry-reuses-run-marker" "markers differ across a retry: '${first_marker}' vs '${second_marker}'"
+  else
+    echo "PASS: jira-retry-reuses-run-marker"
+  fi
+)
+
+# GitLab job retries keep CI_PIPELINE_ID.
+(
+  unset GITHUB_RUN_ID
+  export CI_PIPELINE_ID=9001
+  run_jira_case "jira-retry-gitlab-pipeline" "${JIRA_INSUFFICIENT_JSON}"
+  if [[ "$(jira_comment_marker)" != "--marker <!-- fullsend:triage-run-9001 -->" ]]; then
+    jira_case_fail "jira-retry-uses-gitlab-pipeline-marker" "unexpected marker '$(jira_comment_marker)'"
+  else
+    echo "PASS: jira-retry-uses-gitlab-pipeline-marker"
+  fi
+)
+
+# Separate triage runs (no shared run ID) still get separate comments.
+(
+  unset GITHUB_RUN_ID CI_PIPELINE_ID
+  run_jira_case "jira-new-run-first" "${JIRA_INSUFFICIENT_JSON}"
+  first_marker="$(jira_comment_marker)"
+  run_jira_case "jira-new-run-second" "${JIRA_INSUFFICIENT_JSON}"
+  second_marker="$(jira_comment_marker)"
+  if [[ -z "${first_marker}" || "${first_marker}" == "${second_marker}" ]]; then
+    jira_case_fail "jira-separate-runs-get-separate-comments" "markers should differ: '${first_marker}' vs '${second_marker}'"
+  else
+    echo "PASS: jira-separate-runs-get-separate-comments"
+  fi
+)
+
+# Bot-loop prevention: every comment is written by the configured fullsend
+# Jira account (the identity the Jira poller recognizes as its own) and
+# carries a fullsend marker, so it never reads as a human comment.
+: > "${FULLSEND_ENV_LOG}"
+run_jira_case "jira-comment-uses-bot-identity" "${JIRA_INSUFFICIENT_JSON}"
+if [[ ${JIRA_CASE_RC} -ne 0 ]]; then
+  jira_case_fail "jira-comment-uses-bot-identity" "exit code ${JIRA_CASE_RC}"
+elif ! grep -qF "token=fake-jira-token email=triage@example.com" "${FULLSEND_ENV_LOG}" || [[ -z "$(jira_comment_marker)" ]]; then
+  jira_case_fail "jira-comment-uses-bot-identity" "comment not written as the configured Jira account with a fullsend marker"
+else
+  echo "PASS: jira-comment-uses-bot-identity"
+fi
+
+# Write-failure visibility: a failed label removal fails the step before the
+# comment is posted, instead of being swallowed.
+(
+  export MOCK_JIRA_FAIL_LABEL_REMOVE=1
+  run_jira_case "jira-label-remove-failure-fails-step" "${JIRA_INSUFFICIENT_JSON}"
+  if [[ ${JIRA_CASE_RC} -eq 0 ]]; then
+    jira_case_fail "jira-label-remove-failure-fails-step" "expected failure but got success"
+  elif ! grep -qF "failed to remove label" "${TMPDIR}/stdout.log"; then
+    jira_case_fail "jira-label-remove-failure-fails-step" "missing label-removal error"
+  elif grep -qF "Post-triage complete." "${TMPDIR}/stdout.log"; then
+    jira_case_fail "jira-label-remove-failure-fails-step" "reported completion despite the failed write"
+  else
+    echo "PASS: jira-label-remove-failure-fails-step (expected failure, got exit code ${JIRA_CASE_RC})"
+  fi
+)
+
+# A failed comment write fails the step.
+(
+  export MOCK_FULLSEND_FAIL=1
+  run_jira_case "jira-comment-failure-fails-step" "${JIRA_INSUFFICIENT_JSON}"
+  if [[ ${JIRA_CASE_RC} -eq 0 ]]; then
+    jira_case_fail "jira-comment-failure-fails-step" "expected failure but got success"
+  elif grep -qF "Post-triage complete." "${TMPDIR}/stdout.log"; then
+    jira_case_fail "jira-comment-failure-fails-step" "reported completion despite the failed write"
+  else
+    echo "PASS: jira-comment-failure-fails-step (expected failure, got exit code ${JIRA_CASE_RC})"
+  fi
+)
+
+# Unsupported mappings are listed in the Jira comment, not just the log. The
+# mock's label list is empty, so no label is in use on the site.
+run_jira_case "jira-unapplied-label-reported" \
+  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_crash"},"comment":"## Triage Summary\n\nReady.","label_actions":{"reason":"Area label.","actions":[{"action":"add","label":"area-api"}]}}'
+if [[ ${JIRA_CASE_RC} -ne 0 ]]; then
+  jira_case_fail "jira-unapplied-label-reported" "exit code ${JIRA_CASE_RC}"
+elif ! grep -qF '**Not applied in Jira:**' "${GH_LOG}" || ! grep -qF 'Label `area-api` was not added' "${GH_LOG}"; then
+  jira_case_fail "jira-unapplied-label-reported" "skipped label not listed in the Jira comment"
+else
+  echo "PASS: jira-unapplied-label-reported"
+fi
+
+(
+  export MOCK_JIRA_FAIL_COMPONENTS=1
+  run_jira_case "jira-unapplied-components-reported" \
+    '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_crash"},"comment":"## Triage Summary\n\nReady.","component_actions":{"reason":"Backend component.","actions":[{"action":"add","component":"backend"}]}}'
+  if [[ ${JIRA_CASE_RC} -ne 0 ]]; then
+    jira_case_fail "jira-unapplied-components-reported" "exit code ${JIRA_CASE_RC}"
+  elif ! grep -qF 'Component changes were not applied' "${GH_LOG}"; then
+    jira_case_fail "jira-unapplied-components-reported" "skipped component changes not listed in the Jira comment"
+  else
+    echo "PASS: jira-unapplied-components-reported"
+  fi
+)
+
+# Forge-originated output is unchanged: a skipped label on GitHub adds no
+# Jira section to the comment.
+# shellcheck disable=SC2030
+(
+  export FULLSEND_TRACKER="github" ISSUE_URL="https://github.com/test-org/test-repo/issues/42" GH_TOKEN="fake-token"
+  run_jira_case "github-skipped-label-no-jira-section" \
+    '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_crash"},"comment":"## Triage Summary\n\nReady.","label_actions":{"reason":"Area label.","actions":[{"action":"add","label":"not-a-repo-label"}]}}'
+  if [[ ${JIRA_CASE_RC} -ne 0 ]]; then
+    jira_case_fail "github-skipped-label-no-jira-section" "exit code ${JIRA_CASE_RC}"
+  elif grep -qF 'Not applied in Jira' "${GH_LOG}"; then
+    jira_case_fail "github-skipped-label-no-jira-section" "GitHub comment gained the Jira-only section"
+  else
+    echo "PASS: github-skipped-label-no-jira-section"
+  fi
+)
+
+FAILURES=$((FAILURES + $(wc -l < "${JIRA_CASE_FAILURES}")))
 
 # Restore GitHub tracker for any subsequent tests.
+# shellcheck disable=SC2031
 export FULLSEND_TRACKER="github"
+write_tracker_config github
+# shellcheck disable=SC2031
 export ISSUE_URL="https://github.com/test-org/test-repo/issues/42"
+# shellcheck disable=SC2031
 export GH_TOKEN="fake-token"
 unset GITLAB_TOKEN CI_SERVER_HOST
 unset JIRA_USER_EMAIL JIRA_TOKEN JIRA_DUPLICATE_TRANSITION JIRA_NOT_PLANNED_TRANSITION JIRA_SPLIT_TRANSITION

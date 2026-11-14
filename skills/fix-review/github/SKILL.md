@@ -15,10 +15,16 @@ provides `GH_TOKEN` for authentication.
 
 ```bash
 # View PR with full details
-gh pr view "${PR_NUMBER}" --json number,title,body,headRefName,baseRefName,state,files,labels
+gh pr view "${PR_NUMBER}" --json number,title,body,headRefName,baseRefName,state,files,labels,mergeable
 
 # View PR state only
 gh pr view "${PR_NUMBER}" --json state --jq '.state'
+
+# Mergeability — only mergeable=CONFLICTING is a merge conflict.
+# MERGEABLE and UNKNOWN are not. Do not treat mergeStateStatus BLOCKED,
+# BEHIND, UNSTABLE, or UNKNOWN as a conflict.
+gh pr view "${PR_NUMBER}" --json mergeable,baseRefName \
+  --jq '{mergeable, base: .baseRefName}'
 ```
 
 ## PR Diff
@@ -68,7 +74,9 @@ cat "${REVIEW_BODY_FILE}"
 
 ## Project CI
 
-Inspect project CI during context gathering. Use both
+Inspect project CI during context gathering. Follow the
+`fix-ci-inspection` skill for classification, authorization,
+untrusted-log handling, and `ci_inspections` recording. Use both
 commands: `gh pr checks` covers Actions plus third-party status contexts;
 `gh run list` covers Actions runs that have logs and artifacts.
 

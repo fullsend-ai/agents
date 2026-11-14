@@ -75,35 +75,95 @@ echo "Originating: ${ORIGINATING_REPO}#${ORIGINATING_NUMBER}"
 # at the forge-specific workspace directory by the reusable workflow.
 CONFIG_WORKSPACE="$(forge_get_config_workspace)"
 CONFIG_FILE="${CONFIG_WORKSPACE}/config.yaml"
-if [[ ! -f "${CONFIG_FILE}" ]]; then
+if [[ ! -f "${CONFIG_FILE}" && ! -f "${CONFIG_WORKSPACE}/config.base.yaml" ]]; then
   # Per-repo mode: config is under .fullsend/
   CONFIG_FILE="${CONFIG_WORKSPACE}/.fullsend/config.yaml"
 fi
+# A configuration preset (config.base.yaml) sits beside the overlay. As in
+# fullsend's layered config, an overlay that sets tracker replaces the base
+# tracker as a whole object (an explicit empty target policy included);
+# otherwise tracker is inherited from the base. A null or bare `tracker:` in
+# the overlay counts as unset (it inherits the base), matching that merge.
+BASE_CONFIG_FILE="$(dirname "${CONFIG_FILE}")/config.base.yaml"
+TRACKER_PROVIDER="${FULLSEND_FORGE}"
+ALLOW_TARGETS_KEY="tracker.${TRACKER_PROVIDER}.allowed_targets"
 
-ALLOWED_ORGS=""
+# ALLOWED_SCOPES holds GitHub orgs or GitLab groups (a scope admits every
+# repository under it, including GitLab subgroups); ALLOWED_REPOS holds
+# repositories allowed by exact path.
+ALLOWED_SCOPES=""
 ALLOWED_REPOS=""
-if [[ -f "${CONFIG_FILE}" ]] && ! command -v yq &>/dev/null; then
-  echo "::warning::yq not found — cannot read create_issues.allow_targets from config; cross-repo issue creation disabled"
+if [[ -f "${CONFIG_FILE}" || -f "${BASE_CONFIG_FILE}" ]] && ! command -v yq &>/dev/null; then
+  echo "::warning::yq not found — cannot read ${ALLOW_TARGETS_KEY} from config; cross-repo issue creation disabled"
 fi
-if [[ -f "${CONFIG_FILE}" ]] && command -v yq &>/dev/null; then
-  ALLOWED_ORGS=$(yq -r '.create_issues.allow_targets.orgs // [] | .[]' "${CONFIG_FILE}" 2>/dev/null || true)
-  ALLOWED_REPOS=$(yq -r '.create_issues.allow_targets.repos // [] | .[]' "${CONFIG_FILE}" 2>/dev/null || true)
+if command -v yq &>/dev/null; then
+  TRACKER_JSON="null"
+  OVERLAY_TRACKER_NULL="false"
+  for layer_file in "${CONFIG_FILE}" "${BASE_CONFIG_FILE}"; do
+    [[ -f "${layer_file}" ]] || continue
+    # Fail closed: an unparseable layer disables cross-repo issue creation.
+    if ! layer_tracker=$(yq -o=json '.tracker' "${layer_file}" 2>/dev/null); then
+      echo "::warning::cannot parse $(basename "${layer_file}") — cross-repo issue creation disabled"
+      TRACKER_JSON="null"
+      break
+    fi
+    # The old create_issues.allow_targets key is no longer read.
+    if yq -e '.create_issues.allow_targets' "${layer_file}" &>/dev/null; then
+      echo "::warning::$(basename "${layer_file}") sets create_issues.allow_targets, which is no longer read — move its targets to ${ALLOW_TARGETS_KEY}"
+    fi
+    if [[ "${TRACKER_JSON}" == "null" ]]; then
+      # An overlay that sets tracker to null inherits the base targets; say so
+      # when that keeps cross-repo grants the operator may have meant to clear.
+      if [[ "${OVERLAY_TRACKER_NULL}" == "true" ]] && jq -e '[.. | arrays | select(length > 0)] | length > 0' <<<"${layer_tracker}" &>/dev/null; then
+        echo "::warning::config.yaml sets tracker to null, so cross-repo targets from $(basename "${layer_file}") are inherited — set an empty ${ALLOW_TARGETS_KEY} in config.yaml to revoke them"
+      fi
+      TRACKER_JSON="${layer_tracker}"
+    fi
+    if [[ "${layer_file}" == "${CONFIG_FILE}" && "${layer_tracker}" == "null" && "$(yq 'has("tracker")' "${layer_file}" 2>/dev/null)" == "true" ]]; then
+      OVERLAY_TRACKER_NULL="true"
+    fi
+  done
+  # Warn when a tracker mapping selects other or several providers, since it
+  # then grants no cross-repo targets.
+  TRACKER_PROVIDERS=$(jq -r '
+    (if type == "object" then . else {} end) as $t
+    | [("github", "gitlab", "jira") | select($t[.] != null)] | join(",")
+  ' <<<"${TRACKER_JSON}" 2>/dev/null || true)
+  if [[ -n "${TRACKER_PROVIDERS}" && "${TRACKER_PROVIDERS}" != "${TRACKER_PROVIDER}" ]]; then
+    echo "::warning::tracker mapping selects provider(s) '${TRACKER_PROVIDERS}' but FULLSEND_FORGE requires only '${TRACKER_PROVIDER}' — no cross-repo targets granted"
+  fi
+  # Honor targets only when the tracker selects exactly one provider and it
+  # is the forge issues are created on; otherwise nothing is granted.
+  ALLOWED_TARGETS_JSON=$(jq -c --arg provider "${TRACKER_PROVIDER}" '
+    (if type == "object" then . else {} end) as $t
+    | [("github", "gitlab", "jira") | select($t[.] != null)] as $providers
+    | if $providers == [$provider] then ($t[$provider].allowed_targets // {}) else {} end
+    | if type == "object" then . else {} end
+  ' <<<"${TRACKER_JSON}" 2>/dev/null || echo '{}')
+  ALLOWED_SCOPES=$(jq -r --arg provider "${TRACKER_PROVIDER}" '
+    (if $provider == "gitlab" then .groups else .orgs end)
+    | if type == "array" then .[] | strings else empty end
+  ' <<<"${ALLOWED_TARGETS_JSON}" 2>/dev/null || true)
+  ALLOWED_REPOS=$(jq -r '.repos | if type == "array" then .[] | strings else empty end' \
+    <<<"${ALLOWED_TARGETS_JSON}" 2>/dev/null || true)
 fi
 
 # The originating repo is always implicitly allowed.
 is_target_allowed() {
   local target_repo="$1"
-  local target_org="${target_repo%%/*}"
+  local scope
 
   # Source repo is always allowed.
   if [[ "${target_repo}" == "${ORIGINATING_REPO}" ]]; then
     return 0
   fi
 
-  # Check org allowlist.
-  if [[ -n "${ALLOWED_ORGS}" ]] && echo "${ALLOWED_ORGS}" | grep -qFx "${target_org}"; then
-    return 0
-  fi
+  # Check org/group allowlist (a group also covers its subgroups' projects).
+  while IFS= read -r scope; do
+    if [[ -n "${scope}" && "${target_repo}" == "${scope}/"* ]]; then
+      return 0
+    fi
+  done <<<"${ALLOWED_SCOPES}"
 
   # Check repo allowlist.
   if [[ -n "${ALLOWED_REPOS}" ]] && echo "${ALLOWED_REPOS}" | grep -qFx "${target_repo}"; then
@@ -146,6 +206,8 @@ ISSUE_LINKS=""
 EVIDENCE_NOTES=""
 FILTERED_COUNT=0
 SKIPPED_TARGETS=""
+RECEIPT_SKIPPED=""
+FAILED_PROPOSALS=""
 if [[ "${PROPOSAL_COUNT}" -gt 0 ]]; then
   for i in $(seq 0 $((PROPOSAL_COUNT - 1))); do
     TARGET_REPO=$(jq -r ".proposals[$i].target_repo" "${RESULT_FILE}")
@@ -167,21 +229,56 @@ if [[ "${PROPOSAL_COUNT}" -gt 0 ]]; then
       continue
     fi
 
-    # Allowlist gate: reject proposals targeting repos not in allow_targets.
+    # Allowlist gate: reject proposals targeting repos not in allowed_targets.
     if ! is_target_allowed "${TARGET_REPO}"; then
-      echo "::warning::Skipping issue creation in '${TARGET_REPO}' — not in create_issues.allow_targets"
+      echo "::warning::Skipping issue creation in '${TARGET_REPO}' — not in ${ALLOW_TARGETS_KEY}"
       SKIPPED_TARGETS="${SKIPPED_TARGETS}
 - **${TITLE}** (\`${TARGET_REPO}\`)"
       continue
     fi
 
-    # Build the issue body from the four sections.
+    # Dedup-receipt gate: skip proposals without a well-formed duplicate-search
+    # receipt. This is the enforcement for #1730 — related_issues is optional in
+    # the schema (a missing/weak receipt must skip only its own proposal, not
+    # fail whole-result validation and drop valid siblings and the summary), so
+    # the gate validates the full receipt shape here, on both the validated and
+    # fallback (no FULLSEND_VALIDATED_ITERATION_DIR) paths. The shape check is
+    # exhaustive because the body builder below iterates searched and found and
+    # concatenates note: a non-array searched or a non-string note would abort
+    # BODY=$(...) under `set -e` mid-loop, after earlier proposals were filed.
+    # Requirements: searched is an array of >= 2 distinct, non-blank strings;
+    # found (if present) is an array; note (if present) is a string.
+    if ! jq -e "
+      .proposals[$i].related_issues as \$r |
+      (\$r | type) == \"object\"
+      and (\$r.searched | type) == \"array\"
+      and (\$r.searched | length) >= 2
+      and (\$r.searched | map(select(type == \"string\" and (gsub(\"^\\\\s+|\\\\s+\$\"; \"\") | length > 0))) | length) == (\$r.searched | length)
+      and (\$r.searched | unique | length) == (\$r.searched | length)
+      and ((\$r | has(\"found\") | not) or (\$r.found | type) == \"array\")
+      and ((\$r | has(\"note\") | not) or (\$r.note | type) == \"string\")
+    " "${RESULT_FILE}" >/dev/null 2>&1; then
+      echo "::warning::proposal[$i] not filed — missing or malformed dedup receipt (related_issues.searched must be at least 2 distinct non-empty phrases). Folding into summary."
+      RECEIPT_SKIPPED="${RECEIPT_SKIPPED}
+- **${TITLE}** (${TARGET_REPO}): $(jq -r ".proposals[$i].what_happened | split(\"\\n\")[0]" "${RESULT_FILE}")"
+      continue
+    fi
+
+    # Build the issue body from the four sections, plus the dedup receipt.
     BODY=$(jq -r --arg url "${ORIGINATING_URL}" "
       .proposals[$i] |
       \"## What happened\n\n\" + .what_happened +
       \"\n\n## What could go better\n\n\" + .what_could_go_better +
       \"\n\n## Proposed change\n\n\" + .proposed_change +
       \"\n\n## Validation criteria\n\n\" + .validation_criteria +
+      \"\n\n## Related issues checked\n\nSearched: \" +
+      (.related_issues.searched | join(\"; \")) +
+      (if (.related_issues.found // []) | length > 0 then
+        \"\nConsidered: \" + (.related_issues.found | map(if type == \"number\" then \"#\" + tostring else tostring end) | join(\", \")) +
+        (if .related_issues.note then \"\n\" + .related_issues.note else \"\" end)
+      else
+        \"\nNo overlapping issues found.\"
+      end) +
       \"\n\n---\n_Generated by retro agent from \" + \$url + \"_\"
     " "${RESULT_FILE}")
 
@@ -199,9 +296,14 @@ if [[ "${PROPOSAL_COUNT}" -gt 0 ]]; then
 
     SAFE_TITLE=$(_gha_sanitize "${TITLE}")
     echo "Filing issue in ${TARGET_REPO}: ${SAFE_TITLE}"
+    # A failed creation is non-fatal: record it, keep filing the remaining
+    # proposals, and report it in the summary comment.
     if ! ISSUE_URL=$(forge_create_issue "${TARGET_REPO}" "${TITLE}" "${BODY}" "ready-for-triage"); then
-      echo "ERROR: failed to create issue in ${TARGET_REPO}: ${ISSUE_URL}" >&2
-      exit 1
+      SAFE_OUTPUT=$(_gha_sanitize "${ISSUE_URL}")
+      echo "::warning::Failed to create issue in ${TARGET_REPO} for proposal[$i] (${SAFE_TITLE}): ${SAFE_OUTPUT}"
+      FAILED_PROPOSALS="${FAILED_PROPOSALS}
+- **${TITLE}** (\`${TARGET_REPO}\`)"
+      continue
     fi
 
     echo "Created: ${ISSUE_URL}"
@@ -225,11 +327,17 @@ COMMENT="${SUMMARY}"
 if [[ -n "${ISSUE_LINKS}" ]]; then
   COMMENT=$(printf '%s\n\n### Proposals filed\n\n%s' "${COMMENT}" "${ISSUE_LINKS}")
 fi
+if [[ -n "${FAILED_PROPOSALS}" ]]; then
+  COMMENT=$(printf '%s\n\n### Proposals not filed (issue creation failed)\n\nFile manually; see the post-retro logs for the error:\n%s' "${COMMENT}" "${FAILED_PROPOSALS}")
+fi
 if [[ -n "${EVIDENCE_NOTES}" ]]; then
   COMMENT=$(printf '%s\n\n### Evidence notes (not filed as issues)\n%s' "${COMMENT}" "${EVIDENCE_NOTES}")
 fi
 if [[ -n "${SKIPPED_TARGETS}" ]]; then
-  COMMENT=$(printf '%s\n\n### Proposals skipped (target repo not allowed)\n\nFile manually or update `create_issues.allow_targets` in config.yaml:\n%s' "${COMMENT}" "${SKIPPED_TARGETS}")
+  COMMENT=$(printf '%s\n\n### Proposals skipped (target repo not allowed)\n\nFile manually or update `%s` in config.yaml:\n%s' "${COMMENT}" "${ALLOW_TARGETS_KEY}" "${SKIPPED_TARGETS}")
+fi
+if [[ -n "${RECEIPT_SKIPPED}" ]]; then
+  COMMENT=$(printf '%s\n\n### Proposals skipped (no dedup receipt)\n\nNot filed because they did not record a valid duplicate search (`related_issues`). Re-run retro, or search for duplicates and file manually:\n%s' "${COMMENT}" "${RECEIPT_SKIPPED}")
 fi
 
 # Truncate to forge-specific comment limit.

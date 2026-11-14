@@ -3,9 +3,23 @@ id: fullsend-jira-ro
 display_name: Fullsend Jira (read-only)
 description: Read-only Jira Cloud API access for fullsend agents
 category: data
+credentials:
+  - name: api_token
+    description: Jira API token
+    env_vars: [JIRA_TOKEN]
+    required: true
 endpoints:
   # Jira Cloud only (v1) — see design.md Decision 7.
   - host: "*.atlassian.net"
+    port: 443
+    protocol: rest
+    access: read-only
+    enforcement: enforce
+  # Atlassian Platform API Gateway (api.atlassian.com/ex/jira/<cloudId>/...),
+  # where JIRA_API_URL points by default. It accepts both a bot account's
+  # classic token and a service account's scoped token; the site URL
+  # accepts only the former.
+  - host: "api.atlassian.com"
     port: 443
     protocol: rest
     access: read-only

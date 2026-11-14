@@ -2,21 +2,34 @@
 # GENERATED from pre-code-jira.src.sh — DO NOT EDIT. Run: make script-build
 # Pre-script for Jira-sourced code agent runs.
 #
-# Validates the Jira issue URL and auto-installs pre-commit tool
-# dependencies.  The sandbox reads Jira work items directly through
-# provider-backed API access — no runner-side credential use or
-# .issue-context.json prefetching.
+# Validates the Jira issue URL, skips the run when an open human PR already
+# addresses the issue or the issue has child issues (like pre-code.sh), and
+# auto-installs pre-commit tool dependencies.  The sandbox reads Jira work
+# items directly through provider-backed API access — no .issue-context.json
+# prefetching.
 #
 # Runs on the CI runner BEFORE sandbox creation.
 #
 # Required environment variables:
 #   ISSUE_URL          — Jira browse URL (https://<host>.atlassian.net/browse/PROJ-123)
-#   REPO_FULL_NAME     — target repo (owner/repo), used for pre-commit tool install
+#   REPO_FULL_NAME     — target repo (owner/repo), used for the existing-PR
+#                         check and pre-commit tool install
 #   FULLSEND_FORGE     — "github" or "gitlab" (the target forge, NOT the source)
 #
 # Optional environment variables:
 #   JIRA_BASE_URL      — Jira instance base URL; derived from ISSUE_URL when unset,
 #                         cross-checked when set
+#   JIRA_TOKEN         — Jira token for the child-issue check and the skip
+#                         comment; both are skipped when it is unset
+#   JIRA_USER_EMAIL    — bot-user email (Basic auth); unset means a
+#                         service-account token (Bearer auth)
+#   GH_TOKEN / GITLAB_TOKEN — target forge token for the existing-PR check;
+#                         the check is skipped when unset
+#   COMMENT_BODY       — trigger comment; when unset, read from the dispatch
+#                         event payload (${FULLSEND_DIR}/dispatch/event-payload.json)
+#   CODE_FORCE         — "true" bypasses the existing-PR and child-issue checks
+#   FULLSEND_APP_SET   — GitHub App identity prefix (default "fullsend-ai"),
+#                         used to exclude bot-authored PRs
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -92,27 +105,6 @@ PROJECT_KEY="${ISSUE_KEY%-*}"
 
 echo "::notice::🔗 Jira source: $(_gha_sanitize "${ISSUE_URL}") (project=$(_gha_sanitize "${PROJECT_KEY}"), key=$(_gha_sanitize "${ISSUE_KEY}"))"
 
-# ---------------------------------------------------------------------------
-# Existing-PR check — intentionally omitted for Jira-sourced flows
-# ---------------------------------------------------------------------------
-# The forge pre-script (pre-code.src.sh) checks for existing human PRs
-# linked to the issue via forge_list_prs_for_issue and skips the agent
-# run to avoid stepping on human work.  That check searches for closing
-# keywords (Fixes #N, Closes #N) on the TARGET forge.  Jira-sourced
-# issues do not map 1:1 to a forge issue number — PRs referencing Jira
-# work use the issue key (PROJ-42) not a forge issue reference (#N) —
-# so forge_list_prs_for_issue would produce false negatives.  A Jira-
-# aware existing-PR check requires cross-system linking (e.g., Jira
-# development panel integration) which is out of scope for the initial
-# Jira overlay.  The /fs-code --force override is still available via
-# the forge pre-script for forge-native flows.
-
-# ---------------------------------------------------------------------------
-# Auto-detect and install pre-commit tool dependencies
-# ---------------------------------------------------------------------------
-# This section is shared with the forge pre-script — the target repo is
-# the same regardless of whether the source issue is Jira or a forge.
-
 # shellcheck source=lib/code-ops.lib.sh
 # BEGIN bundled: lib/code-ops.lib.sh
 # shellcheck shell=bash
@@ -123,6 +115,154 @@ echo "::notice::🔗 Jira source: $(_gha_sanitize "${ISSUE_URL}") (project=$(_gh
 
 [[ -n "${CODE_OPS_SH_LOADED:-}" ]] && return 0
 CODE_OPS_SH_LOADED=1
+
+# Load the transient-retry helper unconditionally, before forge dispatch, so
+# forge_retry_transient is defined for every forge (including callers in the
+# pre-code scripts that wrap commands outside the forge-specific libs).
+# shellcheck source=forge-transient-retry.lib.sh
+# BEGIN bundled: lib/forge-transient-retry.lib.sh
+# forge-transient-retry.lib.sh — Retry forge CLI/API calls on 5xx/timeouts.
+#
+# Usage:
+#   forge_retry_transient cmd [args...]
+#
+# On success, prints the command's stdout. On failure, prints the command's
+# combined output to stderr so callers (and workflow logs) can diagnose,
+# and stores the same sanitized text in FORGE_RETRY_LAST_ERROR so callers
+# can classify the error without capturing stderr (which would buffer
+# retry notices).
+# Retries only when the output looks like a transient 5xx or timeout.
+#
+# Environment:
+#   FORGE_TRANSIENT_RETRY_ATTEMPTS   — default 3
+#   FORGE_TRANSIENT_RETRY_BASE_DELAY — default 2 (seconds; doubles each retry)
+
+# shellcheck shell=bash
+
+[[ -n "${FORGE_TRANSIENT_RETRY_SH_LOADED:-}" ]] && return 0
+FORGE_TRANSIENT_RETRY_SH_LOADED=1
+
+forge_is_transient_error() {
+  local text="$1"
+  local lower
+  lower=$(printf '%s' "${text}" | tr '[:upper:]' '[:lower:]')
+
+  if echo "${lower}" | grep -qE \
+    'http[[:space:]]*5[0-9][0-9]|status([:]|[[:space:]]+code:?)[[:space:]]*5[0-9][0-9]|error:[[:space:]]*5[0-9][0-9]|\(http 5[0-9][0-9]\)'; then
+    return 0
+  fi
+  if echo "${lower}" | grep -qE \
+    'internal server error|service unavailable|bad gateway|gateway timeout'; then
+    return 0
+  fi
+  if echo "${lower}" | grep -qE \
+    'context deadline exceeded|connection reset|i/o timeout|operation timed out|timed out'; then
+    return 0
+  fi
+  # Go net/http (gh) and curl timeout diagnostics that carry no other marker.
+  # Specific phrases only: a bare "timeout" would match branch names such as
+  # "agent/42-fix-webhook-timeout".
+  if echo "${lower}" | grep -qE \
+    'tls handshake timeout|ssl connection timeout|timeout awaiting response headers|connection timeout after|client\.timeout exceeded'; then
+    return 0
+  fi
+  return 1
+}
+
+# Duplicate PR/MR create. GitHub CLI, GitHub GraphQL, and GitLab 409 all
+# include this phrase; other 422/400 validation errors do not.
+forge_is_already_exists_error() {
+  local lower
+  lower=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')
+  grep -qE 'already exists' <<< "${lower}"
+}
+
+_forge_retry_notice() {
+  local msg="$1"
+  # Always stderr so success stdout (e.g. a PR URL) stays clean.
+  if declare -F gha_echo >/dev/null 2>&1; then
+    gha_echo warning "${msg}" >&2
+  else
+    echo "${msg}" >&2
+  fi
+}
+
+# Sanitize captured command output before it reaches the runner log.
+# Secret redaction (tokens/PEMs) comes from sanitize_failure_detail when
+# post-failure-report.lib.sh is loaded. Whether or not it is, the same
+# order-safe escaping runs as the final step on every path: the shared
+# sanitizers delete "%0A"/"::" piecemeal, and a nested payload such as
+# ":%0%0AA:error" can reassemble into a live "::error" command after one
+# deletion pass. Escaping instead of deleting avoids that — "%" is escaped
+# first and then "::", so no sequence of the escaped output can form "::",
+# "%0A" or "%0D". ANSI escapes and other control characters are dropped
+# (newline and tab kept).
+_forge_retry_sanitize() {
+  local text="$1"
+  if declare -F sanitize_failure_detail >/dev/null 2>&1; then
+    # max_lines=0 disables truncation — this is diagnostic log output, not a
+    # length-limited PR comment.
+    text="$(sanitize_failure_detail "${text}" 0)"
+  fi
+  text="$(printf '%s' "${text}" | LC_ALL=C tr -d '\000-\010\013-\037\177')"
+  text="${text//%/%25}"
+  text="${text//::/%3A%3A}"
+  printf '%s' "${text}"
+}
+
+# Run a command, retrying transient 5xx/timeout failures with exponential
+# backoff (2s, 4s, 8s by default). Non-transient failures return immediately.
+forge_retry_transient() {
+  local max_attempts="${FORGE_TRANSIENT_RETRY_ATTEMPTS:-3}"
+  local delay="${FORGE_TRANSIENT_RETRY_BASE_DELAY:-2}"
+  local attempt=1
+  local outfile errfile rc combined
+
+  outfile=$(mktemp)
+  errfile=$(mktemp)
+  # Read by forge_create_pr after this function returns (same shell).
+  # shellcheck disable=SC2034
+  FORGE_RETRY_LAST_ERROR=""
+  # shellcheck disable=SC2064
+  trap "rm -f '${outfile}' '${errfile}'" RETURN
+
+  while [ "${attempt}" -le "${max_attempts}" ]; do
+    : >"${outfile}"
+    : >"${errfile}"
+    rc=0
+    "$@" >"${outfile}" 2>"${errfile}" || rc=$?
+
+    if [ "${rc}" -eq 0 ]; then
+      # shellcheck disable=SC2034
+      FORGE_RETRY_LAST_ERROR=""
+      cat "${outfile}"
+      return 0
+    fi
+
+    combined=$(cat "${outfile}" "${errfile}")
+    if [ "${attempt}" -lt "${max_attempts}" ] && forge_is_transient_error "${combined}"; then
+      _forge_retry_notice \
+        "Transient forge error (attempt ${attempt}/${max_attempts}); retrying in ${delay}s..."
+      sleep "${delay}"
+      delay=$((delay * 2))
+      attempt=$((attempt + 1))
+      continue
+    fi
+
+    local sanitized_combined
+    sanitized_combined="$(_forge_retry_sanitize "${combined}")"
+    # shellcheck disable=SC2034
+    FORGE_RETRY_LAST_ERROR="${sanitized_combined}"
+    printf '%s' "${sanitized_combined}" >&2
+    if [ -n "${sanitized_combined}" ]; then
+      printf '\n' >&2
+    fi
+    return "${rc}"
+  done
+
+  return 1
+}
+# END bundled: lib/forge-transient-retry.lib.sh
 
 case "${FULLSEND_FORGE:-}" in
   github)
@@ -142,6 +282,348 @@ case "${FULLSEND_FORGE:-}" in
 
 [[ -n "${GITHUB_CODE_OPS_SH_LOADED:-}" ]] && return 0
 GITHUB_CODE_OPS_SH_LOADED=1
+
+# shellcheck source=forge-transient-retry.lib.sh
+# (already bundled: lib/forge-transient-retry.lib.sh)
+# forge_push_branch: a plain git push, or with GITHUB_SIGNED_COMMITS=true the
+# API publish that gets the commits signed by GitHub.
+# shellcheck source=github-signed-push.lib.sh
+# BEGIN bundled: lib/github-signed-push.lib.sh
+# shellcheck shell=bash
+# github-signed-push.lib.sh — Publish local commits through the GitHub Git
+# Data API so GitHub signs them.
+#
+# The sandbox has no signing key, so a pushed commit is unsigned and a
+# ruleset that requires signatures rejects it. GitHub signs the commits it
+# creates for an App installation token itself, as long as the request sets
+# no author, committer or signature. forge_push_branch rebuilds each commit
+# origin lacks (blobs, tree, commit, ref) and moves the local branch onto
+# the result. It takes this path only when GITHUB_SIGNED_COMMITS is "true";
+# otherwise it is a plain `git push`.
+#
+# The rebuilt commit's author is therefore the App's bot user; the sandbox
+# identity survives in an `Authored-by: name <email>` trailer, which
+# post-fix and the fix-history-rewrite skill read.
+#
+# Each blob, tree and commit is one content-creating request, against
+# GitHub's secondary limit of about 80 per minute and 500 per hour.
+#
+# Approach prototyped by Hector Martinez Lopez (@rh-hemartin) in
+# fullsend-ai/agents#357.
+#
+# Expected globals:
+#   GITHUB_SIGNED_COMMITS — "true" publishes through the API; anything else
+#                    is a plain git push
+#   REPO_FULL_NAME — owner/repo
+#   PUSH_TOKEN     — GitHub App installation token (GH_TOKEN as fallback)
+#   GIT_BOT_EMAIL  — the App bot's noreply address; only a commit it
+#                    authored keeps an existing Authored-by trailer
+# origin must carry push credentials (forge_set_push_remote) for the final
+# fetch.
+
+[[ -n "${GITHUB_SIGNED_PUSH_SH_LOADED:-}" ]] && return 0
+GITHUB_SIGNED_PUSH_SH_LOADED=1
+
+_SIGNED_PUSH_ZERO="0000000000000000000000000000000000000000"
+
+# _signed_push_api METHOD PATH PAYLOAD_FILE — prints the response body. PATH
+# is relative to the repository, or `graphql`. Retries rate-limit and 5xx
+# responses.
+_signed_push_api() {
+  local method="$1" path="$2" payload="$3"
+  local attempt body endpoint err rc
+  err="${_SIGNED_PUSH_DIR}/stderr"
+  case "${path}" in
+    graphql) endpoint="graphql" ;;
+    *) endpoint="repos/${REPO_FULL_NAME}/${path}" ;;
+  esac
+  for attempt in 1 2 3; do
+    rc=0
+    body="$(GH_TOKEN="${PUSH_TOKEN:-${GH_TOKEN:-}}" gh api -X "${method}" \
+      "${endpoint}" --input "${payload}" 2>"${err}")" || rc=$?
+    if [ "${rc}" -eq 0 ]; then
+      printf '%s' "${body}"
+      return 0
+    fi
+    if [ "${attempt}" -eq 3 ] || ! grep -qiE 'rate limit|HTTP 5[0-9][0-9]' "${err}"; then
+      break
+    fi
+    sleep $((attempt * 30))
+  done
+  cat "${err}" >&2
+  # gh prints only the top-level message; errors[] names the rule or object.
+  printf '%s' "${body}" \
+    | jq -r 'select(.message != null) | (.errors // [])[] | .message // tojson' >&2 2>/dev/null
+  return 1
+}
+
+# _signed_push_blob SHA — uploads the local blob SHA and checks that GitHub
+# stored it under the same SHA.
+_signed_push_blob() {
+  local sha="$1" payload="${_SIGNED_PUSH_DIR}/payload" resp got
+  if ! git cat-file blob "${sha}" | base64 | tr -d '\n' \
+      | jq -Rs '{content: ., encoding: "base64"}' > "${payload}"; then
+    echo "error: could not read blob ${sha}" >&2
+    return 1
+  fi
+  resp="$(_signed_push_api POST git/blobs "${payload}")" || return 1
+  got="$(printf '%s' "${resp}" | jq -r '.sha // empty')"
+  if [ "${got}" != "${sha}" ]; then
+    echo "error: GitHub stored blob ${sha} as '${got}'" >&2
+    return 1
+  fi
+}
+
+# _signed_push_mapped SHA — prints the SHA GitHub created for the local
+# commit SHA, or SHA itself when it was not rebuilt (it is on origin).
+_signed_push_mapped() {
+  awk -v sha="$1" '$1 == sha { print $2; found = 1; exit } END { if (!found) print sha }' \
+    "${_SIGNED_PUSH_MAP}"
+}
+
+# _signed_push_base_parent COMMIT — prints the parent whose tree differs
+# from COMMIT's in the fewest paths, so a merge uploads the smaller side.
+# Any parent's tree is already on GitHub (origin, or rebuilt and verified).
+_signed_push_base_parent() {
+  local commit="$1" parent best="" best_n="" n
+  for parent in $(git rev-parse -q "${commit}^@"); do
+    n="$(git diff-tree -r --no-renames --raw "${parent}" "${commit}" | wc -l | tr -d ' ')"
+    if [ -z "${best}" ] || [ "${n}" -lt "${best_n}" ]; then
+      best="${parent}"
+      best_n="${n}"
+    fi
+  done
+  [ -n "${best}" ] && echo "${best}"
+}
+
+# _signed_push_commit COMMIT — rebuilds COMMIT on its rebuilt parents and
+# prints the SHA GitHub created.
+_signed_push_commit() {
+  local commit="$1"
+  local entries="${_SIGNED_PUSH_DIR}/entries" payload="${_SIGNED_PUSH_DIR}/payload"
+  local local_parent base_tree tree new_tree known meta path src_mode dst_mode dst_sha status
+  local parent parents author keep resp sha reason
+  local_parent="$(_signed_push_base_parent "${commit}")" || {
+    echo "error: no commit on origin to build ${commit} on" >&2
+    return 1
+  }
+  base_tree="$(git rev-parse "${local_parent}^{tree}")"
+  tree="$(git rev-parse "${commit}^{tree}")"
+
+  # Blobs GitHub already has: the base tree's, and this push's uploads.
+  known="${_SIGNED_PUSH_DIR}/known-blobs"
+  git ls-tree -r "${base_tree}" | awk '$2 == "blob" { print $3 }' > "${known}"
+
+  # --raw -z entries: ":<src mode> <dst mode> <src sha> <dst sha> <status>\0<path>\0"
+  : > "${entries}"
+  while IFS= read -r -d '' meta && IFS= read -r -d '' path; do
+    read -r src_mode dst_mode _ dst_sha status <<< "${meta#:}"
+    if [ "${status}" = "D" ]; then
+      jq -nc --arg p "${path}" --arg m "${src_mode}" \
+        '{path: $p, mode: $m, type: (if $m == "160000" then "commit" else "blob" end), sha: null}'
+    elif [ "${dst_mode}" = "160000" ]; then
+      jq -nc --arg p "${path}" --arg s "${dst_sha}" \
+        '{path: $p, mode: "160000", type: "commit", sha: $s}'
+    else
+      if ! grep -qxF "${dst_sha}" "${known}" "${_SIGNED_PUSH_BLOBS}"; then
+        _signed_push_blob "${dst_sha}" || return 1
+        echo "${dst_sha}" >> "${_SIGNED_PUSH_BLOBS}"
+      fi
+      jq -nc --arg p "${path}" --arg m "${dst_mode}" --arg s "${dst_sha}" \
+        '{path: $p, mode: $m, type: "blob", sha: $s}'
+    fi >> "${entries}"
+  done < <(git diff-tree -r --no-renames -z --raw "${local_parent}" "${commit}")
+
+  if [ -s "${entries}" ]; then
+    jq -sc --arg b "${base_tree}" '{base_tree: $b, tree: .}' "${entries}" > "${payload}"
+    resp="$(_signed_push_api POST git/trees "${payload}")" || return 1
+    new_tree="$(printf '%s' "${resp}" | jq -r '.sha // empty')"
+  else
+    new_tree="${base_tree}"
+  fi
+  if [ "${new_tree}" != "${tree}" ]; then
+    echo "error: tree rebuilt for ${commit} is '${new_tree}', expected ${tree}" >&2
+    return 1
+  fi
+
+  parents="$(for parent in $(git rev-parse "${commit}^@"); do
+    _signed_push_mapped "${parent}"
+  done | jq -Rn '[inputs]')"
+  # A commit the App bot authored came back from GitHub and keeps the
+  # trailer it was published with; any other commit loses every Authored-by
+  # line first, so a crafted one cannot survive. interpret-trailers runs
+  # outside the checkout so a repo-local trailer.*.cmd cannot run here.
+  author="$(git log -1 --format='%an <%ae>' "${commit}")"
+  if [[ "${author}" == *"[bot] <${GIT_BOT_EMAIL:-}>" ]]; then
+    keep=1
+  else
+    # shellcheck disable=SC2016  # awk program, not shell expansion
+    keep='tolower($0) !~ /^authored-by:/'
+  fi
+  git cat-file commit "${commit}" | sed '1,/^$/d' | awk "${keep}" \
+    | git -C "${_SIGNED_PUSH_DIR}" interpret-trailers --no-divider \
+        --if-exists doNothing --trailer "Authored-by: ${author}" \
+    > "${payload}.msg" || {
+    echo "error: could not read the message of ${commit}" >&2
+    return 1
+  }
+  jq -n --rawfile m "${payload}.msg" --arg t "${tree}" --argjson p "${parents}" \
+    '{message: $m, tree: $t, parents: $p}' > "${payload}"
+  resp="$(_signed_push_api POST git/commits "${payload}")" || return 1
+  sha="$(printf '%s' "${resp}" | jq -r '.sha // empty')"
+  if [ -z "${sha}" ]; then
+    echo "error: no sha in the commit response" >&2
+    return 1
+  fi
+  if [ "$(printf '%s' "${resp}" | jq -r '.verification.verified')" != "true" ]; then
+    reason="$(printf '%s' "${resp}" | jq -r '.verification.reason // "unknown"')"
+    # An App installation token always gets a signature; a PAT (eval
+    # harness, local runs) never does.
+    if [ "${PUSH_TOKEN_SOURCE:-}" = "github-app" ]; then
+      echo "error: GitHub did not sign ${sha} (${reason})" >&2
+      return 1
+    fi
+    echo "warning: GitHub did not sign ${sha} (${reason})" >&2
+  fi
+  echo "${sha}"
+}
+
+# _signed_push_repo_id — prints the GraphQL node id of REPO_FULL_NAME.
+_signed_push_repo_id() {
+  local payload="${_SIGNED_PUSH_DIR}/payload" resp id
+  jq -n --arg o "${REPO_FULL_NAME%%/*}" --arg n "${REPO_FULL_NAME#*/}" \
+    '{query: "query($o: String!, $n: String!) { repository(owner: $o, name: $n) { id } }",
+      variables: {o: $o, n: $n}}' > "${payload}"
+  resp="$(_signed_push_api POST graphql "${payload}")" || return 1
+  id="$(printf '%s' "${resp}" | jq -r '.data.repository.id // empty')"
+  if [ -z "${id}" ]; then
+    echo "error: no repository id in the response for ${REPO_FULL_NAME}" >&2
+    return 1
+  fi
+  echo "${id}"
+}
+
+# _signed_push_update_ref BRANCH BEFORE AFTER FORCE — moves refs/heads/BRANCH
+# from BEFORE (all zeros: create) to AFTER. updateRefs applies it only while
+# the ref is still at BEFORE, the compare-and-swap --force-with-lease needs,
+# and without FORCE only as a fast-forward. A retried request that had
+# already been applied leaves the ref at AFTER, which counts as success.
+_signed_push_update_ref() {
+  local branch="$1" before="$2" after="$3" force="$4"
+  local payload="${_SIGNED_PUSH_DIR}/payload" repo_id current
+  repo_id="$(_signed_push_repo_id)" || return 1
+  jq -n --arg r "${repo_id}" --arg n "refs/heads/${branch}" \
+    --arg b "${before}" --arg a "${after}" --argjson f "${force}" \
+    '{query: "mutation($r: ID!, $u: [RefUpdate!]!) { updateRefs(input: {repositoryId: $r, refUpdates: $u}) { clientMutationId } }",
+      variables: {r: $r, u: [{name: $n, beforeOid: $b, afterOid: $a, force: $f}]}}' > "${payload}"
+  if _signed_push_api POST graphql "${payload}" > /dev/null; then
+    return 0
+  fi
+  current="$(git ls-remote --heads origin "refs/heads/${branch}")" || return 1
+  current="${current%%[[:space:]]*}"
+  current="${current:-${_SIGNED_PUSH_ZERO}}"
+  if [ "${current}" = "${after}" ]; then
+    return 0
+  fi
+  if [ "${current}" != "${before}" ]; then
+    echo "error: origin/${branch} moved from ${before} to ${current} (non-fast-forward)" >&2
+  fi
+  return 1
+}
+
+# forge_push_branch BRANCH [--force-with-lease]
+#
+# Drop-in for `git push -u origin BRANCH`: publishes the current branch's
+# commits that origin lacks through the API, updates origin/BRANCH, and
+# moves the local branch and its upstream onto the commits GitHub created.
+# Unless GITHUB_SIGNED_COMMITS is "true", it is that git push.
+# A non-fast-forward update needs --force-with-lease and, as with git, is
+# refused once origin/BRANCH differs from the remote-tracking ref.
+forge_push_branch() {
+  local rc=0 _SIGNED_PUSH_DIR _SIGNED_PUSH_MAP _SIGNED_PUSH_BLOBS
+  if [ "${GITHUB_SIGNED_COMMITS:-false}" != "true" ]; then
+    local branch="$1" lease
+    shift
+    if [ "${1:-}" = "--force-with-lease" ]; then
+      # Lease on the tracking ref explicitly: a single-branch clone has no
+      # fetch refspec for BRANCH, so a bare --force-with-lease reports stale info.
+      lease="$(git rev-parse -q --verify "refs/remotes/origin/${branch}")" || {
+        echo "error: no remote-tracking ref origin/${branch} to lease on; refusing the non-fast-forward update" >&2
+        return 1
+      }
+      git push --force-with-lease="refs/heads/${branch}:${lease}" -u origin -- "${branch}"
+      return
+    fi
+    git push "$@" -u origin -- "${branch}"
+    return
+  fi
+  _SIGNED_PUSH_DIR="$(mktemp -d)"
+  _SIGNED_PUSH_MAP="${_SIGNED_PUSH_DIR}/commits"
+  _SIGNED_PUSH_BLOBS="${_SIGNED_PUSH_DIR}/blobs"
+  touch "${_SIGNED_PUSH_MAP}" "${_SIGNED_PUSH_BLOBS}"
+  _forge_push_branch "$@" || rc=$?
+  rm -rf "${_SIGNED_PUSH_DIR}"
+  return "${rc}"
+}
+
+_forge_push_branch() {
+  local branch="$1" mode="${2:-}"
+  local remote_sha lease tip commit commits fetched
+  remote_sha="$(git ls-remote --heads origin "refs/heads/${branch}")" || {
+    echo "error: could not read origin/${branch}" >&2
+    return 1
+  }
+  remote_sha="${remote_sha%%[[:space:]]*}"
+  if [ "${mode}" = "--force-with-lease" ]; then
+    lease="$(git rev-parse -q --verify "refs/remotes/origin/${branch}")" || {
+      echo "error: no remote-tracking ref origin/${branch} to lease on; refusing the non-fast-forward update" >&2
+      return 1
+    }
+  elif [ -n "${remote_sha}" ] \
+       && ! { git cat-file -e "${remote_sha}^{commit}" 2>/dev/null \
+              && git merge-base --is-ancestor "${remote_sha}" HEAD; }; then
+    # A commit this clone has never fetched cannot be an ancestor of HEAD.
+    echo "error: origin/${branch} is at ${remote_sha}, not an ancestor of HEAD (non-fast-forward)" >&2
+    return 1
+  fi
+
+  # Parents before children: each parent is on origin or already rebuilt.
+  commits="$(git rev-list --reverse --topo-order HEAD --not --remotes=origin)" || return 1
+  tip="$(git rev-parse HEAD)"
+  for commit in ${commits}; do
+    tip="$(_signed_push_commit "${commit}")" || return 1
+    echo "Created signed commit ${tip} for ${commit}"
+    echo "${commit} ${tip}" >> "${_SIGNED_PUSH_MAP}"
+  done
+
+  if [ "${mode}" = "--force-with-lease" ]; then
+    _signed_push_update_ref "${branch}" "${lease}" "${tip}" true || return 1
+  elif [ "${remote_sha}" = "${tip}" ]; then
+    echo "Everything up-to-date"
+  else
+    _signed_push_update_ref "${branch}" "${remote_sha:-${_SIGNED_PUSH_ZERO}}" "${tip}" false || return 1
+  fi
+
+  # The push is complete once the ref moved; failing to move the local
+  # branch is a warning, not a failed push.
+  git fetch -q origin "+refs/heads/${branch}:refs/remotes/origin/${branch}" || {
+    echo "warning: origin/${branch} is at ${tip} but could not be fetched; the local branch was not moved" >&2
+    return 0
+  }
+  fetched="$(git rev-parse "refs/remotes/origin/${branch}")"
+  if [ "${fetched}" != "${tip}" ]; then
+    echo "warning: origin/${branch} is at ${fetched} right after the update to ${tip}; the local branch was not moved" >&2
+    return 0
+  fi
+  git reset -q --soft "${tip}" || return 1
+  # Set the upstream as `git push -u` does: --set-upstream-to refuses a
+  # remote-tracking ref outside the fetch refspec, as in a single-branch
+  # clone.
+  git config "branch.${branch}.remote" origin || return 1
+  git config "branch.${branch}.merge" "refs/heads/${branch}" || return 1
+  echo "Branch ${branch} is at ${tip} on origin"
+}
+# END bundled: lib/github-signed-push.lib.sh
 
 # --- URL handling ---
 
@@ -199,7 +681,7 @@ forge_create_label() {
 forge_post_issue_comment() {
   local body="$1"
   printf '%s' "${body}" | gh issue comment "${ISSUE_NUMBER}" \
-    --repo "${REPO_FULL_NAME}" --body-file - 2>/dev/null
+    --repo "${REPO_FULL_NAME}" --body-file -
 }
 
 forge_post_pr_comment() {
@@ -207,7 +689,7 @@ forge_post_pr_comment() {
   local body="$2"
   gh pr comment "${target_pr}" \
     --repo "${REPO_FULL_NAME}" \
-    --body "${body}" 2>/dev/null
+    --body "${body}"
 }
 
 # --- PR/MR lifecycle ---
@@ -221,6 +703,10 @@ forge_list_prs_for_issue() {
   # Use closedByPullRequestsReferences to find only PRs with closing keywords
   # (Fixes #N, Closes #N, etc.) for this issue. This avoids false positives
   # from text-search matching (e.g., #1 matching #12 in a PR title).
+  #
+  # GraphQL's Bot.login has no "[bot]" suffix, so strip it and check
+  # __typename == "Bot" to avoid false bot matches. `gh api` lacks --arg,
+  # so pipe the JSON through a standalone `jq -r --arg ...` filter.
   gh api graphql \
     -f owner="${owner}" -f name="${name}" -F number="${issue_number}" \
     -f query='
@@ -231,17 +717,19 @@ forge_list_prs_for_issue() {
             nodes {
               number
               url
-              author { login }
+              author { login __typename }
               state
             }
           }
         }
       }
-    }' --arg bot "${bot_login}" --arg coder "${coder_bot_login}" --jq '
+    }' 2>/dev/null \
+    | jq -r --arg bot "${bot_login%\[bot\]}" --arg coder "${coder_bot_login%\[bot\]}" '
     .data.repository.issue.closedByPullRequestsReferences.nodes
     | [.[] | select(.state == "OPEN")
-           | select(.author.login != $bot
-               and .author.login != $coder)]
+           | select(.author.__typename != "Bot"
+               or (.author.login != $bot
+                   and .author.login != $coder))]
     | .[] | "\(.number)\t\(.author.login)\t\(.url)"
   ' 2>/dev/null || true
 }
@@ -251,8 +739,37 @@ forge_list_prs_for_branch() {
   local owner="${REPO_FULL_NAME%%/*}"
   gh pr list --repo "${REPO_FULL_NAME}" --head "${branch}" \
     --state open --json number,headRepositoryOwner \
-    --jq "[.[] | select(.headRepositoryOwner.login == \"${owner}\")] | .[0].number // empty" \
+    --jq "[.[] | select((.headRepositoryOwner.login | ascii_downcase) == (\"${owner}\" | ascii_downcase))] | .[0].number // empty" \
     2>/dev/null
+}
+
+# Single open same-repo PR for this head and base. Zero or multiple
+# matches fail closed — adopting the wrong PR is worse than reporting
+# failure.
+_forge_resolve_existing_pr_url() {
+  local head="$1"
+  local base="$2"
+  local owner="${REPO_FULL_NAME%%/*}"
+  local json matches count url
+  json=$(forge_retry_transient gh pr list \
+    --repo "${REPO_FULL_NAME}" \
+    --head "${head}" \
+    --base "${base}" \
+    --state open \
+    --json number,url,headRepositoryOwner,headRefName,baseRefName) || return 1
+  matches=$(printf '%s' "${json}" | jq -c \
+    --arg owner "${owner}" --arg head "${head}" --arg base "${base}" \
+    '[.[]
+      | select((.headRepositoryOwner.login | ascii_downcase) == ($owner | ascii_downcase))
+      | select(.headRefName == $head)
+      | select(.baseRefName == $base)
+      | .url] | unique') || return 1
+  count=$(printf '%s' "${matches}" | jq 'length') || return 1
+  url=$(printf '%s' "${matches}" | jq -r '.[0] // empty') || return 1
+  if [ "${count}" -ne 1 ] || [ -z "${url}" ]; then
+    return 1
+  fi
+  printf '%s\n' "${url}"
 }
 
 forge_create_pr() {
@@ -260,12 +777,32 @@ forge_create_pr() {
   local head="$2"
   local title="$3"
   local body="$4"
-  gh pr create \
+  local urlfile rc=0
+  # Call retry in this shell so FORGE_RETRY_LAST_ERROR survives; $(...)
+  # would run it in a subshell and drop the error text.
+  urlfile=$(mktemp) || return 1
+  forge_retry_transient gh pr create \
     --repo "${REPO_FULL_NAME}" \
     --head "${head}" \
     --base "${base}" \
     --title "${title}" \
-    --body "${body}"
+    --body "${body}" >"${urlfile}" || rc=$?
+  if [ "${rc}" -eq 0 ]; then
+    cat "${urlfile}"
+    rm -f "${urlfile}"
+    return 0
+  fi
+  rm -f "${urlfile}"
+  if ! forge_is_already_exists_error "${FORGE_RETRY_LAST_ERROR-}"; then
+    return "${rc}"
+  fi
+  local resolved
+  if ! resolved="$(_forge_resolve_existing_pr_url "${head}" "${base}")"; then
+    echo "PR already exists but could not be resolved for head '${head}' into base '${base}'" >&2
+    return "${rc}"
+  fi
+  _forge_retry_notice "PR create reported already-exists; recovered ${resolved}"
+  printf '%s\n' "${resolved}"
 }
 
 forge_get_pr_url() {
@@ -357,6 +894,37 @@ forge_enable_auto_merge() {
 
 # --- Issue operations ---
 
+# forge_has_sub_issues — whether the GitHub issue has sub-issues (children).
+# Prints a non-negative integer that is non-zero iff children exist. GitHub
+# exposes an exact child count, but callers must treat the result as a
+# truthy/falsy signal only — GitLab's implementation of this same contract
+# can only report 0 or 1 — and must not display it as an exact count in
+# shared (forge-agnostic) messages. Fail-open: prints 0 on API errors so a
+# missing sub-issues field (older GHES) does not skip legitimate leaf work.
+forge_has_sub_issues() {
+  local issue_number="${1:-${ISSUE_NUMBER}}"
+  local owner="${REPO_FULL_NAME%%/*}"
+  local name="${REPO_FULL_NAME##*/}"
+  local count
+  count="$(gh api graphql \
+    -f owner="${owner}" -f name="${name}" -F number="${issue_number}" \
+    -f query='
+    query($owner: String!, $name: String!, $number: Int!) {
+      repository(owner: $owner, name: $name) {
+        issue(number: $number) {
+          subIssues(first: 1) {
+            totalCount
+          }
+        }
+      }
+    }' --jq '.data.repository.issue.subIssues.totalCount // 0' 2>/dev/null || true)"
+  if [[ ! "${count}" =~ ^[0-9]+$ ]]; then
+    echo 0
+    return 0
+  fi
+  echo "${count}"
+}
+
 forge_get_issue_comments() {
   local raw
   if ! raw="$(gh api --paginate \
@@ -444,6 +1012,9 @@ GITLAB_CODE_OPS_SH_LOADED=1
 #
 # Fails closed: rejects when CI_SERVER_HOST is not set.
 #
+# Also derives the trusted origin (scheme, host, and optional port) from
+# CI_SERVER_URL so self-managed instances on non-default HTTPS ports work.
+#
 # Sourced by all gitlab-*-ops.lib.sh files and inlined by the bundler.
 
 [[ -n "${GITLAB_HOST_VALIDATION_SH_LOADED:-}" ]] && return 0
@@ -470,7 +1041,38 @@ _validate_gitlab_host() {
     return 1
   fi
 }
+
+# Prints the trusted GitLab origin (https://host[:port]) for API requests
+# and generated links. Derived from CI_SERVER_URL, a GitLab CI predefined
+# variable that carries any non-default port; falls back to
+# https://${CI_SERVER_HOST} when CI_SERVER_URL is unset. Fails closed when
+# the origin is not HTTPS or its host does not match CI_SERVER_HOST.
+_gitlab_trusted_origin() {
+  _validate_gitlab_host "${CI_SERVER_HOST:-}" || return 1
+  local origin="${CI_SERVER_URL:-https://${CI_SERVER_HOST}}"
+  if [[ ! "${origin}" =~ ^https://([a-zA-Z0-9._-]+)(:[0-9]+)?$ ]]; then
+    echo "ERROR: CI_SERVER_URL is not an HTTPS origin (https://host[:port]): $(_gha_sanitize "${origin}")" >&2
+    return 1
+  fi
+  local host="${BASH_REMATCH[1]}"
+  _validate_gitlab_host "${host}" || return 1
+  printf '%s\n' "${origin}"
+}
+
+# Validates an origin (https://host[:port]) parsed from an untrusted URL
+# against the trusted CI server origin. Scheme, host, and port must all
+# match: a URL without a port only matches a trusted origin without one.
+_validate_gitlab_origin() {
+  local origin="$1" trusted
+  trusted=$(_gitlab_trusted_origin) || return 1
+  if [[ "${origin,,}" != "${trusted,,}" ]]; then
+    echo "ERROR: GitLab origin '$(_gha_sanitize "${origin}")' does not match CI server origin '$(_gha_sanitize "${trusted}")'" >&2
+    return 1
+  fi
+}
 # END bundled: lib/gitlab-host-validation.lib.sh
+# shellcheck source=forge-transient-retry.lib.sh
+# (already bundled: lib/forge-transient-retry.lib.sh)
 
 if ! declare -F gha_echo >/dev/null 2>&1; then
   gha_echo() { echo "::${1}::${2:-}"; }
@@ -597,14 +1199,14 @@ forge_create_label() {
 forge_post_issue_comment() {
   local body="$1"
   _gitlab_code_api POST "/projects/${REPO_ENCODED}/issues/${ISSUE_NUMBER}/notes" \
-    --data-urlencode "body=${body}" > /dev/null 2>/dev/null
+    --data-urlencode "body=${body}" > /dev/null
 }
 
 forge_post_pr_comment() {
   local mr_iid="$1"
   local body="$2"
   _gitlab_code_api POST "/projects/${REPO_ENCODED}/merge_requests/${mr_iid}/notes" \
-    --data-urlencode "body=${body}" > /dev/null 2>/dev/null
+    --data-urlencode "body=${body}" > /dev/null
 }
 
 # --- MR lifecycle ---
@@ -622,10 +1224,9 @@ forge_list_prs_for_issue() {
   while [[ "${page}" -le "${max_pages}" ]]; do
     local batch
     batch=$(_gitlab_code_api GET "/projects/${REPO_ENCODED}/merge_requests?state=opened&per_page=100&page=${page}" 2>/dev/null) || {
-      if [ "${page}" -eq 1 ]; then
-        gha_echo warning "forge_list_prs_for_issue: GitLab API failed on first page — failing closed"
-        return 1
-      fi
+      # Fail open on API errors. Warn on stderr, not via gha_echo's stdout —
+      # this function's stdout is captured as the caller's return value.
+      gha_echo warning "forge_list_prs_for_issue: GitLab API failed on page ${page} — failing open (treating as no existing PRs)" >&2
       break
     }
     local count
@@ -672,24 +1273,74 @@ forge_list_prs_for_branch() {
     '[.[] | select(.source_project_id == ($pid | tonumber))] | .[0].iid // empty'
 }
 
+# Single open same-project MR for this source and target. Zero or
+# multiple matches fail closed — adopting the wrong MR is worse than
+# reporting failure.
+_forge_resolve_existing_pr_url() {
+  local head="$1"
+  local base="$2"
+  local head_encoded base_encoded mrs project_json project_id matches count url
+  head_encoded=$(printf '%s' "${head}" | jq -sRr @uri)
+  base_encoded=$(printf '%s' "${base}" | jq -sRr @uri)
+  mrs=$(forge_retry_transient _gitlab_code_api_with_status GET \
+    "/projects/${REPO_ENCODED}/merge_requests?state=opened&source_branch=${head_encoded}&target_branch=${base_encoded}") || return 1
+  project_json=$(forge_retry_transient _gitlab_code_api_with_status GET \
+    "/projects/${REPO_ENCODED}") || return 1
+  project_id=$(printf '%s' "${project_json}" | jq -r '.id // empty') || return 1
+  if [[ -z "${project_id}" ]]; then
+    return 1
+  fi
+  matches=$(printf '%s' "${mrs}" | jq -c \
+    --arg pid "${project_id}" --arg head "${head}" --arg base "${base}" \
+    '[.[]
+      | select(.source_project_id == ($pid | tonumber))
+      | select(.source_branch == $head)
+      | select(.target_branch == $base)
+      | .web_url] | unique') || return 1
+  count=$(printf '%s' "${matches}" | jq 'length') || return 1
+  url=$(printf '%s' "${matches}" | jq -r '.[0] // empty') || return 1
+  if [ "${count}" -ne 1 ] || [ -z "${url}" ]; then
+    return 1
+  fi
+  printf '%s\n' "${url}"
+}
+
 forge_create_pr() {
   local base="$1"
   local head="$2"
   local title="$3"
   local body="$4"
-  local response
-  response=$(_gitlab_code_api_with_status POST "/projects/${REPO_ENCODED}/merge_requests" \
+  local responsefile rc=0
+  # Call retry in this shell so FORGE_RETRY_LAST_ERROR survives; $(...)
+  # would run it in a subshell and drop the error text.
+  responsefile=$(mktemp) || return 1
+  forge_retry_transient _gitlab_code_api_with_status POST "/projects/${REPO_ENCODED}/merge_requests" \
     --data-urlencode "source_branch=${head}" \
     --data-urlencode "target_branch=${base}" \
     --data-urlencode "title=${title}" \
-    --data-urlencode "description=${body}") || return 1
-  local url
-  url=$(echo "${response}" | jq -r '.web_url // empty')
-  if [[ -z "${url}" ]]; then
-    echo "GitLab API error: MR created but response missing web_url" >&2
+    --data-urlencode "description=${body}" >"${responsefile}" || rc=$?
+  if [ "${rc}" -eq 0 ]; then
+    local url
+    url=$(jq -r '.web_url // empty' "${responsefile}")
+    rm -f "${responsefile}"
+    if [[ -z "${url}" ]]; then
+      echo "GitLab API error: MR created but response missing web_url" >&2
+      return 1
+    fi
+    echo "${url}"
+    return 0
+  fi
+  rm -f "${responsefile}"
+  if ! forge_is_already_exists_error "${FORGE_RETRY_LAST_ERROR-}"; then
     return 1
   fi
-  echo "${url}"
+  local resolved
+  if ! resolved="$(_forge_resolve_existing_pr_url "${head}" "${base}")"; then
+    echo "MR already exists but could not be resolved for source '${head}' into target '${base}'" >&2
+    return 1
+  fi
+  _forge_retry_notice "MR create reported already-exists; recovered ${resolved}"
+  echo "${resolved}"
 }
 
 forge_get_pr_url() {
@@ -746,6 +1397,23 @@ forge_set_push_remote() {
   local token="$1"
   git remote set-url origin \
     "https://oauth2:${token}@${GITLAB_HOST}/${REPO_FULL_NAME}.git"
+}
+
+# forge_push_branch BRANCH [--force-with-lease] — plain git push.
+forge_push_branch() {
+  local branch="$1" lease
+  shift
+  if [ "${1:-}" = "--force-with-lease" ]; then
+    # Lease on the tracking ref explicitly: a single-branch clone has no
+    # fetch refspec for BRANCH, so a bare --force-with-lease reports stale info.
+    lease="$(git rev-parse -q --verify "refs/remotes/origin/${branch}")" || {
+      echo "error: no remote-tracking ref origin/${branch} to lease on; refusing the non-fast-forward update" >&2
+      return 1
+    }
+    git push --force-with-lease="refs/heads/${branch}:${lease}" -u origin -- "${branch}"
+    return
+  fi
+  git push "$@" -u origin -- "${branch}"
 }
 
 forge_check_remote_branch() {
@@ -867,6 +1535,51 @@ forge_enable_auto_merge() {
 
 # --- Issue operations ---
 
+# forge_has_sub_issues — 1 if the GitLab work item has child items, else 0.
+# Uses the work-item hierarchy widget (GitLab's analogue of GitHub sub-issues).
+# This only signals presence, not an exact child count (GitLab's hierarchy
+# widget here exposes hasChildren, not a count) — matches the GitHub
+# implementation's truthy/falsy contract; callers must not display this
+# value as an exact count in shared (forge-agnostic) messages.
+# Fail-open: prints 0 on API errors or older GitLab versions without the field.
+forge_has_sub_issues() {
+  local issue_number="${1:-${ISSUE_NUMBER}}"
+  if [[ -z "${GITLAB_HOST:-}" || -z "${REPO_FULL_NAME:-}" || -z "${issue_number}" ]]; then
+    echo 0
+    return 0
+  fi
+  _validate_gitlab_host "${GITLAB_HOST}" || {
+    echo 0
+    return 0
+  }
+  local payload
+  payload="$(jq -n \
+    --arg path "${REPO_FULL_NAME}" \
+    --arg iid "${issue_number}" \
+    --arg query 'query($path: ID!, $iid: String!) { project(fullPath: $path) { workItem(iid: $iid) { widgets { ... on WorkItemWidgetHierarchy { hasChildren } } } } }' \
+    '{query: $query, variables: {path: $path, iid: $iid}}')" || {
+    echo 0
+    return 0
+  }
+  local body
+  body="$(curl --fail --silent --show-error \
+    --connect-timeout 10 --max-time 30 \
+    --header "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
+    --header "Content-Type: application/json" \
+    --data "${payload}" \
+    "https://${GITLAB_HOST}/api/graphql" 2>/dev/null)" || {
+    echo 0
+    return 0
+  }
+  local count
+  count="$(printf '%s' "${body}" | jq -r '[.data.project.workItem.widgets[]? | select(.hasChildren == true)] | if length > 0 then 1 else 0 end' 2>/dev/null || true)"
+  if [[ ! "${count}" =~ ^[0-9]+$ ]]; then
+    echo 0
+    return 0
+  fi
+  echo "${count}"
+}
+
 forge_get_issue_comments() {
   local notes="[]"
   local page=1 max_pages=50
@@ -954,6 +1667,811 @@ forge_append_path() {
     ;;
 esac
 # END bundled: lib/code-ops.lib.sh
+
+# ---------------------------------------------------------------------------
+# Existing human-PR and child-issue checks, unless bypassed
+# ---------------------------------------------------------------------------
+# Mirrors pre-code.src.sh for Jira-sourced runs:
+#   - an open human PR/MR on the target repo whose title or body names the
+#     Jira key as a whole word (this covers the "Related to <url>" line
+#     post-code.sh writes) skips the run; bot PRs do not;
+#   - an issue with child issues (JQL "parent = KEY", subtasks excluded,
+#     so a story split into subtasks still runs) skips the run;
+#     a failed child query logs a warning and proceeds (fail open);
+#   - `/fs-code --force` on the trigger comment's first line, or
+#     CODE_FORCE=true, bypasses both checks.
+# A skip writes skipped=true through prescript_output and posts one sticky
+# comment on the Jira issue; a failed Jira write still skips. A missing
+# forge token skips the PR check; a missing JIRA_TOKEN skips the child
+# check and the comment.
+#
+# The child check and the comment use jira-triage-ops.lib.sh: Basic auth
+# when JIRA_USER_EMAIL is set (bot user), Bearer when it is not (service
+# account), sent to JIRA_API_URL or else JIRA_BASE_URL (#1900, #1876).
+#
+# On a GitLab target, the trigger comment reaches neither COMMENT_BODY nor
+# the dispatch payload file, so `/fs-code --force` has no effect there until
+# fullsend exports COMMENT_BODY for Jira jobs (fullsend-ai/fullsend#9187).
+# The GitHub check reads the newest 500 open PRs.
+
+# jira-triage-ops.lib.sh exits at load time without JIRA_TOKEN, so load it
+# only when the token is set. JIRA_USER_EMAIL is optional.
+JIRA_CREDS_OK=0
+if [[ -n "${JIRA_TOKEN:-}" ]]; then
+  # shellcheck source=lib/jira-triage-ops.lib.sh
+# BEGIN bundled: lib/jira-triage-ops.lib.sh
+# shellcheck shell=bash
+# jira-triage-ops.lib.sh — Jira Cloud tracker operations for triage scripts.
+#
+# Bundled into pre-triage.sh and post-triage.sh via triage-ops.lib.sh.
+# Labels, transitions, and cross-project issue creation use curl against
+# the Jira Cloud REST API v3. Comment posting shells out to
+# `fullsend issues post-comment --tracker jira`, which handles Jira's
+# markdown-to-ADF conversion and marker-based find-and-update semantics
+# that raw REST calls would otherwise have to reimplement.
+#
+# Jira Cloud only (v1): the issue host must match *.atlassian.net. Jira
+# Server/Data Center is not supported.
+#
+# Expected globals (set by tracker_parse_issue_url):
+#   REPO           — Jira project key (e.g., "PROJ")
+#   ISSUE_NUMBER   — full Jira issue key (e.g., "PROJ-123")
+#   JIRA_ISSUE_NUM — numeric issue suffix (e.g., "123"), for the
+#                    `fullsend issues` CLI's --number flag
+#   JIRA_BASE_URL  — Jira instance base URL (e.g., "https://myteam.atlassian.net")
+#
+# Expected env vars:
+#   ISSUE_URL       — HTML URL of the issue (https://<host>.atlassian.net/browse/PROJ-123)
+#   JIRA_TOKEN      — Jira API token (the triage harness maps
+#                     FULLSEND_JIRA_TOKEN to it)
+#   JIRA_USER_EMAIL — (optional) bot-user email (the triage harness maps
+#                     FULLSEND_JIRA_EMAIL to it). When set, requests use
+#                     Basic auth with email and token; when unset or
+#                     empty, Bearer auth with a service-account token.
+#                     See lib/jira-auth.lib.sh.
+#   FULLSEND_DIR    — .fullsend directory whose config.yaml holds
+#                     tracker.jira, for the `fullsend issues` shell-outs
+#   JIRA_API_URL    — (optional) where REST calls go, e.g. the Atlassian
+#                     API gateway https://api.atlassian.com/ex/jira/<cloudId>
+#                     that `fullsend run` resolves and exports. Falls back
+#                     to JIRA_BASE_URL when unset (older fullsend releases).
+#                     Browse links always use JIRA_BASE_URL.
+#
+# The `fullsend issues` CLI reads its credentials from FULLSEND_JIRA_TOKEN
+# and, for a bot user, FULLSEND_JIRA_EMAIL, and its Jira site and API
+# gateway from tracker.jira in --fullsend-dir. jira_auth_fullsend passes
+# the same token and email to it, so one set of credentials covers both
+# the raw REST calls in this file and the `fullsend` shell-outs below.
+#
+# Optional env vars:
+#   JIRA_DUPLICATE_TRANSITION   — transition name for the "duplicate" action
+#   JIRA_NOT_PLANNED_TRANSITION — transition name for the "not planned" action
+#   JIRA_SPLIT_TRANSITION       — transition name for the "split" and
+#                                 "completed" actions (both close with
+#                                 GitHub reason "completed")
+#   JIRA_CREATE_ISSUE_TYPE      — issue type name for cross-project issue
+#                                 creation (default: "Task")
+
+[[ -n "${JIRA_TRIAGE_OPS_SH_LOADED:-}" ]] && return 0
+JIRA_TRIAGE_OPS_SH_LOADED=1
+
+# Validate credentials at source time — fails once, early, on unredirected
+# stderr, before any call site can swallow the diagnostic with 2>/dev/null.
+# Matches the idiom pre-triage.src.sh / post-triage.src.sh already use for
+# ISSUE_URL and FULLSEND_TRACKER.
+# JIRA_USER_EMAIL is optional: without it, requests use Bearer auth.
+: "${JIRA_TOKEN:?JIRA_TOKEN must be set}"
+
+# shellcheck source=jira-auth.lib.sh
+# BEGIN bundled: lib/jira-auth.lib.sh
+# shellcheck shell=bash
+# jira-auth.lib.sh — Jira credential-mode selection for host-side scripts.
+#
+# Shared by the Jira triage and scribe ops libraries and post-code.sh, and
+# bundled into each script that sources it. Two credential modes
+# (fullsend#9007):
+#
+#   token + email — bot user: Basic auth with email:token
+#   token only    — service account: Bearer auth with the token
+#
+# An email that is empty or only whitespace counts as absent. A harness
+# that maps an unset FULLSEND_JIRA_EMAIL to JIRA_USER_EMAIL yields an empty
+# string, and that must select Bearer, never an empty-user Basic header.
+#
+# Every helper takes the token and email as arguments, so callers that
+# withhold the credentials from their environment can pass saved copies.
+
+[[ -n "${JIRA_AUTH_SH_LOADED:-}" ]] && return 0
+JIRA_AUTH_SH_LOADED=1
+
+# Print the email with surrounding whitespace removed. Empty output means
+# no email, which selects Bearer auth.
+#
+# Usage: jira_auth_email <email>
+jira_auth_email() {
+  local email="$1"
+  email="${email#"${email%%[![:space:]]*}"}"
+  email="${email%"${email##*[![:space:]]}"}"
+  printf '%s' "${email}"
+}
+
+# Run curl with the Authorization for the selected mode, followed by the
+# caller's arguments. Fails without calling curl when the token is empty.
+#
+# Usage: jira_auth_curl <token> <email> [curl args...]
+jira_auth_curl() {
+  local token="$1"
+  local email
+  email="$(jira_auth_email "$2")"
+  shift 2
+  if [[ -z "${token}" ]]; then
+    echo "ERROR: Jira token is empty" >&2
+    return 1
+  fi
+  if [[ -n "${email}" ]]; then
+    curl --user "${email}:${token}" "$@"
+  else
+    curl --oauth2-bearer "${token}" "$@"
+  fi
+}
+
+# Run the fullsend CLI with the Jira credentials it reads from its
+# environment: FULLSEND_JIRA_TOKEN always, FULLSEND_JIRA_EMAIL only for a
+# bot user. In Bearer mode an inherited FULLSEND_JIRA_EMAIL is removed, so
+# the CLI cannot pick Basic auth. The values go through the environment,
+# never the command line.
+#
+# Usage: jira_auth_fullsend <fullsend-bin> <token> <email> [cli args...]
+jira_auth_fullsend() {
+  local bin="$1"
+  local token="$2"
+  local email
+  email="$(jira_auth_email "$3")"
+  shift 3
+  if [[ -z "${token}" ]]; then
+    echo "ERROR: Jira token is empty" >&2
+    return 1
+  fi
+  if [[ -n "${email}" ]]; then
+    FULLSEND_JIRA_TOKEN="${token}" FULLSEND_JIRA_EMAIL="${email}" "${bin}" "$@"
+  else
+    (
+      unset FULLSEND_JIRA_EMAIL
+      FULLSEND_JIRA_TOKEN="${token}" "${bin}" "$@"
+    )
+  fi
+}
+# END bundled: lib/jira-auth.lib.sh
+# JIRA_API_URL is optional, but the credentials are sent to it, so refuse
+# anything that is not https.
+if [[ -n "${JIRA_API_URL:-}" && "${JIRA_API_URL}" != https://* ]]; then
+  echo "ERROR: JIRA_API_URL must start with https://" >&2
+  exit 1
+fi
+
+# JIRA_BASE_URL is derived at runtime by tracker_parse_issue_url, so it
+# cannot be validated at source time — keep a per-call guard for it.
+_jira_require_vars() {
+  if [[ -z "${JIRA_BASE_URL:-}" ]]; then echo "ERROR: JIRA_BASE_URL is not set" >&2; return 1; fi
+}
+
+# Print the base URL for REST calls: JIRA_API_URL when set, else
+# JIRA_BASE_URL, with trailing slash(es) stripped.
+_jira_api_base() {
+  local base="${JIRA_API_URL:-${JIRA_BASE_URL}}"
+  while [[ "${base}" == */ ]]; do
+    base="${base%/}"
+  done
+  printf '%s\n' "${base}"
+}
+
+_jira_api() {
+  local method="$1"
+  shift
+  local endpoint="$1"
+  shift
+
+  _jira_require_vars || return 1
+  local api_base
+  api_base=$(_jira_api_base) || return 1
+
+  jira_auth_curl "${JIRA_TOKEN}" "${JIRA_USER_EMAIL:-}" \
+    --fail --silent --show-error \
+    --connect-timeout 10 --max-time 30 \
+    --header "Content-Type: application/json" \
+    --request "${method}" \
+    "${api_base}/rest/api/3${endpoint}" \
+    "$@"
+}
+
+_jira_api_with_status() {
+  local method="$1"
+  shift
+  local endpoint="$1"
+  shift
+
+  _jira_require_vars || return 1
+  local api_base
+  api_base=$(_jira_api_base) || return 1
+
+  local err_file
+  err_file=$(mktemp)
+  local raw
+  raw=$(jira_auth_curl "${JIRA_TOKEN}" "${JIRA_USER_EMAIL:-}" \
+    --silent --show-error \
+    --connect-timeout 10 --max-time 30 \
+    --header "Content-Type: application/json" \
+    --request "${method}" \
+    --write-out '\n%{http_code}' \
+    "${api_base}/rest/api/3${endpoint}" \
+    "$@" 2>"${err_file}") || {
+    echo "Jira API error: curl failed — $(cat "${err_file}")" >&2
+    rm -f "${err_file}"
+    return 1
+  }
+  rm -f "${err_file}"
+  local http_code
+  http_code=$(echo "${raw}" | tail -1)
+  local body
+  body=$(echo "${raw}" | sed '$d')
+  if [[ "${http_code}" -lt 200 || "${http_code}" -ge 300 ]]; then
+    echo "Jira API error (HTTP ${http_code}): ${body}" >&2
+    return 1
+  fi
+  echo "${body}"
+}
+
+# --- URL handling ---
+
+tracker_validate_issue_url() {
+  if [[ ! "${ISSUE_URL}" =~ ^https://[a-zA-Z0-9.-]+/browse/[A-Z][A-Z0-9]*-[0-9]+$ ]]; then
+    echo "ERROR: ISSUE_URL does not match expected Jira pattern: ${ISSUE_URL}" >&2
+    return 1
+  fi
+  local host
+  host=$(echo "${ISSUE_URL}" | sed -E 's|^https://([^/]+)/.*|\1|')
+  case "${host}" in
+    *.atlassian.net) ;;
+    *) echo "ERROR: Jira host '${host}' is not in the allowed host list" >&2; return 1 ;;
+  esac
+}
+
+tracker_parse_issue_url() {
+  local host
+  host=$(echo "${ISSUE_URL}" | sed -E 's|^https://([^/]+)/.*|\1|')
+  local parsed_base_url="https://${host}"
+  # Strip trailing slash(es) from JIRA_BASE_URL so that a copy-pasted
+  # "https://acme.atlassian.net/" matches the parsed "https://acme.atlassian.net".
+  # Loop rather than a single ${VAR%/} so that "…net//" normalises too.
+  while [[ -n "${JIRA_BASE_URL:-}" && "${JIRA_BASE_URL}" == */ ]]; do
+    JIRA_BASE_URL="${JIRA_BASE_URL%/}"
+  done
+  if [[ -n "${JIRA_BASE_URL:-}" ]] && [[ "${JIRA_BASE_URL}" != "${parsed_base_url}" ]]; then
+    echo "ERROR: JIRA_BASE_URL ('${JIRA_BASE_URL}') does not match ISSUE_URL host ('${parsed_base_url}') — refusing to redirect API calls to a different tenant" >&2
+    return 1
+  fi
+  JIRA_BASE_URL="${parsed_base_url}"
+  ISSUE_NUMBER=$(echo "${ISSUE_URL}" | sed -E 's|.*/browse/||')
+  REPO="${ISSUE_NUMBER%-*}"
+  JIRA_ISSUE_NUM="${ISSUE_NUMBER##*-}"
+}
+
+# --- Labels ---
+
+tracker_add_label() {
+  local label="$1"
+  if ! _jira_api PUT "/issue/${ISSUE_NUMBER}" \
+    --data "$(jq -cn --arg l "${label}" '{update:{labels:[{add:$l}]}}')" > /dev/null; then
+    echo "ERROR: failed to add label '${label}' to issue ${ISSUE_NUMBER} via PUT /issue/${ISSUE_NUMBER}" >&2
+    return 1
+  fi
+}
+
+tracker_remove_label() {
+  local label="$1"
+  # Jira treats removing an absent label as a no-op, so an error here is a
+  # real write failure. Fail the step instead of reporting success.
+  if ! _jira_api PUT "/issue/${ISSUE_NUMBER}" \
+    --data "$(jq -cn --arg l "${label}" '{update:{labels:[{remove:$l}]}}')" > /dev/null; then
+    echo "ERROR: failed to remove label '${label}' from issue ${ISSUE_NUMBER} via PUT /issue/${ISSUE_NUMBER}" >&2
+    return 1
+  fi
+}
+
+tracker_strip_labels() {
+  local labels=("$@")
+  for label in "${labels[@]}"; do
+    _jira_api PUT "/issue/${ISSUE_NUMBER}" \
+      --data "$(jq -cn --arg l "${label}" '{update:{labels:[{remove:$l}]}}')" > /dev/null 2>/dev/null || true
+  done
+}
+
+tracker_verify_labels_stripped() {
+  local labels=("$@")
+  local raw_labels
+  raw_labels=$(_jira_api GET "/issue/${ISSUE_NUMBER}?fields=labels" 2>/dev/null) || {
+    echo "ERROR: cannot verify label state — API call failed" >&2
+    return 1
+  }
+
+  # An unparseable body must not read as "no labels remaining" — parse it up
+  # front so a bad shape fails loudly, matching the GitHub/GitLab sentinel.
+  local current_labels
+  current_labels=$(echo "${raw_labels}" | jq -r '[.fields.labels[]] | join("\n")' 2>/dev/null) \
+    || current_labels="VERIFY_FAILED"
+  if [[ "${current_labels}" == "VERIFY_FAILED" ]]; then
+    echo "ERROR: cannot verify label state — unexpected response shape" >&2
+    return 1
+  fi
+
+  local remaining=""
+  local current
+  while IFS= read -r current; do
+    [[ -z "${current}" ]] && continue
+    for check in "${labels[@]}"; do
+      if [[ "${current}" == "${check}" ]]; then
+        if [[ -n "${remaining}" ]]; then
+          remaining="${remaining}, ${current}"
+        else
+          remaining="${current}"
+        fi
+      fi
+    done
+  done <<< "${current_labels}"
+
+  if [[ -n "${remaining}" ]]; then
+    echo "ERROR: triage labels still present after reset: ${remaining}" >&2
+    return 1
+  fi
+}
+
+# Jira has no per-project label registry like GitHub/GitLab — any string is
+# a valid label with no creation step. As the closest analog to "labels the
+# maintainers already established" (which the "will not auto-create" guard
+# in post-triage.src.sh relies on), this lists labels already used anywhere
+# in the Jira site via the global label-suggestion endpoint.
+tracker_list_repo_labels() {
+  local start_at=0 max_pages=50
+  for _ in $(seq 1 "${max_pages}"); do
+    local batch
+    batch=$(_jira_api GET "/label?startAt=${start_at}&maxResults=200" 2>/dev/null) || break
+    local count
+    count=$(echo "${batch}" | jq '.values | length') || break
+    [[ "${count}" -eq 0 ]] && break
+    echo "${batch}" | jq -r '.values[]'
+    if [[ "$(echo "${batch}" | jq -r '.isLast')" == "true" ]]; then
+      break
+    fi
+    start_at=$((start_at + count))
+  done
+}
+
+# Jira has no label-creation step (see tracker_list_repo_labels) — adding an
+# unused label to an issue works without registering it first.
+tracker_create_label() {
+  :
+}
+
+# Alias used by labels.lib.sh (forge_ensure_label delegates to forge_create_label).
+forge_create_label() {
+  tracker_create_label "$@"
+}
+
+# --- Components ---
+
+# Set components on a Jira issue. Accepts a JSON array of component objects
+# (e.g., [{"name":"backend"},{"name":"frontend"}]) and replaces the issue's
+# component list with that set.
+tracker_set_components() {
+  local components_json="$1"
+  if ! _jira_api PUT "/issue/${ISSUE_NUMBER}" \
+    --data "$(jq -cn --argjson c "${components_json}" '{fields:{components:$c}}')" > /dev/null; then
+    echo "ERROR: failed to set components on issue ${ISSUE_NUMBER} via PUT /issue/${ISSUE_NUMBER}" >&2
+    return 1
+  fi
+}
+
+# Get current components on a Jira issue. Returns a JSON array of component
+# name strings (e.g., ["backend","frontend"]).
+tracker_get_components() {
+  local response
+  response=$(_jira_api GET "/issue/${ISSUE_NUMBER}?fields=components" 2>/dev/null) || {
+    echo "ERROR: failed to get components for issue ${ISSUE_NUMBER}" >&2
+    return 1
+  }
+  echo "${response}" | jq -r '[(.fields.components // [])[].name]'
+}
+
+# --- Comments ---
+
+tracker_post_comment() {
+  local body="$1"
+  _jira_require_vars || return 1
+  # `fullsend issues post-comment` always does marker-based find-and-update;
+  # there is no "always create new" mode. Each triage run gets a new comment,
+  # matching tracker_post_comment's always-new contract on GitHub/GitLab.
+  # The marker is scoped to the CI run (GITHUB_RUN_ID survives a workflow
+  # re-run, CI_PIPELINE_ID a GitLab job retry), so a retried run edits its
+  # own earlier comment instead of posting a duplicate.
+  local marker stamp
+  local run_id="${GITHUB_RUN_ID:-${CI_PIPELINE_ID:-}}"
+  if [[ "${run_id}" =~ ^[0-9]+$ ]]; then
+    marker="<!-- fullsend:triage-run-${run_id} -->"
+  else
+    # No CI run ID: a marker unique to this invocation guarantees no prior
+    # comment matches it.
+    stamp=$(date +%s%N)
+    # BSD date without %N support leaves the literal "N" in place, which would
+    # make the marker identical for every invocation within the same second and
+    # break the always-create-new contract. Fall back to a random suffix.
+    if [[ "${stamp}" == *N* ]]; then
+      stamp="$(date +%s)${RANDOM}${RANDOM}"
+    fi
+    marker="<!-- fullsend:triage-${stamp} -->"
+  fi
+  _jira_post_comment "${body}" "${marker}"
+}
+
+tracker_post_sticky_comment() {
+  local body="$1"
+  local marker="$2"
+  _jira_require_vars || return 1
+  _jira_post_comment "${body}" "${marker}"
+}
+
+# Post or update the comment carrying <marker> through the fullsend CLI,
+# which takes the Jira site and API gateway from tracker.jira in
+# FULLSEND_DIR's config.yaml and the credentials from its environment.
+_jira_post_comment() {
+  local body="$1"
+  local marker="$2"
+  if [[ -z "${FULLSEND_DIR:-}" ]]; then
+    echo "ERROR: FULLSEND_DIR is not set; the fullsend CLI needs it for the tracker.jira settings" >&2
+    return 1
+  fi
+  printf '%s' "${body}" | jira_auth_fullsend fullsend "${JIRA_TOKEN}" "${JIRA_USER_EMAIL:-}" \
+    issues post-comment --tracker jira --fullsend-dir "${FULLSEND_DIR}" \
+    --project "${REPO}" --number "${JIRA_ISSUE_NUM}" \
+    --marker "${marker}" --result -
+}
+
+# --- Issues ---
+
+tracker_close_issue() {
+  local reason="$1"
+  local transition_var
+  case "${reason}" in
+    duplicate) transition_var="JIRA_DUPLICATE_TRANSITION" ;;
+    "not planned") transition_var="JIRA_NOT_PLANNED_TRANSITION" ;;
+    completed) transition_var="JIRA_SPLIT_TRANSITION" ;;
+    *)
+      echo "ERROR: unknown close reason '${reason}' — no Jira transition mapping" >&2
+      return 1
+      ;;
+  esac
+
+  local transition_name="${!transition_var:-}"
+  if [[ -z "${transition_name}" ]]; then
+    echo "ERROR: ${transition_var} is not set — cannot close issue ${ISSUE_NUMBER} via Jira transition for reason '${reason}'" >&2
+    return 1
+  fi
+
+  local transitions
+  transitions=$(_jira_api GET "/issue/${ISSUE_NUMBER}/transitions" 2>/dev/null) || {
+    echo "ERROR: failed to list transitions for issue ${ISSUE_NUMBER}" >&2
+    return 1
+  }
+  local transition_id
+  transition_id=$(echo "${transitions}" | jq -r --arg name "${transition_name}" \
+    '[.transitions[] | select(.name == $name)][0].id // empty')
+  if [[ -z "${transition_id}" ]]; then
+    echo "ERROR: transition '${transition_name}' (from ${transition_var}) is not available on issue ${ISSUE_NUMBER}" >&2
+    return 1
+  fi
+
+  if ! _jira_api POST "/issue/${ISSUE_NUMBER}/transitions" \
+    --data "$(jq -cn --arg id "${transition_id}" '{transition:{id:$id}}')" > /dev/null; then
+    echo "ERROR: failed to transition issue ${ISSUE_NUMBER} via '${transition_name}'" >&2
+    return 1
+  fi
+}
+
+_text_to_adf() {
+  # Convert plain text to Atlassian Document Format (ADF) JSON.
+  # Splits on blank lines into separate paragraphs; within a paragraph,
+  # single newlines become hardBreak nodes.
+  local text="$1"
+  jq -cn --arg text "${text}" '
+    # Split into paragraphs on blank lines (two or more consecutive newlines).
+    ($text | split("\n\n")) as $paragraphs |
+    {
+      type: "doc",
+      version: 1,
+      content: [
+        $paragraphs[] |
+        select(length > 0) |
+        # Split each paragraph on single newlines and interleave hardBreak nodes.
+        (split("\n") | map(select(length > 0))) as $lines |
+        select(($lines | length) > 0) |
+        {
+          type: "paragraph",
+          content: (
+            reduce $lines[] as $line (
+              {idx: 0, nodes: []};
+              if .idx > 0 then
+                .nodes += [{type: "hardBreak"}, {type: "text", text: $line}]
+              else
+                .nodes += [{type: "text", text: $line}]
+              end | .idx += 1
+            ) | .nodes
+          )
+        }
+      ]
+    }
+  '
+}
+
+tracker_create_issue() {
+  local target_repo="$1"
+  local title="$2"
+  local body="$3"
+  local issue_type="${JIRA_CREATE_ISSUE_TYPE:-Task}"
+  # Jira Cloud REST v3 requires the description as Atlassian Document
+  # Format, not plain text/markdown. Multi-line bodies are split into
+  # ADF paragraphs (on blank lines) with hardBreak nodes for single
+  # newlines within a paragraph.
+  local description_adf
+  description_adf=$(_text_to_adf "${body}")
+  local response
+  response=$(_jira_api_with_status POST "/issue" \
+    --data "$(jq -cn --arg proj "${target_repo}" --arg title "${title}" \
+      --arg itype "${issue_type}" --argjson desc "${description_adf}" \
+      '{fields:{project:{key:$proj},summary:$title,description:$desc,issuetype:{name:$itype}}}')") || {
+    echo "Jira API error: failed to create issue in ${target_repo}" >&2
+    return 1
+  }
+  local key
+  key=$(echo "${response}" | jq -r '.key // empty' 2>/dev/null)
+  if [[ -z "${key}" ]]; then
+    echo "ERROR: Jira create-issue response for ${target_repo} contained no issue key" >&2
+    return 1
+  fi
+  echo "${JIRA_BASE_URL}/browse/${key}"
+}
+
+# Apply ready-for-triage to a newly created issue so Jira dispatch can
+# pick it up. Failures are non-fatal for the caller.
+#
+# target_project must be the same already-allowlisted project key (checked
+# via is_target_allowed) that created_url's issue was created in. Unlike
+# GitHub/GitLab, the issue key used to address the label PUT (not just a
+# REPO global) has to be derived from created_url, so this validates the
+# URL against the same anchored pattern tracker_validate_issue_url uses and
+# then rebuilds the issue key from target_project plus only the numeric
+# suffix of created_url — rather than trusting the project name parsed out
+# of created_url — before mutating.
+tracker_dispatch_triage() {
+  local created_url="$1"
+  local target_project="$2"
+  local saved_number="${ISSUE_NUMBER}"
+  if [[ ! "${created_url}" =~ ^https://[a-zA-Z0-9.-]+/browse/[A-Z][A-Z0-9]*-[0-9]+$ ]]; then
+    echo "ERROR: created_url does not match expected Jira pattern: $(_gha_sanitize "${created_url}")" >&2
+    return 1
+  fi
+  local parsed_key="${created_url##*/browse/}"
+  if [[ -n "${target_project}" ]]; then
+    # Rebuild the issue key from the already-allowlisted target project
+    # plus only the numeric suffix from created_url, rather than trusting
+    # the project name parsed out of created_url.
+    ISSUE_NUMBER="${target_project}-${parsed_key##*-}"
+  else
+    ISSUE_NUMBER="${parsed_key}"
+  fi
+  local rc=0
+  if ! tracker_add_label "ready-for-triage"; then
+    echo "::warning::Failed to add ready-for-triage label to $(_gha_sanitize "${created_url}")" >&2
+    rc=1
+  fi
+  ISSUE_NUMBER="${saved_number}"
+  return "${rc}"
+}
+# END bundled: lib/jira-triage-ops.lib.sh
+  JIRA_CREDS_OK=1
+  # Globals tracker_post_sticky_comment reads.
+  # shellcheck disable=SC2034
+  REPO="${PROJECT_KEY}"
+  # shellcheck disable=SC2034
+  JIRA_ISSUE_NUM="${ISSUE_KEY##*-}"
+else
+  echo "No Jira credentials set — skipping child-issue check and skip comment"
+fi
+
+SKIP_COMMENT_MARKER="<!-- fullsend:pre-code-jira-skip -->"
+
+# _jira_first_line_token TEXT N — print the Nth whitespace-separated token of
+# the first line of TEXT. Parameter expansion instead of `head -1` avoids
+# SIGPIPE on a large TEXT under pipefail.
+_jira_first_line_token() {
+  local first_line="${1%%$'\n'*}"
+  printf '%s' "${first_line}" | tr -d '\r' | awk -v n="$2" '{print $n}'
+}
+
+# _jira_post_skip_comment BODY — post or update the sticky skip comment.
+# Never fails: a skip must stay a skip when the Jira write fails.
+_jira_post_skip_comment() {
+  if [[ "${JIRA_CREDS_OK}" -ne 1 ]]; then
+    echo "No Jira credentials set — not commenting on ${ISSUE_KEY}"
+    return 0
+  fi
+  if ! tracker_post_sticky_comment "$1" "${SKIP_COMMENT_MARKER}" > /dev/null; then
+    echo "::warning::Failed to post the skip comment on Jira issue ${ISSUE_KEY} — skipping the run anyway"
+  fi
+}
+
+# _jira_list_human_prs KEY BOT_LOGIN CODER_BOT_LOGIN — print one
+# "number<TAB>author<TAB>url" line per open human PR/MR on the target repo
+# whose title or body contains KEY as a whole word (PROJ-12 does not match
+# PROJ-123). Fails open: an API error prints a warning and no lines.
+_jira_list_human_prs() {
+  local key="$1"
+  local bot="${2%\[bot\]}"
+  local coder="${3%\[bot\]}"
+  local prs=""
+  case "${FULLSEND_FORGE}" in
+    github)
+      prs="$(gh pr list --repo "${REPO_FULL_NAME}" --state open --limit 500 \
+        --json number,title,body,url,author 2>/dev/null \
+        | jq -c '[.[] | {number, title, body, url, author: (.author.login // ""), is_bot: (.author.is_bot // false)}]' 2>/dev/null)" \
+        || prs=""
+      ;;
+    gitlab)
+      # An external work item has no GitLab issue URL to derive the host from;
+      # the MR target is the GitLab instance running this job (as post-code.sh).
+      # shellcheck disable=SC2034
+      GITLAB_HOST="${CI_SERVER_HOST:-}"
+      REPO_ENCODED="$(printf '%s' "${REPO_FULL_NAME}" | jq -sRr @uri)"
+      local all_mrs="[]" page=1 batch count
+      while [[ "${page}" -le 10 ]]; do
+        batch="$(_gitlab_code_api GET "/projects/${REPO_ENCODED}/merge_requests?state=opened&per_page=100&page=${page}" 2>/dev/null)" \
+          || { all_mrs=""; break; }
+        count="$(printf '%s' "${batch}" | jq 'length' 2>/dev/null)" || { all_mrs=""; break; }
+        [[ "${count}" -eq 0 ]] && break
+        all_mrs="$(printf '%s\n%s' "${all_mrs}" "${batch}" | jq -s 'add')" || { all_mrs=""; break; }
+        page=$((page + 1))
+      done
+      # Same bot-username patterns as forge_list_prs_for_issue on GitLab.
+      if [[ -n "${all_mrs}" ]]; then
+        prs="$(printf '%s' "${all_mrs}" | jq -c '[.[]
+          | {number: .iid, title, body: .description, url: .web_url, author: (.author.username // "")}
+          | select((.author | test("\\[bot\\]$|^fullsend|_bot$")) | not)]' 2>/dev/null)" || prs=""
+      fi
+      ;;
+  esac
+  if [[ -z "${prs}" ]]; then
+    echo "::warning::Could not list open PRs on $(_gha_sanitize "${REPO_FULL_NAME}") — failing open (treating as no existing PRs)" >&2
+    return 0
+  fi
+  # Case-insensitive, so "fix/proj-42-..." matches PROJ-42. Any bot author
+  # is dropped (as pre-code.sh does), plus the app-set logins.
+  printf '%s' "${prs}" | jq -r --arg key "${key}" --arg bot "${bot}" --arg coder "${coder}" '
+    ("(^|[^A-Za-z0-9_])" + $key + "($|[^A-Za-z0-9_])") as $re
+    | .[]
+    | select(((.title // "") | test($re; "i")) or ((.body // "") | test($re; "i")))
+    | select((.is_bot // false) | not)
+    | select((.author | sub("^app/"; "") | sub("\\[bot\\]$"; "")) as $login
+        | $login != $bot and $login != $coder)
+    | "\(.number)\t\(.author)\t\(.url)"' 2>/dev/null || true
+}
+
+# _jira_child_count — print the number of children found for ISSUE_KEY
+# (0 or 1: one result is enough to know the issue is a parent). Returns
+# non-zero when the count cannot be read.
+_jira_child_count() {
+  local resp
+  resp="$(_jira_api POST "/search/jql" \
+    --data "$(jq -cn --arg jql "parent = ${ISSUE_KEY} AND issuetype not in subTaskIssueTypes()" '{jql: $jql, maxResults: 1, fields: ["key"]}')" 2>/dev/null)" \
+    || return 1
+  printf '%s' "${resp}" | jq -er '.issues | length' 2>/dev/null
+}
+
+# --force counts only as the command's flag token on the trigger comment's
+# first line, the same tokenization as pre-code.src.sh. COMMENT_BODY wins
+# when set; otherwise read the dispatch event payload. A label-triggered run
+# has no comment and therefore no --force.
+FORCE_WORD=""
+if [[ -n "${COMMENT_BODY:-}" ]]; then
+  FORCE_WORD="$(_jira_first_line_token "${COMMENT_BODY}" 2)"
+else
+  EVENT_PAYLOAD_FILE=""
+  for _payload_candidate in \
+    "${FULLSEND_DIR:+${FULLSEND_DIR}/dispatch/event-payload.json}" \
+    "${GITHUB_WORKSPACE:-.}/.fullsend/dispatch/event-payload.json"; do
+    if [[ -n "${_payload_candidate}" && -f "${_payload_candidate}" ]]; then
+      EVENT_PAYLOAD_FILE="${_payload_candidate}"
+      break
+    fi
+  done
+  if [[ -n "${EVENT_PAYLOAD_FILE}" ]]; then
+    # .comment.body is the full comment ("/fs-code --force ..."); the
+    # normalized instruction is the rest of line 1 after the command.
+    _trigger_line="$(jq -r '(.comment.body // "") | (split("\n")[0] // "")' "${EVENT_PAYLOAD_FILE}" 2>/dev/null)" || _trigger_line=""
+    if [[ -n "${_trigger_line}" ]]; then
+      FORCE_WORD="$(_jira_first_line_token "${_trigger_line}" 2)"
+    else
+      _trigger_line="$(jq -r '(._normalized_event.transition.comment.instruction // "") | (split("\n")[0] // "")' "${EVENT_PAYLOAD_FILE}" 2>/dev/null)" || _trigger_line=""
+      FORCE_WORD="$(_jira_first_line_token "${_trigger_line}" 1)"
+    fi
+  fi
+fi
+
+SKIP_EXISTING_CHECKS=0
+if [[ "${CODE_FORCE:-}" == "true" ]] || [[ "${FORCE_WORD}" == "--force" ]]; then
+  echo "Force override — skipping existing-PR and child-issue checks"
+  SKIP_EXISTING_CHECKS=1
+fi
+
+if [[ "${SKIP_EXISTING_CHECKS}" -eq 0 ]]; then
+  if { [ "${FULLSEND_FORGE}" = "github" ] && [ -z "${GH_TOKEN:-}" ]; } || \
+     { [ "${FULLSEND_FORGE}" = "gitlab" ] && [ -z "${GITLAB_TOKEN:-}" ]; }; then
+    echo "No ${FULLSEND_FORGE} token set — skipping existing-PR check"
+  else
+    APP_SET="${FULLSEND_APP_SET:-fullsend-ai}"
+    echo "Checking for existing open PRs that reference ${ISSUE_KEY}..."
+    HUMAN_PR_LINES="$(_jira_list_human_prs "${ISSUE_KEY}" "${APP_SET}[bot]" "${APP_SET}-coder[bot]")"
+
+    if [[ -n "${HUMAN_PR_LINES}" ]]; then
+      _pr_prefix="#"
+      if [ "${FULLSEND_FORGE}" = "gitlab" ]; then
+        _pr_prefix="!"
+      fi
+      FIRST_PR_NUM="$(printf '%s\n' "${HUMAN_PR_LINES}" | head -1 | cut -f1)"
+      FIRST_PR_AUTHOR="$(printf '%s\n' "${HUMAN_PR_LINES}" | head -1 | cut -f2)"
+      echo "::notice::Found existing human PR ${_pr_prefix}${FIRST_PR_NUM} by @${FIRST_PR_AUTHOR}"
+
+      PR_LIST_MD=""
+      while IFS=$'\t' read -r _pr_num _pr_author pr_url; do
+        PR_LIST_MD="${PR_LIST_MD}
+- ${pr_url}"
+      done <<< "${HUMAN_PR_LINES}"
+
+      _jira_post_skip_comment "An open pull request already addresses ${ISSUE_KEY} — skipping automated implementation.
+${PR_LIST_MD}
+
+To override, comment \`/fs-code --force\` on this issue."
+
+      echo "Skipping code agent — existing PR(s) found for ${ISSUE_KEY}"
+      prescript_output "skipped" "true"
+      prescript_output "reason" "open PR ${_pr_prefix}${FIRST_PR_NUM} by @${FIRST_PR_AUTHOR} already addresses ${ISSUE_KEY}"
+      exit 0
+    fi
+    echo "No existing human PRs found"
+  fi
+
+  if [[ "${JIRA_CREDS_OK}" -eq 1 ]]; then
+    echo "Checking for child issues of ${ISSUE_KEY}..."
+    if ! CHILD_COUNT="$(_jira_child_count)" || [[ ! "${CHILD_COUNT}" =~ ^[0-9]+$ ]]; then
+      echo "::warning::Could not read child issues of ${ISSUE_KEY} — proceeding with code agent"
+    elif [[ "${CHILD_COUNT}" -gt 0 ]]; then
+      echo "::notice::${ISSUE_KEY} has child issue(s) — skipping code agent"
+
+      _jira_post_skip_comment "${ISSUE_KEY} has child issues — skipping automated implementation.
+
+The code agent implements leaf work items. Use the child issues for implementation, or comment \`/fs-code --force\` to implement this parent issue anyway."
+
+      prescript_output "skipped" "true"
+      prescript_output "reason" "${ISSUE_KEY} has child issue(s); implement the child issues instead"
+      exit 0
+    else
+      echo "No child issues found"
+    fi
+  fi
+fi
+
+# ---------------------------------------------------------------------------
+# Auto-detect and install pre-commit tool dependencies
+# ---------------------------------------------------------------------------
+# This section is shared with the forge pre-script — the target repo is
+# the same regardless of whether the source issue is Jira or a forge.
 
 TARGET_REPO="$(forge_get_repo_dir)"
 RESOLVE_SCRIPT="${SCRIPT_DIR}/resolve-precommit-tools.py"

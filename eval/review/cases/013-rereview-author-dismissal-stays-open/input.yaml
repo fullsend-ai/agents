@@ -1,0 +1,41 @@
+forge: github
+seed_issues:
+  - title: "Add a helper"
+    body: |
+      Add a small helper used by the service.
+fixture:
+  type: pull_request
+  title: "Add helper"
+  body: |
+    Fixes #1
+
+    Dismissing f_human1. The name x matches the public API and should stay.
+  base: main
+  files:
+    - path: src/foo.py
+      content: |
+        def run(x):
+            return x
+    - path: README.md
+      content: |
+        # Example service
+  followup_files:
+    - path: src/foo.py
+      content: |
+        def run(x):
+            return x
+    - path: README.md
+      content: |
+        # Example service
+
+        Run the tests with `pytest`.
+prior_review:
+  provenance: app-verified
+  body: |
+    ## Findings
+
+    #### Low
+
+    - **[naming-convention]** `src/foo.py:1` — rename the parameter.
+
+    <!-- fullsend:review-findings-v2:eyJ2ZXJzaW9uIjoyLCJmaW5kaW5ncyI6W3sic2V2ZXJpdHkiOiJsb3ciLCJjYXRlZ29yeSI6Im5hbWluZy1jb252ZW50aW9uIiwiZmlsZSI6InNyYy9mb28ucHkiLCJsaW5lIjoxLCJpZCI6ImZfaHVtYW4xIn1dfQ== -->

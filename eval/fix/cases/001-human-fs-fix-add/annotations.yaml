@@ -1,13 +1,14 @@
 state: open
 
+# Selected as the fix agent's release-tier smoke case (eval/run-functional.sh
+# EVAL_TIER=release) — the only case for this agent.
+release: true
+
 expected_files:
   - calc.py
 
-labels:
-  forbidden: []
-
 max_turns: 80
-max_cost_usd: 8.00
+max_cost_usd: 0.50
 
 # Human reference only; not consumed by judges (unlike triage/review quality).
 fix_expectations: |

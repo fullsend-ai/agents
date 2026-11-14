@@ -2,10 +2,35 @@ version: "1"
 allowed_remote_resources:
   - "https://raw.githubusercontent.com/fullsend-ai/fullsend/"
   - "https://raw.githubusercontent.com/fullsend-ai/agents/"
+# This file is the workspace the functional evals run in (FULLSEND_DIR =
+# repo root), and the one local `fullsend run --fullsend-dir .` runs read.
+# Consumers configure agents through their own .fullsend/config.yaml.
+#
+# Every agent runs on Sonnet 5.5 here. The harness defaults
+# (harness/*.yaml model:) stay as shipped; each entry below sets the parent
+# model to `sonnet`, and this block points both `sonnet` and `opus` at
+# claude-sonnet-5-5, so nothing that asks for `opus` (a pi persona, or
+# EVAL_MODEL=opus) gets Opus. On the Claude runtime, the review personas
+# resolve their model inside the sandbox instead; eval/harness/review.yaml
+# covers them. To run the parent on Opus on purpose, pass a full id, e.g.
+# EVAL_MODEL=claude-opus-4-6; on the Claude runtime the review personas
+# stay on Sonnet 5.5 through that overlay. A pinned alias has no
+# fallback: a Vertex project that does not serve claude-sonnet-5-5 fails
+# the run instead of silently using another model.
+models:
+  aliases:
+    sonnet: claude-sonnet-5-5
+    opus: claude-sonnet-5-5
 agents:
   - source: harness/triage.yaml
-  - source: harness/code.yaml
-  - source: harness/fix.yaml
-  - source: harness/review.yaml
+    model: sonnet
+  - source: eval/harness/code.yaml
+    model: sonnet
+  - source: eval/harness/fix.yaml
+    model: sonnet
+  - source: eval/harness/review.yaml
+    model: sonnet
   - source: harness/retro.yaml
+    model: sonnet
   - source: harness/prioritize.yaml
+    model: sonnet

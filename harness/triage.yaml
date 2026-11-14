@@ -9,16 +9,44 @@ model: opus
 # effort is unset (internal/runtime/pi_run.go piDefaultThinking). Revisit
 # when the model: above moves to a generation with a different default.
 effort: high
-image: ghcr.io/fullsend-ai/fullsend-sandbox@sha256:259605fea321353552fdefd3a6a55e8b5c260998dfc5a622ed143e41a429995a
+image: ghcr.io/fullsend-ai/fullsend-sandbox@sha256:1b427b856e584b5de905553e4121feef2969b5f46d4607cef0d323f5ad712c59
 policy: policies/base.yaml
-openshell:
-  profiles:
-    - profiles/fullsend-vertex-ai.yaml
 providers:
-  - providers/vertex-ai.yaml
+  - vertex-ai
+  - openai
 
 role: triage
 slug: fullsend-ai-triage
+
+# CEL dispatch trigger (docs/guides/user/cel-triggers-reference.md in
+# fullsend). Matches the event selection of the triage routing in fullsend's
+# reusable-dispatch.yml: an issue opened or edited by a human; the
+# ready-for-triage label added to an issue, by a human or a bot (post-triage
+# labels the sub-issues it creates); or a /fs-triage comment from a human on
+# an issue, a PR or an MR (a GitHub PR comment arrives as a work_item, a
+# GitLab MR note as a change_proposal). Authorization stays with the platform
+# gate and its per-harness threshold (fullsend-ai/fullsend#8727), so this
+# expression has no role checks. The human guard on opened, edited and
+# /fs-triage keeps the triage bot's own sub-issues, edits and comments from
+# triaging again once the gate recognizes fullsend bots
+# (fullsend-ai/fullsend#8329); post-triage already avoids issue edits for the
+# same reason. The expression is forge-neutral, so a Jira poller that
+# dispatches triage also matches Jira issues opened or edited.
+# harness/triggertest/trigger_test.go evaluates this against the
+# NormalizedEvent fixtures.
+trigger: >
+  (event.entity.kind == "work_item"
+    && event.transition.kind in ["opened", "edited"]
+    && event.actor.kind == "human")
+  || (event.entity.kind == "work_item"
+    && event.transition.kind == "label_changed"
+    && event.transition.label.name == "ready-for-triage"
+    && event.transition.label.action == "added")
+  || (event.entity.kind in ["work_item", "change_proposal"]
+    && event.transition.kind == "comment_added"
+    && has(event.transition.comment.command)
+    && event.transition.comment.command == "/fs-triage"
+    && event.actor.kind == "human")
 
 host_files:
   - src: env/gcp-vertex.env
@@ -26,6 +54,7 @@ host_files:
     expand: true
   - src: ${GOOGLE_APPLICATION_CREDENTIALS}
     dest: /tmp/.gcp-credentials.json
+    optional: true
   - src: ${GCP_OIDC_TOKEN_FILE}
     dest: /sandbox/workspace/.gcp-oidc-token
     optional: true
@@ -35,6 +64,7 @@ post_script: scripts/post-triage.sh
 
 validation_loop:
   script: scripts/validate-output-schema.sh
+  preflight_check: 'python3 -c "import jsonschema"'
   schema: schemas/triage-result.schema.json
   max_iterations: 2
 
@@ -54,10 +84,7 @@ env:
 overlays:
   - when: '(has(event.source) && event.source.system == "github") || (!has(event.source) && runtime.forge == "github")'
     providers:
-      - providers/github-ro.yaml
-    openshell:
-      profiles:
-        - profiles/fullsend-github-ro.yaml
+      - github-ro
     skills:
       - skills/github-forge
       - skills/issue-labels/github
@@ -104,6 +131,14 @@ overlays:
       - skills/jira-forge
       - skills/issue-labels/jira
       - skills/jira-components
+    # triage.env also carries JIRA_API_URL and JIRA_USER_EMAIL: a host file
+    # expands an unset variable to empty, where env.sandbox would fail the
+    # run when it is unset. fullsend run sets JIRA_USER_EMAIL from the
+    # optional FULLSEND_JIRA_EMAIL repository secret
+    # (fullsend-ai/fullsend#9411); there is no JIRA_USER_EMAIL secret. An
+    # empty JIRA_USER_EMAIL selects Bearer auth (service account) in the
+    # Jira skills. The jira-ro provider reads FULLSEND_JIRA_TOKEN; there is
+    # no JIRA_TOKEN secret.
     host_files:
       - src: env/jira/triage.env
         dest: /sandbox/workspace/.env.d/triage.env
@@ -111,8 +146,14 @@ overlays:
     env:
       runner:
         ISSUE_URL: ${FULLSEND_WORK_ITEM_URL}
-        JIRA_USER_EMAIL: ${JIRA_USER_EMAIL}
-        JIRA_TOKEN: ${JIRA_TOKEN}
+        # Host-side Jira credentials from the FULLSEND_JIRA_TOKEN and
+        # optional FULLSEND_JIRA_EMAIL repository secrets (fullsend#9079).
+        # An absent email expands empty here, and the scripts then use
+        # service-account Bearer auth instead of bot-user Basic auth.
+        JIRA_TOKEN: ${FULLSEND_JIRA_TOKEN}
+        JIRA_USER_EMAIL: ${FULLSEND_JIRA_EMAIL}
+        # `fullsend issues` reads tracker.jira from this directory's config.
+        FULLSEND_DIR: ${FULLSEND_DIR}
         JIRA_BASE_URL: ${JIRA_BASE_URL}
         JIRA_DUPLICATE_TRANSITION: "Duplicate"
         JIRA_NOT_PLANNED_TRANSITION: "Won't Do"
@@ -120,6 +161,5 @@ overlays:
         FULLSEND_FORGE: jira
       sandbox:
         ISSUE_URL: "${FULLSEND_WORK_ITEM_URL}"
-        JIRA_USER_EMAIL: "${JIRA_USER_EMAIL}"
         JIRA_BASE_URL: "${JIRA_BASE_URL}"
         FULLSEND_FORGE: jira
