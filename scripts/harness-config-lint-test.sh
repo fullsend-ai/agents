@@ -536,6 +536,7 @@ test_negative_fixtures() {
   local expected_failures=(
     "script-no-schema.yaml:test_validation_loop_schema:^script-no-schema.yaml.*top-level validation_loop has script but no schema"
     "empty-schema.yaml:test_validation_loop_schema:^empty-schema.yaml.*top-level validation_loop.schema is empty or null"
+    "schema-path-explicit-empty.yaml:test_validation_loop_schema:^schema-path-explicit-empty.yaml.*top-level validation_loop.schema is empty or null"
     "forge-script-no-inherited-schema.yaml:test_validation_loop_schema:^forge-script-no-inherited-schema.yaml.*validation_loop has script but no schema.*no top-level schema"
     "overlay-script-no-inherited-schema.yaml:test_validation_loop_schema:^overlay-script-no-inherited-schema.yaml.*validation_loop has script but no schema.*no top-level schema"
     "forge-null-inherited-schema.yaml:test_validation_loop_schema:^forge-null-inherited-schema.yaml.*validation_loop has script but schema is empty/null.*top-level schema is also empty/null"
