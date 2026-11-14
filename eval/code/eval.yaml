@@ -477,7 +477,11 @@ judges:
       missing toolchain is an environment fact rather than agent behaviour
       and still passes as a recorded skip. Missing checks or a clone failure
       fail the case: evidence must exist, the same stance as
-      diff_fetch_failed, since this runs at min_pass_rate 1.0.
+      diff_fetch_failed, since this runs at min_pass_rate 1.0. When the
+      case lists preserved_tests, each must appear in the PR head's
+      passed_tests (top-level tests `go test -v` reported as PASS): deleting
+      whole test functions would otherwise satisfy every deletion count and
+      leave a green `go test` with less coverage.
     check: |
       try:
           import json
@@ -503,6 +507,9 @@ judges:
               return False, "removed_symbols is malformed; see the removed_symbols judge for the schema"
           go_case = any(f.endswith(".go") for sites in symbols.values()
                         if isinstance(sites, dict) for f in sites)
+          preserved = outputs.get("annotations", {}).get("preserved_tests") or []
+          if not isinstance(preserved, list):
+              return False, "preserved_tests must be a list of test names"
           skips = []
           problems = []
           for p in prs:
@@ -525,6 +532,14 @@ judges:
                       f"PR #{num}: go build exit {checks.get('build_exit')}, "
                       f"go test exit {checks.get('test_exit')}"
                   )
+              elif preserved:
+                  passed = checks.get("passed_tests")
+                  if not isinstance(passed, list):
+                      problems.append(f"PR #{num}: no passed-test list captured")
+                  else:
+                      lost = [t for t in preserved if t not in passed]
+                      if lost:
+                          problems.append(f"PR #{num}: preserved tests missing or not passing: {lost}")
           if problems:
               return False, "; ".join(problems + skips)
           if skips:

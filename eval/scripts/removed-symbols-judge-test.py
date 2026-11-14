@@ -107,13 +107,16 @@ DELETE_TEST_FILE = "\n".join([
 ])
 
 
-def outputs_for(diff, symbols=None, pr_state=None):
+def outputs_for(diff, symbols=None, pr_state=None, preserved=None):
     if symbols is None:
         symbols = SYMBOLS
     if pr_state is None:
         pr_state = {"number": 7, "state": "OPEN", "diff_fetch_failed": False}
+    annotations = {"removed_symbols": symbols}
+    if preserved is not None:
+        annotations["preserved_tests"] = preserved
     return {
-        "annotations": {"removed_symbols": symbols},
+        "annotations": annotations,
         "files": {
             "output/fixture-state.json": json.dumps({"pull_requests": [pr_state]}),
             "output/pr-7.diff": diff,
@@ -399,7 +402,52 @@ FIXTURE_CHECKS_CASES = [
     # would be dropped from the pass rate and pass min_pass_rate 1.0.
     ("unexpected judge exception fails closed",
      {"annotations": {"removed_symbols": SYMBOLS}}, False),
+    # Over-deletion: dropping TestDefaults/TestLoad/TestLoadPartial wholesale
+    # meets every deletion count and `go test` still exits 0.
+    ("preserved tests all passing",
+     outputs_for(COMPLETE, preserved=["TestDefaults", "TestLoad"],
+                 pr_state=pr_with_checks({"build_exit": 0, "test_exit": 0,
+                                          "passed_tests": ["TestDefaults", "TestLoad"]})), True),
+    ("deleted test functions fail the case",
+     outputs_for(COMPLETE, preserved=["TestDefaults", "TestLoad", "TestLoadUnknownKey"],
+                 pr_state=pr_with_checks({"build_exit": 0, "test_exit": 0,
+                                          "passed_tests": ["TestLoadUnknownKey"]})), False),
+    ("preserved tests without a captured passed list fail closed",
+     outputs_for(COMPLETE, preserved=["TestDefaults"],
+                 pr_state=pr_with_checks({"build_exit": 0, "test_exit": 0})), False),
+    ("malformed preserved_tests fails closed",
+     outputs_for(COMPLETE, preserved="TestDefaults",
+                 pr_state=pr_with_checks({"build_exit": 0, "test_exit": 0,
+                                          "passed_tests": ["TestDefaults"]})), False),
 ]
+
+
+def check_preserved_drift():
+    """003's preserved_tests must name exactly the fixture's Go tests."""
+    ann_path = os.path.join(REPO_ROOT, "eval", "code", "cases",
+                            "003-dead-config-field", "annotations.yaml")
+    fixture_root = os.path.join(REPO_ROOT, "eval", "code", "repos", "taskrunner")
+    declared, in_block = [], False
+    with open(ann_path, encoding="utf-8") as handle:
+        for line in handle:
+            if line.startswith("preserved_tests:"):
+                in_block = True
+            elif in_block and line.startswith("  - "):
+                declared.append(line[4:].strip())
+            elif in_block:
+                break
+    actual = []
+    for root, _, names in os.walk(fixture_root):
+        for name in names:
+            if name.endswith("_test.go"):
+                with open(os.path.join(root, name), encoding="utf-8") as handle:
+                    actual += re.findall(r"^func (Test\w+)\(", handle.read(), re.M)
+    if not declared or sorted(declared) != sorted(actual):
+        print(f"FAIL: preserved_tests drift — annotations.yaml {sorted(declared)}, "
+              f"fixture {sorted(actual)}")
+        return 1
+    print(f"ok: preserved_tests match the fixture's {len(actual)} tests")
+    return 0
 
 
 def check_annotation_drift():
@@ -475,6 +523,7 @@ def main():
             else:
                 print(f"ok: [{judge_name}] {name}")
     failures += check_annotation_drift()
+    failures += check_preserved_drift()
     if failures:
         print(f"FAIL: {failures} judge behaviours/drift checks wrong")
         return 1

@@ -123,7 +123,10 @@ case_wants_pr_diff() {
 # longer compiles — only building and testing the actual PR head catches
 # that. (An in-place comment-out is caught by the diff judge instead: the
 # added comment line is a survivor.)
-# Pure half: given a checkout, emit {"build_exit":N,"test_exit":N}, or a
+# Pure half: given a checkout, emit {"build_exit":N,"test_exit":N,
+# "passed_tests":[...]} (the top-level tests `go test -v` reported as PASS,
+# which the fixture_checks judge holds against annotations.preserved_tests),
+# or a
 # recorded {"skipped":reason} when there is nothing to build (no go.mod) or
 # nothing to build WITH (no go toolchain) — recorded rather than silent so
 # the fixture_checks judge message shows why nothing was graded.
@@ -198,9 +201,13 @@ run_go_checks() {
     test_log="${log_prefix}-test.log"
   fi
   (cd "$dir" && "${scrub[@]}" "${runner[@]}" build ./...) >"$build_log" 2>&1 || build_exit=$?
-  (cd "$dir" && "${scrub[@]}" "${runner[@]}" test ./...) >"$test_log" 2>&1 || test_exit=$?
+  local test_out="${scratch}/test.out" passed
+  (cd "$dir" && "${scrub[@]}" "${runner[@]}" test -v ./...) >"$test_out" 2>&1 || test_exit=$?
+  cat "$test_out" > "$test_log"
+  # Top-level results start at column 0; subtests are indented.
+  passed=$(sed -n 's/^--- PASS: \([A-Za-z0-9_]*\) .*/\1/p' "$test_out" | jq -R . | jq -cs .)
   rm -rf "$scratch"
-  printf '{"build_exit":%d,"test_exit":%d}' "$build_exit" "$test_exit"
+  printf '{"build_exit":%d,"test_exit":%d,"passed_tests":%s}' "$build_exit" "$test_exit" "$passed"
 }
 
 # Clone half: shallow-clone the PR head branch and run run_go_checks on it.

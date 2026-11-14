@@ -271,7 +271,7 @@ if command -v go >/dev/null 2>&1; then
   printf 'package clean\n\nfunc Two() int { return 2 }\n' > "${clean}/clean.go"
   printf 'package clean\n\nimport "testing"\n\nfunc TestTwo(t *testing.T) {\n\tif Two() != 2 {\n\t\tt.Fatal("nope")\n\t}\n}\n' \
     > "${clean}/clean_test.go"
-  assert_checks '{"build_exit":0,"test_exit":0}' "$clean" "compiling module with passing tests"
+  assert_checks '{"build_exit":0,"test_exit":0,"passed_tests":["TestTwo"]}' "$clean" "compiling module with passing tests"
 
   # The commented-out-site shape fixture_checks exists for: does not compile.
   # Assert build_exit != 0 specifically (not just "not all-zero"), so a
@@ -296,10 +296,23 @@ if command -v go >/dev/null 2>&1; then
   printf 'package failing\n\nimport "testing"\n\nfunc TestTwo(t *testing.T) {\n\tif Two() != 2 {\n\t\tt.Fatal("nope")\n\t}\n}\n' \
     > "${failing}/failing_test.go"
   test_json="$(run_go_checks "$failing")"
-  if [[ "$(jq -r '.build_exit' <<<"$test_json")" == 0 && "$(jq -r '.test_exit' <<<"$test_json")" != 0 ]]; then
-    pass "failing tests report build_exit 0, nonzero test_exit → ${test_json}"
+  if [[ "$(jq -r '.build_exit' <<<"$test_json")" == 0 && "$(jq -r '.test_exit' <<<"$test_json")" != 0 \
+    && "$(jq -c '.passed_tests' <<<"$test_json")" == '[]' ]]; then
+    pass "failing tests report build_exit 0, nonzero test_exit, no passed tests → ${test_json}"
   else
-    fail "failing tests not reported as build 0 / test nonzero: ${test_json}"
+    fail "failing tests not reported as build 0 / test nonzero / none passed: ${test_json}"
+  fi
+
+  # passed_tests on the real 003 fixture must name every test its
+  # preserved_tests lists, or the fixture_checks judge fails a correct fix.
+  fixture="${TMP}/taskrunner"
+  cp -R "${SCRIPT_DIR}/../code/repos/taskrunner" "$fixture"
+  fixture_json="$(run_go_checks "$fixture")"
+  want="$(yq -o=json -I=0 '.preserved_tests | sort' "${SCRIPT_DIR}/../code/cases/003-dead-config-field/annotations.yaml")"
+  if [[ "$(jq -c '.passed_tests | sort' <<<"$fixture_json")" == "$want" ]]; then
+    pass "taskrunner fixture passes exactly 003's preserved_tests"
+  else
+    fail "taskrunner passed_tests ${fixture_json} != preserved_tests ${want}"
   fi
 
   # Containment: the env -i scrub must strip runner credentials so agent-
@@ -334,7 +347,7 @@ GO
   scrub_json="$(EVAL_GH_TOKEN=x GH_TOKEN=x GOOGLE_APPLICATION_CREDENTIALS=/x \
     ACTIONS_ID_TOKEN_REQUEST_TOKEN=x ACTIONS_ID_TOKEN_REQUEST_URL=https://x \
     run_go_checks "$scrub_mod")"
-  if [[ "$scrub_json" == '{"build_exit":0,"test_exit":0}' ]]; then
+  if [[ "$scrub_json" == '{"build_exit":0,"test_exit":0,"passed_tests":["TestNoRunnerSecrets"]}' ]]; then
     pass "env -i scrub hides all five runner secrets from go test → ${scrub_json}"
   else
     fail "credential vars survived the scrub into go test: ${scrub_json}"

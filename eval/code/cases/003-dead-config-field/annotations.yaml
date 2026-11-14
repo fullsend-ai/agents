@@ -27,6 +27,22 @@ removed_symbols:
     config/fields.go: 1       # case "verbose_logging"
     config/config_test.go: 1  # raw literal in TestLoad
 
+# Consumed by eval.yaml's fixture_checks judge: every test in the fixture
+# must still pass on the PR head. Without it, deleting TestDefaults, TestLoad
+# and TestLoadPartial wholesale meets every removed_symbols count and leaves
+# a green `go test`. Must list exactly the fixture's `func Test` names
+# (removed-symbols-judge-test.py checks).
+preserved_tests:
+  - TestDefaults
+  - TestLoad
+  - TestLoadPartial
+  - TestLoadMalformedLine
+  - TestLoadUnknownKey
+  - TestNewRejectsInvalidConfig
+  - TestRunHappyPath
+  - TestRunRetriesUntilSuccess
+  - TestRunTimeoutCancelsAttempt
+
 # Code agent budgets. Report-only: the eval's max_turns/max_cost judges have
 # no threshold. Placeholders, not observations: this case has never run
 # (its PR needs ok-to-test). They match 001-fix-add (60 turns / $0.75, ~3x
