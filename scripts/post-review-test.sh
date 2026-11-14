@@ -235,8 +235,9 @@ filter_and_downgrade() {
       echo "$filtered" | jq 'if (.findings | length) == 0 then del(.findings) else . end | .action = "comment"'
       return
     fi
-    if [ "$action" = "approve" ] && [ "$(echo "$filtered" | jq '.findings | length')" -gt 0 ]; then
-      # Disclosure-only approve (nothing reviewed) → comment, disclosures kept.
+    if [ "$action" = "approve" ] && echo "$filtered" | jq -e 'any(.findings[]?; .category == "excluded-content")' >/dev/null; then
+      # Approve with only disclosures, one of them excluded-content → comment,
+      # disclosures kept. A provenance-warning alone keeps the approve.
       echo "$filtered" | jq '.action = "comment"'
       return
     fi
@@ -351,6 +352,15 @@ DISCLOSURE_ONLY_APPROVE='{"action":"approve","findings":[
 
 run_downgrade_test "disclosure-only-approve-downgrades-keeps-findings" \
   "$DISCLOSURE_ONLY_APPROVE" "low" "comment" "true"
+
+# A provenance-warning is a disclosure about prior context, not about
+# unreviewed content: alone it keeps the approve (and stays visible).
+PROVENANCE_ONLY_APPROVE='{"action":"approve","findings":[
+  {"severity":"info","category":"provenance-warning","file":"N/A","description":"prior review discarded"}
+]}'
+
+run_downgrade_test "provenance-only-approve-stays-approve" \
+  "$PROVENANCE_ONLY_APPROVE" "low" "approve" "true"
 
 # A disclosure plus a real above-threshold finding → no downgrade
 DISCLOSURE_PLUS_BLOCKING='{"action":"request-changes","findings":[
