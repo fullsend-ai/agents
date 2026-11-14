@@ -215,7 +215,7 @@ for_each_forge_and_overlay_location() {
     done
   fi
 
-  return ${rc}
+  return "${rc}"
 }
 
 # Test 1: Every validation_loop with script must have schema
