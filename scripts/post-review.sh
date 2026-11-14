@@ -473,11 +473,12 @@ forge_list_repo_labels() {
 # Bundled into pre-review.sh and post-review.sh via review-ops.lib.sh.
 # All functions use curl against the GitLab REST API.
 #
-# Expected globals (set by forge_parse_pr_url):
+# Expected globals (set by forge_parse_pr_url or caller):
 #   REPO           — plain project path (e.g., "group/project")
 #   REPO_ENCODED   — URL-encoded project path (e.g., "group%2Fproject")
 #   PR_NUMBER      — merge request IID
 #   GITLAB_HOST    — API host (e.g., "gitlab.com")
+#   RESULT_FILE    — (optional) path to reviewed agent-result JSON (for head_sha)
 #
 # Expected env vars:
 #   PR_URL         — HTML URL of the merge request
@@ -711,9 +712,102 @@ forge_get_finding_comment_links() {
   echo '{}'
 }
 
-# GitHub-only: GitLab discussions have no isOutdated equivalent in this
-# issue's scope. No-op so post-review can call this unconditionally.
+# Resolve still-open review threads on GitLab whose only comments are outdated
+# inline comments authored by the review agent. Best-effort: failures log a
+# warning and return success so they do not fail the post-review step.
 forge_resolve_outdated_review_threads() {
+  if [[ -z "${REPO_ENCODED:-}" || -z "${PR_NUMBER:-}" ]]; then
+    return 0
+  fi
+
+  local reviewed_sha=""
+  if [[ -n "${RESULT_FILE:-}" && -f "${RESULT_FILE}" ]]; then
+    reviewed_sha=$(jq -r '(.head_sha // empty) | strings' "${RESULT_FILE}" 2>/dev/null) || reviewed_sha=""
+  fi
+  if [[ -z "${reviewed_sha}" ]]; then
+    echo "::warning::Could not determine reviewed head SHA — skipping outdated-thread resolution"
+    return 0
+  fi
+
+  local mr_info live_head_sha
+  if ! mr_info=$(_gitlab_api GET "/projects/${REPO_ENCODED}/merge_requests/${PR_NUMBER}" 2>/dev/null); then
+    echo "::warning::Failed to fetch MR details for #${PR_NUMBER} — skipping outdated-thread resolution"
+    return 0
+  fi
+  live_head_sha=$(echo "${mr_info}" | jq -r '[.diff_refs.head_sha?, .sha? | strings | select(length > 0)] | first // empty' 2>/dev/null) || live_head_sha=""
+  if [[ -z "${live_head_sha}" ]]; then
+    echo "::warning::Could not determine MR head SHA — skipping outdated-thread resolution"
+    return 0
+  fi
+  if [[ "${live_head_sha}" != "${reviewed_sha}" ]]; then
+    echo "MR head moved ($(_gha_sanitize "${reviewed_sha}") -> $(_gha_sanitize "${live_head_sha}")) — skipping outdated-thread resolution"
+    return 0
+  fi
+
+  local current_sha="${reviewed_sha}"
+
+  local current_user bot_user_id
+  if ! current_user=$(_gitlab_api GET "/user" 2>/dev/null); then
+    echo "::warning::Could not determine review identity — skipping outdated-thread resolution"
+    return 0
+  fi
+  bot_user_id=$(echo "${current_user}" | jq -r '(.id? | select(. != null and . != "")) | tostring' 2>/dev/null) || bot_user_id=""
+  if [[ -z "${bot_user_id}" ]]; then
+    echo "::warning::Could not determine review identity — skipping outdated-thread resolution"
+    return 0
+  fi
+
+  local page=1 all_discussions="[]"
+  while [[ "${page}" -le 10 ]]; do
+    local response
+    response=$(_gitlab_api GET "/projects/${REPO_ENCODED}/merge_requests/${PR_NUMBER}/discussions?per_page=100&page=${page}" 2>/dev/null) || {
+      echo "::warning::Failed to fetch MR discussions for #${PR_NUMBER} while resolving outdated threads" >&2
+      break
+    }
+    if [[ -z "${response}" || "${response}" == "[]" || "${response}" != "["* ]]; then
+      break
+    fi
+    all_discussions=$(jq -c -s '.[0] + .[1]' <<< "${all_discussions} ${response}" 2>/dev/null) || break
+    local count
+    count=$(jq 'length' <<< "${response}" 2>/dev/null) || count=0
+    [[ "${count}" -lt 100 ]] && break
+    page=$((page + 1))
+  done
+
+  local discussion_ids
+  discussion_ids=$(echo "${all_discussions}" | jq -r --arg current_sha "${current_sha}" --arg bot_id "${bot_user_id}" '
+    .[]
+    | select(.id != null)
+    | .notes |= (map(select(.system != true)) // [])
+    | select(.notes | type == "array" and length > 0)
+    | select(.notes | any(.resolvable == true and .resolved == false))
+    | select(.notes | all((.author.id | tostring) == $bot_id))
+    | select((.notes[0].position.head_sha // empty) != "" and .notes[0].position.head_sha != $current_sha)
+    | .id
+  ' 2>/dev/null) || discussion_ids=""
+
+  if [[ -z "${discussion_ids}" ]]; then
+    return 0
+  fi
+
+  local resolved=0 failed=0
+  while IFS= read -r disc_id; do
+    [[ -z "${disc_id}" ]] && continue
+    if _gitlab_api PUT "/projects/${REPO_ENCODED}/merge_requests/${PR_NUMBER}/discussions/${disc_id}?resolved=true" >/dev/null 2>&1; then
+      resolved=$((resolved + 1))
+    else
+      failed=$((failed + 1))
+      echo "::warning::Failed to resolve review thread $(_gha_sanitize "${disc_id}")"
+    fi
+  done <<< "${discussion_ids}"
+
+  if [[ "${resolved}" -gt 0 ]]; then
+    echo "Resolved ${resolved} outdated review-agent thread(s)"
+  fi
+  if [[ "${failed}" -gt 0 ]]; then
+    echo "::warning::Failed to resolve ${failed} outdated review thread(s)"
+  fi
+
   return 0
 }
 
@@ -921,12 +1015,6 @@ The \`/fs-review\` command only reviews open PRs/MRs.
 
   exit 0
 fi
-
-# Resolve still-open GitHub review threads whose only comments are
-# outdated inline comments authored by the review agent. A later push
-# marks those threads isOutdated; leaving them unresolved keeps them
-# in the PR's unresolved-review state. Best-effort (GitLab no-op).
-forge_resolve_outdated_review_threads
 
 # Find the agent result — prefer the validated iteration when set.
 # Trust boundary: FULLSEND_VALIDATED_ITERATION_DIR is set by the fullsend CLI
@@ -2683,6 +2771,12 @@ if [ "${ACTION}" = "failure" ]; then
   echo "::error::Review result reported action=failure (reason: ${FAILURE_REASON}) — failure notice was published, but propagating a failed task outcome (PR #${PR_NUMBER} in ${REPO})" >&2
   exit 1
 fi
+
+# Resolve still-open GitHub/GitLab review threads whose only comments are
+# outdated inline comments authored by the review agent. Run only after a
+# real review has been posted so missing/failed agent runs or stale-head
+# exits do not close existing unresolved threads. Best-effort.
+forge_resolve_outdated_review_threads
 
 if [ "${OUTCOME_LABEL}" = "ready-for-merge" ]; then
   echo "Approve disposition — applying ready-for-merge label"
