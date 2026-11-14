@@ -107,15 +107,24 @@ check_validation_loop_at_path() {
       echo "${harness_name}: yq failed to extract schema at ${location}"
       return 1
     }
-    # Allow inheritance only when schema is empty/null AND there is a top-level schema
+    # Allow inheritance only when schema is empty/null AND there is a usable top-level schema
     if [[ -z "${per_location_schema}" || "${per_location_schema}" == "null" ]]; then
-      # Check if top-level schema exists
+      # Check if top-level schema exists AND is usable (non-empty, non-null)
       local top_level_has_schema
       top_level_has_schema="$(yq '.validation_loop | has("schema")' "${harness}")" || {
         echo "${harness_name}: yq failed to check top-level schema"
         return 1
       }
       if [[ "${top_level_has_schema}" == "true" ]]; then
+        local top_level_schema
+        top_level_schema="$(yq '.validation_loop.schema' "${harness}")" || {
+          echo "${harness_name}: yq failed to extract top-level schema value"
+          return 1
+        }
+        if [[ -z "${top_level_schema}" || "${top_level_schema}" == "null" ]]; then
+          echo "${harness_name}: ${location} validation_loop has script but schema is empty/null (and top-level schema is also empty/null)"
+          return 1
+        fi
         return 0
       else
         echo "${harness_name}: ${location} validation_loop has script but no schema (and no top-level schema to inherit)"
@@ -173,6 +182,7 @@ for_each_forge_and_overlay_location() {
   local resolve_root="${3:-}"
   local harness_name
   harness_name="$(basename "${harness}")"
+  local rc=0
 
   # Iterate forge-specific locations
   local has_forge
@@ -188,7 +198,7 @@ for_each_forge_and_overlay_location() {
     }
     while IFS= read -r platform; do
       [[ -z "${platform}" ]] && continue
-      "${callback}" "${harness}" ".forge.${platform}" "forge.${platform}" "${resolve_root}"
+      "${callback}" "${harness}" ".forge.${platform}" "forge.${platform}" "${resolve_root}" || rc=1
     done <<< "${platforms}"
   fi
 
@@ -201,9 +211,11 @@ for_each_forge_and_overlay_location() {
   if [[ ${overlay_count} -gt 0 ]]; then
     local i
     for ((i=0; i<overlay_count; i++)); do
-      "${callback}" "${harness}" ".overlays[${i}]" "overlays[${i}]" "${resolve_root}"
+      "${callback}" "${harness}" ".overlays[${i}]" "overlays[${i}]" "${resolve_root}" || rc=1
     done
   fi
+
+  return ${rc}
 }
 
 # Test 1: Every validation_loop with script must have schema
@@ -494,6 +506,8 @@ test_negative_fixtures() {
     "empty-schema.yaml:test_validation_loop_schema:^empty-schema.yaml.*top-level validation_loop.schema is empty or null"
     "forge-script-no-inherited-schema.yaml:test_validation_loop_schema:^forge-script-no-inherited-schema.yaml.*validation_loop has script but no schema.*no top-level schema"
     "overlay-script-no-inherited-schema.yaml:test_validation_loop_schema:^overlay-script-no-inherited-schema.yaml.*validation_loop has script but no schema.*no top-level schema"
+    "forge-null-inherited-schema.yaml:test_validation_loop_schema:^forge-null-inherited-schema.yaml.*validation_loop has script but schema is empty/null.*top-level schema is also empty/null"
+    "overlay-empty-inherited-schema.yaml:test_validation_loop_schema:^overlay-empty-inherited-schema.yaml.*validation_loop has script but schema is empty/null.*top-level schema is also empty/null"
     "missing-schema-file.yaml:test_schema_files_exist_and_valid:^missing-schema-file.yaml.*top-level schema file not found"
     "forge-missing-schema-file.yaml:test_schema_files_exist_and_valid:^forge-missing-schema-file.yaml.*forge.github.*schema file not found"
     "overlay-bad-json-schema.yaml:test_schema_files_exist_and_valid:^overlay-bad-json-schema.yaml.*overlays\[0\].*schema file is not valid JSON"
@@ -564,13 +578,18 @@ test_positive_fixtures() {
 
     local output
     local exit_code=0
-    output="$(HARNESS_DIR="${fixtures_dir}" REPO_ROOT="${SCRIPT_DIR}"/test-fixtures test_validation_loop_schema test_schema_files_exist_and_valid 2>&1)" || exit_code=$?
-
-    if [[ ${exit_code} -eq 0 ]]; then
-      continue
-    else
-      echo "Fixture ${fixture_name}: exit_code=${exit_code}, expected 0 (pass)"
+    output="$(HARNESS_DIR="${fixtures_dir}" REPO_ROOT="${SCRIPT_DIR}"/test-fixtures test_validation_loop_schema 2>&1)" || exit_code=$?
+    if [[ ${exit_code} -ne 0 ]]; then
+      echo "Fixture ${fixture_name}: test_validation_loop_schema failed with exit_code=${exit_code}"
       found_error=1
+      continue
+    fi
+
+    output="$(HARNESS_DIR="${fixtures_dir}" REPO_ROOT="${SCRIPT_DIR}"/test-fixtures test_schema_files_exist_and_valid 2>&1)" || exit_code=$?
+    if [[ ${exit_code} -ne 0 ]]; then
+      echo "Fixture ${fixture_name}: test_schema_files_exist_and_valid failed with exit_code=${exit_code}"
+      found_error=1
+      continue
     fi
   done
 
