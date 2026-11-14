@@ -157,8 +157,23 @@ check_validation_loop_at_path() {
         return 1
       fi
     fi
-    # Also allow inheritance when script matches top-level (both script and schema inherited)
+    # For same-script inheritance, also validate that per-location schema is not explicitly empty
     if [[ -n "${top_level_script}" && "${per_location_script}" == "${top_level_script}" ]]; then
+      # Check if per-location has explicit schema (not just inherited)
+      # If per_location_schema is empty string, it's an explicit override to empty
+      if [[ -z "${per_location_schema}" ]]; then
+        echo "${harness_name}: ${location} validation_loop.schema is empty"
+        return 1
+      fi
+      # If schema is YAML null (but not string "null"), still allow inheritance
+      if [[ "${per_location_type}" == *"null"* && "${per_location_type}" != *"str"* ]]; then
+        return 0
+      fi
+      # Otherwise require explicit non-empty schema
+      if [[ -z "${per_location_schema}" ]]; then
+        echo "${harness_name}: ${location} validation_loop has script but schema is empty"
+        return 1
+      fi
       return 0
     fi
   fi
@@ -628,6 +643,7 @@ test_negative_fixtures() {
     "multi-document.yaml:test_validation_loop_schema:^multi-document.yaml.*harness must contain exactly one YAML document"
     "forge-literal-null-schema.yaml:test_schema_files_exist_and_valid:^forge-literal-null-schema.yaml.*forge.github.*schema file not found: null"
     "absolute-schema-path.yaml:test_schema_files_exist_and_valid:^absolute-schema-path.yaml.*top-level schema file not found: /nonexistent"
+    "forge-same-script-empty-schema.yaml:test_validation_loop_schema:^forge-same-script-empty-schema.yaml.*forge.github.*validation_loop.schema is empty"
   )
 
   for fixture_spec in "${expected_failures[@]}"; do
@@ -669,7 +685,8 @@ test_positive_fixtures() {
   local fixtures_dir="${SCRIPT_DIR}/test-fixtures/harness-config-good"
 
   if [[ ! -d "${fixtures_dir}" ]]; then
-    return 0
+    echo "positive fixtures directory not found: ${fixtures_dir}"
+    return 1
   fi
 
   local expected_passes=(
