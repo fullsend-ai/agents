@@ -243,7 +243,7 @@ and its residual risk are in `filter-review-diff.sh`'s header.
 
 `/sandbox/workspace/pr-excluded.txt` (never on stdout) is the
 orchestrator's context only: its paths stay out of every MANIFEST and
-file list a sub-agent gets (3d), so stripped content never re-enters as
+file list a sub-agent gets (3d, 6d), so stripped content never re-enters as
 a whole file; step 7 discloses them.
 
 ### 2a. Prior review context (re-reviews)
@@ -1030,10 +1030,10 @@ wait: under 240, close it; with no `completed` message, apply item 4.
    `/sandbox/workspace/pr-full-diff.txt` and retain security findings anywhere.
 
    ### PR head files
-   <same section as step 4, with the full MANIFEST>
+   <same section as step 4, with the full MANIFEST minus step 2c exclusions>
 
    ### Changed files
-   <full PR file list>
+   <full PR file list minus step 2c exclusions>
 
    ### Dependency scope
    <dependency_scope or none>
