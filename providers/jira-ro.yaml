@@ -1,7 +1,7 @@
 ---
-# Deprecated: the built-in harnesses use fullsend's builtin `jira` provider
-# instead. Custom harnesses can still list this file until it is removed in
-# the next release; list `jira` in their providers instead.
+# Deprecated: the built-in harnesses now use fullsend's builtin `jira`
+# provider. This file still works in this release and is removed in the
+# next one. In a custom harness, list `jira` under `providers` instead.
 #
 # The sandbox gets this provider's placeholder, never the real token. The
 # proxy swaps the placeholder in for either Jira auth mode the skills

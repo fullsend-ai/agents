@@ -29,8 +29,10 @@ full list of allowed hosts and binaries. Jira access comes from the
 Jira overlays attach; see fullsend's
 [Jira integration guide](https://github.com/fullsend-ai/fullsend/blob/main/docs/guides/user/jira-integration.md).
 The older `providers/jira-ro.yaml` and `profiles/fullsend-jira-ro.yaml`
-are deprecated and will be removed in the next release: if your custom
-harness lists them, list `jira` under `providers` instead.
+are deprecated. They still work in this release and are removed in the
+next one. If your custom harness lists either file, replace it with `jira`
+under `providers`: listing both fails when fullsend mints the Jira token
+from client credentials.
 
 ## Before you start
 
