@@ -1189,6 +1189,82 @@ else
   echo "PASS: gitlab-user-resolver-closes-by-id"
 fi
 
+# --- Clone deepening uses the configured GitHub host ---
+
+# run_deepen_test runs pre-review.sh against a shallow-looking target dir with
+# a mock git that logs its arguments.
+# Arguments:
+#   $1 — test name
+#   $2 — GITHUB_SERVER_URL value ("unset" leaves it unset)
+#   $3 — expected exit code
+#   $4 — expected fetch URL ("" expects no fetch at all)
+run_deepen_test() {
+  local test_name="$1" server="$2" expect_exit="$3" expected_url="$4"
+  local mock_bin git_log="${TMPDIR}/git-calls.log" target="${TMPDIR}/deepen-target"
+  local pr_origin="${server}"
+  [[ "${server}" == "unset" ]] && pr_origin="https://github.com"
+  mock_bin="$(build_mock "OPEN" "some-human")"
+  mkdir -p "${target}"
+  : > "${git_log}"
+  cat > "${mock_bin}/git" <<MOCKEOF
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "${git_log}"
+[[ " \$* " == *" rev-parse --is-shallow-repository "* ]] && echo true
+exit 0
+MOCKEOF
+  chmod +x "${mock_bin}/git"
+
+  local env_cmd=(env -u GITHUB_SERVER_URL)
+  [[ "${server}" == "unset" ]] || env_cmd+=(GITHUB_SERVER_URL="${server}")
+  env_cmd+=(
+    PATH="${mock_bin}:${PATH}"
+    REPO_FULL_NAME="test-org/test-repo"
+    PR_URL="${pr_origin}/test-org/test-repo/pull/42"
+    FULLSEND_FORGE="github"
+    REVIEW_TOKEN="fake-token"
+    GH_TOKEN="fake-token"
+    REVIEW_GIT_FETCH_DEPTH="0"
+    REPO_DIR="${target}"
+  )
+
+  local exit_code=0
+  "${env_cmd[@]}" bash "${SCRIPT_DIR}/pre-review.sh" \
+    > "${TMPDIR}/stdout-deepen.log" 2>&1 || exit_code=$?
+
+  local ok=1
+  [[ ${exit_code} -eq ${expect_exit} ]] || ok=0
+  if [[ -z "${expected_url}" ]]; then
+    grep -q "fetch" "${git_log}" && ok=0
+  else
+    local expected_header
+    expected_header="http.${expected_url%/test-org/test-repo.git}/.extraheader=Authorization: basic $(printf 'x-access-token:%s' "fake-token" | base64 -w0)"
+    grep -qF -- "fetch --unshallow ${expected_url}" "${git_log}" || ok=0
+    grep -qF -- "${expected_header}" "${git_log}" || ok=0
+    if [[ "${expected_url}" != https://github.com/* ]]; then
+      grep -qF "github.com" "${git_log}" && ok=0
+    fi
+  fi
+
+  if [[ ${ok} -eq 1 ]]; then
+    echo "PASS: ${test_name}"
+  else
+    echo "FAIL: ${test_name} — exit ${exit_code} (expected ${expect_exit})"
+    cat "${git_log}"
+    cat "${TMPDIR}/stdout-deepen.log"
+    FAILURES=$((FAILURES + 1))
+  fi
+}
+
+run_deepen_test "deepen-default-host" "unset" 0 \
+  "https://github.com/test-org/test-repo.git"
+run_deepen_test "deepen-github-com-host" "https://github.com" 0 \
+  "https://github.com/test-org/test-repo.git"
+run_deepen_test "deepen-ghe-host" "https://ghe.example.internal" 0 \
+  "https://ghe.example.internal/test-org/test-repo.git"
+run_deepen_test "deepen-invalid-host-non-https" "http://ghe.example.internal" 1 ""
+run_deepen_test "deepen-invalid-host-userinfo" "https://user@ghe.example.internal" 1 ""
+run_deepen_test "deepen-invalid-host-path" "https://ghe.example.internal/path" 1 ""
+
 # --- Summary ---
 
 echo ""
