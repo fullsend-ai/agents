@@ -2215,6 +2215,7 @@ export ISSUE_URL="https://test.atlassian.net/browse/TESTPROJ-42"
 export JIRA_USER_EMAIL="triage@example.com"
 export JIRA_TOKEN="fake-jira-token"
 export FULLSEND_DIR="${TMPDIR}/dot-fullsend"
+export JIRA_COMPLETED_TRANSITION="Closed"
 export JIRA_DUPLICATE_TRANSITION="Duplicate"
 export JIRA_NOT_PLANNED_TRANSITION="Not Planned"
 export JIRA_SPLIT_TRANSITION="Done"
@@ -2247,8 +2248,33 @@ for arg in "$@"; do
 done
 
 # List transitions available on the issue.
-if [[ "${URL}" =~ /transitions$ ]] && [[ "${METHOD}" == "GET" ]]; then
-  echo '{"transitions":[{"id":"31","name":"Duplicate"},{"id":"41","name":"Not Planned"},{"id":"51","name":"Done"}]}'
+if [[ "${URL}" =~ /transitions(\?|$) ]] && [[ "${METHOD}" == "GET" ]]; then
+  if [[ -n "${MOCK_JIRA_TRANSITIONS:-}" ]]; then
+    echo "${MOCK_JIRA_TRANSITIONS}"
+  else
+    echo '{"transitions":[{"id":"31","name":"Duplicate","to":{"statusCategory":{"key":"done"}}},{"id":"41","name":"Not Planned","to":{"statusCategory":{"key":"done"}}},{"id":"51","name":"Done","to":{"statusCategory":{"key":"done"}}},{"id":"61","name":"Closed","to":{"statusCategory":{"key":"done"}}}]}'
+  fi
+  exit 0
+fi
+
+# Return status and resolution for the issue (used by idempotency check).
+if [[ "${URL}" =~ /issue/[A-Z]+-[0-9]+\?fields=status ]] && [[ "${METHOD}" == "GET" ]]; then
+  if [[ -n "${MOCK_JIRA_STATUS_OBSOLETE:-}" ]]; then
+    echo '{"fields":{"status":{"name":"Obsolete","statusCategory":{"key":"done","name":"Done"}},"resolution":null}}'
+  elif [[ -n "${MOCK_JIRA_STATUS_REJECTED:-}" ]]; then
+    echo '{"fields":{"status":{"name":"Won'\''t Do","statusCategory":{"key":"done","name":"Done"}},"resolution":{"name":"Won'\''t Do"}}}'
+  elif [[ -n "${MOCK_JIRA_STATUS_DONE:-}" ]]; then
+    status_name="${MOCK_JIRA_STATUS_NAME:-Done}"
+    if [[ -n "${MOCK_JIRA_ISSUE_RESOLUTION:-}" ]]; then
+      jq -nc --arg s "${status_name}" --arg r "${MOCK_JIRA_ISSUE_RESOLUTION}" \
+        '{fields:{status:{name:$s,statusCategory:{key:"done",name:"Done"}},resolution:{name:$r}}}'
+    else
+      jq -nc --arg s "${status_name}" \
+        '{fields:{status:{name:$s,statusCategory:{key:"done",name:"Done"}},resolution:null}}'
+    fi
+  else
+    echo '{"fields":{"status":{"name":"In Progress","statusCategory":{"key":"indeterminate","name":"In Progress"}},"resolution":null}}'
+  fi
   exit 0
 fi
 
@@ -2397,16 +2423,173 @@ run_jira_test "jira-not-planned-transitions" \
   '{"action":"not-planned","reasoning":"out of scope","comment":"This request is out of scope."}' \
   '{"transition":{"id":"41"}}'
 
-# Jira completed action reuses JIRA_SPLIT_TRANSITION (close reason "completed").
+# Jira completed action transitions the issue via JIRA_COMPLETED_TRANSITION.
 run_jira_test "jira-completed-transitions" \
   '{"action":"completed","reasoning":"all child issues are closed","comment":"All tracked work is done."}' \
+  '{"transition":{"id":"61"}}'
+
+# Jira completed action falls back to available Done transition if configured name is not present.
+MOCK_JIRA_TRANSITIONS='{"transitions":[{"id":"31","name":"Duplicate","to":{"statusCategory":{"key":"done"}}},{"id":"41","name":"Won'\''t Do","to":{"statusCategory":{"key":"done"}}},{"id":"51","name":"Done","to":{"statusCategory":{"key":"done"}}}]}' \
+JIRA_COMPLETED_TRANSITION="NonExistent" \
+run_jira_test "jira-completed-fallback-done" \
+  '{"action":"completed","reasoning":"all child issues are closed","comment":"All tracked work is done."}' \
   '{"transition":{"id":"51"}}'
+if grep -qF "::warning::Transition 'NonExistent' (from JIRA_COMPLETED_TRANSITION) is not available on issue" "${TMPDIR}/stdout.log"; then
+  echo "PASS: jira-completed-fallback-done-warning"
+else
+  echo "FAIL: jira-completed-fallback-done-warning — expected fallback warning in stdout"
+  FAILURES=$((FAILURES + 1))
+fi
+
+# Jira completed fallback skips rejection target statuses (e.g. "Close Issue" -> "Won't Fix" / "Deferred") and matches positive Done target.
+MOCK_JIRA_TRANSITIONS='{"transitions":[{"id":"42","name":"Close Issue","to":{"name":"Won'\''t Fix","statusCategory":{"key":"done"}}},{"id":"43","name":"Close Issue","to":{"name":"Deferred","statusCategory":{"key":"done"}}},{"id":"51","name":"Done","to":{"name":"Done","statusCategory":{"key":"done"}}}]}' \
+JIRA_COMPLETED_TRANSITION="NonExistent" \
+run_jira_test "jira-completed-fallback-skips-close-issue-wont-fix" \
+  '{"action":"completed","reasoning":"all child issues are closed","comment":"All tracked work is done."}' \
+  '{"transition":{"id":"51"}}'
+
+# Jira completed action falls back via target status name (.to.name) / positive word match (e.g. 'Resolve Issue' -> 'Resolved').
+MOCK_JIRA_TRANSITIONS='{"transitions":[{"id":"31","name":"Duplicate","to":{"name":"Duplicate","statusCategory":{"key":"done"}}},{"id":"71","name":"Resolve Issue","to":{"name":"Resolved","statusCategory":{"key":"done"}}}]}' \
+JIRA_COMPLETED_TRANSITION="NonExistent" \
+run_jira_test "jira-completed-fallback-resolve-issue" \
+  '{"action":"completed","reasoning":"all child issues are closed","comment":"All tracked work is done."}' \
+  '{"transition":{"id":"71"}}'
+
+# Jira completed fallback prefers screenless transitions (hasScreen: false) over hasScreen: true within the same tier.
+MOCK_JIRA_TRANSITIONS='{"transitions":[{"id":"70","name":"Resolve Issue","hasScreen":true,"fields":{"resolution":{"required":true,"allowedValues":[{"name":"Done"}]}},"to":{"name":"Resolved","statusCategory":{"key":"done"}}},{"id":"51","name":"Done","hasScreen":false,"to":{"name":"Done","statusCategory":{"key":"done"}}}]}' \
+JIRA_COMPLETED_TRANSITION="NonExistent" \
+run_jira_test "jira-completed-fallback-prefers-screenless" \
+  '{"action":"completed","reasoning":"all child issues are closed","comment":"All tracked work is done."}' \
+  '{"transition":{"id":"51"}}'
+
+# Jira completed fallback populates fields.resolution.name when the only eligible transition has hasScreen: true with required resolution.
+MOCK_JIRA_TRANSITIONS='{"transitions":[{"id":"31","name":"Duplicate","to":{"name":"Duplicate","statusCategory":{"key":"done"}}},{"id":"71","name":"Resolve Issue","hasScreen":true,"fields":{"resolution":{"required":true,"allowedValues":[{"name":"Won'\''t Fix"},{"name":"Done"}]}},"to":{"name":"Resolved","statusCategory":{"key":"done"}}}]}' \
+JIRA_COMPLETED_TRANSITION="NonExistent" \
+run_jira_test "jira-completed-fallback-screen-sets-resolution" \
+  '{"action":"completed","reasoning":"all child issues are closed","comment":"All tracked work is done."}' \
+  '{"transition":{"id":"71"},"fields":{"resolution":{"name":"Done"}}}'
+
+# Jira completed fallback refuses hasScreen: true transitions requiring non-resolution custom fields or having empty fields metadata.
+MOCK_JIRA_TRANSITIONS='{"transitions":[{"id":"72","name":"Resolve With Note","hasScreen":true,"fields":{"customfield_10010":{"required":true},"resolution":{"required":true}},"to":{"name":"Resolved","statusCategory":{"key":"done"}}},{"id":"73","name":"Empty Screen","hasScreen":true,"fields":{},"to":{"name":"Done","statusCategory":{"key":"done"}}}]}' \
+JIRA_COMPLETED_TRANSITION="NonExistent" \
+run_jira_test "jira-completed-fallback-screen-required-customfield-skipped" \
+  '{"action":"completed","reasoning":"all child issues are closed","comment":"All tracked work is done."}' \
+  "" true
+if ! grep -qF "is not available on issue" "${TMPDIR}/stdout.log"; then
+  echo "FAIL: jira-completed-fallback-screen-required-customfield-skipped — expected error message in stderr"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: jira-completed-fallback-screen-required-customfield-skipped-error"
+fi
+
+# Jira duplicate action does NOT skip when issue is in a different rejection status (Won't Do).
+MOCK_JIRA_STATUS_REJECTED=1 \
+run_jira_test "jira-duplicate-on-wont-do-transitions" \
+  '{"action":"duplicate","reasoning":"same as TESTPROJ-10","duplicate_of":"TESTPROJ-10","comment":"Duplicate of TESTPROJ-10."}' \
+  '{"transition":{"id":"31"}}'
+
+# Jira not-planned action skips idempotently when issue is already in its matching rejection status (Won't Do).
+JIRA_NOT_PLANNED_TRANSITION="Won't Do" \
+MOCK_JIRA_STATUS_REJECTED=1 \
+run_jira_test_stdout "jira-not-planned-idempotent-wont-do" \
+  '{"action":"not-planned","reasoning":"out of scope","comment":"Out of scope."}' \
+  "is already in status 'Won't Do' (done); skipping transition for reason 'not planned'"
+if grep -qE "POST .*/transitions" "${JIRA_CURL_LOG}"; then
+  echo "FAIL: jira-not-planned-idempotent-wont-do — expected no transition POST"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: jira-not-planned-idempotent-wont-do-no-post"
+fi
+
+# Jira completed action refuses rejection-only Done transitions during fallback.
+MOCK_JIRA_TRANSITIONS='{"transitions":[{"id":"31","name":"Duplicate","to":{"statusCategory":{"key":"done"}}},{"id":"41","name":"Not Planned","to":{"statusCategory":{"key":"done"}}}]}' \
+JIRA_COMPLETED_TRANSITION="NonExistent" \
+run_jira_test "jira-completed-fallback-refuses-rejection-only" \
+  '{"action":"completed","reasoning":"all child issues are closed","comment":"All tracked work is done."}' \
+  "" true
+
+# Jira completed action falls back to JIRA_SPLIT_TRANSITION when JIRA_COMPLETED_TRANSITION is unset.
+_saved_jira_completed="${JIRA_COMPLETED_TRANSITION:-}"
+unset JIRA_COMPLETED_TRANSITION
+run_jira_test_stdout "jira-completed-fallback-to-split-var" \
+  '{"action":"completed","reasoning":"all child issues are closed","comment":"All tracked work is done."}' \
+  "falling back to JIRA_SPLIT_TRANSITION"
+if [[ -n "${_saved_jira_completed}" ]]; then
+  export JIRA_COMPLETED_TRANSITION="${_saved_jira_completed}"
+fi
+unset _saved_jira_completed
+
+# Jira completed action skips transition if issue is already in positive Done category (idempotent).
+MOCK_JIRA_STATUS_DONE=1 \
+run_jira_test_stdout "jira-completed-idempotent-done" \
+  '{"action":"completed","reasoning":"all child issues are closed","comment":"All tracked work is done."}' \
+  "is already in status 'Done' (done); skipping transition"
+
+# Jira completed action does not skip if issue is currently in Done status "Closed" with a rejection resolution (e.g. "Won't Fix").
+MOCK_JIRA_STATUS_DONE=1 \
+MOCK_JIRA_STATUS_NAME="Closed" \
+MOCK_JIRA_ISSUE_RESOLUTION="Won't Fix" \
+run_jira_test "jira-completed-preflight-closed-wont-fix-not-satisfied" \
+  '{"action":"completed","reasoning":"re-completing closed wont-fix issue","comment":"All tracked work is done."}' \
+  '{"transition":{"id":"61"}}'
+
+# Jira completed action does not skip if issue is currently in a rejection status (e.g. Won't Do).
+MOCK_JIRA_STATUS_REJECTED=1 \
+run_jira_test "jira-completed-rejection-status-transitions" \
+  '{"action":"completed","reasoning":"re-completing previously rejected issue","comment":"All tracked work is done."}' \
+  '{"transition":{"id":"61"}}'
 
 # Jira split action closes the original issue via JIRA_SPLIT_TRANSITION
 # after creating both sub-issues (defaulting to the source project).
 run_jira_test "jira-split-closes-via-transition" \
   '{"action":"split","reasoning":"bundles two independent features","sub_issues":[{"title":"Feature A","body":"Do A"},{"title":"Feature B","body":"Do B"}],"comment":"Splitting into two sub-issues."}' \
   '{"transition":{"id":"51"}}'
+
+# Jira split action skips transition if issue is already in configured JIRA_SPLIT_TRANSITION ('Obsolete').
+JIRA_SPLIT_TRANSITION="Obsolete" \
+MOCK_JIRA_STATUS_OBSOLETE=1 \
+run_jira_test_stdout "jira-split-idempotent-obsolete" \
+  '{"action":"split","reasoning":"already split previously","sub_issues":[{"title":"Feature A","body":"Do A"},{"title":"Feature B","body":"Do B"}],"comment":"Splitting into two sub-issues."}' \
+  "is already in status 'Obsolete' (done); skipping transition for reason 'split'"
+if grep -qE "POST .*/transitions" "${JIRA_CURL_LOG}"; then
+  echo "FAIL: jira-split-idempotent-obsolete — expected no transition POST when already Obsolete"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: jira-split-idempotent-obsolete-no-transition-post"
+fi
+
+# Jira split action falls back to Done when configured Obsolete transition is unavailable.
+JIRA_SPLIT_TRANSITION="Obsolete" \
+MOCK_JIRA_TRANSITIONS='{"transitions":[{"id":"31","name":"Duplicate","to":{"statusCategory":{"key":"done"}}},{"id":"41","name":"Won'\''t Do","to":{"statusCategory":{"key":"done"}}},{"id":"51","name":"Done","to":{"statusCategory":{"key":"done"}}}]}' \
+run_jira_test "jira-split-fallback-done" \
+  '{"action":"split","reasoning":"bundles two independent features","sub_issues":[{"title":"Feature A","body":"Do A"},{"title":"Feature B","body":"Do B"}],"comment":"Splitting into two sub-issues."}' \
+  '{"transition":{"id":"51"}}'
+
+# Documented setup where all four transition variables share "Done" skips idempotently when already Done
+# and resolves Done when transitioning even if duplicate/not-planned equal the same name.
+_saved_comp="${JIRA_COMPLETED_TRANSITION:-}"
+_saved_dup="${JIRA_DUPLICATE_TRANSITION:-}"
+_saved_np="${JIRA_NOT_PLANNED_TRANSITION:-}"
+_saved_split="${JIRA_SPLIT_TRANSITION:-}"
+export JIRA_COMPLETED_TRANSITION="Done"
+export JIRA_DUPLICATE_TRANSITION="Done"
+export JIRA_NOT_PLANNED_TRANSITION="Done"
+export JIRA_SPLIT_TRANSITION="Done"
+MOCK_JIRA_STATUS_DONE=1 \
+run_jira_test_stdout "jira-all-four-done-idempotent-completed" \
+  '{"action":"completed","reasoning":"all child issues closed","comment":"Done."}' \
+  "is already in status 'Done' (done); skipping transition for reason 'completed'"
+if grep -qE "POST .*/transitions" "${JIRA_CURL_LOG}"; then
+  echo "FAIL: jira-all-four-done-idempotent-completed — expected no transition POST"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: jira-all-four-done-idempotent-completed-no-post"
+fi
+export JIRA_COMPLETED_TRANSITION="${_saved_comp}"
+export JIRA_DUPLICATE_TRANSITION="${_saved_dup}"
+export JIRA_NOT_PLANNED_TRANSITION="${_saved_np}"
+export JIRA_SPLIT_TRANSITION="${_saved_split}"
+unset _saved_comp _saved_dup _saved_np _saved_split
 
 # Jira split: triage dispatch adds ready-for-triage label to created sub-issues (#1123).
 run_jira_test "jira-split-dispatches-triage" \
@@ -2676,7 +2859,7 @@ if [[ "${URL}" =~ /issue/ ]] && [[ "${METHOD}" == "PUT" ]]; then
   exit 1
 fi
 # Transitions listing still works.
-if [[ "${URL}" =~ /transitions$ ]] && [[ "${METHOD}" == "GET" ]]; then
+if [[ "${URL}" =~ /transitions(\?|$) ]] && [[ "${METHOD}" == "GET" ]]; then
   echo '{"transitions":[{"id":"31","name":"Duplicate"},{"id":"41","name":"Not Planned"},{"id":"51","name":"Done"}]}'
   exit 0
 fi
@@ -2711,7 +2894,7 @@ for arg in "$@"; do
       ;;
   esac
 done
-if [[ "${URL}" =~ /transitions$ ]] && [[ "${METHOD}" == "GET" ]]; then
+if [[ "${URL}" =~ /transitions(\?|$) ]] && [[ "${METHOD}" == "GET" ]]; then
   echo '{"transitions":[{"id":"31","name":"Duplicate"},{"id":"41","name":"Not Planned"},{"id":"51","name":"Done"}]}'
   exit 0
 fi
@@ -2754,7 +2937,7 @@ run_jira_test "jira-component-actions-with-labels" \
 export FULLSEND_TRACKER="github"
 export ISSUE_URL="https://github.com/test-org/test-repo/issues/42"
 export GH_TOKEN="fake-token"
-unset JIRA_USER_EMAIL JIRA_TOKEN JIRA_DUPLICATE_TRANSITION JIRA_NOT_PLANNED_TRANSITION JIRA_SPLIT_TRANSITION
+unset JIRA_USER_EMAIL JIRA_TOKEN JIRA_COMPLETED_TRANSITION JIRA_DUPLICATE_TRANSITION JIRA_NOT_PLANNED_TRANSITION JIRA_SPLIT_TRANSITION
 
 run_test_stdout "github-component-actions-ignored" \
   '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_crash"},"comment":"## Triage Summary\n\nReady.","component_actions":{"reason":"Backend component.","actions":[{"action":"add","component":"backend"}]}}' \
@@ -2766,6 +2949,7 @@ export ISSUE_URL="https://test.atlassian.net/browse/TESTPROJ-42"
 export JIRA_USER_EMAIL="triage@example.com"
 export JIRA_TOKEN="fake-jira-token"
 export FULLSEND_DIR="${TMPDIR}/dot-fullsend"
+export JIRA_COMPLETED_TRANSITION="Closed"
 export JIRA_DUPLICATE_TRANSITION="Duplicate"
 export JIRA_NOT_PLANNED_TRANSITION="Not Planned"
 export JIRA_SPLIT_TRANSITION="Done"
@@ -3110,7 +3294,7 @@ export ISSUE_URL="https://github.com/test-org/test-repo/issues/42"
 # shellcheck disable=SC2031
 export GH_TOKEN="fake-token"
 unset GITLAB_TOKEN CI_SERVER_HOST
-unset JIRA_USER_EMAIL JIRA_TOKEN JIRA_DUPLICATE_TRANSITION JIRA_NOT_PLANNED_TRANSITION JIRA_SPLIT_TRANSITION
+unset JIRA_USER_EMAIL JIRA_TOKEN JIRA_COMPLETED_TRANSITION JIRA_DUPLICATE_TRANSITION JIRA_NOT_PLANNED_TRANSITION JIRA_SPLIT_TRANSITION
 
 # --- Summary ---
 

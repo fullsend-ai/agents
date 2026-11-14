@@ -925,7 +925,7 @@ if [[ "${ACTION}" == "completed" ]]; then
 fi
 
 if [[ "${ACTION}" == "split" ]]; then
-  tracker_close_issue "completed"
+  tracker_close_issue "split"
 fi
 
 echo "Post-triage complete."

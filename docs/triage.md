@@ -286,13 +286,20 @@ independently:
 
 | Variable | Used for |
 |----------|----------|
+| `JIRA_COMPLETED_TRANSITION` | The `completed` action (falls back to `JIRA_SPLIT_TRANSITION` when unset). |
 | `JIRA_DUPLICATE_TRANSITION` | The `duplicate` action. |
 | `JIRA_NOT_PLANNED_TRANSITION` | The `not-planned` action. |
-| `JIRA_SPLIT_TRANSITION` | The `split` action, and the `completed` action (both close with GitHub reason `completed`). |
+| `JIRA_SPLIT_TRANSITION` | The `split` action. |
 
 If the relevant variable is unset when that action fires, the post-script
-fails loudly rather than silently skipping the close — set all three to the
-same transition name if your Jira workflow doesn't distinguish between them.
+fails loudly rather than silently skipping the close (for `completed`,
+`JIRA_COMPLETED_TRANSITION` falls back to `JIRA_SPLIT_TRANSITION` with a notice
+if set). Set all four to the same transition name if your Jira workflow doesn't
+distinguish between them. When a configured transition name is not present in
+the issue's workflow, `completed` and `split` actions fall back to an available
+positive Done-category transition (preferring `"Done"`, `"Closed"`, `"Resolved"`,
+or `"Complete"`), strictly excluding rejection transitions like `"Won't Do"`,
+`"Not Planned"`, or `"Duplicate"`.
 
 Cross-project issue creation for Jira prerequisites is gated by a
 `tracker.jira.allowed_targets.projects` list of Jira project keys in
