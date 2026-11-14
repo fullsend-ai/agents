@@ -50,6 +50,8 @@ See [Customizing with AGENTS.md](https://fullsend.sh/docs/guides/user/customizin
 
 | Variable | Description | Default | Valid values |
 |----------|-------------|---------|--------------|
+| `CODE_JIRA_STARTED_TRANSITION` | Named Jira transition after Jira preflight accepts the run, before sandbox creation; configure through a derived harness's `env.runner`. See [Jira workflow transitions](#jira-workflow-transitions). | `"off"` (disabled) | Exact Jira transition name, or `"off"` |
+| `CODE_JIRA_PR_READY_TRANSITION` | Named Jira transition to execute after the post-script confirms an open, non-draft PR/MR; configure through a derived harness's `env.runner`. See [Jira workflow transitions](#jira-workflow-transitions). | `"off"` (disabled) | Exact Jira transition name, or `"off"` |
 | `CODE_ALLOWED_TARGET_BRANCHES` | Restricts which branches the code agent can target when pushing. The post-code script reads it from the runner when present and validates the agent's chosen target branch before pushing. It is never injected into the sandbox. | Repo default branch (auto-detected via forge API; falls back to `main`) | Comma-separated branch names (e.g. `main,develop`) or `*` for any branch |
 | `FULLSEND_FORGE` | Forge platform. Set automatically by the harness overlay `env` section (matched via `when: 'runtime.forge == "<platform>"'`). | (set by harness) | `"github"`, `"gitlab"` |
 | `FULLSEND_TRACKER` | Source tracker for the work item (matches triage convention). When set to `"jira"`, the code agent reads the Jira work item directly via provider-backed Jira API access (the `jira-ro` provider handles credential injection at the network layer). Set by the Jira-source overlay in `harness/code.yaml`. | (unset — forge-native) | `"jira"` |
@@ -394,6 +396,67 @@ vars. Key differences from single-forge setup:
   set automatically by the runner. Validation fails closed when
   `CI_SERVER_HOST` is not set. The GitLab profile in
   `profiles/fullsend-gitlab-code.yaml` must also be updated.
+
+## Jira workflow transitions
+
+To opt in, override `env.runner` in your code harness (using `base:`
+composition), following [ADR 0080](https://github.com/fullsend-ai/fullsend/blob/main/docs/ADRs/0080-config-yaml-vs-agent-env-var-scope.md):
+
+```yaml
+env:
+  runner:
+    CODE_JIRA_STARTED_TRANSITION: "In Progress"
+    CODE_JIRA_PR_READY_TRANSITION: "Review"
+```
+
+These are independent optional settings. Each value is a transition name,
+not a destination status. Jira defines which source states allow it and
+where it leads. The example assumes your workflow has transitions named
+`In Progress` and `Review`; replace them with your team's transition names.
+Choose a workflow transition
+that restricts source states appropriately; a global transition can still
+be available from Blocked or Closed. The literal `off` is reserved for
+disabling this feature. An unset or empty value also disables it.
+
+`CODE_JIRA_STARTED_TRANSITION` runs only at the end of the Jira pre-script,
+after URL validation, existing-PR/child-issue skip checks, and the dependency
+setup phase. A skipped run or failed preflight does not transition. Existing
+nonfatal setup warnings still allow preflight to accept the run. `CODE_FORCE=true` bypasses the existing-PR/child checks and
+can therefore reach the transition. This means preflight accepted the run;
+it does not guarantee that the sandbox was created or inference began.
+A later sandbox failure can leave Jira in the new state; there is no
+automatic rollback.
+
+The pre-script removes Jira credentials from its inherited environment by
+re-executing before running repository dependency tools, keeps them in
+unexported shell variables, and resolves the trusted CLI before installation
+can prepend executables to PATH. It checks supplied runner work-item
+identity against the validated Jira issue URL. Missing credentials, CLI,
+configuration directory, identity conflicts or transition failures warn
+and skip the optional write without stopping coding. As with post-code,
+this does not provide isolation from a same-user process with ptrace access.
+
+After the existing Jira stage comment succeeds, the post-script fetches the
+PR/MR's current state from GitHub or GitLab. Only an explicitly open,
+non-draft PR/MR permits the shared `fullsend issues transition --transition`
+command to run. It uses the same validated source issue and runner-only
+Jira credentials as the comment. Both transition settings require a fullsend
+release containing
+[the shared transition command](https://github.com/fullsend-ai/fullsend/issues/6704).
+No Jira API calls are added to the sandbox.
+
+Both settings belong only to the code harness, not parallel `config.yaml`
+behavior field or CI workflow environment setting. Repository overrides
+must update the harness settings. The PR-ready setting applies to readiness
+observed during the code post-script, including updates to an existing PR/MR. Neither setting
+watches later draft-to-ready events or closes issues on merge. Configure
+either setting alone or both; neither depends on the other.
+
+Readiness lookup or transition failures produce a warning and leave the
+successful code result intact. The existing Jira stage-comment failure
+still fails the step. Transitions are not automatically retried; inspect
+Jira after an uncertain response before rerunning, because a workflow can
+allow repeated transitions with side effects.
 
 ## Issue attachments
 
