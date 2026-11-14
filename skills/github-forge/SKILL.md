@@ -85,6 +85,6 @@ gh pr list --repo OTHER-ORG/OTHER-REPO --state open --search "relevant keywords"
 
 Extract OWNER/REPO from the issue URL:
 ```bash
-REPO=$(echo "${ISSUE_URL}" | sed 's|https://github.com/||; s|/issues/.*||')
-ISSUE_NUMBER=$(basename "${ISSUE_URL}")
+REPO=$(printf '%s\n' "$ISSUE_URL" | sed 's|https://github.com/||; s|/issues/.*||')
+ISSUE_NUMBER="${ISSUE_URL##*/}"
 ```

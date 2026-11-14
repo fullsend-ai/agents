@@ -12,21 +12,22 @@ download right after listing them.
 ```bash
 attach_dir=/tmp/issue-attachments
 mkdir -p "${attach_dir}"
-{
-  gh api -H "Accept: application/vnd.github.html+json" \
-    "repos/{owner}/{repo}/issues/${ISSUE_NUMBER}" --jq '.body_html'
-  gh api --paginate -H "Accept: application/vnd.github.html+json" \
-    "repos/{owner}/{repo}/issues/${ISSUE_NUMBER}/comments" --jq '.[].body_html'
-} | grep -oE 'https://(private-)?user-images\.githubusercontent\.com/[^"]+' \
-  | sed 's/&amp;/\&/g' | sort -u | {
-  n=0
-  while IFS= read -r url; do
+issue_html=$(gh api -H "Accept: application/vnd.github.html+json" \
+  "repos/{owner}/{repo}/issues/$ISSUE_NUMBER" --jq '.body_html')
+comments_html=$(gh api --paginate -H "Accept: application/vnd.github.html+json" \
+  "repos/{owner}/{repo}/issues/$ISSUE_NUMBER/comments" --jq '.[].body_html')
+urls=$(printf '%s\n%s\n' "$issue_html" "$comments_html" \
+  | grep -oE 'https://(private-)?user-images\.githubusercontent\.com/[^"]+' \
+  | sed 's/&amp;/\&/g' | sort -u)
+n=0
+if test -n "${urls}"; then
+  printf '%s\n' "${urls}" | while IFS= read -r url; do
     n=$((n + 1)); name="${url%%\?*}"; name="${name##*/}"
     curl --fail --silent --show-error --max-filesize 20000000 \
       --write-out '%{content_type} %{filename_effective}\n' \
       --output "${attach_dir}/${n}-${name}" "${url}"
   done
-}
+fi
 ```
 
 - Each file name contains the attachment's `<uuid>`, which maps it back to

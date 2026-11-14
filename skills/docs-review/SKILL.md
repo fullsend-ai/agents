@@ -118,7 +118,7 @@ Run the script in a single Bash call:
 ```bash
 for id in "identifier1" "identifier2" "identifier3"; do
   matches=$(grep -rl "$id" --include="*.md" --include="*.rst" --include="*.adoc" . 2>/dev/null)
-  if [ -n "$matches" ]; then
+  if test -n "$matches"; then
     echo "MATCH: $id -> $matches"
   else
     echo "NO_MATCH: $id"

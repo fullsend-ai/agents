@@ -279,6 +279,18 @@ assert_not_contains "GitLab request URLs avoid the GITLAB_HOST variable" "${GITL
   '//${GITLAB_HOST}'
 assert_contains "GitLab request URLs use the literal host placeholder" "${GITLAB_FORGE}" \
   '//<GITLAB_HOST>/api/v4/projects/<REPO_ENCODED>/'
+for gitlab_skill in fix-review issue-labels retro-analysis finding-agent-runs; do
+  assert_not_contains "${gitlab_skill} GitLab request URLs avoid the GITLAB_HOST variable" \
+    "${REPO_ROOT}/skills/${gitlab_skill}/gitlab/SKILL.md" '//${GITLAB_HOST}'
+  assert_not_contains "${gitlab_skill} GitLab request URLs avoid the unbraced GITLAB_HOST variable" \
+    "${REPO_ROOT}/skills/${gitlab_skill}/gitlab/SKILL.md" '//$GITLAB_HOST'
+  assert_contains "${gitlab_skill} GitLab request URLs use the literal host placeholder" \
+    "${REPO_ROOT}/skills/${gitlab_skill}/gitlab/SKILL.md" '//<GITLAB_HOST>/api/v4'
+done
+assert_not_contains "fix-review GitLab request URLs avoid the JOB_ID variable" \
+  "${REPO_ROOT}/skills/fix-review/gitlab/SKILL.md" '/${JOB_ID}'
+assert_not_contains "retro-analysis GitLab request URLs avoid the TARGET_ENCODED variable" \
+  "${REPO_ROOT}/skills/retro-analysis/gitlab/SKILL.md" '/${TARGET_ENCODED}'
 assert_contains "orchestrator requires forge commit-message fetch" "${SKILL}" \
   "forge's available **\"Commit messages\"** commands"
 assert_contains "orchestrator requires forge issue-context fetch" "${SKILL}" \

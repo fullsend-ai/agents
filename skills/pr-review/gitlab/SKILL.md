@@ -18,10 +18,10 @@ Run this first, in its own Bash tool call, before any other GitLab command.
 It extracts the host, project path, and MR IID from `PR_URL` and prints them:
 
 ```bash
-GITLAB_HOST=$(echo "${PR_URL}" | sed -nE 's|^https://([^/]+)/.*|\1|p')
-REPO=$(echo "${PR_URL}" | sed -E 's|^https://[^/]+/(.+)/-/merge_requests/[0-9]+$|\1|')
-REPO_ENCODED=$(printf '%s' "${REPO}" | jq -sRr @uri)
-MR_IID=$(basename "${PR_URL}")
+GITLAB_HOST=$(printf '%s\n' "$PR_URL" | sed -nE 's|^https://([^/]+)/.*|\1|p')
+REPO=$(printf '%s\n' "$PR_URL" | sed -E 's|^https://[^/]+/(.+)/-/merge_requests/[0-9]+$|\1|')
+REPO_ENCODED=$(printf '%s' "$REPO" | jq -sRr @uri)
+MR_IID="${PR_URL##*/}"
 test -n "${GITLAB_HOST}" || echo "GITLAB_HOST is empty: PR_URL is unset or not an https URL" >&2
 if printf '%s' "${GITLAB_HOST}" | grep -Eqz '^[A-Za-z0-9.-]+$' && printf '%s' "${MR_IID}" | grep -Eqz '^[0-9]+$'; then
   printf 'GITLAB_HOST=%s\nREPO_ENCODED=%s\nMR_IID=%s\n' "${GITLAB_HOST}" "${REPO_ENCODED}" "${MR_IID}"
