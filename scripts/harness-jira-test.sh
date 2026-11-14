@@ -51,19 +51,27 @@ jira_overlay_has() {
 # ---------------------------------------------------------------------------
 TRIAGE_HARNESS="${REPO_ROOT}/harness/triage.yaml"
 
-# Provider present
-if jira_overlay_has "${TRIAGE_HARNESS}" ".providers[]" "providers/jira-ro.yaml"; then
-  assert_pass "triage-jira-provider-present"
-else
-  assert_fail "triage-jira-provider-present" "providers/jira-ro.yaml not in Jira overlay"
-fi
-
-# Profile present
-if jira_overlay_has "${TRIAGE_HARNESS}" ".openshell.profiles[]" "profiles/fullsend-jira-ro.yaml"; then
-  assert_pass "triage-jira-profile-present"
-else
-  assert_fail "triage-jira-profile-present" "profiles/fullsend-jira-ro.yaml not in Jira overlay"
-fi
+# The Jira overlay lists fullsend's builtin `jira` provider by bare name
+# (fullsend-ai/fullsend#9233) and no longer the repo-local jira-ro
+# provider or fullsend-jira-ro profile (#1926). The builtin profile ships
+# with fullsend, so the overlay lists no Jira profile of its own.
+check_builtin_jira_provider() {
+  local harness_file="$1" prefix="$2"
+  local providers profiles
+  providers="$(jira_overlay_field "${harness_file}" "(.providers // []) | .[]")"
+  profiles="$(jira_overlay_field "${harness_file}" "(.openshell.profiles // []) | .[]")"
+  if grep -qxF "jira" <<< "${providers}"; then
+    assert_pass "${prefix}-jira-builtin-provider"
+  else
+    assert_fail "${prefix}-jira-builtin-provider" "builtin provider 'jira' not in Jira overlay (got: ${providers//$'\n'/ })"
+  fi
+  if grep -qF "jira-ro" <<< "${providers}${profiles}"; then
+    assert_fail "${prefix}-jira-no-jira-ro" "jira-ro provider or fullsend-jira-ro profile still in Jira overlay"
+  else
+    assert_pass "${prefix}-jira-no-jira-ro"
+  fi
+}
+check_builtin_jira_provider "${TRIAGE_HARNESS}" triage
 
 # JIRA_TOKEN not in sandbox env
 if jira_overlay_has "${TRIAGE_HARNESS}" "(.env.sandbox // {}) | keys | .[]" "JIRA_TOKEN"; then
@@ -104,17 +112,46 @@ check_runner_mapping() {
 check_runner_mapping "${TRIAGE_HARNESS}" triage JIRA_TOKEN '${FULLSEND_JIRA_TOKEN}'
 check_runner_mapping "${TRIAGE_HARNESS}" triage JIRA_USER_EMAIL '${FULLSEND_JIRA_EMAIL}'
 check_runner_mapping "${TRIAGE_HARNESS}" triage FULLSEND_DIR '${FULLSEND_DIR}'
+# OAuth 2.0 client credentials (#1926) reach the host-side scripts under
+# their own names, so jira-auth.lib.sh and the fullsend CLI read them.
+check_runner_mapping "${TRIAGE_HARNESS}" triage FULLSEND_JIRA_CLIENT_ID '${FULLSEND_JIRA_CLIENT_ID}'
+check_runner_mapping "${TRIAGE_HARNESS}" triage FULLSEND_JIRA_CLIENT_SECRET '${FULLSEND_JIRA_CLIENT_SECRET}'
 
-# The real FULLSEND_JIRA_* values must never reach the sandbox, so no
-# sandbox env or Jira host file may reference them. The jira-ro provider is
-# the one exception (below): it holds the token host-side and gives the
-# sandbox only a placeholder.
+# The real FULLSEND_JIRA_* values (token, email, client ID and secret) must
+# never reach the sandbox, so no sandbox env, Jira host file or provider
+# entry may reference them. The builtin jira provider reads them inside
+# fullsend and gives the sandbox only a placeholder.
 for f in "${TRIAGE_HARNESS}" "${REPO_ROOT}/harness/code.yaml"; do
   name="$(basename "${f}" .yaml)"
   if jira_overlay_field "${f}" "(.env.sandbox // {}) | to_entries | .[] | .key + \"=\" + .value" | grep -qF 'FULLSEND_JIRA_'; then
     assert_fail "${name}-no-fullsend-jira-in-sandbox" "FULLSEND_JIRA_* referenced in env.sandbox"
   else
     assert_pass "${name}-no-fullsend-jira-in-sandbox"
+  fi
+  if yq -r '[(.env.sandbox // {}), (.overlays[]? | .env.sandbox // {}), (.forge[]? | .env.sandbox // {})] | .[] | to_entries | .[] | .key + "=" + .value' "${f}" \
+    | grep -qF 'FULLSEND_JIRA_CLIENT_'; then
+    assert_fail "${name}-no-jira-client-credentials-in-any-sandbox" "FULLSEND_JIRA_CLIENT_* referenced in an env.sandbox block"
+  else
+    assert_pass "${name}-no-jira-client-credentials-in-any-sandbox"
+  fi
+  if yq -r '[(.providers // []), (.forge[]? | .providers // []), (.overlays[]? | .providers // [])] | flatten | .[] | tostring' "${f}" \
+    | grep -qF 'FULLSEND_JIRA_'; then
+    assert_fail "${name}-no-fullsend-jira-in-providers" "FULLSEND_JIRA_* referenced in a provider entry"
+  else
+    assert_pass "${name}-no-fullsend-jira-in-providers"
+  fi
+  host_srcs="$(yq -r '[(.host_files // []), (.overlays[]? | .host_files // [])] | flatten | .[] | .src' "${f}")"
+  leaked=""
+  while IFS= read -r src; do
+    [[ -n "${src}" && -f "${REPO_ROOT}/${src}" ]] || continue
+    if grep -qF 'FULLSEND_JIRA_CLIENT_' "${REPO_ROOT}/${src}"; then
+      leaked="${leaked} ${src}"
+    fi
+  done <<< "${host_srcs}"
+  if [[ -n "${leaked}" ]]; then
+    assert_fail "${name}-no-jira-client-credentials-in-host-files" "FULLSEND_JIRA_CLIENT_* referenced in host file(s):${leaked}"
+  else
+    assert_pass "${name}-no-jira-client-credentials-in-host-files"
   fi
 done
 if grep -hv '^[[:space:]]*#' "${REPO_ROOT}"/env/jira/*.env | grep -qF 'FULLSEND_JIRA_'; then
@@ -123,14 +160,14 @@ else
   assert_pass "no-fullsend-jira-in-host-files"
 fi
 
-# The jira-ro provider reads the FULLSEND_JIRA_TOKEN repository secret
-# (fullsend-ai/fullsend#9411) under the JIRA_TOKEN placeholder name, and
-# nothing else: no JIRA_TOKEN secret is needed.
-provider_creds="$(yq -r '.credentials // {} | to_entries | .[] | .key + "=" + .value' "${REPO_ROOT}/providers/jira-ro.yaml")"
-if [[ "${provider_creds}" == 'JIRA_TOKEN=${FULLSEND_JIRA_TOKEN}' ]]; then
-  assert_pass "provider-reads-fullsend-jira-token"
+# No repo-local provider file other than the deprecated jira-ro may carry
+# the Jira credentials: the builtin provider replaces it, and fullsend
+# refuses a second provider that declares JIRA_TOKEN next to a minted one.
+if grep -lE 'JIRA_TOKEN|FULLSEND_JIRA_' "${REPO_ROOT}"/providers/*.yaml 2>/dev/null \
+  | grep -v '/providers/jira-ro\.yaml$'; then
+  assert_fail "no-repo-provider-declares-jira-credentials" "a providers/*.yaml file declares Jira credentials"
 else
-  assert_fail "provider-reads-fullsend-jira-token" "jira-ro credentials are '${provider_creds}', want 'JIRA_TOKEN=\${FULLSEND_JIRA_TOKEN}'"
+  assert_pass "no-repo-provider-declares-jira-credentials"
 fi
 
 # JIRA_BASE_URL in sandbox env (non-secret, needed for API URLs)
@@ -175,19 +212,7 @@ else
     "when expression lacks has(event.source) guard: ${code_jira_when}"
 fi
 
-# Provider present
-if jira_overlay_has "${CODE_HARNESS}" ".providers[]" "providers/jira-ro.yaml"; then
-  assert_pass "code-jira-provider-present"
-else
-  assert_fail "code-jira-provider-present" "providers/jira-ro.yaml not in Jira overlay"
-fi
-
-# Profile present
-if jira_overlay_has "${CODE_HARNESS}" ".openshell.profiles[]" "profiles/fullsend-jira-ro.yaml"; then
-  assert_pass "code-jira-profile-present"
-else
-  assert_fail "code-jira-profile-present" "profiles/fullsend-jira-ro.yaml not in Jira overlay"
-fi
+check_builtin_jira_provider "${CODE_HARNESS}" code
 
 # JIRA_TOKEN not in sandbox env
 if jira_overlay_has "${CODE_HARNESS}" "(.env.sandbox // {}) | keys | .[]" "JIRA_TOKEN"; then
@@ -212,6 +237,8 @@ fi
 check_runner_mapping "${CODE_HARNESS}" code JIRA_TOKEN '${FULLSEND_JIRA_TOKEN}'
 check_runner_mapping "${CODE_HARNESS}" code JIRA_USER_EMAIL '${FULLSEND_JIRA_EMAIL}'
 check_runner_mapping "${CODE_HARNESS}" code FULLSEND_DIR '${FULLSEND_DIR}'
+check_runner_mapping "${CODE_HARNESS}" code FULLSEND_JIRA_CLIENT_ID '${FULLSEND_JIRA_CLIENT_ID}'
+check_runner_mapping "${CODE_HARNESS}" code FULLSEND_JIRA_CLIENT_SECRET '${FULLSEND_JIRA_CLIENT_SECRET}'
 
 # JIRA_USER_EMAIL reaches the sandbox through the expanded host file, not
 # env.sandbox (optional for a service account; #1900).
@@ -245,11 +272,12 @@ fi
 
 # ---------------------------------------------------------------------------
 # Skill-level tests: sandbox curl commands use the opaque provider
-# placeholder with Basic auth (--user "${JIRA_USER_EMAIL}:${JIRA_TOKEN}")
+# placeholder with Basic auth (--user "${JIRA_USER_EMAIL}:<token>")
 # when JIRA_USER_EMAIL is set, and Bearer auth (--oauth2-bearer) when it
-# is empty (#1900). The real token never enters the sandbox; JIRA_TOKEN in
-# these commands is the provider-supplied placeholder that OpenShell
-# replaces at the proxy boundary.
+# is empty (#1900). The real token never enters the sandbox; the token in
+# these commands (JIRA_TOKEN_NOW, read from /sandbox/fullsend-jira/token or
+# else JIRA_TOKEN; #1926) is the provider-supplied placeholder that
+# OpenShell replaces at the proxy boundary.
 # ---------------------------------------------------------------------------
 SKILL_FILES=(
   "${REPO_ROOT}/skills/jira-forge/SKILL.md"
@@ -273,7 +301,7 @@ for skill_file in "${SKILL_FILES[@]}"; do
   # auth with an empty or whitespace-only email.
   if grep -qF -- 'JIRA_EMAIL="${JIRA_USER_EMAIL:-}"; JIRA_EMAIL="${JIRA_EMAIL//[[:space:]]/}"' "${skill_file}" \
     && grep -qF -- 'JIRA_AUTH_FLAG=--oauth2-bearer; test -n "${JIRA_EMAIL}" && JIRA_AUTH_FLAG=--user' "${skill_file}" \
-    && grep -qF -- 'JIRA_AUTH="${JIRA_EMAIL:+${JIRA_EMAIL}:}${JIRA_TOKEN}"' "${skill_file}"; then
+    && grep -qF -- 'JIRA_AUTH="${JIRA_EMAIL:+${JIRA_EMAIL}:}${JIRA_TOKEN_NOW}"' "${skill_file}"; then
     assert_pass "${test_name}"
   else
     assert_fail "${test_name}" "missing the Basic/Bearer selection lines in ${skill_file}"
@@ -326,33 +354,20 @@ for skill_file in "${SKILL_FILES[@]}"; do
   fi
 done
 
-# ---------------------------------------------------------------------------
-# Provider and profile file existence
-# ---------------------------------------------------------------------------
-if [ -f "${REPO_ROOT}/providers/jira-ro.yaml" ]; then
-  assert_pass "provider-file-exists"
-else
-  assert_fail "provider-file-exists" "providers/jira-ro.yaml not found"
-fi
-
-if [ -f "${REPO_ROOT}/profiles/fullsend-jira-ro.yaml" ]; then
-  assert_pass "profile-file-exists"
-else
-  assert_fail "profile-file-exists" "profiles/fullsend-jira-ro.yaml not found"
-fi
+# The repo-local provider and profile stay for custom harnesses until the
+# next release, marked deprecated; the built-in overlays use `jira`.
+for f in providers/jira-ro.yaml profiles/fullsend-jira-ro.yaml; do
+  if [ -f "${REPO_ROOT}/${f}" ] && grep -q "^# Deprecated:" "${REPO_ROOT}/${f}"; then
+    assert_pass "deprecated-${f//\//-}"
+  else
+    assert_fail "deprecated-${f//\//-}" "${f} is missing or lacks its deprecation note"
+  fi
+done
 
 # ---------------------------------------------------------------------------
 # JIRA_API_URL (#1876): REST calls go to the API URL fullsend provides (the
 # Atlassian API gateway), falling back to JIRA_BASE_URL.
 # ---------------------------------------------------------------------------
-# The sandbox can reach the gateway.
-if yq -e '.endpoints[] | select(.host == "api.atlassian.com" and .port == 443)' \
-  "${REPO_ROOT}/profiles/fullsend-jira-ro.yaml" >/dev/null; then
-  assert_pass "profile-allows-api-gateway"
-else
-  assert_fail "profile-allows-api-gateway" "api.atlassian.com:443 not in fullsend-jira-ro endpoints"
-fi
-
 # JIRA_API_URL reaches the sandbox through an expanded .env.d host file and
 # never through env.runner/env.sandbox: a ${VAR} there fails the run when the
 # host variable is unset, and older fullsend releases do not set it.

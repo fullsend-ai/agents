@@ -168,12 +168,16 @@ overlays:
   # has(event.source) guards the field access: on non-Jira runs event is
   # present but has no source, and unguarded event.source throws CEL
   # "no such key: source" instead of skipping the overlay.
+  # The builtin `jira` provider (profile `fullsend-jira`, shipped with
+  # fullsend; fullsend-ai/fullsend#9233) gives the sandbox a placeholder,
+  # never the real credential. With FULLSEND_JIRA_TOKEN it is an ordinary
+  # provider. With only FULLSEND_JIRA_CLIENT_ID and
+  # FULLSEND_JIRA_CLIENT_SECRET, fullsend run mints the access token,
+  # refreshes it during the run, and keeps the current placeholder in
+  # /sandbox/fullsend-jira/token, which the skills read on every call.
   - when: 'has(event.source) && event.source.system == "jira"'
     providers:
-      - providers/jira-ro.yaml
-    openshell:
-      profiles:
-        - profiles/fullsend-jira-ro.yaml
+      - jira
     pre_script: scripts/pre-code-jira.sh
     # JIRA_API_URL and JIRA_USER_EMAIL reach the sandbox through an
     # expanded host file, not env.sandbox: a ${VAR} in env.sandbox fails the
@@ -183,8 +187,7 @@ overlays:
     # (fullsend-ai/fullsend#9411); there is no JIRA_USER_EMAIL secret. An
     # unset value expands to empty here: the skills fall back to
     # JIRA_BASE_URL, and an empty JIRA_USER_EMAIL selects Bearer auth
-    # (service account). The jira-ro provider reads FULLSEND_JIRA_TOKEN;
-    # there is no JIRA_TOKEN secret.
+    # (service account). There is no JIRA_TOKEN secret.
     host_files:
       - src: env/jira/code.env
         dest: /sandbox/workspace/.env.d/jira-code.env
@@ -194,12 +197,18 @@ overlays:
         JIRA_BASE_URL: "${JIRA_BASE_URL}"
         # Runner-only Jira credentials: post-code writes the code-stage
         # update and PR/MR URL to the Jira issue. The sandbox never gets the
-        # real token (the jira-ro provider supplies a placeholder). They
+        # real credential (the jira provider supplies a placeholder). They
         # come from the FULLSEND_JIRA_TOKEN and optional FULLSEND_JIRA_EMAIL
         # repository secrets (fullsend#9079). An absent email expands empty
         # here, and post-code then uses service-account Bearer auth.
         JIRA_TOKEN: "${FULLSEND_JIRA_TOKEN}"
         JIRA_USER_EMAIL: "${FULLSEND_JIRA_EMAIL}"
+        # OAuth 2.0 client credentials, the alternative to the token
+        # (#1926). Optional keys: an unset value is dropped. Runner only —
+        # never env.sandbox, a host file or a provider.
+        # scripts/lib/jira-auth.lib.sh refuses them next to a token.
+        FULLSEND_JIRA_CLIENT_ID: "${FULLSEND_JIRA_CLIENT_ID}"
+        FULLSEND_JIRA_CLIENT_SECRET: "${FULLSEND_JIRA_CLIENT_SECRET}"
         # `fullsend issues` reads tracker.jira from this directory's config.
         FULLSEND_DIR: "${FULLSEND_DIR}"
         ISSUE_URL: "${FULLSEND_WORK_ITEM_URL}"

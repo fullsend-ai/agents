@@ -121,12 +121,16 @@ overlays:
       sandbox:
         ISSUE_URL: "${GITLAB_ISSUE_URL}"
         FULLSEND_FORGE: gitlab
+  # The builtin `jira` provider (profile `fullsend-jira`, shipped with
+  # fullsend; fullsend-ai/fullsend#9233) gives the sandbox a placeholder,
+  # never the real credential. With FULLSEND_JIRA_TOKEN it is an ordinary
+  # provider. With only FULLSEND_JIRA_CLIENT_ID and
+  # FULLSEND_JIRA_CLIENT_SECRET, fullsend run mints the access token,
+  # refreshes it during the run, and keeps the current placeholder in
+  # /sandbox/fullsend-jira/token, which the skills read on every call.
   - when: '(has(event.source) && event.source.system == "jira") || (!has(event.source) && runtime.forge == "jira")'
     providers:
-      - providers/jira-ro.yaml
-    openshell:
-      profiles:
-        - profiles/fullsend-jira-ro.yaml
+      - jira
     skills:
       - skills/jira-forge
       - skills/issue-labels/jira
@@ -137,8 +141,7 @@ overlays:
     # optional FULLSEND_JIRA_EMAIL repository secret
     # (fullsend-ai/fullsend#9411); there is no JIRA_USER_EMAIL secret. An
     # empty JIRA_USER_EMAIL selects Bearer auth (service account) in the
-    # Jira skills. The jira-ro provider reads FULLSEND_JIRA_TOKEN; there is
-    # no JIRA_TOKEN secret.
+    # Jira skills. There is no JIRA_TOKEN secret.
     host_files:
       - src: env/jira/triage.env
         dest: /sandbox/workspace/.env.d/triage.env
@@ -152,6 +155,12 @@ overlays:
         # service-account Bearer auth instead of bot-user Basic auth.
         JIRA_TOKEN: ${FULLSEND_JIRA_TOKEN}
         JIRA_USER_EMAIL: ${FULLSEND_JIRA_EMAIL}
+        # OAuth 2.0 client credentials, the alternative to the token
+        # (#1926). Optional keys: an unset value is dropped. Runner only —
+        # never env.sandbox, a host file or a provider.
+        # scripts/lib/jira-auth.lib.sh refuses them next to a token.
+        FULLSEND_JIRA_CLIENT_ID: ${FULLSEND_JIRA_CLIENT_ID}
+        FULLSEND_JIRA_CLIENT_SECRET: ${FULLSEND_JIRA_CLIENT_SECRET}
         # `fullsend issues` reads tracker.jira from this directory's config.
         FULLSEND_DIR: ${FULLSEND_DIR}
         JIRA_BASE_URL: ${JIRA_BASE_URL}
