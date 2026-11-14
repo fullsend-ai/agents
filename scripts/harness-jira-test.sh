@@ -160,10 +160,11 @@ else
   assert_pass "no-fullsend-jira-in-host-files"
 fi
 
-# No repo-local provider file may carry the Jira credentials: the builtin
-# provider replaces jira-ro, and fullsend refuses a second provider that
-# declares JIRA_TOKEN next to a minted jira provider.
-if grep -lE 'JIRA_TOKEN|FULLSEND_JIRA_' "${REPO_ROOT}"/providers/*.yaml 2>/dev/null; then
+# No repo-local provider file other than the deprecated jira-ro may carry
+# the Jira credentials: the builtin provider replaces it, and fullsend
+# refuses a second provider that declares JIRA_TOKEN next to a minted one.
+if grep -lE 'JIRA_TOKEN|FULLSEND_JIRA_' "${REPO_ROOT}"/providers/*.yaml 2>/dev/null \
+  | grep -v '/providers/jira-ro\.yaml$'; then
   assert_fail "no-repo-provider-declares-jira-credentials" "a providers/*.yaml file declares Jira credentials"
 else
   assert_pass "no-repo-provider-declares-jira-credentials"
@@ -353,12 +354,13 @@ for skill_file in "${SKILL_FILES[@]}"; do
   fi
 done
 
-# The repo-local provider and profile were replaced by the builtin ones.
+# The repo-local provider and profile stay for custom harnesses until the
+# next release, marked deprecated; the built-in overlays use `jira`.
 for f in providers/jira-ro.yaml profiles/fullsend-jira-ro.yaml; do
-  if [ -e "${REPO_ROOT}/${f}" ]; then
-    assert_fail "removed-${f//\//-}" "${f} still exists; the builtin jira provider replaces it"
+  if [ -f "${REPO_ROOT}/${f}" ] && grep -q "^# Deprecated:" "${REPO_ROOT}/${f}"; then
+    assert_pass "deprecated-${f//\//-}"
   else
-    assert_pass "removed-${f//\//-}"
+    assert_fail "deprecated-${f//\//-}" "${f} is missing or lacks its deprecation note"
   fi
 done
 
