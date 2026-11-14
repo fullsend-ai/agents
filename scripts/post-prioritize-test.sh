@@ -735,8 +735,8 @@ unset ORG
 unset PROJECT_NUMBER
 
 CURL_LOG="${TEST_TMPDIR}/curl-calls.log"
-MOCK_NOTES_FILE="${TEST_TMPDIR}/mock-notes-override.json"
-printf '#!/usr/bin/env bash\necho "curl $*" >> %s\nMOCK_NOTES_FILE=%s\n' "${CURL_LOG}" "${MOCK_NOTES_FILE}" > "${MOCK_BIN}/curl"
+MOCK_CURL_NOTE_FAIL="${TEST_TMPDIR}/mock-curl-note-fail"
+printf '#!/usr/bin/env bash\necho "curl $*" >> %s\nMOCK_CURL_NOTE_FAIL=%s\n' "${CURL_LOG}" "${MOCK_CURL_NOTE_FAIL}" > "${MOCK_BIN}/curl"
 cat >> "${MOCK_BIN}/curl" <<'CURLMOCK'
 
 # Parse the URL from args.
@@ -767,29 +767,24 @@ for arg in "$@"; do
   esac
 done
 
-# Return bot user identity.
+# Simulate a failed note POST when flagged.
+if [[ "${URL}" =~ /notes$ ]] && [[ "${METHOD}" == "POST" ]] && [[ -f "${MOCK_CURL_NOTE_FAIL}" ]] && [[ -n "${HAS_FAIL}" ]]; then
+  echo "curl: (22) The requested URL returned error: 500" >&2
+  exit 22
+fi
+
+# Bot identity and a bot-authored prioritize note. Posting never reads
+# these; they let the append test catch code that edits in place.
 if [[ "${URL}" =~ /user$ ]] && [[ "${METHOD}" == "GET" ]]; then
   echo '{"username":"fullsend-bot","id":12345,"name":"Fullsend Bot"}'
   exit 0
 fi
-
-# Return notes list — check for test-specific override file (page 1 only).
 if [[ "${URL}" =~ /notes\? ]] && [[ "${METHOD}" == "GET" ]]; then
-  if [[ "${URL}" =~ page=1 ]] || [[ ! "${URL}" =~ page=[0-9] ]]; then
-    if [[ -f "${MOCK_NOTES_FILE}" ]]; then
-      cat "${MOCK_NOTES_FILE}"
-    else
-      echo '[]'
-    fi
+  if [[ "${URL}" =~ page=1(&|$) ]] || [[ ! "${URL}" =~ page=[0-9] ]]; then
+    echo '[{"id":200,"body":"<!-- fullsend:prioritize-agent -->\nOld RICE scores","author":{"username":"fullsend-bot"}}]'
   else
     echo '[]'
   fi
-  exit 0
-fi
-
-# PUT to notes — sticky comment update.
-if [[ "${URL}" =~ /notes/[0-9]+$ ]] && [[ "${METHOD}" == "PUT" ]]; then
-  echo '{"id":1}'
   exit 0
 fi
 
@@ -961,29 +956,41 @@ export ISSUE_URL="https://evil.example/group/project/-/issues/1"
 run_gitlab_test "gitlab-rejects-non-allowlisted-host" "true"
 export ISSUE_URL="${SAVED_ISSUE_URL}"
 
-# --- GitLab sticky-comment author filtering ---
+# --- GitLab marked comments append (fullsend-ai/fullsend#9334) ---
 
-# Test: sticky comment ignores notes from other users (spoofing protection).
-printf '%s' '[{"id":100,"body":"<!-- fullsend:prioritize-agent -->\nSpoofed content","author":{"username":"attacker"}}]' > "${MOCK_NOTES_FILE}"
-run_gitlab_test_curl_pattern "gitlab-sticky-comment-ignores-spoofed-notes" \
-  "--request POST"
-if grep -qF "notes/100" "${CURL_LOG}"; then
-  echo "FAIL: gitlab-sticky-comment-ignores-spoofed-notes — attacker note 100 was updated (PUT)"
+# Test: the mock lists a bot-authored prioritize note, so code that edited
+# it in place would PUT it. Each run must instead post one new note, marker
+# first and the result below it, and never list or edit (PUT) notes.
+run_gitlab_test_curl_pattern "gitlab-rerun-posts-new-note" \
+  "--request POST https://gitlab.com/api/v4/projects/test-group%2Ftest-project/issues/42/notes --data-urlencode body=<!-- fullsend:prioritize-agent -->"
+if grep -qE -- "--request PUT [^ ]*/notes/" "${CURL_LOG}"; then
+  echo "FAIL: gitlab-rerun-posts-new-note — an earlier note was edited (PUT)"
   FAILURES=$((FAILURES + 1))
 fi
-rm -f "${MOCK_NOTES_FILE}"
+if grep -qF -- "/notes?" "${CURL_LOG}" || grep -qF -- "Previous run" "${CURL_LOG}"; then
+  echo "FAIL: gitlab-rerun-posts-new-note — notes were listed or history was folded in"
+  FAILURES=$((FAILURES + 1))
+fi
+POSTS=$(grep -cE -- "--request POST [^ ]*/issues/42/notes( |$)" "${CURL_LOG}" || true)
+if [[ "${POSTS}" -ne 1 ]]; then
+  echo "FAIL: gitlab-rerun-posts-new-note — expected exactly one note POST, got ${POSTS}"
+  FAILURES=$((FAILURES + 1))
+fi
+# The same POST carries the result body, not just the marker.
+if ! awk '/^curl /{p = index($0, "--request POST ") && index($0, "/notes --data-urlencode body=<!-- fullsend:")} p' "${CURL_LOG}" \
+    | grep -qF -- "RICE Priority Score"; then
+  echo "FAIL: gitlab-rerun-posts-new-note — the posted note has no result body"
+  FAILURES=$((FAILURES + 1))
+fi
 
-# Test: sticky comment updates own note when bot-authored note exists.
-printf '%s' '[{"id":200,"body":"<!-- fullsend:prioritize-agent -->\nOld RICE scores","author":{"username":"fullsend-bot"}}]' > "${MOCK_NOTES_FILE}"
-run_gitlab_test_curl_pattern "gitlab-sticky-comment-updates-own-note" \
-  "notes/200"
-rm -f "${MOCK_NOTES_FILE}"
-
-# Test: sticky comment preserves history in <details> block.
-printf '%s' '[{"id":300,"body":"<!-- fullsend:prioritize-agent -->\nPrevious RICE summary here","author":{"username":"fullsend-bot"}}]' > "${MOCK_NOTES_FILE}"
-run_gitlab_test_curl_pattern "gitlab-sticky-comment-preserves-history" \
-  "Previous run"
-rm -f "${MOCK_NOTES_FILE}"
+# Test: a failed note POST warns and fails the step.
+touch "${MOCK_CURL_NOTE_FAIL}"
+run_gitlab_test "gitlab-post-failure-fails" "true"
+if ! grep -qF -- "::warning::Failed to post comment" "${TEST_TMPDIR}/stdout-gitlab-post-failure-fails.log"; then
+  echo "FAIL: gitlab-post-failure-fails — no ::warning:: for the failed POST"
+  FAILURES=$((FAILURES + 1))
+fi
+rm -f "${MOCK_CURL_NOTE_FAIL}"
 
 # --- GitLab subgroup URL parsing ---
 

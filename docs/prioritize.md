@@ -4,7 +4,7 @@
 
 Scores an issue using the RICE framework (Reach, Impact, Confidence, Effort) and produces scores with reasoning for project board ranking. Supports both GitHub and GitLab forges.
 
-On GitHub, scores are written to Projects V2 custom fields and posted as a reasoning comment. On GitLab, scores are posted as a sticky issue comment. GitLab custom fields API integration is deferred — the Issues API silently ignores unknown keys, and the correct Custom Fields API requires Premium/Ultimate with runtime field ID resolution.
+On GitHub, scores are written to Projects V2 custom fields and posted as a reasoning comment. On GitLab, scores are posted as an issue comment; each run adds a new comment rather than editing the earlier one. GitLab custom fields API integration is deferred — the Issues API silently ignores unknown keys, and the correct Custom Fields API requires Premium/Ultimate with runtime field ID resolution.
 
 ## Setup
 
@@ -41,7 +41,7 @@ skill data.
 The prioritize agent does not apply or consume control labels. It reads the
 issue content and produces a score. On GitHub, the project board is updated
 directly via Projects V2 custom fields. On GitLab, scores are posted as
-a sticky comment on the issue.
+a new comment on the issue each run.
 
 ## Configuration
 

@@ -1791,11 +1791,11 @@ unset GH_TOKEN
 
 # GitLab mock curl: record calls and return appropriate responses.
 CURL_LOG="${TMPDIR}/curl-calls.log"
-MOCK_NOTES_FILE="${TMPDIR}/mock-notes-override.json"
 MOCK_CURL_ISSUE_FAIL="${TMPDIR}/mock-curl-issue-fail"
 MOCK_CURL_LABEL_FAIL="${TMPDIR}/mock-curl-label-fail"
 MOCK_CURL_CLOSE_FAIL="${TMPDIR}/mock-curl-close-fail"
-printf '#!/usr/bin/env bash\necho "curl $*" >> %s\nMOCK_NOTES_FILE=%s\nMOCK_CURL_ISSUE_FAIL=%s\nMOCK_CURL_LABEL_FAIL=%s\nMOCK_CURL_CLOSE_FAIL=%s\n' "${CURL_LOG}" "${MOCK_NOTES_FILE}" "${MOCK_CURL_ISSUE_FAIL}" "${MOCK_CURL_LABEL_FAIL}" "${MOCK_CURL_CLOSE_FAIL}" > "${MOCK_BIN}/curl"
+MOCK_CURL_NOTE_FAIL="${TMPDIR}/mock-curl-note-fail"
+printf '#!/usr/bin/env bash\necho "curl $*" >> %s\nMOCK_CURL_ISSUE_FAIL=%s\nMOCK_CURL_LABEL_FAIL=%s\nMOCK_CURL_CLOSE_FAIL=%s\nMOCK_CURL_NOTE_FAIL=%s\n' "${CURL_LOG}" "${MOCK_CURL_ISSUE_FAIL}" "${MOCK_CURL_LABEL_FAIL}" "${MOCK_CURL_CLOSE_FAIL}" "${MOCK_CURL_NOTE_FAIL}" > "${MOCK_BIN}/curl"
 cat >> "${MOCK_BIN}/curl" <<'CURLMOCK'
 
 # Parse the URL from args (last non-flag argument or after --request METHOD).
@@ -1837,10 +1837,25 @@ for arg in "$@"; do
   esac
 done
 
-# Return bot user identity.
+# Bot identity and a bot-authored note per triage marker. Posting never
+# reads these; they let the append tests catch code that edits in place.
 if [[ "${URL}" =~ /user$ ]] && [[ "${METHOD}" == "GET" ]]; then
   echo '{"username":"fullsend-bot","id":12345,"name":"Fullsend Bot"}'
   exit 0
+fi
+if [[ "${URL}" =~ /notes\? ]] && [[ "${METHOD}" == "GET" ]]; then
+  if [[ "${URL}" =~ page=1(&|$) ]] || [[ ! "${URL}" =~ page=[0-9] ]]; then
+    echo '[{"id":200,"body":"<!-- fullsend:triage-in-progress -->\nOld status","author":{"username":"fullsend-bot"}},{"id":201,"body":"<!-- fullsend:triage-agent -->\nOld analysis","author":{"username":"fullsend-bot"}}]'
+  else
+    echo '[]'
+  fi
+  exit 0
+fi
+
+# Simulate a failed note POST when flagged.
+if [[ "${URL}" =~ /notes$ ]] && [[ "${METHOD}" == "POST" ]] && [[ -f "${MOCK_CURL_NOTE_FAIL}" ]] && [[ -n "${HAS_FAIL}" ]]; then
+  echo "curl: (22) The requested URL returned error: 500" >&2
+  exit 22
 fi
 
 # Return labels for the issue when queried.
@@ -1853,20 +1868,6 @@ fi
 if [[ "${URL}" =~ /labels\? ]] && [[ "${METHOD}" == "GET" ]]; then
   if [[ "${URL}" =~ page=1(&|$) ]] || [[ ! "${URL}" =~ page=[0-9] ]]; then
     echo '[{"name":"area/api"},{"name":"area/cli"},{"name":"priority/high"},{"name":"component/parser"},{"name":"enhancement"},{"name":"bug"},{"name":"documentation"},{"name":"pr-open"}]'
-  else
-    echo '[]'
-  fi
-  exit 0
-fi
-
-# Return notes list — check for test-specific override file (page 1 only).
-if [[ "${URL}" =~ /notes\? ]] && [[ "${METHOD}" == "GET" ]]; then
-  if [[ "${URL}" =~ page=1(&|$) ]] || [[ ! "${URL}" =~ page=[0-9] ]]; then
-    if [[ -f "${MOCK_NOTES_FILE}" ]]; then
-      cat "${MOCK_NOTES_FILE}"
-    else
-      echo '[]'
-    fi
   else
     echo '[]'
   fi
@@ -2074,29 +2075,61 @@ run_gitlab_test "gitlab-in-progress-posts-sticky-comment" \
   '{"action":"in-progress","reasoning":"MR !50 fixes the reported bug","pull_requests":[{"url":"https://gitlab.com/test-group/test-project/-/merge_requests/50"}],"comment":"An open MR is already addressing this issue."}' \
   "api/v4/projects/test-group%2Ftest-project/issues/42/notes"
 
-# --- GitLab sticky-comment author filtering ---
+# --- GitLab marked comments append (fullsend-ai/fullsend#9334) ---
 
-# Test: sticky comment ignores notes from other users (spoofing protection).
-# Set up notes with a spoofed marker from a non-bot user.
-printf '%s' '[{"id":100,"body":"<!-- fullsend:triage-in-progress -->\nSpoofed content","author":{"username":"attacker"}}]' > "${MOCK_NOTES_FILE}"
-run_gitlab_test "gitlab-sticky-comment-ignores-spoofed-notes" \
-  '{"action":"in-progress","reasoning":"MR !50 fixes the reported bug","pull_requests":[{"url":"https://gitlab.com/test-group/test-project/-/merge_requests/50"}],"comment":"An open MR is already addressing this issue."}' \
-  "POST"
-rm -f "${MOCK_NOTES_FILE}"
+# run_gitlab_append_test NAME MARKER BODY_TEXT JSON — the mock lists a
+# bot-authored note for each marker, so code that edited the earlier note
+# in place would PUT it. Each run must instead post one new note: marker
+# first, the result (BODY_TEXT) below it, and no listing or PUT of notes.
+run_gitlab_append_test() {
+  local test_name="$1" marker="$2" body_text="$3" json="$4"
+  local before=${FAILURES}
+  run_gitlab_test "${test_name}" "${json}" \
+    "--request POST https://gitlab.com/api/v4/projects/test-group%2Ftest-project/issues/42/notes --data-urlencode body=${marker}"
+  [[ ${FAILURES} -eq ${before} ]] || return 0
+  if grep -qE -- "--request PUT [^ ]*/notes/" "${CURL_LOG}"; then
+    echo "FAIL: ${test_name} — an earlier note was edited (PUT)"
+    FAILURES=$((FAILURES + 1))
+  fi
+  if grep -qF -- "/notes?" "${CURL_LOG}" || grep -qF -- "Previous run" "${CURL_LOG}"; then
+    echo "FAIL: ${test_name} — notes were listed or history was folded in"
+    FAILURES=$((FAILURES + 1))
+  fi
+  local posts
+  posts=$(grep -cE -- "--request POST [^ ]*/issues/42/notes( |$)" "${CURL_LOG}" || true)
+  if [[ "${posts}" -ne 1 ]]; then
+    echo "FAIL: ${test_name} — expected exactly one note POST, got ${posts}"
+    FAILURES=$((FAILURES + 1))
+  fi
+  # The same POST carries the result body, not just the marker.
+  if ! awk -v m="body=${marker}" '/^curl /{p = index($0, "--request POST ") && index($0, m)} p' "${CURL_LOG}" \
+      | grep -qF -- "${body_text}"; then
+    echo "FAIL: ${test_name} — the posted note has no result body"
+    FAILURES=$((FAILURES + 1))
+  fi
+}
 
-# Test: sticky comment updates own note when bot-authored note exists.
-printf '%s' '[{"id":200,"body":"<!-- fullsend:triage-in-progress -->\nOld triage content","author":{"username":"fullsend-bot"}}]' > "${MOCK_NOTES_FILE}"
-run_gitlab_test "gitlab-sticky-comment-updates-own-note" \
-  '{"action":"in-progress","reasoning":"MR !50 fixes the reported bug","pull_requests":[{"url":"https://gitlab.com/test-group/test-project/-/merge_requests/50"}],"comment":"An open MR is already addressing this issue."}' \
-  "notes/200"
-rm -f "${MOCK_NOTES_FILE}"
+run_gitlab_append_test "gitlab-rerun-in-progress-posts-new-note" \
+  "<!-- fullsend:triage-in-progress -->" \
+  "An open MR is already addressing this issue." \
+  '{"action":"in-progress","reasoning":"MR !50 fixes the reported bug","pull_requests":[{"url":"https://gitlab.com/test-group/test-project/-/merge_requests/50"}],"comment":"An open MR is already addressing this issue."}'
 
-# Test: sticky comment preserves history in <details> block.
-printf '%s' '[{"id":300,"body":"<!-- fullsend:triage-in-progress -->\nPrevious triage summary here","author":{"username":"fullsend-bot"}}]' > "${MOCK_NOTES_FILE}"
-run_gitlab_test "gitlab-sticky-comment-preserves-history" \
+run_gitlab_append_test "gitlab-rerun-sufficient-posts-new-note" \
+  "<!-- fullsend:triage-agent -->" \
+  "Ready to implement." \
+  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_crash"},"comment":"## Triage Summary\n\nReady to implement."}'
+
+# Test: a failed note POST warns and fails the step.
+touch "${MOCK_CURL_NOTE_FAIL}"
+run_gitlab_test "gitlab-sticky-post-failure-fails" \
   '{"action":"in-progress","reasoning":"MR !50 fixes the reported bug","pull_requests":[{"url":"https://gitlab.com/test-group/test-project/-/merge_requests/50"}],"comment":"An open MR is already addressing this issue."}' \
-  "Previous run"
-rm -f "${MOCK_NOTES_FILE}"
+  "" \
+  "true"
+if ! grep -qF -- "::warning::Failed to post comment" "${TMPDIR}/stdout.log"; then
+  echo "FAIL: gitlab-sticky-post-failure-fails — no ::warning:: for the failed POST"
+  FAILURES=$((FAILURES + 1))
+fi
+rm -f "${MOCK_CURL_NOTE_FAIL}"
 
 # Test: curl timeout flags are present in API calls.
 : > "${CURL_LOG}"

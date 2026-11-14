@@ -253,6 +253,14 @@ variable, which the harness sets based on the detected CI platform (`github`,
 forward-compatible override when set, but the harness itself only ever sets
 `FULLSEND_FORGE`.
 
+Re-running triage posts the result differently per tracker:
+
+- **GitLab:** every run, a retry included, posts the `sufficient` or
+  `in-progress` result as a new note and never edits an earlier one.
+- **GitHub and Jira:** the `sufficient` and `in-progress` results edit the
+  earlier marked comment until fullsend-ai/fullsend#9399 lands, which is
+  expected to make them post a new comment each run as well.
+
 ### Jira setup
 
 Jira triage requires the following env vars, mirroring the shape of the
@@ -314,7 +322,8 @@ somewhere else.
   `in-progress`) use fixed markers. Other comments use a marker scoped to the
   CI run (`GITHUB_RUN_ID` or `CI_PIPELINE_ID`). A re-run of the same workflow
   or pipeline edits its earlier comment, while a new triage run still posts a
-  new one.
+  new one. This is expected to change once fullsend-ai/fullsend#9399 lands
+  (see [Multi-forge support](#multi-forge-support)).
 - **Write failures:** a failed Jira write fails the step. This covers label
   adds and removals, component updates, comments and transitions.
 - **Updates that cannot be applied:** these are listed under **Not applied in

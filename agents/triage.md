@@ -97,11 +97,19 @@ If every child is closed and every addressing PR/MR is merged, use `completed`. 
 
 Check whether this issue has already been triaged. Look through the comments you fetched in Step 1 for a prior triage comment — it will contain `<!-- fullsend:triage-agent -->` or `<!-- fullsend:triage-in-progress -->` in its body, or be posted by a user whose login ends in `-triage[bot]`.
 
+An issue triaged more than once can have several comments containing `<!-- fullsend:triage-agent -->`: on GitLab every triage run adds a new one, and elsewhere a run may add one or edit the earlier one. Read every one of them. The newest is your starting point (**the prior analysis**); read any newer triage comments (an in-progress status, questions) as updates since. Fetch every page of comments before choosing, and do not rely on the order of the first page:
+
+- **GitLab:** the forge skill lists notes oldest first, 100 per page. Repeat the request with `&page=N` (2, 3, …) until a page returns fewer than `per_page` items or the `X-Next-Page` response header is empty.
+- **Jira:** the forge skill returns the 50 newest comments by creation time, and an edited marked comment keeps its old creation time, so it can sit past page one. Repeat the request with `&startAt=N` (advancing by `maxResults`) until `startAt + maxResults >= total`.
+- **GitHub:** `gh issue view --json comments` already returns every comment.
+
+Pick the newest by the latest edit time (GitLab `updated_at`, Jira `updated`), or creation time when no edit time is given, since GitHub and Jira still edit the marked comment in place until fullsend-ai/fullsend#9399 lands.
+
 If a prior triage comment exists, **accumulate — do not replace:**
 
 - **Preserve all previously identified problems.** Treat every cause documented in the prior analysis as an established finding. Do not silently drop any of them. If you believe a previously identified cause is no longer valid (e.g., already fixed, confirmed misdiagnosis), document this explicitly in `reasoning` — a cause removed without explanation is a regression in analysis quality.
 - **Incorporate human-identified problems.** When an issue author or contributor adds a comment that says "the real issue is X", "you also missed Y", or otherwise points to a problem not in the prior analysis, treat it with the same evidentiary weight as a clear error message. If you cannot independently verify the claim, include it as a hypothesis — do not omit it.
-- **Your new analysis must be a superset** of the prior analysis. Identified problems accumulate across triage runs; the count of documented problems can only go up, not down (unless a cause is explicitly refuted with reasoning).
+- **Your new analysis must be a superset** of every earlier analysis: keep every cause documented in any earlier triage-agent comment, not only the newest. Identified problems accumulate across triage runs; the count of documented problems can only go up, not down (unless a cause is explicitly refuted with reasoning).
 - **Re-triaging is about incorporating new information**, not restarting from scratch. If a human comment triggered this re-run, focus your analysis on what that comment changes or adds. Then confirm all previously documented problems are still represented.
 
 ## Step 3: Assess information sufficiency
