@@ -1,33 +1,34 @@
 name: Functional Tests
 
-# PR-triggered functional tests use pull_request_target so fork PRs receive
-# secrets.  Authorization runs in a separate gate job (base checkout only)
-# before the test job checks out the PR head — same pattern as fullsend e2e.
+# Same-repo PRs run on pull_request (secrets available; the gate job
+# authorizes the author before detect/functional-tests check out PR head).
+# Fork PRs get no secrets on pull_request: the suites skip until a writer
+# comments `/ok-to-test <sha>`, and ok-to-test.yml calls this workflow for
+# that sha (event_name issue_comment, inputs.head_sha). No
+# pull_request_target: GitHub blocks it by default from 2026-12-02 (#1975).
+#
+# Each change runs the full tier once, in the merge queue, on the commit that
+# lands. PR runs use the release tier (one release:true case per agent)
+# unless the PR carries the eval-full label. Applying eval-full does not
+# start a run by itself; it applies from the next push or /ok-to-test run. There is no push-to-main run:
+# the merge queue already tested that merge commit, and the nightly
+# (functional-tests-nightly.yml) runs the full tier for every agent.
 
 permissions: {}
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - 'eval/**'
-      - 'agents/**'
-      - 'harness/**'
-      - 'scripts/**'
-      - 'schemas/**'
-      - 'env/**'
-      - 'common/**'
-      - 'policies/**'
-      - 'skills/**'
-      - 'plugins/**'
-      - 'docs/**'
-      - '.github/workflows/functional-tests.yml'
-      - '.github/scripts/**'
-      - 'config.yaml'
-  pull_request_target:
-    types: [opened, synchronize, reopened, labeled]
+  pull_request:
+    # Fork PRs: /ok-to-test is handled by ok-to-test.yml via workflow_call.
+    types: [opened, synchronize, reopened]
   merge_group:
   workflow_dispatch:
+    inputs:
+      tier:
+        description: 'Eval tier: auto (script default), full or release'
+        required: false
+        type: choice
+        options: [auto, full, release]
+        default: auto
   workflow_call:
     inputs:
       fullsend_ref:
@@ -35,6 +36,26 @@ on:
         required: false
         type: string
         default: main
+      tier:
+        # Empty keeps eval/run-functional.sh's caller-derived default
+        # (release for a cross-repo call), so callers that omit it -- and
+        # callers pinned to an older copy of this workflow -- behave the same.
+        description: "Eval tier: '' or auto (script default), full or release"
+        required: false
+        type: string
+        default: ''
+      # Set only by ok-to-test.yml in this repo, from an authorized
+      # /ok-to-test comment; fullsend's release.yml leaves them empty.
+      pr_number:
+        description: Pull request number the /ok-to-test comment authorized
+        required: false
+        type: string
+        default: ''
+      head_sha:
+        description: PR head sha the /ok-to-test comment authorized (checked out by the tests)
+        required: false
+        type: string
+        default: ''
     secrets:
       E2E_GCP_WIF_PROVIDER:
         required: false
@@ -48,26 +69,37 @@ on:
       agents_sha:
         description: 'Resolved commit SHA of the agents checkout (for cross-repo tagging)'
         value: ${{ jobs.detect.outputs.agents_sha }}
+      result:
+        description: 'functional-tests-complete job status (success or failure); read by ok-to-test.yml'
+        value: ${{ jobs.functional-tests-complete.outputs.result }}
 
+# In a called workflow github.workflow is the caller's name, so /ok-to-test
+# runs need their own group: behaviour-tests.yml is called from the same
+# caller run and would otherwise share (and deadlock on) one group. They are
+# never cancelled; the caller reports their result.
 concurrency:
   group: >-
-    ${{ github.event_name == 'pull_request_target'
+    ${{ github.event_name == 'pull_request'
         && format('functional-{0}', github.event.pull_request.number)
         || github.repository != 'fullsend-ai/agents'
         && format('functional-call-{0}', github.run_id)
+        || github.event_name == 'issue_comment'
+        && format('functional-ok-to-test-{0}', inputs.pr_number)
         || format('{0}-{1}', github.workflow, github.ref) }}
   cancel-in-progress: >-
-    ${{ github.event_name == 'pull_request_target'
-        || github.ref != 'refs/heads/main' }}
+    ${{ github.event_name == 'pull_request'
+        || (github.event_name != 'issue_comment' && github.ref != 'refs/heads/main') }}
 
 jobs:
   gate:
     # Separate job so pull-requests: write stays out of the job that checks
     # out fork head and runs tests with secrets.
     # Never checkout github.event.pull_request.head.sha here.
+    # Same-repo PRs only (gh-aw's guard): a fork PR's pull_request token is
+    # read-only and it gets no secrets, so forks go through /ok-to-test.
     if: >-
-      github.event_name == 'pull_request_target' &&
-      (github.event.action != 'labeled' || github.event.label.name == 'ok-to-test')
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.head.repo.id == github.repository_id
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
@@ -78,7 +110,8 @@ jobs:
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          ref: ${{ github.sha }}  # Base branch only — never checkout PR head in gate
+          ref: ${{ github.event.pull_request.base.sha }}  # Base only — never checkout PR head in gate
+          persist-credentials: false
 
       - name: Check PR authorization
         id: auth
@@ -90,6 +123,7 @@ jobs:
           event_action: ${{ github.event.action }}
           pr_author_association: ${{ github.event.pull_request.author_association }}
           pr_author_login: ${{ github.event.pull_request.user.login }}
+          label_actor_login: ${{ github.event.sender.login }}
 
   # ---------------------------------------------------------------------------
   # Detect which agents need functional testing based on changed files.
@@ -100,7 +134,8 @@ jobs:
     if: >-
       !cancelled() &&
       github.repository_owner == 'fullsend-ai' &&
-      (github.event_name != 'pull_request_target' || needs.gate.outputs.authorized == 'true')
+      (github.event_name != 'pull_request' || needs.gate.outputs.authorized == 'true') &&
+      (github.event_name != 'issue_comment' || inputs.head_sha != '')
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
@@ -113,8 +148,8 @@ jobs:
         id: changes
         if: >-
           github.repository == 'fullsend-ai/agents' &&
-          (github.event_name == 'pull_request_target' ||
-           github.event_name == 'push' ||
+          (github.event_name == 'pull_request' ||
+           github.event_name == 'issue_comment' ||
            github.event_name == 'merge_group')
         env:
           GH_TOKEN: ${{ github.token }}
@@ -123,27 +158,23 @@ jobs:
           REPO: ${{ github.repository }}
           MERGE_GROUP_BASE: ${{ github.event.merge_group.base_sha }}
           MERGE_GROUP_HEAD: ${{ github.event.merge_group.head_sha }}
-          PUSH_BEFORE: ${{ github.event.before }}
-          PUSH_AFTER: ${{ github.event.after }}
+          # /ok-to-test runs: diff the authorized sha, not whatever the PR head is now.
+          HEAD_SHA: ${{ inputs.head_sha }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
-          if [ "$EVENT_NAME" = "merge_group" ]; then
-            FILES=$(gh api "repos/${REPO}/compare/${MERGE_GROUP_BASE}...${MERGE_GROUP_HEAD}" --jq '.files[].filename') || {
-              echo "::warning::Failed to fetch merge group files — running all functional tests as a precaution"
+          if [ "$EVENT_NAME" = "merge_group" ] || [ "$EVENT_NAME" = "issue_comment" ]; then
+            if [ "$EVENT_NAME" = "merge_group" ]; then
+              RANGE="${MERGE_GROUP_BASE}...${MERGE_GROUP_HEAD}"
+            else
+              RANGE="${DEFAULT_BRANCH}...${HEAD_SHA}"
+            fi
+            FILES=$(gh api "repos/${REPO}/compare/${RANGE}" --jq '.files[].filename') || {
+              echo "::warning::Failed to fetch ${EVENT_NAME} files — running all functional tests as a precaution"
               exit 0
             }
             FILE_COUNT=$(echo "$FILES" | wc -l)
             if [ "$FILE_COUNT" -ge 300 ]; then
               echo "::warning::Compare API returned $FILE_COUNT files (possible truncation at 300) — running all functional tests as a precaution"
-              exit 0
-            fi
-          elif [ "$EVENT_NAME" = "push" ]; then
-            FILES=$(gh api "repos/${REPO}/compare/${PUSH_BEFORE}...${PUSH_AFTER}" --jq '.files[].filename') || {
-              echo "::warning::Failed to fetch push diff — running all functional tests as a precaution"
-              exit 0
-            }
-            FILE_COUNT=$(echo "$FILES" | wc -l)
-            if [ "$FILE_COUNT" -ge 300 ]; then
-              echo "::warning::Push diff returned $FILE_COUNT files (possible truncation at 300) — running all functional tests as a precaution"
               exit 0
             fi
           else
@@ -171,11 +202,14 @@ jobs:
           ref: >-
             ${{ github.repository != 'fullsend-ai/agents'
                 && 'main'
-                || (github.event_name == 'pull_request_target'
+                || (github.event_name == 'pull_request'
                     && github.event.pull_request.head.sha
+                    || github.event_name == 'issue_comment' && inputs.head_sha
                     || github.sha) }}
           persist-credentials: false
-          allow-unsafe-pr-checkout: ${{ github.event_name == 'pull_request_target' }}
+          # Fork code runs only on issue_comment, after ok-to-test.yml has
+          # authorized this exact sha (checkout itself does not enforce it).
+          allow-unsafe-pr-checkout: ${{ github.event_name == 'issue_comment' }}
 
       - name: Install yq
         run: |
@@ -191,7 +225,8 @@ jobs:
           if [ -n "$CHANGED_FILES" ]; then
             AGENTS=$(echo "$CHANGED_FILES" | bash .github/scripts/select-eval-agents.sh)
           else
-            # workflow_dispatch: run all agents with eval configs
+            # No diff (dispatch, workflow_call, or a failed diff fetch): run all
+            # agents with eval configs
             AGENTS=$(for d in eval/*/eval.yaml; do basename "$(dirname "$d")"; done)
           fi
           JSON=$(echo "$AGENTS" | jq -Rsc '[split("\n")[] | select(length > 0)]')
@@ -208,9 +243,12 @@ jobs:
       !cancelled() &&
       github.repository_owner == 'fullsend-ai' &&
       needs.detect.outputs.agents != '[]' &&
-      (github.event_name != 'pull_request_target' || needs.gate.outputs.authorized == 'true')
+      (github.event_name != 'pull_request' || needs.gate.outputs.authorized == 'true') &&
+      (github.event_name != 'issue_comment' || inputs.head_sha != '')
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    # The full-tier review leg takes 39-43 min (9 live cases); 60 leaves
+    # headroom. The release tier runs one case per agent.
+    timeout-minutes: 60
     permissions:
       contents: read
       id-token: write
@@ -225,11 +263,14 @@ jobs:
           ref: >-
             ${{ github.repository != 'fullsend-ai/agents'
                 && (needs.detect.outputs.agents_sha || 'main')
-                || (github.event_name == 'pull_request_target'
+                || (github.event_name == 'pull_request'
                     && github.event.pull_request.head.sha
+                    || github.event_name == 'issue_comment' && inputs.head_sha
                     || github.sha) }}
           persist-credentials: false
-          allow-unsafe-pr-checkout: ${{ github.event_name == 'pull_request_target' }}
+          # Fork code runs only on issue_comment, after ok-to-test.yml has
+          # authorized this exact sha (checkout itself does not enforce it).
+          allow-unsafe-pr-checkout: ${{ github.event_name == 'issue_comment' }}
           submodules: true
 
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
@@ -285,29 +326,6 @@ jobs:
           echo "${FULLSEND_CHECKOUT}/bin" >> "$GITHUB_PATH"
           "${FULLSEND_CHECKOUT}/bin/fullsend" --version
 
-      - name: Configure OpenShell gateway
-        run: |
-          eval "$(grep -E '^OPENSHELL_(VERSION|SHA)=' "${FULLSEND_CHECKOUT}/.github/scripts/openshell-version.sh")"
-          if [ -z "$OPENSHELL_VERSION" ] || [ -z "$OPENSHELL_SHA" ]; then
-            echo "::error::Failed to resolve OpenShell version from fullsend checkout"
-            exit 1
-          fi
-          echo "OPENSHELL_VERSION=${OPENSHELL_VERSION}" >> "$GITHUB_ENV"
-          echo "OPENSHELL_SHA=${OPENSHELL_SHA}" >> "$GITHUB_ENV"
-          mkdir -p "$HOME/.config/openshell"
-          echo "OPENSHELL_BIND_ADDRESS=0.0.0.0" > "$HOME/.config/openshell/gateway.env"
-          cat > "$HOME/.config/openshell/gateway.toml" << EOF
-          [openshell]
-          version = 1
-
-          [openshell.gateway]
-          supervisor_image = "ghcr.io/nvidia/openshell/supervisor:${OPENSHELL_VERSION}"
-          EOF
-
-      - name: Install OpenShell CLI
-        run: |
-          "${FULLSEND_CHECKOUT}/.github/scripts/install-openshell.sh"
-
       - name: Install Podman
         run: |
           sudo apt-get update
@@ -321,16 +339,52 @@ jobs:
 
       - name: Start Podman API service
         run: |
+          # Socket-activated under the user's systemd, as in fullsend's
+          # action.yml. The OpenShell gateway is a systemd user service that
+          # pins the podman driver and needs this socket to answer when it
+          # starts. With a `podman system service &` started from a step
+          # instead, it failed with "no responsive Podman API socket found".
+          systemctl --user start podman.socket
           SOCKET_PATH="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/podman/podman.sock"
-          if [ ! -S "${SOCKET_PATH}" ]; then
-            mkdir -p "$(dirname "${SOCKET_PATH}")"
-            podman system service --time=0 "unix://${SOCKET_PATH}" &
-            for _i in $(seq 1 30); do
-              [ -S "${SOCKET_PATH}" ] && podman --url "unix://${SOCKET_PATH}" info >/dev/null 2>&1 && break
-              sleep 1
-            done
-            [ -S "${SOCKET_PATH}" ] || { echo "::error::Podman socket not ready"; exit 1; }
+          for _i in $(seq 1 30); do
+            podman --url "unix://${SOCKET_PATH}" info >/dev/null 2>&1 && break
+            sleep 1
+          done
+          if ! podman --url "unix://${SOCKET_PATH}" info >/dev/null 2>&1; then
+            echo "::error::Podman socket not ready at ${SOCKET_PATH}"
+            systemctl --user status podman.socket podman.service --no-pager || true
+            journalctl --user -u podman.socket -u podman.service --no-pager -n 40 || true
+            exit 1
           fi
+
+      # After Podman: the gateway pins compute_driver = "podman" and does not
+      # start without the Podman API socket.
+      - name: Configure OpenShell gateway
+        run: |
+          eval "$(grep -E '^OPENSHELL_(VERSION|SHA)=' "${FULLSEND_CHECKOUT}/.github/scripts/openshell-version.sh")"
+          if [ -z "$OPENSHELL_VERSION" ] || [ -z "$OPENSHELL_SHA" ]; then
+            echo "::error::Failed to resolve OpenShell version from fullsend checkout"
+            exit 1
+          fi
+          echo "OPENSHELL_VERSION=${OPENSHELL_VERSION}" >> "$GITHUB_ENV"
+          echo "OPENSHELL_SHA=${OPENSHELL_SHA}" >> "$GITHUB_ENV"
+          mkdir -p "$HOME/.config/openshell"
+          echo "OPENSHELL_BIND_ADDRESS=0.0.0.0" > "$HOME/.config/openshell/gateway.env"
+          cat > "$HOME/.config/openshell/gateway.toml" << EOF
+          [openshell]
+          version = 2
+
+          [openshell.gateway]
+          compute_driver = "podman"
+
+          [openshell.drivers.podman]
+          supervisor_image = "ghcr.io/nvidia/openshell/supervisor:${OPENSHELL_VERSION}"
+          health_check_interval_secs = 10
+          EOF
+
+      - name: Install OpenShell CLI
+        run: |
+          "${FULLSEND_CHECKOUT}/.github/scripts/install-openshell.sh"
 
       - name: Install validation dependencies
         run: pip install --quiet "jsonschema>=4.18.0"
@@ -373,6 +427,18 @@ jobs:
           EVALS_HOST_CREDENTIALS: ${{ env.HOST_GOOGLE_APPLICATION_CREDENTIALS }}
           FULLSEND_DIR: ${{ github.workspace }}
           AGENT: ${{ matrix.agent }}
+          # An explicit tier input (dispatch, workflow_call) wins; a
+          # workflow_call sees its caller's event_name, so the input must
+          # be checked first. Otherwise merge_group runs full, and
+          # pull_request runs release, or full with the eval-full label.
+          # ok-to-test.yml passes the tier from the PR's labels. Anything
+          # else leaves EVAL_TIER empty, i.e. the script's default.
+          EVAL_TIER: >-
+            ${{ (inputs.tier != '' && inputs.tier != 'auto') && inputs.tier
+                || github.event_name == 'merge_group' && 'full'
+                || github.event_name == 'pull_request'
+                   && (contains(github.event.pull_request.labels.*.name, 'eval-full') && 'full' || 'release')
+                || '' }}
         run: ./eval/run-functional.sh "$AGENT"
 
       # Protected-path change (human review required): scrub eval artifacts before
@@ -397,30 +463,30 @@ jobs:
           retention-days: 30
 
   # ---------------------------------------------------------------------------
-  # Roll-up job with a stable name for branch protection required checks.
-  # Require "functional-tests-complete" in repo settings — it handles all
-  # dynamic matrix shapes including empty (no agents to test).
+  # Roll-up job with a stable name: one verdict for every dynamic matrix
+  # shape, including empty (no agents to test). It is not a required check.
+  # Before requiring it, note that on pull_request a fork PR controls this
+  # workflow file; only the check run ok-to-test.yml creates is trustworthy.
   # ---------------------------------------------------------------------------
   functional-tests-complete:
     needs: [gate, detect, functional-tests]
-    # Always runs. A pull_request_target `labeled` event for a label other
-    # than ok-to-test is handled inside check-rollup-result.sh, which mirrors
-    # the previous verdict on this commit rather than asserting a new one.
-    # Guarding this job with the gate's own `if:` was tried and rejected: a
-    # skipped job still publishes a check run that supersedes the previous
-    # one, and `skipped` satisfies a required check — so it would turn a
-    # genuinely failing run green the moment anyone labelled the PR. See #954.
+    # Always runs, so every PR head gets a verdict: a fork PR's skipped
+    # detect fails here until a writer comments /ok-to-test <sha>.
     if: always()
     runs-on: ubuntu-24.04
-    timeout-minutes: 1
+    # 5, not 1: ok-to-test.yml reads this job's result, and a called job
+    # that finished its steps was seen cancelled at a 1-minute limit.
+    timeout-minutes: 5
     permissions:
       contents: read
-      # Read-only: the roll-up mirrors the previous check run of its own name
-      # on this commit when a label event carries no verdict.
-      checks: read
+    outputs:
+      result: ${{ steps.result.outputs.result }}
     steps:
-      # Base branch only -- a PR must not be able to rewrite this script
-      # to force-pass its own roll-up check.
+      # On pull_request this file and the script come from the PR's merge
+      # commit, so a PR can force its own roll-up green. That gates
+      # nothing: the check is not required, a same-repo author already has
+      # write access, and a fork PR's trustworthy result is the check run
+      # ok-to-test.yml creates after /ok-to-test.
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           repository: ${{ github.repository != 'fullsend-ai/agents' && 'fullsend-ai/agents' || github.repository }}
@@ -432,14 +498,18 @@ jobs:
           sparse-checkout: .github/scripts
 
       - name: Check results
+        id: result
         env:
           EVENT_NAME: ${{ github.event_name }}
-          EVENT_ACTION: ${{ github.event.action }}
-          LABEL_NAME: ${{ github.event.label.name }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || inputs.head_sha }}
           GATE_RESULT: ${{ needs.gate.result }}
           DETECT_RESULT: ${{ needs.detect.result }}
           TESTS_RESULT: ${{ needs.functional-tests.result }}
           CROSS_REPO: ${{ github.repository != 'fullsend-ai/agents' }}
-          GH_TOKEN: ${{ github.token }}
-        run: bash .github/scripts/check-rollup-result.sh
+        run: |
+          if bash .github/scripts/check-rollup-result.sh; then
+            echo "result=success" >> "$GITHUB_OUTPUT"
+          else
+            echo "result=failure" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi

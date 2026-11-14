@@ -1,0 +1,12 @@
+{
+  "action": "approve",
+  "pr_number": 1,
+  "repo": "owner/repo",
+  "head_sha": "<pr_head_sha>",
+  "body": "Behaviour smoke: the review bot approves.",
+  "risk_assessment": {
+    "score": 1,
+    "level": "low",
+    "rationale": "Behaviour smoke: a one-line test file change."
+  }
+}

@@ -1,0 +1,44 @@
+forge: github
+seed_issues:
+  - title: "Clarify developer setup in the README"
+    body: |
+      Update the README with the current local development command.
+fixture:
+  type: pull_request
+  title: "docs: clarify developer setup"
+  body: |
+    Fixes #1
+
+    Update the README with the current local development command.
+  base: main
+  files:
+    - path: README.md
+      content: |
+        # Example service
+
+        Run the tests with `pytest`.
+    - path: src/auth.py
+      content: |
+        def lookup_user(connection, name):
+            return connection.execute(f"SELECT * FROM users WHERE name='{name}'")
+  followup_files:
+    - path: README.md
+      content: |
+        # Example service
+
+        Install dependencies with `pip install -r requirements.txt`.
+        Run the tests with `pytest`.
+    - path: src/auth.py
+      content: |
+        def lookup_user(connection, name):
+            return connection.execute(f"SELECT * FROM users WHERE name='{name}'")
+prior_review:
+  provenance: app-verified
+  body: |
+    ## Findings
+
+    #### High
+
+    - **[injection-vuln]** `src/auth.py:2` — SQL query interpolates user input.
+
+    <!-- fullsend:review-findings-v2:eyJ2ZXJzaW9uIjoyLCJmaW5kaW5ncyI6W3sic2V2ZXJpdHkiOiJoaWdoIiwiY2F0ZWdvcnkiOiJpbmplY3Rpb24tdnVsbiIsImZpbGUiOiJzcmMvYXV0aC5weSIsImxpbmUiOjIsImlkIjoiZl91bmNoYW5nZWQxIn1dfQ== -->

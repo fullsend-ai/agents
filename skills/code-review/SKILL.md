@@ -184,6 +184,9 @@ already stripped the payload.
 - Does the change fit the overall design of the module/system?
 - Is the complexity proportional to the value delivered?
 - Are there simpler alternatives that achieve the same goal?
+- **Multi-issue scope bundling:** use **medium+** `scope-bundling` for
+  2+ issue references across separate domains; recommend a split.
+  Same-domain feature-plus-tests bundling stays low.
 
 #### Style/conventions
 
@@ -220,9 +223,9 @@ readability or correctness.
 For each issue identified, record:
 
 - **Severity:** critical | high | medium | low | info
-- **Category:** e.g., `logic-error`, `auth-bypass`, `missing-test`,
-  `test-weakened`, `tier-mismatch`, `injection-pattern`,
-  `unicode-steganography`, `data-exposure`, `naming-convention`
+- **Category:** a value from the canonical review taxonomy, e.g.
+  `logic-error`, `auth-bypass`, `missing-test`, `test-weakened`,
+  `tier-mismatch`, `injection-vuln`, `naming-convention`
 - **Description:** natural-language explanation of the finding
 - **Location:** relative file path and line number(s). Verify each
   line number: the content at the cited line must be the specific
@@ -264,25 +267,18 @@ skill):
   since the prior review SHA: severity may be re-evaluated normally.
 - **New findings:** For findings with no prior match: assess severity
   normally.
+- **Ids and closed records:** Copy a matched prior `id`; never invent one.
+  Closed `resolved_by_change`/`dismissed_by_human` records are not re-raised;
+  a returning defect gets a new id.
 
 When prior review context is NOT available (first review): assess all
 findings normally.
 
 #### Finding matching procedure
 
-To match a current finding against a prior finding:
-
-1. **Category match:** same review dimension (correctness, security, etc.)
-2. **File match:** same relative file path
-3. **Code location match:** verify the function or class containing the
-   finding still exists in the unchanged file. Use function/class names
-   as anchors — if line numbers shifted due to insertions or deletions
-   elsewhere in the file, the function name is the stable identifier.
-4. **Description match:** the finding's description applies to the same
-   logical issue (not just the same line number)
-
-If all four criteria match, apply the anchoring rule. If any criterion
-fails, treat the finding as new.
+Prior fields are severity/category/file/line only; descriptions are absent. Match
+by same category, non-null path, and unchanged function/class. Line may
+disambiguate. Never infer descriptions; null files do not anchor. Ambiguous matches are new.
 
 Then determine the overall outcome:
 
@@ -302,6 +298,8 @@ Then determine the overall outcome:
   findings as comments in the review body so the author sees them, but
   do not block the PR)
 - No findings -> `approve`
+- On verified re-review, new low/info findings do not start a fix run;
+  carried actionable and prior high/critical findings remain blocking.
 - The approach is fundamentally wrong — wrong design, unauthorized
   change, or the PR should be closed/completely rethought -> `reject`.
   Use `reject` only when no amount of code-level iteration will make

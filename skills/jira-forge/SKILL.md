@@ -9,21 +9,42 @@ description: >-
 # Jira Cloud API
 
 Use `curl` with the Jira Cloud REST API (v3). The environment provides
-`JIRA_USER_EMAIL`, `JIRA_TOKEN`, and `JIRA_BASE_URL`. `JIRA_TOKEN` inside
+`JIRA_TOKEN`, `JIRA_BASE_URL`, and, when set, `JIRA_USER_EMAIL` and
+`JIRA_API_URL`. `JIRA_TOKEN` inside
 the sandbox is the opaque placeholder supplied by the `jira-ro` provider —
-the real API token never enters the sandbox. All requests use Basic auth:
+the real API token never enters the sandbox. Send API requests to
+`JIRA_API_URL` (the Atlassian API gateway for the site), falling back to
+`JIRA_BASE_URL` when it is empty; build browse links for humans from
+`JIRA_BASE_URL`.
+
+The auth mode depends on the account. A bot user has an email and uses
+Basic auth with `email:token`. A service account has no email
+(`JIRA_USER_EMAIL` is unset, empty, or only whitespace) and uses Bearer auth with the token.
+Never send Basic auth with an empty email. Shell variables do not carry over
+between commands, so start every command that calls Jira with the line that
+sets `JIRA_AUTH_FLAG` and `JIRA_AUTH`:
 
 ```bash
-curl --silent --user "${JIRA_USER_EMAIL}:${JIRA_TOKEN}" \
+JIRA_EMAIL="${JIRA_USER_EMAIL:-}"; JIRA_EMAIL="${JIRA_EMAIL//[[:space:]]/}"
+JIRA_AUTH_FLAG=--oauth2-bearer; test -n "${JIRA_EMAIL}" && JIRA_AUTH_FLAG=--user
+JIRA_AUTH="${JIRA_EMAIL:+${JIRA_EMAIL}:}${JIRA_TOKEN}"
+curl --silent "${JIRA_AUTH_FLAG}" "${JIRA_AUTH}" \
   --header "Content-Type: application/json" \
-  "${JIRA_BASE_URL}/rest/api/3/..."
+  "${JIRA_API_URL:-${JIRA_BASE_URL}}/rest/api/3/..."
 ```
 
 Extract the issue key and project key from the issue URL:
 ```bash
-ISSUE_KEY=$(echo "${ISSUE_URL}" | sed -E 's|.*/browse/||')
+ISSUE_KEY="${ISSUE_URL##*/browse/}"
 PROJECT_KEY="${ISSUE_KEY%-*}"
+echo "issue ${ISSUE_KEY}, project ${PROJECT_KEY}"
 ```
+
+Shell variables do not carry over between commands either, so the blocks
+below derive `ISSUE_KEY` again where they use it. In JQL, replace
+`<PROJECT_KEY>` with the project key printed above (the issue key up to
+its last `-`). The sandbox command check blocks a shell variable inside
+`--data-urlencode`.
 
 Jira Cloud only (v1) — the issue host must be `*.atlassian.net`. Jira
 Server/Data Center is not supported.
@@ -31,20 +52,25 @@ Server/Data Center is not supported.
 ## Issues
 
 ```bash
+JIRA_EMAIL="${JIRA_USER_EMAIL:-}"; JIRA_EMAIL="${JIRA_EMAIL//[[:space:]]/}"
+JIRA_AUTH_FLAG=--oauth2-bearer; test -n "${JIRA_EMAIL}" && JIRA_AUTH_FLAG=--user
+JIRA_AUTH="${JIRA_EMAIL:+${JIRA_EMAIL}:}${JIRA_TOKEN}"
+ISSUE_KEY="${ISSUE_URL##*/browse/}"
+
 # View an issue with full details
-curl --fail-with-body --silent --user "${JIRA_USER_EMAIL}:${JIRA_TOKEN}" \
-  "${JIRA_BASE_URL}/rest/api/3/issue/${ISSUE_KEY}"
+curl --fail-with-body --silent "${JIRA_AUTH_FLAG}" "${JIRA_AUTH}" \
+  "${JIRA_API_URL:-${JIRA_BASE_URL}}/rest/api/3/issue/${ISSUE_KEY}"
 
 # List issue comments (newest first, so the most recent reply is on page one)
-curl --fail-with-body --silent --user "${JIRA_USER_EMAIL}:${JIRA_TOKEN}" \
-  "${JIRA_BASE_URL}/rest/api/3/issue/${ISSUE_KEY}/comment?orderBy=-created&maxResults=50"
+curl --fail-with-body --silent "${JIRA_AUTH_FLAG}" "${JIRA_AUTH}" \
+  "${JIRA_API_URL:-${JIRA_BASE_URL}}/rest/api/3/issue/${ISSUE_KEY}/comment?orderBy=-created&maxResults=50"
 
 # List open issues in the project
-curl --fail-with-body --silent --user "${JIRA_USER_EMAIL}:${JIRA_TOKEN}" \
+curl --fail-with-body --silent "${JIRA_AUTH_FLAG}" "${JIRA_AUTH}" \
   --header "Content-Type: application/json" \
-  --get --data-urlencode "jql=project = ${PROJECT_KEY} AND statusCategory != Done" \
+  --get --data-urlencode "jql=project = <PROJECT_KEY> AND statusCategory != Done" \
   --data-urlencode "fields=summary,status,labels" \
-  "${JIRA_BASE_URL}/rest/api/3/search/jql"
+  "${JIRA_API_URL:-${JIRA_BASE_URL}}/rest/api/3/search/jql"
 ```
 
 **Requesting fields:** `/rest/api/3/search/jql` returns only `id` and `key`
@@ -67,30 +93,38 @@ that could be mistaken for an empty result set.
 ## Searching for Duplicates and Related Issues
 
 ```bash
+JIRA_EMAIL="${JIRA_USER_EMAIL:-}"; JIRA_EMAIL="${JIRA_EMAIL//[[:space:]]/}"
+JIRA_AUTH_FLAG=--oauth2-bearer; test -n "${JIRA_EMAIL}" && JIRA_AUTH_FLAG=--user
+JIRA_AUTH="${JIRA_EMAIL:+${JIRA_EMAIL}:}${JIRA_TOKEN}"
+
 # Search issues by keyword (JQL text search)
-curl --fail-with-body --silent --user "${JIRA_USER_EMAIL}:${JIRA_TOKEN}" \
+curl --fail-with-body --silent "${JIRA_AUTH_FLAG}" "${JIRA_AUTH}" \
   --header "Content-Type: application/json" \
-  --get --data-urlencode "jql=project = ${PROJECT_KEY} AND text ~ \"keyword\"" \
+  --get --data-urlencode "jql=project = <PROJECT_KEY> AND text ~ \"keyword\"" \
   --data-urlencode "fields=summary,status,labels" \
-  "${JIRA_BASE_URL}/rest/api/3/search/jql"
+  "${JIRA_API_URL:-${JIRA_BASE_URL}}/rest/api/3/search/jql"
 
 # Search across all projects visible to the account
-curl --fail-with-body --silent --user "${JIRA_USER_EMAIL}:${JIRA_TOKEN}" \
+curl --fail-with-body --silent "${JIRA_AUTH_FLAG}" "${JIRA_AUTH}" \
   --header "Content-Type: application/json" \
   --get --data-urlencode "jql=text ~ \"keyword\" ORDER BY updated DESC" \
   --data-urlencode "fields=summary,status,labels" \
-  "${JIRA_BASE_URL}/rest/api/3/search/jql"
+  "${JIRA_API_URL:-${JIRA_BASE_URL}}/rest/api/3/search/jql"
 ```
 
 ## Cross-Project Searches
 
 ```bash
+JIRA_EMAIL="${JIRA_USER_EMAIL:-}"; JIRA_EMAIL="${JIRA_EMAIL//[[:space:]]/}"
+JIRA_AUTH_FLAG=--oauth2-bearer; test -n "${JIRA_EMAIL}" && JIRA_AUTH_FLAG=--user
+JIRA_AUTH="${JIRA_EMAIL:+${JIRA_EMAIL}:}${JIRA_TOKEN}"
+
 # Search issues in another project (use its project key)
-curl --fail-with-body --silent --user "${JIRA_USER_EMAIL}:${JIRA_TOKEN}" \
+curl --fail-with-body --silent "${JIRA_AUTH_FLAG}" "${JIRA_AUTH}" \
   --header "Content-Type: application/json" \
   --get --data-urlencode "jql=project = OTHERPROJ AND text ~ \"keyword\"" \
   --data-urlencode "fields=summary,status,labels" \
-  "${JIRA_BASE_URL}/rest/api/3/search/jql"
+  "${JIRA_API_URL:-${JIRA_BASE_URL}}/rest/api/3/search/jql"
 ```
 
 ## Linked Code Changes
@@ -99,9 +133,14 @@ Jira has no pull/merge requests of its own. A PR that someone attached to the
 issue as a web link shows up as a remote link:
 
 ```bash
+JIRA_EMAIL="${JIRA_USER_EMAIL:-}"; JIRA_EMAIL="${JIRA_EMAIL//[[:space:]]/}"
+JIRA_AUTH_FLAG=--oauth2-bearer; test -n "${JIRA_EMAIL}" && JIRA_AUTH_FLAG=--user
+JIRA_AUTH="${JIRA_EMAIL:+${JIRA_EMAIL}:}${JIRA_TOKEN}"
+ISSUE_KEY="${ISSUE_URL##*/browse/}"
+
 # List remote links on an issue (may include manually linked PRs/MRs)
-curl --fail-with-body --silent --user "${JIRA_USER_EMAIL}:${JIRA_TOKEN}" \
-  "${JIRA_BASE_URL}/rest/api/3/issue/${ISSUE_KEY}/remotelink"
+curl --fail-with-body --silent "${JIRA_AUTH_FLAG}" "${JIRA_AUTH}" \
+  "${JIRA_API_URL:-${JIRA_BASE_URL}}/rest/api/3/issue/${ISSUE_KEY}/remotelink"
 ```
 
 This is strictly best-effort discovery for the Existing PR/MR gate, and it

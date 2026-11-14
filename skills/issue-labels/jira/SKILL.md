@@ -20,8 +20,9 @@ control labels -- just recommend what fits and the pipeline will filter.
 ## Step 0: Derive variables from ISSUE_URL
 
 ```bash
-ISSUE_KEY=$(echo "${ISSUE_URL}" | sed -E 's|.*/browse/||')
+ISSUE_KEY="${ISSUE_URL##*/browse/}"
 PROJECT_KEY="${ISSUE_KEY%-*}"
+echo "issue ${ISSUE_KEY}, project ${PROJECT_KEY}"
 ```
 
 ## Step 1: Discover labels already in use
@@ -32,9 +33,15 @@ maintainers already established," list labels already used anywhere on the
 Jira site via the global label-suggestion endpoint (paginate with `startAt`
 until `isLast` is `true`):
 
+Pick the auth mode as the `jira` skill describes: Basic when
+`JIRA_USER_EMAIL` is set, Bearer when it is empty.
+
 ```bash
-curl --silent --user "${JIRA_USER_EMAIL}:${JIRA_TOKEN}" \
-  "${JIRA_BASE_URL}/rest/api/3/label?startAt=0&maxResults=200" \
+JIRA_EMAIL="${JIRA_USER_EMAIL:-}"; JIRA_EMAIL="${JIRA_EMAIL//[[:space:]]/}"
+JIRA_AUTH_FLAG=--oauth2-bearer; test -n "${JIRA_EMAIL}" && JIRA_AUTH_FLAG=--user
+JIRA_AUTH="${JIRA_EMAIL:+${JIRA_EMAIL}:}${JIRA_TOKEN}"
+curl --silent "${JIRA_AUTH_FLAG}" "${JIRA_AUTH}" \
+  "${JIRA_API_URL:-${JIRA_BASE_URL}}/rest/api/3/label?startAt=0&maxResults=200" \
   | jq -r '.values[]'
 ```
 
@@ -46,14 +53,20 @@ labeling entirely -- do not emit `label_actions`.
 Spawn a sub-agent to investigate how labels have been applied to recent
 issues in the project. The sub-agent should:
 
-1. Query recent issues via JQL:
+1. Query recent issues via JQL. Replace `<PROJECT_KEY>` with the project
+   key printed in Step 0, and pass that key in the sub-agent's prompt:
+   the sandbox command check blocks a shell variable inside
+   `--data-urlencode`.
    ```bash
-   curl --fail-with-body --silent --user "${JIRA_USER_EMAIL}:${JIRA_TOKEN}" \
+   JIRA_EMAIL="${JIRA_USER_EMAIL:-}"; JIRA_EMAIL="${JIRA_EMAIL//[[:space:]]/}"
+   JIRA_AUTH_FLAG=--oauth2-bearer; test -n "${JIRA_EMAIL}" && JIRA_AUTH_FLAG=--user
+   JIRA_AUTH="${JIRA_EMAIL:+${JIRA_EMAIL}:}${JIRA_TOKEN}"
+   curl --fail-with-body --silent "${JIRA_AUTH_FLAG}" "${JIRA_AUTH}" \
      --header "Content-Type: application/json" \
-     --get --data-urlencode "jql=project = ${PROJECT_KEY} ORDER BY updated DESC" \
+     --get --data-urlencode "jql=project = <PROJECT_KEY> ORDER BY updated DESC" \
      --data-urlencode "maxResults=50" \
      --data-urlencode "fields=summary,labels" \
-     "${JIRA_BASE_URL}/rest/api/3/search/jql"
+     "${JIRA_API_URL:-${JIRA_BASE_URL}}/rest/api/3/search/jql"
    ```
 2. Analyze which labels appear together and in what contexts.
 3. Return a short summary (under 500 characters) describing the labeling

@@ -1,0 +1,6 @@
+[dependency-groups]
+test = [
+    "jsonschema==4.23.0",
+    "gitlint-core==0.19.1",
+    "PyYAML==6.0.3",
+]

@@ -13,6 +13,11 @@
 #   GH_TOKEN       — GitHub token (when FULLSEND_FORGE=github)
 #   GITLAB_TOKEN   — GitLab token (when FULLSEND_FORGE=gitlab)
 #
+# Jira issue creation (FULLSEND_TRACKER=jira): new issues are created in
+# SCRIBE_JIRA_PROJECT; comments are not supported. See
+# lib/jira-scribe-ops.lib.sh for the JIRA_* variables and FULLSEND_DIR.
+# JIRA_USER_EMAIL is optional: unset or empty selects Bearer auth.
+#
 # Optional env vars:
 #   SCRIBE_MODE              — "all" (default), "comments_only", "new_issues_only"
 #   SCRIBE_SLACK_WEBHOOK_URL — Slack incoming webhook for notification (skip if unset)
@@ -34,6 +39,11 @@ if [[ -n "${GH_TOKEN:-}" ]]; then
 fi
 if [[ -n "${GITLAB_TOKEN:-}" ]]; then
   echo "::add-mask::${GITLAB_TOKEN}"
+fi
+if [[ -n "${JIRA_TOKEN:-}" ]]; then
+  # Sanitize workflow-command delimiters before interpolating into ::add-mask::
+  # so a crafted token cannot inject additional workflow commands.
+  printf '::add-mask::%s\n' "$(printf '%s' "${JIRA_TOKEN}" | tr -d '\n\r')"
 fi
 
 # ============================================================
@@ -68,6 +78,18 @@ case "${SCRIBE_MODE}" in
     exit 1
     ;;
 esac
+# Jira: existing_issue is a numeric forge issue number, so comments on Jira
+# issues are not supported yet. Only new issues are written.
+if [[ "${FULLSEND_TRACKER}" == "jira" ]]; then
+  if [[ "${SCRIBE_MODE}" == "comments_only" ]]; then
+    echo "ERROR: SCRIBE_MODE=comments_only is not supported with FULLSEND_TRACKER=jira (comments are not supported)"
+    exit 1
+  fi
+  if [[ "${SCRIBE_MODE}" == "all" ]]; then
+    echo "::notice::FULLSEND_TRACKER=jira — comments are not supported; using new_issues_only"
+    SCRIBE_MODE="new_issues_only"
+  fi
+fi
 echo "Mode: ${SCRIBE_MODE}"
 
 # Find the agent result JSON — prefer the validated iteration when set.
@@ -124,42 +146,47 @@ is_valid_confidence() {
   [[ "${1}" =~ ^[0-9]+(\.[0-9]+)?$ ]]
 }
 
+# Numeric less-than via awk. The supported runner image does not ship bc.
+numeric_lt() {
+  awk -v a="${1}" -v b="${2}" 'BEGIN { exit (a+0 < b+0) ? 0 : 1 }'
+}
+
 if ! is_valid_confidence "${MIN_CONFIDENCE}"; then
   echo "ERROR: SCRIBE_MIN_CONFIDENCE must be a number between 0.0 and 1.0 (got: ${MIN_CONFIDENCE})"
   exit 1
 fi
-if (( $(echo "${MIN_CONFIDENCE} < 0 || ${MIN_CONFIDENCE} > 1" | bc -l) )); then
+if numeric_lt "${MIN_CONFIDENCE}" "0" || numeric_lt "1" "${MIN_CONFIDENCE}"; then
   echo "ERROR: SCRIBE_MIN_CONFIDENCE must be between 0.0 and 1.0 (got: ${MIN_CONFIDENCE})"
   exit 1
 fi
 echo "Confidence threshold: ${MIN_CONFIDENCE}"
 REJECTED=0
 
+# The detectors feed their input via here-strings rather than `echo | grep -q`:
+# with pipefail, an early-exiting reader makes the writer die of SIGPIPE on
+# large inputs, the pipeline fails, and the helper wrongly reports "clean".
+# Boolean sensitive-content gate for topics/new-issues (titles+bodies+labels).
+# The per-span title redactor `redact_sensitive_title` in scribe-ops.lib.sh
+# mirrors these secret patterns — keep the two in sync.
 contains_sensitive() {
   local text="$1"
   # GitHub PATs, AWS access keys, private keys
-  echo "${text}" \
-    | grep -qEi '(ghp|gho|ghs|ghr)_[A-Za-z0-9_]{36,}|\b(AKIA|ABIA|ACCA|ASIA)[0-9A-Z]{16}\b|-----BEGIN.*(PRIVATE KEY)' \
+  grep -qEi '(ghp|gho|ghs|ghr)_[A-Za-z0-9_]{36,}|\b(AKIA|ABIA|ACCA|ASIA)[0-9A-Z]{16}\b|-----BEGIN.*(PRIVATE KEY)' <<< "${text}" \
     && return 0
   # Email addresses
-  echo "${text}" \
-    | grep -qE '\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b' \
+  grep -qE '\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b' <<< "${text}" \
     && return 0
   # SSN
-  echo "${text}" \
-    | grep -qE '\b[0-9]{3}-[0-9]{2}-[0-9]{4}\b' \
+  grep -qE '\b[0-9]{3}-[0-9]{2}-[0-9]{4}\b' <<< "${text}" \
     && return 0
   # Slack webhooks
-  echo "${text}" \
-    | grep -qE 'https://hooks\.slack\.com/services/T[A-Z0-9]+/B[A-Z0-9]+/[A-Za-z0-9]+' \
+  grep -qE 'https://hooks\.slack\.com/services/T[A-Z0-9]+/B[A-Z0-9]+/[A-Za-z0-9]+' <<< "${text}" \
     && return 0
   # JWTs
-  echo "${text}" \
-    | grep -qE '\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b' \
+  grep -qE '\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b' <<< "${text}" \
     && return 0
   # Generic key=value secrets
-  echo "${text}" \
-    | grep -qEi '(api[_-]?key|token|secret|password|bearer)[[:space:]]*[:=][[:space:]]*['"'"'"]?[A-Za-z0-9_.~+/-]{20,}' \
+  grep -qEi '(api[_-]?key|token|secret|password|bearer)[[:space:]]*[:=][[:space:]]*['"'"'"]?[A-Za-z0-9_.~+/-]{20,}' <<< "${text}" \
     && return 0
   return 1
 }
@@ -167,8 +194,7 @@ contains_sensitive() {
 contains_suspicious_unicode() {
   local text="$1"
   # Tag characters (U+E0000–E007F), zero-width chars, BOM, bidi overrides/isolates
-  echo "${text}" \
-    | perl -e 'binmode(STDIN, q(:encoding(UTF-8))); while (<STDIN>) { if (/[\x{E0000}-\x{E007F}\x{200B}\x{200C}\x{200D}\x{FEFF}\x{202A}-\x{202E}\x{2066}-\x{2069}]/) { exit 0 } } exit 1' \
+  perl -e 'binmode(STDIN, q(:encoding(UTF-8))); while (<STDIN>) { if (/[\x{E0000}-\x{E007F}\x{200B}\x{200C}\x{200D}\x{FEFF}\x{202A}-\x{202E}\x{2066}-\x{2069}]/) { exit 0 } } exit 1' <<< "${text}" \
     && return 0
   return 1
 }
@@ -176,11 +202,49 @@ contains_suspicious_unicode() {
 # Escape Slack mrkdwn metacharacters in link labels.
 sanitize_slack_mrkdwn() {
   local val="$1"
+  # Bash 5.2+ enables patsub_replacement by default, which makes a bare `&` in a
+  # ${var//pat/repl} replacement expand to the matched text — turning `<` into
+  # `<lt;` instead of `&lt;`. Disable it locally so the HTML entities below are
+  # inserted literally (restored afterward). Matters for untrusted input such as
+  # Drive document titles (issue #706) that may contain `<`, `>`, or `&`.
+  local _patsub=0
+  if shopt -q patsub_replacement 2>/dev/null; then
+    _patsub=1
+    shopt -u patsub_replacement
+  fi
+  # Double backslashes first: SLACK_TEXT is later expanded with `printf '%b'`, so
+  # a literal `\n` in untrusted input would otherwise become a real newline (a
+  # forged report line) and `\c` would truncate the message. Doubling makes the
+  # backslash survive %b as a literal (issue #706).
+  val="${val//\\/\\\\}"
   val="${val//&/&amp;}"
   val="${val//</&lt;}"
   val="${val//>/&gt;}"
   val="${val//|/¦}"
+  [[ ${_patsub} -eq 1 ]] && shopt -s patsub_replacement
   printf '%s' "${val}"
+}
+
+# strip_unsafe_chars and redact_sensitive_title are defined in
+# scribe-ops.lib.sh (sourced above) so pre-scribe can apply the same
+# normalization/redaction to the document names it logs.
+
+# Sanitize untrusted text for a Slack mrkdwn body line (e.g. Drive document
+# titles, issue #706): strip unsafe chars, then escape mrkdwn metacharacters.
+sanitize_slack_text() {
+  sanitize_slack_mrkdwn "$(strip_unsafe_chars "$1")"
+}
+
+# Sanitize an untrusted title for display inside an inline code span in the
+# GitHub step summary (e.g. Drive document titles, issue #706). The caller wraps
+# the result in backticks; a code span renders its content literally, which
+# suppresses Markdown links, raw HTML, AND GitHub bare-URL autolinking in one
+# step, while keeping readable text like "100% sync" or "Q3 :: Planning" intact
+# (so _gha_sanitize's `%`/`::` encoding is deliberately not used here).
+# strip_unsafe_chars already removes backticks, so the title cannot close the
+# code span.
+sanitize_md_text() {
+  strip_unsafe_chars "$1"
 }
 
 CONTENT_GATE_REJECTIONS=0
@@ -206,11 +270,14 @@ gate_reject_content() {
 # ============================================================
 # If the LLM produces multiple entries for the same issue despite being asked
 # not to, merge them: combine summaries, keep the highest confidence, keep
-# public_safe=false if any entry is unsafe.
+# public_safe=false if any entry is unsafe. Omitted entries (non-empty
+# omit_reason) are never merged, so they cannot suppress or add content to
+# an actionable comment.
 DEDUP_FILE="${RESULT_FILE}.deduped"
 jq --argjson max_len "${MAX_COMMENT_LEN}" '
+  def mergeable: .existing_issue != null and ((.omit_reason // "") == "");
   .topics as $all |
-  ($all | map(select(.existing_issue != null)) | group_by(.existing_issue) |
+  ($all | map(select(mergeable)) | group_by(.existing_issue) |
     map(
       if length == 1 then .[0]
       else
@@ -225,7 +292,7 @@ jq --argjson max_len "${MAX_COMMENT_LEN}" '
         else . end
     )
   ) as $merged |
-  ($all | map(select(.existing_issue == null))) as $rest |
+  ($all | map(select(mergeable | not))) as $rest |
   . + {topics: ($merged + $rest)}
 ' "${RESULT_FILE}" > "${DEDUP_FILE}"
 
@@ -244,6 +311,10 @@ COMMENT_ISSUES=()
 NEW_ISSUE_TITLES=()
 NEW_ISSUE_URLS=()
 SKIPPED_NEW_ISSUES=0
+JIRA_DEDUP_FAILURES=0
+CREATE_FAILURES=0
+JIRA_LABEL_FAILURES=0
+JIRA_LABEL_FAILURE_KEYS=()  # issue keys whose label PUT failed
 
 # ============================================================
 # Process comment topics (existing issues)
@@ -257,7 +328,8 @@ else
   echo "Processing ${TOPIC_COUNT} topics for existing issues..."
 fi
 
-for i in $(seq 0 $((TOPIC_COUNT - 1))); do
+if [[ "${TOPIC_COUNT}" -gt 0 ]]; then
+  for i in $(seq 0 $((TOPIC_COUNT - 1))); do
   # Read public_safe FIRST — if false, we must not log topic title or content
   PUBLIC_SAFE=$(jq -r ".topics[${i}].public_safe" "${RESULT_FILE}")
   PUBLIC_SAFE_CAT=$(jq -r ".topics[${i}].public_safe_category // empty" "${RESULT_FILE}")
@@ -277,11 +349,30 @@ for i in $(seq 0 $((TOPIC_COUNT - 1))); do
   OMIT=$(jq -r ".topics[${i}].omit_reason // empty" "${RESULT_FILE}")
 
   if [[ -n "${OMIT}" ]]; then
-    echo "  OMITTED: [$(_gha_sanitize "${TOPIC}")] — $(_gha_sanitize "${OMIT}")"
+    if contains_sensitive "${SUMMARY}" || contains_sensitive "${TOPIC}" || contains_sensitive "${OMIT}" \
+      || contains_suspicious_unicode "${SUMMARY}" || contains_suspicious_unicode "${TOPIC}" || contains_suspicious_unicode "${OMIT}"; then
+      echo "  OMITTED: item $((i + 1)) of ${TOPIC_COUNT} (details suppressed)"
+    else
+      echo "  OMITTED: [$(_gha_sanitize "${TOPIC}")] — $(_gha_sanitize "${OMIT}")"
+    fi
     continue
   fi
 
   if [[ -z "${ISSUE_NUM}" || "${ISSUE_NUM}" == "null" ]]; then
+    continue
+  fi
+
+  # Content gates run before any gate or log line that prints the topic,
+  # and reject without echoing it.
+  # Gate: sensitive content (deterministic PII/secret patterns)
+  if contains_sensitive "${SUMMARY}" || contains_sensitive "${TOPIC}"; then
+    gate_reject_content "$((i + 1))" "${TOPIC_COUNT}" "sensitive content (PII, secrets)"
+    continue
+  fi
+
+  # Gate: suspicious Unicode (prompt injection defense)
+  if contains_suspicious_unicode "${SUMMARY}" || contains_suspicious_unicode "${TOPIC}"; then
+    gate_reject_content "$((i + 1))" "${TOPIC_COUNT}" "suspicious Unicode (potential prompt injection)"
     continue
   fi
 
@@ -300,20 +391,8 @@ for i in $(seq 0 $((TOPIC_COUNT - 1))); do
     gate_reject "${TOPIC}" "invalid confidence value"
     continue
   fi
-  if (( $(echo "${CONFIDENCE} < ${MIN_CONFIDENCE}" | bc -l) )); then
+  if numeric_lt "${CONFIDENCE}" "${MIN_CONFIDENCE}"; then
     gate_reject "${TOPIC}" "confidence ${CONFIDENCE} below threshold ${MIN_CONFIDENCE}"
-    continue
-  fi
-
-  # Gate: sensitive content (deterministic PII/secret patterns)
-  if contains_sensitive "${SUMMARY}" || contains_sensitive "${TOPIC}"; then
-    gate_reject "${TOPIC}" "contains sensitive content (PII, secrets)"
-    continue
-  fi
-
-  # Gate: suspicious Unicode (prompt injection defense)
-  if contains_suspicious_unicode "${SUMMARY}" || contains_suspicious_unicode "${TOPIC}"; then
-    gate_reject "${TOPIC}" "contains suspicious Unicode (potential prompt injection)"
     continue
   fi
 
@@ -364,6 +443,7 @@ for i in $(seq 0 $((TOPIC_COUNT - 1))); do
     COMMENT_ISSUES+=("${ISSUE_NUM}")
   fi
 done
+fi
 
 # ============================================================
 # Process new issues
@@ -378,7 +458,17 @@ else
   echo "Processing ${NEW_COUNT} new issue proposals..."
 fi
 
-for i in $(seq 0 $((NEW_COUNT - 1))); do
+# Jira: fail before any create call if the configured project/issue type
+# needs required fields scribe does not set.
+if [[ "${FULLSEND_TRACKER}" == "jira" ]] && [[ "${NEW_COUNT}" -gt 0 ]]; then
+  if ! tracker_validate_create; then
+    echo "ERROR: Jira project validation failed — no issues created"
+    exit 1
+  fi
+fi
+
+if [[ "${NEW_COUNT}" -gt 0 ]]; then
+  for i in $(seq 0 $((NEW_COUNT - 1))); do
   # Read public_safe FIRST — if false, suppress all content from logs
   PUBLIC_SAFE=$(jq -r ".new_issues[${i}].public_safe" "${RESULT_FILE}")
   PUBLIC_SAFE_CAT=$(jq -r ".new_issues[${i}].public_safe_category // empty" "${RESULT_FILE}")
@@ -396,25 +486,29 @@ for i in $(seq 0 $((NEW_COUNT - 1))); do
   CONFIDENCE=$(jq -r ".new_issues[${i}].confidence" "${RESULT_FILE}")
   LABELS=$(jq -r ".new_issues[${i}].labels // [\"meeting-notes\"] | join(\",\")" "${RESULT_FILE}")
 
+  # Content gates run before any gate that prints the title, and reject
+  # without echoing it.
+  # Gate: sensitive content (deterministic PII/secret patterns)
+  # Labels are model-produced free text (Jira creates them on the fly), so
+  # they pass the same gates as the title and body.
+  if contains_sensitive "${TITLE}" || contains_sensitive "${BODY}" || contains_sensitive "${LABELS}"; then
+    gate_reject_content "$((i + 1))" "${NEW_COUNT}" "sensitive content"
+    continue
+  fi
+
+  # Gate: suspicious Unicode (prompt injection defense)
+  if contains_suspicious_unicode "${TITLE}" || contains_suspicious_unicode "${BODY}" || contains_suspicious_unicode "${LABELS}"; then
+    gate_reject_content "$((i + 1))" "${NEW_COUNT}" "suspicious Unicode (potential prompt injection)"
+    continue
+  fi
+
   # Gate: confidence
   if ! is_valid_confidence "${CONFIDENCE}"; then
     gate_reject "${TITLE}" "invalid confidence value"
     continue
   fi
-  if (( $(echo "${CONFIDENCE} < ${MIN_CONFIDENCE}" | bc -l) )); then
+  if numeric_lt "${CONFIDENCE}" "${MIN_CONFIDENCE}"; then
     gate_reject "${TITLE}" "confidence ${CONFIDENCE} below threshold ${MIN_CONFIDENCE}"
-    continue
-  fi
-
-  # Gate: sensitive content (deterministic PII/secret patterns)
-  if contains_sensitive "${TITLE}" || contains_sensitive "${BODY}"; then
-    gate_reject "${TITLE}" "contains sensitive content"
-    continue
-  fi
-
-  # Gate: suspicious Unicode (prompt injection defense)
-  if contains_suspicious_unicode "${TITLE}" || contains_suspicious_unicode "${BODY}"; then
-    gate_reject "${TITLE}" "contains suspicious Unicode (potential prompt injection)"
     continue
   fi
 
@@ -451,15 +545,44 @@ for i in $(seq 0 $((NEW_COUNT - 1))); do
 
   if [[ "${DRY_RUN}" == "true" ]]; then
     echo "    [DRY RUN] Would create issue: ${SAFE_TITLE}"
-    echo "    [DRY RUN] Labels: $(_gha_sanitize "${LABELS}")"
+    DISPLAY_LABELS=$(forge_normalize_labels "${LABELS}")
+    echo "    [DRY RUN] Labels: $(_gha_sanitize "${DISPLAY_LABELS}")"
     echo "    [DRY RUN] Body length: ${BODY_LEN} chars"
     NEW_ISSUE_URLS+=("")
   else
-    ISSUE_URL=$(printf '%s' "${FULL_BODY}" | forge_create_issue "${SCRIBE_REPO}" "${TITLE}" "${LABELS}")
+    # Jira rerun protection: skip if an issue with the same summary exists.
+    if [[ "${FULLSEND_TRACKER}" == "jira" ]]; then
+      if ! EXISTING_URL=$(tracker_find_existing_issue "${TITLE}"); then
+        echo "  ERROR: Jira duplicate check failed — refusing to create issue: ${SAFE_TITLE}"
+        JIRA_DEDUP_FAILURES=$((JIRA_DEDUP_FAILURES + 1))
+        unset "NEW_ISSUE_TITLES[$((${#NEW_ISSUE_TITLES[@]} - 1))]"
+        continue
+      fi
+      if [[ -n "${EXISTING_URL}" ]]; then
+        echo "    SKIP: duplicate issue (already exists: ${EXISTING_URL})"
+        unset "NEW_ISSUE_TITLES[$((${#NEW_ISSUE_TITLES[@]} - 1))]"
+        continue
+      fi
+    fi
+    CREATE_RC=0
+    ISSUE_URL=$(printf '%s' "${FULL_BODY}" | forge_create_issue "${SCRIBE_REPO}" "${TITLE}" "${LABELS}") || CREATE_RC=$?
+    if [[ ${CREATE_RC} -ne 0 && ${CREATE_RC} -ne 2 ]]; then
+      echo "    ERROR: forge_create_issue failed (exit ${CREATE_RC})"
+      unset "NEW_ISSUE_TITLES[$((${#NEW_ISSUE_TITLES[@]} - 1))]"
+      CREATE_FAILURES=$((CREATE_FAILURES + 1))
+      continue
+    fi
     echo "    Created: ${ISSUE_URL}"
     NEW_ISSUE_URLS+=("${ISSUE_URL}")
+    # Exit code 2 means the issue was created but the label PUT failed.
+    if [[ ${CREATE_RC} -eq 2 ]]; then
+      JIRA_LABEL_FAILURES=$((JIRA_LABEL_FAILURES + 1))
+      # Extract issue key from URL (e.g. PROJ-100 from .../browse/PROJ-100)
+      JIRA_LABEL_FAILURE_KEYS+=("${ISSUE_URL##*/}")
+    fi
   fi
 done
+fi
 
 # ============================================================
 # Summary (console)
@@ -467,10 +590,71 @@ done
 RUN_MODE_LABEL="LIVE"
 [[ "${DRY_RUN}" == "true" ]] && RUN_MODE_LABEL="DRY RUN"
 
+# No-notes detection (issue #1618). pre-scribe writes a runner-side
+# scribe-meta.json whose docs_downloaded holds the search's matching-document
+# count (a confirmed numeric 0 is the successful empty search).
+#
+# The empty-search *signal* comes from the metadata; the concise *message*
+# additionally requires the agent to have produced nothing at the source — zero
+# topics and zero new-issue proposals, read straight from RESULT_FILE rather than
+# TOPIC_COUNT / NEW_COUNT (which mode handling zeroes: new_issues_only zeroes
+# TOPIC_COUNT, comments_only zeroes NEW_COUNT). Gating on the raw result covers
+# every "something happened" case at once — comments posted, issues created,
+# issues skipped by mode (SKIPPED_NEW_ISSUES), gate rejections (REJECTED), and
+# create/dedup failures (CREATE_FAILURES / JIRA_DEDUP_FAILURES) only arise when
+# there were topics or proposals to begin with — so a zero-document search that
+# still returned proposals keeps the activity report. A run that found notes but
+# extracted zero topics has docs_downloaded > 0 and keeps the normal report.
+SCRIBE_META_FILE="${RUNNER_TEMP:-/tmp}/scribe-workspace/scribe-meta.json"
+NO_NOTES=false
+# NO_NOTES_DOCS records why the no-notes branch did/did not fire so a silent
+# fallback is diagnosable from the job log (printed in the summary below):
+# "missing" (no meta), "invalid" (unparseable JSON or a non-object root), or the
+# numeric docs_downloaded value. The guard requires an object root: valid JSON
+# with a non-object root ([], "x", 123, true) passes a bare `jq -e .` but then
+# errors on `.docs_downloaded` (jq exit 5), which under `set -e` would abort the
+# run before the summary and Slack delivery.
+if [[ ! -f "${SCRIBE_META_FILE}" ]]; then
+  NO_NOTES_DOCS="missing"
+elif ! jq -e 'type == "object"' "${SCRIBE_META_FILE}" >/dev/null 2>&1; then
+  NO_NOTES_DOCS="invalid"
+else
+  NO_NOTES_DOCS="$(jq -r '(.docs_downloaded | numbers) // "nan"' "${SCRIBE_META_FILE}")"
+  if [[ "${NO_NOTES_DOCS}" == "0" ]]; then
+    RESULT_TOPIC_TOTAL=$(jq '.topics | length' "${RESULT_FILE}")
+    RESULT_NEW_ISSUE_TOTAL=$(jq '.new_issues | length' "${RESULT_FILE}")
+    if [[ "${RESULT_TOPIC_TOTAL}" -eq 0 && "${RESULT_NEW_ISSUE_TOTAL}" -eq 0 ]]; then
+      NO_NOTES=true
+    fi
+  fi
+fi
+
+# Meeting titles (issue #706) come from a runner-only scribe-titles.json that is
+# NOT mounted into the sandbox, so untrusted Drive titles never enter the agent
+# context. Normalize each title with strip_unsafe_chars FIRST, then redact
+# sensitive spans on the normalized text — so the redactor sees exactly what will
+# be published (a zero-width char cannot split a secret/email past it and then be
+# stripped at display). redact_sensitive_title replaces only the matching span,
+# so a non-sensitive remainder keeps the meeting identifiable. Read NUL-delimited
+# so a title containing a newline stays one element.
+SCRIBE_TITLES_FILE="${RUNNER_TEMP:-/tmp}/scribe-workspace/scribe-titles.json"
+MEETING_TITLES=()
+if [[ -f "${SCRIBE_TITLES_FILE}" ]] && jq -e 'type == "object"' "${SCRIBE_TITLES_FILE}" >/dev/null 2>&1; then
+  while IFS= read -r -d '' _title; do
+    _title=$(strip_unsafe_chars "${_title}")
+    # Explicit if (not `[[ … ]] && …`) so skipping an empty title keeps a success
+    # status and cannot trip `set -e` on the loop body.
+    if [[ -n "${_title}" ]]; then
+      MEETING_TITLES+=("$(redact_sensitive_title "${_title}")")
+    fi
+  done < <(jq -j '(.doc_names // [])[] | . + "\u0000"' "${SCRIBE_TITLES_FILE}")
+fi
+
 echo ""
 echo "=== Scribe Post-Script Summary ==="
 echo "  Run mode: ${RUN_MODE_LABEL}"
 echo "  Agent mode: ${SCRIBE_MODE}"
+echo "  No-notes check: docs_downloaded=${NO_NOTES_DOCS} -> NO_NOTES=${NO_NOTES}"
 echo "  Topics processed: ${TOPIC_COUNT}"
 echo "  Comments ${WOULD_BE}posted: ${#COMMENT_TOPICS[@]}"
 echo "  New issues ${WOULD_BE}created: ${#NEW_ISSUE_TITLES[@]}"
@@ -478,6 +662,9 @@ echo "  Gate rejections: ${REJECTED}"
 echo "    Content gate: ${CONTENT_GATE_REJECTIONS}"
 echo "  New proposals reviewed: ${NEW_COUNT}"
 [[ "${SKIPPED_NEW_ISSUES}" -gt 0 ]] && echo "  Skipped new issues (mode): ${SKIPPED_NEW_ISSUES}"
+if [[ "${JIRA_LABEL_FAILURES}" -gt 0 ]]; then
+  echo "  Label failures: ${JIRA_LABEL_FAILURES} issue(s) created without labels: ${JIRA_LABEL_FAILURE_KEYS[*]}"
+fi
 echo "=================================="
 
 # ============================================================
@@ -488,6 +675,16 @@ if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
 {
   echo "### Scribe agent report (${RUN_MODE_LABEL})"
   echo ""
+  if [[ ${#MEETING_TITLES[@]} -eq 1 ]]; then
+    echo "**Meeting:** \`$(sanitize_md_text "${MEETING_TITLES[0]}")\`"
+    echo ""
+  elif [[ ${#MEETING_TITLES[@]} -gt 1 ]]; then
+    echo "**Meetings (${#MEETING_TITLES[@]}):**"
+    for _title in "${MEETING_TITLES[@]}"; do
+      echo "- \`$(sanitize_md_text "${_title}")\`"
+    done
+    echo ""
+  fi
   echo "| Metric | Count |"
   echo "|--------|------:|"
   echo "| Topics processed | ${TOPIC_COUNT} |"
@@ -520,6 +717,11 @@ if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
     echo ""
   fi
 
+  if [[ "${JIRA_LABEL_FAILURES}" -gt 0 ]]; then
+    echo "> :warning: **${JIRA_LABEL_FAILURES}** issue(s) created without labels (label PUT failed): ${JIRA_LABEL_FAILURE_KEYS[*]}"
+    echo ""
+  fi
+
   if [[ "${REJECTED}" -gt 0 ]]; then
     echo "> **${REJECTED}** topic(s) rejected by the security gate."
     if [[ "${CONTENT_GATE_REJECTIONS}" -gt 0 ]]; then
@@ -542,43 +744,76 @@ if [[ -n "${SLACK_WEBHOOK}" ]]; then
   RUN_URL=$(forge_run_url "${SCRIBE_REPO}")
 
   SLACK_TEXT=":memo: *Scribe agent* (${RUN_MODE_LABEL})"
-  SLACK_TEXT+="\nMode: \`${SCRIBE_MODE}\` · Confidence: \`${MIN_CONFIDENCE}\`"
-  SLACK_TEXT+="\n• Topics processed: *${TOPIC_COUNT}*"
-  SLACK_TEXT+="\n• Comments: *${#COMMENT_TOPICS[@]}*"
-  SLACK_TEXT+="\n• New issues: *${#NEW_ISSUE_TITLES[@]}*"
-  SLACK_TEXT+="\n• Gate rejections: *${REJECTED}*"
-  if [[ "${CONTENT_GATE_REJECTIONS}" -gt 0 ]]; then
-    SLACK_TEXT+=" (${CONTENT_GATE_REJECTIONS} content)"
-  fi
-  if [[ "${SKIPPED_NEW_ISSUES}" -gt 0 ]]; then
-    SLACK_TEXT+="\n• Skipped (${SCRIBE_MODE}): *${SKIPPED_NEW_ISSUES}*"
-  fi
-
-  if [[ ${#COMMENT_TOPICS[@]} -gt 0 ]]; then
-    SLACK_TEXT+="\n\n*Comments:*"
-    for idx in "${!COMMENT_TOPICS[@]}"; do
-      SLACK_TOPIC=$(sanitize_slack_mrkdwn "${COMMENT_TOPICS[$idx]}")
-      SLACK_TEXT+="\n  • <${ISSUE_BASE}/${COMMENT_ISSUES[$idx]}|#${COMMENT_ISSUES[$idx]} — ${SLACK_TOPIC}>"
+  if [[ ${#MEETING_TITLES[@]} -eq 1 ]]; then
+    # Render in a code span (backtick-wrapped), like the step summary: per
+    # Slack's formatting reference, text in inline code is not reformatted
+    # with other mrkdwn syntax, so an untrusted title cannot inject emphasis
+    # (*bold*, _italic_, ~strike~) into the notification. Slack's docs do not
+    # explicitly state whether a bare URL is still auto-linked/clickable
+    # inside a code span, so this is not relied on alone: unfurl_links/
+    # unfurl_media are disabled on the payload below, independently closing
+    # the link-preview risk regardless of code-span semantics.
+    # strip_unsafe_chars already removed any backtick from the title, so it
+    # cannot close the span early. The entity escaping above (&, <, >) is kept
+    # as defense-in-depth against Slack's own link/mention syntax, even though
+    # whether it is still decoded inside a code span is similarly unverified.
+    SLACK_TEXT+="\nMeeting: \`$(sanitize_slack_text "${MEETING_TITLES[0]}")\`"
+  elif [[ ${#MEETING_TITLES[@]} -gt 1 ]]; then
+    SLACK_TEXT+="\nMeetings (${#MEETING_TITLES[@]}):"
+    for _title in "${MEETING_TITLES[@]}"; do
+      SLACK_TEXT+="\n  • \`$(sanitize_slack_text "${_title}")\`"
     done
   fi
+  if [[ "${NO_NOTES}" == "true" ]]; then
+    SLACK_TEXT+="\nNo meeting notes found for today."
+  else
+    SLACK_TEXT+="\nMode: \`${SCRIBE_MODE}\` · Confidence: \`${MIN_CONFIDENCE}\`"
+    SLACK_TEXT+="\n• Topics processed: *${TOPIC_COUNT}*"
+    SLACK_TEXT+="\n• Comments: *${#COMMENT_TOPICS[@]}*"
+    SLACK_TEXT+="\n• New issues: *${#NEW_ISSUE_TITLES[@]}*"
+    SLACK_TEXT+="\n• Gate rejections: *${REJECTED}*"
+    if [[ "${CONTENT_GATE_REJECTIONS}" -gt 0 ]]; then
+      SLACK_TEXT+=" (${CONTENT_GATE_REJECTIONS} content)"
+    fi
+    if [[ "${SKIPPED_NEW_ISSUES}" -gt 0 ]]; then
+      SLACK_TEXT+="\n• Skipped (${SCRIBE_MODE}): *${SKIPPED_NEW_ISSUES}*"
+    fi
+    if [[ "${JIRA_LABEL_FAILURES}" -gt 0 ]]; then
+      SLACK_TEXT+="\n• :warning: Label failures: *${JIRA_LABEL_FAILURES}* (${JIRA_LABEL_FAILURE_KEYS[*]})"
+    fi
 
-  if [[ ${#NEW_ISSUE_TITLES[@]} -gt 0 ]]; then
-    SLACK_TEXT+="\n\n*New issues:*"
-    for idx in "${!NEW_ISSUE_TITLES[@]}"; do
-      SLACK_TITLE=$(sanitize_slack_mrkdwn "${NEW_ISSUE_TITLES[$idx]}")
-      if [[ -n "${NEW_ISSUE_URLS[$idx]:-}" ]]; then
-        SLACK_TEXT+="\n  • <${NEW_ISSUE_URLS[$idx]}|${SLACK_TITLE}>"
-      else
-        SLACK_TEXT+="\n  • ${SLACK_TITLE}"
-      fi
-    done
+    if [[ ${#COMMENT_TOPICS[@]} -gt 0 ]]; then
+      SLACK_TEXT+="\n\n*Comments:*"
+      for idx in "${!COMMENT_TOPICS[@]}"; do
+        SLACK_TOPIC=$(sanitize_slack_mrkdwn "${COMMENT_TOPICS[$idx]}")
+        SLACK_TEXT+="\n  • <${ISSUE_BASE}/${COMMENT_ISSUES[$idx]}|#${COMMENT_ISSUES[$idx]} — ${SLACK_TOPIC}>"
+      done
+    fi
+
+    if [[ ${#NEW_ISSUE_TITLES[@]} -gt 0 ]]; then
+      SLACK_TEXT+="\n\n*New issues:*"
+      for idx in "${!NEW_ISSUE_TITLES[@]}"; do
+        SLACK_TITLE=$(sanitize_slack_mrkdwn "${NEW_ISSUE_TITLES[$idx]}")
+        if [[ -n "${NEW_ISSUE_URLS[$idx]:-}" ]]; then
+          SLACK_TEXT+="\n  • <${NEW_ISSUE_URLS[$idx]}|${SLACK_TITLE}>"
+        else
+          SLACK_TEXT+="\n  • ${SLACK_TITLE}"
+        fi
+      done
+    fi
   fi
 
   SLACK_TEXT+="\n\n<${RUN_URL}|View run>"
 
-  SLACK_PAYLOAD=$(printf '%b' "${SLACK_TEXT}" | jq -Rs '{text: .}')
+  # unfurl_links/unfurl_media: false — independent of whether Slack's code-span
+  # rendering suppresses auto-linking, this unconditionally stops Slack from
+  # generating a link-preview card for a URL in an untrusted meeting title
+  # (issue #706). No other URL in this message needs an unfurl.
+  SLACK_PAYLOAD=$(printf '%b' "${SLACK_TEXT}" | jq -Rs '{text: ., unfurl_links: false, unfurl_media: false}')
+  # Slack is best-effort: bound the request so a stalled webhook cannot hang the job.
   if printf '%s' "${SLACK_PAYLOAD}" \
-      | curl -fsSL -X POST -H 'Content-Type: application/json' \
+      | curl -fsSL --connect-timeout 10 --max-time 30 \
+        -X POST -H 'Content-Type: application/json' \
         --data-binary @- "${SLACK_WEBHOOK}" >/dev/null 2>&1; then
     echo "Slack notification sent"
   else
@@ -587,4 +822,11 @@ if [[ -n "${SLACK_WEBHOOK}" ]]; then
   unset SLACK_WEBHOOK
 else
   echo "No SCRIBE_SLACK_WEBHOOK_URL set — skipping Slack notification"
+fi
+
+# Deferred failure: if any Jira duplicate checks or issue creates failed, exit
+# non-zero after finalization so already-created issues are reported in the summary.
+if [[ "${JIRA_DEDUP_FAILURES}" -gt 0 || "${CREATE_FAILURES}" -gt 0 ]]; then
+  echo "ERROR: ${JIRA_DEDUP_FAILURES} Jira duplicate check(s) and/or ${CREATE_FAILURES} issue creation(s) failed — exiting with error"
+  exit 1
 fi

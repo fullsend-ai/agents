@@ -15,6 +15,13 @@
 [[ -n "${GITHUB_CODE_OPS_SH_LOADED:-}" ]] && return 0
 GITHUB_CODE_OPS_SH_LOADED=1
 
+# shellcheck source=forge-transient-retry.lib.sh
+source "${BASH_SOURCE[0]%/*}/forge-transient-retry.lib.sh"
+# forge_push_branch: a plain git push, or with GITHUB_SIGNED_COMMITS=true the
+# API publish that gets the commits signed by GitHub.
+# shellcheck source=github-signed-push.lib.sh
+source "${BASH_SOURCE[0]%/*}/github-signed-push.lib.sh"
+
 # --- URL handling ---
 
 forge_validate_issue_url() {
@@ -71,7 +78,7 @@ forge_create_label() {
 forge_post_issue_comment() {
   local body="$1"
   printf '%s' "${body}" | gh issue comment "${ISSUE_NUMBER}" \
-    --repo "${REPO_FULL_NAME}" --body-file - 2>/dev/null
+    --repo "${REPO_FULL_NAME}" --body-file -
 }
 
 forge_post_pr_comment() {
@@ -79,7 +86,7 @@ forge_post_pr_comment() {
   local body="$2"
   gh pr comment "${target_pr}" \
     --repo "${REPO_FULL_NAME}" \
-    --body "${body}" 2>/dev/null
+    --body "${body}"
 }
 
 # --- PR/MR lifecycle ---
@@ -93,6 +100,10 @@ forge_list_prs_for_issue() {
   # Use closedByPullRequestsReferences to find only PRs with closing keywords
   # (Fixes #N, Closes #N, etc.) for this issue. This avoids false positives
   # from text-search matching (e.g., #1 matching #12 in a PR title).
+  #
+  # GraphQL's Bot.login has no "[bot]" suffix, so strip it and check
+  # __typename == "Bot" to avoid false bot matches. `gh api` lacks --arg,
+  # so pipe the JSON through a standalone `jq -r --arg ...` filter.
   gh api graphql \
     -f owner="${owner}" -f name="${name}" -F number="${issue_number}" \
     -f query='
@@ -103,17 +114,19 @@ forge_list_prs_for_issue() {
             nodes {
               number
               url
-              author { login }
+              author { login __typename }
               state
             }
           }
         }
       }
-    }' --arg bot "${bot_login}" --arg coder "${coder_bot_login}" --jq '
+    }' 2>/dev/null \
+    | jq -r --arg bot "${bot_login%\[bot\]}" --arg coder "${coder_bot_login%\[bot\]}" '
     .data.repository.issue.closedByPullRequestsReferences.nodes
     | [.[] | select(.state == "OPEN")
-           | select(.author.login != $bot
-               and .author.login != $coder)]
+           | select(.author.__typename != "Bot"
+               or (.author.login != $bot
+                   and .author.login != $coder))]
     | .[] | "\(.number)\t\(.author.login)\t\(.url)"
   ' 2>/dev/null || true
 }
@@ -123,8 +136,37 @@ forge_list_prs_for_branch() {
   local owner="${REPO_FULL_NAME%%/*}"
   gh pr list --repo "${REPO_FULL_NAME}" --head "${branch}" \
     --state open --json number,headRepositoryOwner \
-    --jq "[.[] | select(.headRepositoryOwner.login == \"${owner}\")] | .[0].number // empty" \
+    --jq "[.[] | select((.headRepositoryOwner.login | ascii_downcase) == (\"${owner}\" | ascii_downcase))] | .[0].number // empty" \
     2>/dev/null
+}
+
+# Single open same-repo PR for this head and base. Zero or multiple
+# matches fail closed — adopting the wrong PR is worse than reporting
+# failure.
+_forge_resolve_existing_pr_url() {
+  local head="$1"
+  local base="$2"
+  local owner="${REPO_FULL_NAME%%/*}"
+  local json matches count url
+  json=$(forge_retry_transient gh pr list \
+    --repo "${REPO_FULL_NAME}" \
+    --head "${head}" \
+    --base "${base}" \
+    --state open \
+    --json number,url,headRepositoryOwner,headRefName,baseRefName) || return 1
+  matches=$(printf '%s' "${json}" | jq -c \
+    --arg owner "${owner}" --arg head "${head}" --arg base "${base}" \
+    '[.[]
+      | select((.headRepositoryOwner.login | ascii_downcase) == ($owner | ascii_downcase))
+      | select(.headRefName == $head)
+      | select(.baseRefName == $base)
+      | .url] | unique') || return 1
+  count=$(printf '%s' "${matches}" | jq 'length') || return 1
+  url=$(printf '%s' "${matches}" | jq -r '.[0] // empty') || return 1
+  if [ "${count}" -ne 1 ] || [ -z "${url}" ]; then
+    return 1
+  fi
+  printf '%s\n' "${url}"
 }
 
 forge_create_pr() {
@@ -132,12 +174,32 @@ forge_create_pr() {
   local head="$2"
   local title="$3"
   local body="$4"
-  gh pr create \
+  local urlfile rc=0
+  # Call retry in this shell so FORGE_RETRY_LAST_ERROR survives; $(...)
+  # would run it in a subshell and drop the error text.
+  urlfile=$(mktemp) || return 1
+  forge_retry_transient gh pr create \
     --repo "${REPO_FULL_NAME}" \
     --head "${head}" \
     --base "${base}" \
     --title "${title}" \
-    --body "${body}"
+    --body "${body}" >"${urlfile}" || rc=$?
+  if [ "${rc}" -eq 0 ]; then
+    cat "${urlfile}"
+    rm -f "${urlfile}"
+    return 0
+  fi
+  rm -f "${urlfile}"
+  if ! forge_is_already_exists_error "${FORGE_RETRY_LAST_ERROR-}"; then
+    return "${rc}"
+  fi
+  local resolved
+  if ! resolved="$(_forge_resolve_existing_pr_url "${head}" "${base}")"; then
+    echo "PR already exists but could not be resolved for head '${head}' into base '${base}'" >&2
+    return "${rc}"
+  fi
+  _forge_retry_notice "PR create reported already-exists; recovered ${resolved}"
+  printf '%s\n' "${resolved}"
 }
 
 forge_get_pr_url() {
@@ -228,6 +290,37 @@ forge_enable_auto_merge() {
 }
 
 # --- Issue operations ---
+
+# forge_has_sub_issues — whether the GitHub issue has sub-issues (children).
+# Prints a non-negative integer that is non-zero iff children exist. GitHub
+# exposes an exact child count, but callers must treat the result as a
+# truthy/falsy signal only — GitLab's implementation of this same contract
+# can only report 0 or 1 — and must not display it as an exact count in
+# shared (forge-agnostic) messages. Fail-open: prints 0 on API errors so a
+# missing sub-issues field (older GHES) does not skip legitimate leaf work.
+forge_has_sub_issues() {
+  local issue_number="${1:-${ISSUE_NUMBER}}"
+  local owner="${REPO_FULL_NAME%%/*}"
+  local name="${REPO_FULL_NAME##*/}"
+  local count
+  count="$(gh api graphql \
+    -f owner="${owner}" -f name="${name}" -F number="${issue_number}" \
+    -f query='
+    query($owner: String!, $name: String!, $number: Int!) {
+      repository(owner: $owner, name: $name) {
+        issue(number: $number) {
+          subIssues(first: 1) {
+            totalCount
+          }
+        }
+      }
+    }' --jq '.data.repository.issue.subIssues.totalCount // 0' 2>/dev/null || true)"
+  if [[ ! "${count}" =~ ^[0-9]+$ ]]; then
+    echo 0
+    return 0
+  fi
+  echo "${count}"
+}
 
 forge_get_issue_comments() {
   local raw
