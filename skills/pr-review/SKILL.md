@@ -228,7 +228,7 @@ else
 fi
 if ! test -s /sandbox/workspace/pr-diff.txt; then
   if test -s /sandbox/workspace/pr-excluded.txt; then
-    echo "ALL EXCLUDED — nothing left to review; go to step 7 with the excluded-content disclosures"
+    echo "ALL EXCLUDED — skip steps 3–6d; run 6e onward, then step 7"
   else
     echo "EMPTY DIFF after filtering — produce a failure result (reason tool-failure)"
   fi
@@ -236,8 +236,9 @@ fi
 ```
 
 It fails open: any failure leaves the diff as fetched and the review
-unfiltered, never a lost diff. An all-excluded PR skips steps 3–6 and
-goes to step 7 with the disclosures as its findings. What it strips
+unfiltered, never a lost diff. ALL EXCLUDED skips dispatch only: 6e
+(injection, metadata, scope, protected paths) still runs, with the
+disclosures as the adjudicated set. What it strips
 (lockfiles, minified/sourcemap, vendored, generated; migrations exempt)
 and its residual risk are in `filter-review-diff.sh`'s header.
 
@@ -1179,8 +1180,9 @@ The protected paths list is determined at runtime, matching
   operator has deliberately opted out of protected-path enforcement.
   The active list is empty, so no file can match it.
 
-For each file in the PR diff, check whether its path starts with (or
-exactly matches) any entry in the active protected paths list.
+For each changed file (step 2's list, step 2c exclusions included),
+check whether its path starts with (or exactly matches) any entry in
+the active protected paths list.
 
 If **any** protected files are modified, you MUST emit a
 `category: "protected-path"` finding — `review-result.schema.json`
@@ -1382,8 +1384,9 @@ footer, with `line` omitted:
   "Excluded from line-by-line review (`<reason>`, +A/-D lines); no
   model read its contents."
 
-An all-excluded PR is `comment`, never `approve`: nothing was read
-(post-review downgrades it too).
+An all-excluded PR is never `approve` (nothing was read; post-review
+downgrades it too): `comment`, unless a 6e rule requires
+`request-changes`.
 
 Map the outcome to an action value. `action`, `pr_number`, and `repo`
 are always required (see the agent definition for the full schema).
