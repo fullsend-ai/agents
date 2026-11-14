@@ -255,7 +255,7 @@ calls during both execution and scoring.
 | Variable | Description |
 |----------|-------------|
 | `FULLSEND_DIR` | Path to the fullsend scaffold directory. Defaults to the repo root. |
-| `EVAL_TIMEOUT` | Runner timeout in seconds, honoured only when the agent's `eval.yaml` `execution.env` does not set it. The code, review and fix evals pin `1700` and retro pins `540` there, which replaces any value in the environment; triage uses the environment, defaulting to `1800` (30 min). |
+| `EVAL_TIMEOUT` | Runner timeout in seconds, honoured only when the agent's `eval.yaml` `execution.env` does not set it. The review and fix evals pin `1700`, code pins `1100` and retro pins `540` there, which replaces any value in the environment; triage uses the environment, defaulting to `1800` (30 min). |
 | `EVAL_REPO_VISIBILITY` | Visibility of the ephemeral repos `setup-fixture.sh` creates: `private` (the default: a fixture is a throwaway copy of someone else's repository, and a public copy is indexed, scanned and acted on by automation as if it were meant to be published) or `public`; any other value is an error before anything is created. The snapshot commit and push bypass the developer's local git hooks only for `private`; for `public` the hooks (a secret scanner, for one) run and the script warns. The CI evals use the default. |
 | `EVAL_RUNTIME` | Run every case under this runtime (`claude`, `codex` or `pi`) via `fullsend run --runtime`, instead of the workspace config. |
 | `EVAL_MODEL` | Model override for every case (alias, id or `provider/id`, e.g. `google-vertex/gemini-2.5-flash`) via `fullsend run --model`. |

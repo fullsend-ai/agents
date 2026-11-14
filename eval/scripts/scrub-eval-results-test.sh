@@ -21,10 +21,11 @@ run_test() {
   local test_name="$1"
   local input_content="$2"
   local expected_content="$3"
+  local filename="${4:-output.log}"
 
   local test_dir="${TMPDIR}/${test_name}"
   mkdir -p "${test_dir}"
-  printf '%s' "${input_content}" > "${test_dir}/output.log"
+  printf '%s' "${input_content}" > "${test_dir}/${filename}"
 
   local exit_code=0
   bash "${SCRUB_SCRIPT}" "${test_dir}" > /dev/null 2>&1 || exit_code=$?
@@ -36,7 +37,7 @@ run_test() {
   fi
 
   local actual
-  actual="$(cat "${test_dir}/output.log")"
+  actual="$(cat "${test_dir}/${filename}")"
 
   if [[ "${actual}" != "${expected_content}" ]]; then
     echo "FAIL: ${test_name}"
@@ -114,6 +115,15 @@ Token is realsecret123" \
 ::add-mask::***
 The quick brown fox jumps over a lazy dog
 Token is ***"
+
+# --- Captured PR diffs (.diff) are scrubbed like any text artifact ---
+
+run_test "diff-file-token-redacted" \
+  "diff --git a/config b/config
++url = https://x-access-token:ghs_abcdefghijklmnopqrstuv@github.com/o/r" \
+  "diff --git a/config b/config
++url = https://x-access-token:***@github.com/o/r" \
+  "pr-1.diff"
 
 # --- Every attempt of a retried case is scrubbed ---
 

@@ -1,0 +1,65 @@
+state: open
+
+expected_files:
+  - config/config.go
+  - config/fields.go
+  - config/config_test.go
+
+# Consumed by eval.yaml's removed_symbols judge: for each symbol, each file
+# maps to the minimum number of deletion lines that must name the symbol,
+# and the symbol must not survive in any added or context line of the diff.
+# Both the Go identifier and its YAML key must vanish from all three sites.
+#
+# Counts rather than a bare file list on purpose: one deletion line per
+# file is satisfied by the struct field alone, while the `VerboseLogging:
+# false,` in Defaults() sits 11 lines away — outside git's 3-line context,
+# so it is neither deleted nor visible as a survivor, and the tree no
+# longer compiles. The counts are the lines that name the symbol today
+# (`grep -n` in eval/code/repos/taskrunner/config/), excluding the doc
+# comment above the field, which a fix may legitimately leave or drop.
+removed_symbols:
+  VerboseLogging:
+    config/config.go: 2       # struct field, Defaults()
+    config/fields.go: 1       # c.VerboseLogging = v
+    config/config_test.go: 6  # TestDefaults, TestLoad, TestLoadPartial (2 each)
+  verbose_logging:
+    config/config.go: 1       # yaml tag on the struct field
+    config/fields.go: 1       # case "verbose_logging"
+    config/config_test.go: 1  # raw literal in TestLoad
+
+# Consumed by eval.yaml's fixture_checks judge: every test in the fixture
+# must still pass on the PR head. Without it, deleting TestDefaults, TestLoad
+# and TestLoadPartial wholesale meets every removed_symbols count and leaves
+# a green `go test`. Must list exactly the fixture's `func Test` names
+# (removed-symbols-judge-test.py checks).
+preserved_tests:
+  - TestDefaults
+  - TestLoad
+  - TestLoadPartial
+  - TestLoadMalformedLine
+  - TestLoadUnknownKey
+  - TestNewRejectsInvalidConfig
+  - TestRunHappyPath
+  - TestRunRetriesUntilSuccess
+  - TestRunTimeoutCancelsAttempt
+
+# Code agent budgets. Report-only: the eval's max_turns/max_cost judges have
+# no threshold. Placeholders, not observations: this case has never run
+# (its PR needs ok-to-test). They match 001-fix-add (60 turns / $0.75, ~3x
+# its $0.23 Sonnet 5.5 cost in run 37125458624) and eval.yaml's
+# max_budget_usd; re-derive from 003's first real run.
+max_turns: 60
+max_cost_usd: 0.75
+
+# Human reference only; not consumed by judges (unlike triage/review quality).
+code_expectations: |
+  The repo has a dead config field: Config.VerboseLogging is declared, defaulted,
+  parsed, and tested, but never read by any consumer (runner/runner.go doesn't
+  use it). A successful run creates a PR that removes VerboseLogging from: the
+  struct definition (config.go), the Defaults() return value (config.go), the
+  SetField() switch case (fields.go), and all test assertions (config_test.go).
+  Tests must still pass after removal. This case tests cross-file dead-code
+  removal — tracing symbol references across multiple files to determine what
+  to change, not just fixing a single line. The raw YAML literal in TestLoad
+  (verbose_logging: true) must also be removed — SetField rejects unknown keys,
+  so leaving it breaks Load().
