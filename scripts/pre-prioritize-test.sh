@@ -170,6 +170,31 @@ run_test "gitlab-no-trust-source-fails-closed" \
   "CI_SERVER_HOST is not set" \
   "true"
 
+# --- Jira forge tests ---
+
+run_test "jira-valid-url" \
+  "jira" \
+  "https://redhat.atlassian.net/browse/AISDLC-8" \
+  "Issue URL validated."
+
+run_test "jira-malformed-url-fails" \
+  "jira" \
+  "https://redhat.atlassian.net/jira/software/c/projects/AISDLC/boards/1" \
+  "does not match expected Jira pattern" \
+  "true"
+
+run_test "jira-non-allowlisted-host-fails" \
+  "jira" \
+  "https://evil.example/browse/AISDLC-8" \
+  "is not in the allowed host list" \
+  "true"
+
+run_test "jira-http-url-fails" \
+  "jira" \
+  "http://redhat.atlassian.net/browse/AISDLC-8" \
+  "does not match expected Jira pattern" \
+  "true"
+
 # --- Invalid forge ---
 
 run_test "invalid-forge-fails" \
