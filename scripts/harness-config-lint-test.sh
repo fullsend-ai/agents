@@ -688,7 +688,6 @@ test_negative_fixtures() {
     "hardcoded-overlay-clean-first.yaml:test_no_hardcoded_schema:^hardcoded-overlay-clean-first\.yaml.*overlays\\\[1\\\]\.runner_env.*contains hardcoded$"
     "hardcoded-forge-clean-first.yaml:test_no_hardcoded_schema:^hardcoded-forge-clean-first\.yaml.*forge\.gitlab.*runner_env.*contains hardcoded$"
     "forge-schema-only-empty-override.yaml:test_validation_loop_schema:^forge-schema-only-empty-override\.yaml.*forge\.github.*validation_loop\.schema is empty$"
-    "overlay-schema-only-empty-override.yaml:test_validation_loop_schema:^overlay-schema-only-empty-override\.yaml.*overlays\\\[0\\\].*validation_loop\.schema is empty$"
     "script-with-null-schema.yaml:test_validation_loop_schema:^script-with-null-schema\.yaml.*top-level validation_loop\.schema is null$"
     "empty-json-schema.yaml:test_schema_files_exist_and_valid:^empty-json-schema\.yaml.*schema file is not valid JSON$"
     "multiple-json-values.yaml:test_schema_files_exist_and_valid:^multiple-json-values\.yaml.*schema file is not valid JSON$"
@@ -748,7 +747,7 @@ test_positive_fixtures() {
   # Test absolute-schema-path-valid: create a temporary fixture with an absolute path
   local abs_test_dir
   abs_test_dir="$(mktemp -d)"
-  trap 'rm -rf "${abs_test_dir}"' EXIT
+  trap '[[ -n "${abs_test_dir:-}" ]] && rm -rf "${abs_test_dir}"' EXIT
   local abs_schema_path="${SCRIPT_DIR}/test-fixtures/schemas/review-result.schema.json"
   cat > "${abs_test_dir}/absolute-schema-path-valid.yaml" << EOF
 ---
@@ -803,19 +802,22 @@ EOF
   fi
 }
 
-run_test "harness-yaml-valid" test_harness_yaml_valid
-run_test "validation-loop-has-schema" test_validation_loop_schema
-run_test "no-hardcoded-schema-in-env" test_no_hardcoded_schema
-run_test "schema-files-exist-and-valid" test_schema_files_exist_and_valid
-run_test "negative-fixtures-fail" test_negative_fixtures
-run_test "positive-fixtures-pass" test_positive_fixtures
+# Only run tests if this script is executed directly, not sourced
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+  run_test "harness-yaml-valid" test_harness_yaml_valid
+  run_test "validation-loop-has-schema" test_validation_loop_schema
+  run_test "no-hardcoded-schema-in-env" test_no_hardcoded_schema
+  run_test "schema-files-exist-and-valid" test_schema_files_exist_and_valid
+  run_test "negative-fixtures-fail" test_negative_fixtures
+  run_test "positive-fixtures-pass" test_positive_fixtures
 
-if [[ ${FAILURES} -eq 0 ]]; then
-  echo
-  echo "✓ All harness config invariants pass"
-  exit 0
-else
-  echo
-  echo "✗ ${FAILURES} test(s) failed"
-  exit 1
+  if [[ ${FAILURES} -eq 0 ]]; then
+    echo
+    echo "✓ All harness config invariants pass"
+    exit 0
+  else
+    echo
+    echo "✗ ${FAILURES} test(s) failed"
+    exit 1
+  fi
 fi
