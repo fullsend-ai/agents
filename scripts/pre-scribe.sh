@@ -16,6 +16,10 @@
 #   GH_TOKEN       — GitHub token (when FULLSEND_FORGE=github)
 #   GITLAB_TOKEN   — GitLab token (when FULLSEND_FORGE=gitlab)
 #
+# Jira backlog (FULLSEND_TRACKER=jira): see lib/jira-scribe-ops.lib.sh for
+# JIRA_BASE_URL, JIRA_TOKEN, SCRIBE_JIRA_PROJECT, FULLSEND_DIR, and the
+# optional JIRA_USER_EMAIL (unset or empty selects Bearer auth).
+#
 # Optional env vars:
 #   SCRIBE_NAME_FILTER    — substring filter on doc names
 #   SCRIBE_LOOKBACK_HOURS — how far back to search (default: 3)
@@ -31,13 +35,214 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck shell=bash
 # scribe-ops.lib.sh — Forge-dispatch wrapper for scribe operations.
 #
-# Sources the correct forge-specific ops based on FULLSEND_FORGE.
+# Sources the correct forge-specific ops based on FULLSEND_FORGE. When
+# FULLSEND_TRACKER=jira, additionally sources the Jira tracker ops, which
+# redefine the backlog, closed-issue, and issue-creation functions so they
+# target Jira while repo context (open PRs, docs) stays on the forge.
+# FULLSEND_TRACKER defaults to FULLSEND_FORGE.
 # Bundled inline by bundle-sh.sh at build time.
 
 [[ -n "${SCRIBE_OPS_SH_LOADED:-}" ]] && return 0
 SCRIBE_OPS_SH_LOADED=1
 
 _gha_sanitize() { printf '%s' "$1" | tr -d '\n\r' | sed 's/\x1b\[[0-9;]*[a-zA-Z]//g; s/%/%25/g; s/::/%3A%3A/g'; }
+
+# Strip the characters that let untrusted text (e.g. Drive document titles,
+# issue #706) break out of a single display line, hide/reorder content, or be
+# removed later and reassemble a secret past a sensitive-content check:
+# - CSI ANSI escape sequences;
+# - every C0 control char and DEL (\000-\037\177), which covers CR, LF, VT, FF,
+#   TAB and a bare ESC — so a title cannot inject extra log/report lines;
+# - backticks (\140), which the step-summary code span removes anyway — stripping
+#   them here means the redactor sees the same text that is published, so a title
+#   like `123-45-<bt>6789<bt>` cannot evade the SSN check and then reassemble;
+# - Unicode line/paragraph separators (U+2028/U+2029);
+# - every Unicode "Default_Ignorable_Code_Point" (DI) character: this is the
+#   Unicode property specifically defined for characters "recommended to be
+#   ignored during rendering" — it covers soft hyphen, word joiner, LRM/RLM/
+#   ALM, bidi embeds/overrides/isolates, zero-width chars, BOM, Mongolian
+#   vowel separator, tag characters, AND variation selectors (U+FE00-FE0F,
+#   U+E0100-E01EF, category Mn — not Cf/Cc, so earlier revisions that matched
+#   by general-category class alone missed them). A single invisible
+#   character of ANY of these kinds could split a secret/PII pattern so
+#   neither half matched, passing the gate below while rendering
+#   invisibly — exposing the full, unredacted value. Matching the DI property
+#   instead of a general-category class or an enumerated list closes that
+#   gap for the whole class of invisible-by-design code points at once,
+#   rather than one newly-discovered exception at a time;
+# - every Unicode "Control" (Cc) character, which additionally covers the C1
+#   range (U+0080-009F) that the C0/DEL `tr` above does not reach — not
+#   itself part of DI.
+# Shared by the Slack, step-summary and pre-scribe log paths so all are equally
+# strong, and run before redaction so the redactor matches what is published.
+# perl is already a runner dependency (see pre-scribe.sh).
+strip_unsafe_chars() {
+  printf '%s' "$1" \
+    | sed 's/\x1b\[[0-9;]*[a-zA-Z]//g' \
+    | tr -d '\000-\037\177\140' \
+    | perl -CS -pe 's/[\p{Default_Ignorable_Code_Point}\p{Cc}\x{2028}\x{2029}]//g'
+}
+
+# Redact sensitive spans in a meeting title / Drive document name (issue #706).
+# Titles are raw, never-scrubbed Drive names shown verbatim in Slack, the step
+# summary and the pre-scribe job log, so they can carry secrets AND the PII that
+# pre-scribe scrubs from note bodies (phone / IPv4 / card). Unlike the boolean
+# `contains_sensitive` gate used for topics/new-issues (deliberately left
+# unchanged), this replaces only the MATCHING substring with [redacted] so the
+# rest of the meeting name stays identifiable, and Luhn-validates card-like digit
+# runs so version numbers and meeting IDs (e.g. "OKR 1234567890123") are not
+# blanked. The secret patterns mirror `contains_sensitive` in post-scribe.sh and
+# must be kept in sync with it. Input must already be strip_unsafe_chars'd (no
+# control chars) so it is safe to hand to perl as data.
+redact_sensitive_title() {
+  printf '%s' "$1" | perl -CS -pe '
+    sub luhn {
+      my $d = shift; $d =~ s/\D//g;
+      return 0 if length($d) < 13 || length($d) > 19;
+      my ($sum, $alt) = (0, 0);
+      for my $i (reverse 0 .. length($d) - 1) {
+        my $n = substr($d, $i, 1);
+        if ($alt) { $n *= 2; $n -= 9 if $n > 9; }
+        $sum += $n; $alt = !$alt;
+      }
+      return $sum % 10 == 0;
+    }
+    # Find and redact card-shaped spans in $s, returning the modified string.
+    # A single `s///g` cannot do this: once a greedy candidate (e.g. an
+    # unrelated 4-digit number immediately before a real PAN) is tried and
+    # fails Luhn, `/g` resumes scanning AFTER it and never retries starting
+    # one token later, so the real PAN underneath is never checked. Instead,
+    # tokenize into digit-runs ("tokens") and the single-space/dash gaps that
+    # chain them into a "run", then within each run try candidate WINDOWS of
+    # consecutive tokens (longest-first at each start) against known PAN
+    # shapes — contiguous 13-19 digits, 4-digit groups with a 1-7 digit final
+    # group (the common grouping), or Amex'"'"'s 4-6-5 grouping — Luhn-checking
+    # only shape-valid windows. On the first Luhn-valid window, commit it and
+    # resume scanning right after; otherwise advance the start by one token so
+    # an overlapping later window still gets tried. Restricting candidates to
+    # whole-token windows of a recognized shape (rather than arbitrary digit
+    # sub-strings) keeps the false-positive rate low: a short numeric ID
+    # (Sprint/OKR) never has the right token shape to be tried at all, so it
+    # never reaches Luhn.
+    sub redact_cards {
+      my ($s) = @_;
+      my @tokens;
+      while ($s =~ /([0-9]+)/g) {
+        push @tokens, { text => $1, start => $-[1], end => $+[1] };
+      }
+      return $s unless @tokens;
+      my @runs;
+      my @cur = (0);
+      for my $i (1 .. $#tokens) {
+        my $gap = substr($s, $tokens[$i - 1]{end}, $tokens[$i]{start} - $tokens[$i - 1]{end});
+        if ($gap eq " " || $gap eq "-") { push @cur, $i; }
+        else { push @runs, [@cur]; @cur = ($i); }
+      }
+      push @runs, [@cur];
+      my @replacements;
+      for my $run (@runs) {
+        my @idx = @$run;
+        my $n = scalar @idx;
+        my $start = 0;
+        while ($start < $n) {
+          my $committed = 0;
+          # A valid PAN has at most 19 digits and every token has at least one,
+          # so a window can never need more than 19 tokens. Capping $end here
+          # bounds the inner loop (and the O(count) window/width rebuild inside
+          # it) to a constant, making the scan linear in the number of tokens
+          # instead of cubic — important because titles are untrusted (issue
+          # #706) and a long digit-heavy title is otherwise an algorithmic DoS.
+          my $max_end = $start + 18;
+          $max_end = $n - 1 if $max_end > $n - 1;
+          for (my $end = $max_end; $end >= $start; $end--) {
+            my @window = @idx[$start .. $end];
+            my $count = scalar @window;
+            my @widths = map { length($tokens[$_]{text}) } @window;
+            my $total = 0; $total += $_ for @widths;
+            my $shape_ok = 0;
+            if ($count == 1 && $widths[0] >= 13 && $widths[0] <= 19) {
+              $shape_ok = 1; # standalone contiguous 13-19 digit run
+            } elsif ($count >= 1) {
+              my $last = $widths[-1];
+              my $all4 = 1;
+              for my $w (@widths[0 .. $count - 2]) { $all4 = 0 if $w != 4; }
+              if ($all4 && $last >= 1 && $last <= 7 && $total >= 13 && $total <= 19) {
+                $shape_ok = 1; # 4-4-...-(1-7) grouping
+              }
+            }
+            if (!$shape_ok && $count == 3 && $widths[0] == 4 && $widths[1] == 6 && $widths[2] == 5) {
+              $shape_ok = 1; # Amex 4-6-5 grouping
+            }
+            next unless $shape_ok;
+            my $digits = join("", map { $tokens[$_]{text} } @window);
+            if (luhn($digits)) {
+              push @replacements, [$tokens[$idx[$start]]{start}, $tokens[$idx[$end]]{end}, "[redacted]"];
+              $start = $end + 1;
+              $committed = 1;
+              last;
+            }
+          }
+          $start++ unless $committed;
+        }
+      }
+      return $s unless @replacements;
+      my $out = ""; my $pos = 0;
+      for my $r (@replacements) {
+        my ($rs, $re, $txt) = @$r;
+        $out .= substr($s, $pos, $rs - $pos);
+        $out .= $txt;
+        $pos = $re;
+      }
+      $out .= substr($s, $pos);
+      return $out;
+    }
+    my $R = "[redacted]";
+    # Secrets / credentials (mirror contains_sensitive in post-scribe.sh — its
+    # ghp/AKIA/BEGIN alternation is grepped with -i, so match case-insensitively
+    # here too). Also add the AWS-secret-access-key and private_key_id patterns
+    # pre-scribe scrubs from note bodies (pre-scribe.src.sh): contains_sensitive
+    # itself does not have them, but titles are raw/never-scrubbed like bodies,
+    # so the same credential patterns apply. Keep all three lists in sync.
+    s/(?:ghp|gho|ghs|ghr)_[A-Za-z0-9_]{36,}/$R/gi;
+    s/\b(?:AKIA|ABIA|ACCA|ASIA)[0-9A-Z]{16}\b/$R/gi;
+    s/-----BEGIN[^\n]*PRIVATE KEY[^\n]*/$R/gi;
+    s/aws.?secret.?(?:access)?.?key\s*[:=]\s*[A-Za-z0-9\/+=]{40}/$R/gi;
+    s/(?i:private_key_id)\s*[:=]\s*[\x27\x22]?[a-f0-9]{40}[\x27\x22]?/$R/g;
+    s/https:\/\/hooks\.slack\.com\/services\/T[A-Z0-9]+\/B[A-Z0-9]+\/[A-Za-z0-9]+/$R/g;
+    s/\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/$R/g;
+    s/(?i:(?:api[_-]?key|token|secret|password|bearer)\s*[:=]\s*[\x27\x22]?[A-Za-z0-9_.~+\/-]{20,})/$R/g;
+    # PII pre-scribe scrubs from note bodies, applied per-span to titles.
+    s/\b[A-Za-z0-9._%+-]+\@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/$R/g;
+    s/\b[0-9]{3}-[0-9]{2}-[0-9]{4}\b/$R/g;
+    s/\b(?:\+?1[-. ]?)?\(?[0-9]{3}\)?[-. ]?[0-9]{3}[-. ]?[0-9]{4}\b/$R/g;
+    s/\+[0-9]{1,3}[-. ]?[0-9]{4,14}\b/$R/g;
+    s/\b(?:[0-9]{1,3}\.){3}[0-9]{1,3}\b/$R/g;
+    $_ = redact_cards($_);
+  '
+}
+
+# Redact PII patterns from Google Meet note bodies before the sandboxed agent
+# sees them. Predates issue #706; moved here (from inline in pre-scribe.src.sh)
+# so it is directly testable alongside redact_sensitive_title above — the two
+# functions mirror each other's secret/PII patterns and must be kept in sync.
+# Ordered: specific patterns first, generic last (matches Go sanitizer.go).
+scrub_note_pii() {
+  printf '%s\n' "$1" \
+    | sed -E 's/\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/[REDACTED]/g' \
+    | sed -E 's/\b(\+?1[-. ]?)?\(?[0-9]{3}\)?[-. ]?[0-9]{3}[-. ]?[0-9]{4}\b/[REDACTED]/g' \
+    | sed -E 's/\+[0-9]{1,3}[-. ]?[0-9]{4,14}\b/[REDACTED]/g' \
+    | sed -E 's/\b([0-9]{1,3}\.){3}[0-9]{1,3}\b/[REDACTED]/g' \
+    | sed -E 's/\b[0-9]{3}-[0-9]{2}-[0-9]{4}\b/[REDACTED]/g' \
+    | sed -E 's/\b([0-9][ -]?){13,19}\b/[REDACTED]/g' \
+    | sed -E 's/\b(AKIA|ABIA|ACCA|ASIA)[0-9A-Z]{16}\b/[REDACTED]/g' \
+    | sed -E 's/[Aa][Ww][Ss].?[Ss][Ee][Cc][Rr][Ee][Tt].?([Aa][Cc][Cc][Ee][Ss][Ss])?.?[Kk][Ee][Yy][[:space:]]*[:=][[:space:]]*[A-Za-z0-9\/+=]{40}/[REDACTED]/g' \
+    | sed -E 's/\b(ghp|gho|ghs|ghr)_[A-Za-z0-9_]{36,255}\b/[REDACTED]/g' \
+    | sed -E 's|https://hooks\.slack\.com/services/T[A-Z0-9]+/B[A-Z0-9]+/[A-Za-z0-9]+|[REDACTED]|g' \
+    | sed -E 's/-----BEGIN[[:space:]]+(RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----.*/[REDACTED]/g' \
+    | sed -E 's/[Pp][Rr][Ii][Vv][Aa][Tt][Ee]_[Kk][Ee][Yy]_[Ii][Dd][[:space:]]*[:=][[:space:]]*['"'"'"]?[a-f0-9]{40}['"'"'"]?/[REDACTED]/g' \
+    | sed -E 's/\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/[REDACTED]/g' \
+    | sed -E 's/([Aa][Pp][Ii][_-]?[Kk][Ee][Yy]|[Tt][Oo][Kk][Ee][Nn]|[Ss][Ee][Cc][Rr][Ee][Tt]|[Pp][Aa][Ss][Ss][Ww][Oo][Rr][Dd]|[Bb][Ee][Aa][Rr][Ee][Rr])[[:space:]]*[:=][[:space:]]*['"'"'"]?[A-Za-z0-9_.~+\/-]{20,}['"'"'"]?/[REDACTED]/g'
+}
 
 case "${FULLSEND_FORGE:-}" in
   github)
@@ -150,6 +355,12 @@ forge_issue_url_base() {
   echo "https://github.com/${repo}/issues"
 }
 
+# Normalize labels for display and creation. Returns comma-separated string.
+forge_normalize_labels() {
+  local labels="$1"
+  printf '%s' "${labels}"
+}
+
 # Return the CI run URL for notifications.
 forge_run_url() {
   echo "${GITHUB_SERVER_URL:-https://github.com}/${GITHUB_REPOSITORY:-${1}}/actions/runs/${GITHUB_RUN_ID:-0}"
@@ -168,6 +379,9 @@ forge_run_url() {
 #   SCRIBE_REPO    — GitLab project path (group/project)
 #   GITLAB_TOKEN   — GitLab personal/project access token
 #   CI_SERVER_HOST — GitLab CI predefined variable (set by runner)
+#   CI_SERVER_URL  — GitLab CI predefined variable; origin for API requests
+#                    and links, including any non-default port (falls back
+#                    to https://${CI_SERVER_HOST} when unset)
 
 [[ -n "${GITLAB_SCRIBE_OPS_SH_LOADED:-}" ]] && return 0
 GITLAB_SCRIBE_OPS_SH_LOADED=1
@@ -181,6 +395,9 @@ GITLAB_SCRIBE_OPS_SH_LOADED=1
 # variable set automatically by the runner.
 #
 # Fails closed: rejects when CI_SERVER_HOST is not set.
+#
+# Also derives the trusted origin (scheme, host, and optional port) from
+# CI_SERVER_URL so self-managed instances on non-default HTTPS ports work.
 #
 # Sourced by all gitlab-*-ops.lib.sh files and inlined by the bundler.
 
@@ -208,6 +425,35 @@ _validate_gitlab_host() {
     return 1
   fi
 }
+
+# Prints the trusted GitLab origin (https://host[:port]) for API requests
+# and generated links. Derived from CI_SERVER_URL, a GitLab CI predefined
+# variable that carries any non-default port; falls back to
+# https://${CI_SERVER_HOST} when CI_SERVER_URL is unset. Fails closed when
+# the origin is not HTTPS or its host does not match CI_SERVER_HOST.
+_gitlab_trusted_origin() {
+  _validate_gitlab_host "${CI_SERVER_HOST:-}" || return 1
+  local origin="${CI_SERVER_URL:-https://${CI_SERVER_HOST}}"
+  if [[ ! "${origin}" =~ ^https://([a-zA-Z0-9._-]+)(:[0-9]+)?$ ]]; then
+    echo "ERROR: CI_SERVER_URL is not an HTTPS origin (https://host[:port]): $(_gha_sanitize "${origin}")" >&2
+    return 1
+  fi
+  local host="${BASH_REMATCH[1]}"
+  _validate_gitlab_host "${host}" || return 1
+  printf '%s\n' "${origin}"
+}
+
+# Validates an origin (https://host[:port]) parsed from an untrusted URL
+# against the trusted CI server origin. Scheme, host, and port must all
+# match: a URL without a port only matches a trusted origin without one.
+_validate_gitlab_origin() {
+  local origin="$1" trusted
+  trusted=$(_gitlab_trusted_origin) || return 1
+  if [[ "${origin,,}" != "${trusted,,}" ]]; then
+    echo "ERROR: GitLab origin '$(_gha_sanitize "${origin}")' does not match CI server origin '$(_gha_sanitize "${trusted}")'" >&2
+    return 1
+  fi
+}
 # END bundled: lib/gitlab-host-validation.lib.sh
 
 _gitlab_api() {
@@ -215,13 +461,14 @@ _gitlab_api() {
   shift
   local endpoint="$1"
   shift
-  # Scribe has no input URL to cross-reference — validates CI_SERVER_HOST format only.
-  _validate_gitlab_host "${CI_SERVER_HOST:-}" || return 1
+  # Scribe has no input URL to cross-reference — uses the trusted CI origin.
+  local origin
+  origin=$(_gitlab_trusted_origin) || return 1
   curl --fail --silent --show-error \
     --connect-timeout 10 --max-time 30 \
     --header "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
     --request "${method}" \
-    "https://${CI_SERVER_HOST}/api/v4${endpoint}" \
+    "${origin}/api/v4${endpoint}" \
     "$@"
 }
 
@@ -391,9 +638,15 @@ forge_create_issue() {
 
 # Return the base URL for linking to issues.
 forge_issue_url_base() {
-  local repo="$1"
-  _validate_gitlab_host "${CI_SERVER_HOST:-}" || return 1
-  echo "https://${CI_SERVER_HOST}/${repo}/-/issues"
+  local repo="$1" origin
+  origin=$(_gitlab_trusted_origin) || return 1
+  echo "${origin}/${repo}/-/issues"
+}
+
+# Normalize labels for display and creation. Returns comma-separated string.
+forge_normalize_labels() {
+  local labels="$1"
+  printf '%s' "${labels}"
 }
 
 # Return the CI run/job URL for notifications.
@@ -401,8 +654,9 @@ forge_run_url() {
   if [[ -n "${CI_JOB_URL:-}" ]]; then
     echo "${CI_JOB_URL}"
   else
-    _validate_gitlab_host "${CI_SERVER_HOST:-}" || return 1
-    echo "https://${CI_SERVER_HOST}/${1}"
+    local origin
+    origin=$(_gitlab_trusted_origin) || return 1
+    echo "${origin}/${1}"
   fi
 }
 # END bundled: lib/gitlab-scribe-ops.lib.sh
@@ -412,7 +666,622 @@ forge_run_url() {
     exit 1
     ;;
 esac
+
+FULLSEND_TRACKER="${FULLSEND_TRACKER:-${FULLSEND_FORGE}}"
+
+case "${FULLSEND_TRACKER}" in
+  "${FULLSEND_FORGE}") ;;
+  jira)
+# BEGIN bundled: lib/jira-scribe-ops.lib.sh
+# shellcheck shell=bash
+# jira-scribe-ops.lib.sh — Jira Cloud tracker operations for scribe scripts.
+#
+# Bundled into pre-scribe.sh and post-scribe.sh via scribe-ops.lib.sh, which
+# sources this file AFTER the GitHub/GitLab forge library when
+# FULLSEND_TRACKER=jira. The functions below redefine the backlog, closed-issue,
+# and write operations (open-issue fetch, backlog filter, closed-issue fetch,
+# open count, issue creation, issue URL base) so that backlog matching,
+# closed-issue context, and writes target one Jira project, while repo context
+# (open PRs, doc index, run URL) keeps coming from the forge.
+#
+# Scope (MVP): new issues only, in one operator-configured project and
+# issue type. Comment writes are not supported — existing_issue is a
+# numeric forge issue number and Jira keys need a separate string-key path.
+#
+# All writes happen host-side in post-scribe.sh with operator-provided
+# credentials; the sandbox never receives the Jira token.
+#
+# Jira Cloud only: JIRA_BASE_URL must be https://<site>.atlassian.net.
+#
+# Requires fullsend >= the release that ships `fullsend issues create
+# --tracker jira --fullsend-dir` (fullsend#7083 / fullsend#9078). The post-script
+# validates this at preflight time via tracker_validate_create.
+#
+# Expected env vars:
+#   JIRA_BASE_URL          — Jira Cloud base URL (https://<site>.atlassian.net)
+#   JIRA_TOKEN             — Jira API token
+#   FULLSEND_DIR           — .fullsend directory whose config.yaml holds
+#                            tracker.jira, for `fullsend issues create`
+#   SCRIBE_JIRA_PROJECT    — Jira project key that backlog reads and new
+#                            issues are scoped to (e.g. "PROJ")
+#
+# Optional env vars:
+#   JIRA_USER_EMAIL        — bot-user email. When set, requests use Basic
+#                            auth with email and token; when unset or empty,
+#                            Bearer auth with a service-account token. See
+#                            lib/jira-auth.lib.sh.
+#   JIRA_API_URL           — where REST calls go, e.g. the Atlassian API
+#                            gateway https://api.atlassian.com/ex/jira/<cloudId>
+#                            that `fullsend run` resolves and exports. Falls
+#                            back to JIRA_BASE_URL when unset (older fullsend
+#                            releases). Browse links always use JIRA_BASE_URL.
+#   SCRIBE_JIRA_ISSUE_TYPE — issue type name for created issues (default: "Task")
+#   SCRIBE_JIRA_LABELS     — comma-separated allowlist of labels that scribe may
+#                            apply to Jira issues (default: "meeting-notes")
+#   SCRIBE_JIRA_MAX_PAGES  — maximum pages fetched per paginated Jira read
+#                            (default: 50)
+
+[[ -n "${JIRA_SCRIBE_OPS_SH_LOADED:-}" ]] && return 0
+JIRA_SCRIBE_OPS_SH_LOADED=1
+
+# JIRA_USER_EMAIL is optional: without it, requests use Bearer auth.
+: "${JIRA_TOKEN:?JIRA_TOKEN must be set}"
+: "${JIRA_BASE_URL:?JIRA_BASE_URL must be set}"
+: "${SCRIBE_JIRA_PROJECT:?SCRIBE_JIRA_PROJECT must be set}"
+
+# shellcheck source=jira-auth.lib.sh
+# BEGIN bundled: lib/jira-auth.lib.sh
+# shellcheck shell=bash
+# jira-auth.lib.sh — Jira credential-mode selection for host-side scripts.
+#
+# Shared by the Jira triage and scribe ops libraries and post-code.sh, and
+# bundled into each script that sources it. Two credential modes
+# (fullsend#9007):
+#
+#   token + email — bot user: Basic auth with email:token
+#   token only    — service account: Bearer auth with the token
+#
+# An email that is empty or only whitespace counts as absent. A harness
+# that maps an unset FULLSEND_JIRA_EMAIL to JIRA_USER_EMAIL yields an empty
+# string, and that must select Bearer, never an empty-user Basic header.
+#
+# Every helper takes the token and email as arguments, so callers that
+# withhold the credentials from their environment can pass saved copies.
+
+[[ -n "${JIRA_AUTH_SH_LOADED:-}" ]] && return 0
+JIRA_AUTH_SH_LOADED=1
+
+# Print the email with surrounding whitespace removed. Empty output means
+# no email, which selects Bearer auth.
+#
+# Usage: jira_auth_email <email>
+jira_auth_email() {
+  local email="$1"
+  email="${email#"${email%%[![:space:]]*}"}"
+  email="${email%"${email##*[![:space:]]}"}"
+  printf '%s' "${email}"
+}
+
+# Run curl with the Authorization for the selected mode, followed by the
+# caller's arguments. Fails without calling curl when the token is empty.
+#
+# Usage: jira_auth_curl <token> <email> [curl args...]
+jira_auth_curl() {
+  local token="$1"
+  local email
+  email="$(jira_auth_email "$2")"
+  shift 2
+  if [[ -z "${token}" ]]; then
+    echo "ERROR: Jira token is empty" >&2
+    return 1
+  fi
+  if [[ -n "${email}" ]]; then
+    curl --user "${email}:${token}" "$@"
+  else
+    curl --oauth2-bearer "${token}" "$@"
+  fi
+}
+
+# Run the fullsend CLI with the Jira credentials it reads from its
+# environment: FULLSEND_JIRA_TOKEN always, FULLSEND_JIRA_EMAIL only for a
+# bot user. In Bearer mode an inherited FULLSEND_JIRA_EMAIL is removed, so
+# the CLI cannot pick Basic auth. The values go through the environment,
+# never the command line.
+#
+# Usage: jira_auth_fullsend <fullsend-bin> <token> <email> [cli args...]
+jira_auth_fullsend() {
+  local bin="$1"
+  local token="$2"
+  local email
+  email="$(jira_auth_email "$3")"
+  shift 3
+  if [[ -z "${token}" ]]; then
+    echo "ERROR: Jira token is empty" >&2
+    return 1
+  fi
+  if [[ -n "${email}" ]]; then
+    FULLSEND_JIRA_TOKEN="${token}" FULLSEND_JIRA_EMAIL="${email}" "${bin}" "$@"
+  else
+    (
+      unset FULLSEND_JIRA_EMAIL
+      FULLSEND_JIRA_TOKEN="${token}" "${bin}" "$@"
+    )
+  fi
+}
+# END bundled: lib/jira-auth.lib.sh
+
+while [[ "${JIRA_BASE_URL}" == */ ]]; do
+  JIRA_BASE_URL="${JIRA_BASE_URL%/}"
+done
+if [[ ! "${JIRA_BASE_URL}" =~ ^https://[a-zA-Z0-9-]+\.atlassian\.net$ ]]; then
+  echo "ERROR: JIRA_BASE_URL must be a Jira Cloud URL (https://<site>.atlassian.net)" >&2
+  exit 1
+fi
+# Base URL for REST calls; the credentials go here, so require https.
+SCRIBE_JIRA_API_BASE="${JIRA_API_URL:-${JIRA_BASE_URL}}"
+while [[ "${SCRIBE_JIRA_API_BASE}" == */ ]]; do
+  SCRIBE_JIRA_API_BASE="${SCRIBE_JIRA_API_BASE%/}"
+done
+if [[ "${SCRIBE_JIRA_API_BASE}" != https://* ]]; then
+  echo "ERROR: JIRA_API_URL must start with https://" >&2
+  exit 1
+fi
+if [[ ! "${SCRIBE_JIRA_PROJECT}" =~ ^[A-Z][A-Z0-9_]*$ ]]; then
+  echo "ERROR: SCRIBE_JIRA_PROJECT must be a Jira project key (e.g. PROJ)" >&2
+  exit 1
+fi
+SCRIBE_JIRA_ISSUE_TYPE="${SCRIBE_JIRA_ISSUE_TYPE:-Task}"
+SCRIBE_JIRA_LABELS="${SCRIBE_JIRA_LABELS:-meeting-notes}"
+
+# Maximum pages fetched per paginated Jira read (100 issues per JQL page).
+SCRIBE_JIRA_MAX_PAGES="${SCRIBE_JIRA_MAX_PAGES:-50}"
+
+_scribe_jira_api() {
+  local method="$1"
+  shift
+  local endpoint="$1"
+  shift
+  jira_auth_curl "${JIRA_TOKEN}" "${JIRA_USER_EMAIL:-}" \
+    --fail --silent --show-error \
+    --connect-timeout 10 --max-time 30 \
+    --header "Content-Type: application/json" \
+    --header "Accept: application/json" \
+    --request "${method}" \
+    "${SCRIBE_JIRA_API_BASE}/rest/api/3${endpoint}" \
+    "$@"
+}
+
+# Like _scribe_jira_api but captures the HTTP status code and returns the
+# response body even on error, so callers can log field-level rejection
+# reasons instead of a generic "failed" message.
+_scribe_jira_api_with_status() {
+  local method="$1"
+  shift
+  local endpoint="$1"
+  shift
+  local err_file raw http_code body
+  err_file=$(mktemp)
+  raw=$(jira_auth_curl "${JIRA_TOKEN}" "${JIRA_USER_EMAIL:-}" \
+    --silent --show-error \
+    --connect-timeout 10 --max-time 30 \
+    --header "Content-Type: application/json" \
+    --header "Accept: application/json" \
+    --request "${method}" \
+    --write-out '\n%{http_code}' \
+    "${SCRIBE_JIRA_API_BASE}/rest/api/3${endpoint}" \
+    "$@" 2>"${err_file}") || {
+    echo "Jira API error: curl failed — $(_gha_sanitize "$(cat "${err_file}")")" >&2
+    rm -f "${err_file}"
+    return 1
+  }
+  rm -f "${err_file}"
+  http_code=$(printf '%s' "${raw}" | tail -1)
+  body=$(printf '%s' "${raw}" | sed '$d')
+  if [[ "${http_code}" -lt 200 || "${http_code}" -ge 300 ]]; then
+    local errors
+    errors=$(printf '%s' "${body}" | jq -r '(.errorMessages // []) + [(.errors // {} | to_entries[] | "\(.key): \(.value)")] | join("; ")' 2>/dev/null || echo "")
+    echo "Jira API error (HTTP ${http_code}): $(_gha_sanitize "${errors:-${body}}")" >&2
+    return 1
+  fi
+  printf '%s' "${body}"
+}
+
+# Escape a value for use inside a double-quoted JQL string literal.
+_scribe_jql_quote() {
+  local val="$1"
+  val="${val//\\/\\\\}"
+  val="${val//\"/\\\"}"
+  printf '"%s"' "${val}"
+}
+
+_scribe_jira_backlog_jql() {
+  printf 'project = %s AND statusCategory != Done ORDER BY created DESC' \
+    "$(_scribe_jql_quote "${SCRIBE_JIRA_PROJECT}")"
+}
+
+_scribe_jira_closed_jql() {
+  printf 'project = %s AND statusCategory = Done AND resolved >= -30d ORDER BY resolved DESC' \
+    "$(_scribe_jql_quote "${SCRIBE_JIRA_PROJECT}")"
+}
+
+# Run a JQL search, following nextPageToken. Writes one JSON array of issues
+# per page to output_file (same multi-document shape as `gh api --paginate`).
+# Returns 2 if the page cap was hit while more results remained.
+_scribe_jira_search_paginated() {
+  local jql="$1" fields_json="$2" output_file="$3"
+  local token="" page payload response is_last
+  : > "${output_file}"
+  for ((page = 1; page <= SCRIBE_JIRA_MAX_PAGES; page++)); do
+    payload=$(jq -cn --arg jql "${jql}" --argjson fields "${fields_json}" --arg tok "${token}" \
+      '{jql: $jql, fields: $fields, maxResults: 100} + (if $tok != "" then {nextPageToken: $tok} else {} end)')
+    response=$(_scribe_jira_api POST "/search/jql" --data "${payload}") || {
+      echo "ERROR: Jira JQL search failed" >&2
+      return 1
+    }
+    # A 2xx response that is not JSON, or has no issues array, must not be
+    # read as "no results" — callers use that to prove a duplicate is absent.
+    if ! printf '%s' "${response}" | jq -ce 'select(type == "object" and (.issues | type) == "array") | .issues' >> "${output_file}"; then
+      echo "ERROR: Jira JQL search returned a malformed or incomplete response" >&2
+      return 1
+    fi
+    token=$(printf '%s' "${response}" | jq -r '.nextPageToken // empty') || {
+      echo "ERROR: Jira JQL search response could not be parsed" >&2
+      return 1
+    }
+    is_last=$(printf '%s' "${response}" | jq -r '.isLast // false') || {
+      echo "ERROR: Jira JQL search response could not be parsed" >&2
+      return 1
+    }
+    if [[ "${is_last}" == "true" ]]; then
+      return 0
+    fi
+    if [[ -z "${token}" ]]; then
+      echo "ERROR: Jira JQL search returned isLast=false with no nextPageToken" >&2
+      return 1
+    fi
+  done
+  echo "WARNING: Jira search stopped after ${SCRIBE_JIRA_MAX_PAGES} pages; results are truncated" >&2
+  return 2
+}
+
+# --- Pre-script: backlog ---
+
+forge_fetch_open_issues_raw() {
+  local _repo="$1" output_file="$2" rc=0
+  _scribe_jira_search_paginated "$(_scribe_jira_backlog_jql)" \
+    '["summary","description","labels","status"]' "${output_file}" || rc=$?
+  if [[ ${rc} -eq 2 ]]; then
+    # shellcheck disable=SC2034 # SCRIBE_BACKLOG_PAGE_CAPPED consumed by pre-scribe
+    SCRIBE_BACKLOG_PAGE_CAPPED=true
+    return 2
+  fi
+  return ${rc}
+}
+
+# Convert raw Jira issues to the backlog format. Jira issues carry a string
+# `key` instead of a numeric `number`; the description (ADF) is flattened
+# to plain text and truncated to 500 chars.
+forge_filter_issues_to_backlog() {
+  local raw_file="$1" backlog_file="$2"
+  jq -s --arg base "${JIRA_BASE_URL}" '[.[][] | {
+      key,
+      title: (.fields.summary // ""),
+      body: ([.fields.description | .. | objects | select(.type == "text") | .text] | join(" ")),
+      labels: (.fields.labels // []),
+      url: ($base + "/browse/" + .key)
+    }]' "${raw_file}" \
+    | jq '[.[] | .body = (.body[:500] + if (.body | length) > 500 then "…" else "" end)]' \
+    > "${backlog_file}"
+}
+
+forge_count_paginated_total() {
+  local raw_file="$1"
+  jq -s '[.[][]] | length' "${raw_file}"
+}
+
+# Approximate open-issue count for truncation detection. Returns empty on
+# failure so callers fall back to the fetched count.
+forge_get_issue_count() {
+  local _repo="$1"
+  _scribe_jira_api POST "/search/approximate-count" \
+    --data "$(jq -cn --arg jql "$(_scribe_jira_backlog_jql)" '{jql: $jql}')" 2>/dev/null \
+    | jq -r '.count // empty' 2>/dev/null || echo ""
+}
+
+# Fetch recently closed (Done) issues from the Jira project (resolved in the
+# last 30 days, up to limit, default 50).
+forge_list_closed_issues() {
+  local _repo="$1" output_file="$2" limit="${3:-50}"
+  [[ "${limit}" =~ ^[1-9][0-9]*$ ]] || limit=50
+  [[ "${limit}" -gt 100 ]] && limit=100
+  local payload response
+  payload=$(jq -cn \
+    --arg jql "$(_scribe_jira_closed_jql)" \
+    --argjson limit "${limit}" \
+    '{jql: $jql, fields: ["summary","labels"], maxResults: $limit}')
+  response=$(_scribe_jira_api POST "/search/jql" --data "${payload}" 2>/dev/null) || {
+    echo "WARNING: failed to fetch recently closed Jira issues" >&2
+    echo '[]' > "${output_file}"
+    return 0
+  }
+  if ! printf '%s' "${response}" | jq --arg base "${JIRA_BASE_URL}" '[.issues[]? | {
+      key,
+      title: (.fields.summary // ""),
+      labels: (.fields.labels // []),
+      url: ($base + "/browse/" + .key)
+    }]' > "${output_file}" 2>/dev/null; then
+    echo "WARNING: failed to parse recently closed Jira issues" >&2
+    echo '[]' > "${output_file}"
+    return 0
+  fi
+}
+
+# --- Post-script: issue operations ---
+
+forge_list_issue_comments() {
+  echo "ERROR: comments are not supported when FULLSEND_TRACKER=jira" >&2
+  return 1
+}
+
+forge_post_issue_comment() {
+  echo "ERROR: comments are not supported when FULLSEND_TRACKER=jira" >&2
+  return 1
+}
+
+# Filter and sanitize labels for Jira:
+# 1. Accepts either a JSON array or a comma-separated list.
+# 2. Intersects with the operator allowlist SCRIBE_JIRA_LABELS (default: "meeting-notes").
+# 3. Enforces ^[A-Za-z0-9._-]{1,64}$ per label.
+# 4. Caps at 10 labels and deduplicates while preserving order.
+_scribe_jira_filter_labels() {
+  local raw="$1"
+  jq -cn \
+    --arg raw "${raw}" \
+    --arg allowlist "${SCRIBE_JIRA_LABELS:-meeting-notes}" '
+    def parse_list:
+      if (type == "array") then .
+      elif (type == "string") then [split(",")[] | gsub("^\\s+|\\s+$"; "")]
+      else [] end;
+    def parse_raw:
+      ($raw | try fromjson catch $raw) | parse_list;
+    def parse_allowlist:
+      $allowlist | split(",") | map(gsub("^\\s+|\\s+$"; "") | select(test("^[A-Za-z0-9._-]{1,64}$")));
+    (parse_allowlist) as $allowed |
+    [parse_raw[]?
+      | select(type == "string")
+      | gsub("^\\s+|\\s+$"; "")
+      | select(test("^[A-Za-z0-9._-]{1,64}$"))
+      | select(. as $item | $allowed | index($item))
+    ] | reduce .[] as $item ([]; if index($item) then . else . + [$item] end) | .[0:10]
+  '
+}
+
+# Add labels to an existing Jira issue via the REST API. Labels can be
+# passed as a JSON array or a comma-separated list. Labels are filtered
+# through _scribe_jira_filter_labels (allowlist, format, count cap).
+_scribe_jira_add_labels() {
+  local key="$1" labels="$2"
+  local labels_json ops
+  labels_json=$(_scribe_jira_filter_labels "${labels}")
+  if [[ "$(printf '%s' "${labels_json}" | jq 'length')" -eq 0 ]]; then
+    return 0
+  fi
+  ops=$(printf '%s' "${labels_json}" | jq '{update:{labels:[.[] | {add:.}]}}')
+  _scribe_jira_api_with_status PUT "/issue/${key}" --data "${ops}" > /dev/null
+}
+
+# Fetch every item of a paginated createmeta endpoint (startAt paging) and
+# print them as one JSON array. Fails if a page cannot be read or the page
+# cap is hit before the last page, so callers never validate on partial data.
+_scribe_jira_createmeta_all() {
+  local endpoint="$1" start=0 page resp count total last
+  local items_file
+  items_file=$(mktemp)
+  printf '[]' > "${items_file}"
+  for ((page = 1; page <= SCRIBE_JIRA_MAX_PAGES; page++)); do
+    resp=$(_scribe_jira_api GET "${endpoint}?maxResults=200&startAt=${start}") || { rm -f "${items_file}"; return 1; }
+    count=$(printf '%s' "${resp}" | jq -r '(.issueTypes // .values // .fields // []) | length') || { rm -f "${items_file}"; return 1; }
+    # Merge page items via stdin/file to avoid --argjson argument-size limits
+    # on projects with large allowedValues lists. Strip allowedValues to
+    # reduce accumulated size since it is not needed for validation.
+    if printf '%s' "${resp}" | jq -c '(.issueTypes // .values // .fields // []) | map(del(.allowedValues))' \
+      | jq -sc '.[0] + .[1]' "${items_file}" - > "${items_file}.tmp" \
+      && mv "${items_file}.tmp" "${items_file}"; then
+      :
+    else
+      rm -f "${items_file}" "${items_file}.tmp"
+      return 1
+    fi
+    total=$(printf '%s' "${resp}" | jq -r '.total // empty')
+    # Distinguish absent isLast from explicit false: jq's `// empty`
+    # converts false to empty, so use has() to detect absence.
+    last=$(printf '%s' "${resp}" | jq -r 'if has("isLast") then (.isLast | tostring) else "absent" end')
+    start=$((start + count))
+    # Without a total or isLast marker the response is a single page.
+    if [[ "${count}" -eq 0 || "${last}" == "true" ]] \
+      || [[ -z "${total}" && "${last}" == "absent" ]] \
+      || [[ -n "${total}" && "${start}" -ge "${total}" ]]; then
+      cat "${items_file}"
+      rm -f "${items_file}"
+      return 0
+    fi
+  done
+  rm -f "${items_file}"
+  echo "ERROR: Jira create metadata exceeds ${SCRIBE_JIRA_MAX_PAGES} pages" >&2
+  return 1
+}
+
+# Check that the configured project and issue type exist and that every
+# required create field without a default is one scribe supplies. Fails
+# before any create call when the project needs extra fields.
+tracker_validate_create() {
+  local types type_id meta missing
+  # Preflight: verify that the fullsend CLI ships `issues create`.
+  # The config-backed form (--tracker jira --fullsend-dir) was introduced in
+  # fullsend#9078 and may not be present in older binaries. Failing here surfaces the problem on
+  # dry-run instead of silently passing validation and then exploding
+  # on the first live create.
+  if ! fullsend issues create --help >/dev/null 2>&1; then
+    echo "ERROR: 'fullsend issues create' is not available — upgrade fullsend to a version that includes the config-backed Jira commands (fullsend#9078)" >&2
+    return 1
+  fi
+  types=$(_scribe_jira_createmeta_all "/issue/createmeta/${SCRIBE_JIRA_PROJECT}/issuetypes") || {
+    echo "ERROR: cannot read create metadata for Jira project ${SCRIBE_JIRA_PROJECT} (missing project or no create permission)" >&2
+    return 1
+  }
+  type_id=$(printf '%s' "${types}" | jq -r --arg name "${SCRIBE_JIRA_ISSUE_TYPE}" \
+    '[.[] | select(.name == $name)][0].id // empty')
+  if [[ -z "${type_id}" ]]; then
+    echo "ERROR: issue type '$(_gha_sanitize "${SCRIBE_JIRA_ISSUE_TYPE}")' is not available in Jira project ${SCRIBE_JIRA_PROJECT}" >&2
+    return 1
+  fi
+  meta=$(_scribe_jira_createmeta_all "/issue/createmeta/${SCRIBE_JIRA_PROJECT}/issuetypes/${type_id}") || {
+    echo "ERROR: cannot read create fields for issue type '$(_gha_sanitize "${SCRIBE_JIRA_ISSUE_TYPE}")' in Jira project ${SCRIBE_JIRA_PROJECT}" >&2
+    return 1
+  }
+  missing=$(printf '%s' "${meta}" | jq -r '
+    [.[]
+      | select(.required == true and (.hasDefaultValue // false) == false)
+      | select((.fieldId // .key) as $f | ["project","issuetype","summary","description"] | index($f) | not)
+      | (.fieldId // .key)] | join(", ")')
+  if [[ -n "${missing}" ]]; then
+    echo "ERROR: Jira project ${SCRIBE_JIRA_PROJECT} requires fields scribe does not set: $(_gha_sanitize "${missing}")" >&2
+    return 1
+  fi
+  # forge_create_issue sends description and labels; Jira rejects the create
+  # when a field is not on the create screen. Description carries the issue
+  # content, so fail clearly; labels are optional, so omit them instead.
+  if ! printf '%s' "${meta}" | jq -e 'any(.[]; (.fieldId // .key) == "description")' >/dev/null; then
+    echo "ERROR: issue type '$(_gha_sanitize "${SCRIBE_JIRA_ISSUE_TYPE}")' in Jira project ${SCRIBE_JIRA_PROJECT} has no Description field on its create screen" >&2
+    return 1
+  fi
+  SCRIBE_JIRA_LABELS_AVAILABLE=true
+  if ! printf '%s' "${meta}" | jq -e 'any(.[]; (.fieldId // .key) == "labels")' >/dev/null; then
+    SCRIBE_JIRA_LABELS_AVAILABLE=false
+    echo "WARNING: issue type '$(_gha_sanitize "${SCRIBE_JIRA_ISSUE_TYPE}")' in Jira project ${SCRIBE_JIRA_PROJECT} has no Labels field on its create screen; labels will be omitted" >&2
+  fi
+}
+
+# Rerun protection: print the browse URL of an issue in the configured
+# project whose summary exactly matches the title (any status). Paginates
+# all matches of the fuzzy JQL summary search before comparing exactly.
+# Returns 1 when the lookup cannot prove absence (API failure, no searchable
+# terms, or results truncated by the page cap with no exact match) so callers
+# refuse to create blindly.
+tracker_find_existing_issue() {
+  local title="$1" raw_file jql terms match rc=0
+  # JQL text search reserves most punctuation; search on the letter/digit
+  # terms only (Unicode-aware) and compare the full title exactly below.
+  terms=$(printf '%s' "${title}" | jq -Rr '[scan("[\\p{L}\\p{N}]+")] | join(" ")') || return 1
+  if [[ -z "${terms}" ]]; then
+    echo "ERROR: Jira duplicate check has no searchable terms in the issue title" >&2
+    return 1
+  fi
+  raw_file=$(mktemp)
+  jql="project = $(_scribe_jql_quote "${SCRIBE_JIRA_PROJECT}") AND summary ~ $(_scribe_jql_quote "$(_scribe_jql_quote "${terms}")")"
+  _scribe_jira_search_paginated "${jql}" '["summary"]' "${raw_file}" || rc=$?
+  if [[ ${rc} -ne 0 && ${rc} -ne 2 ]]; then
+    rm -f "${raw_file}"
+    return 1
+  fi
+  if ! match=$(jq -rs --arg t "${title}" '[.[][] | select(.fields.summary == $t) | .key][0] // empty' "${raw_file}"); then
+    rm -f "${raw_file}"
+    echo "ERROR: Jira duplicate check could not parse search results" >&2
+    return 1
+  fi
+  rm -f "${raw_file}"
+  if [[ -n "${match}" ]]; then
+    echo "${JIRA_BASE_URL}/browse/${match}"
+  elif [[ ${rc} -eq 2 ]]; then
+    echo "ERROR: Jira duplicate check was truncated by the page cap; cannot rule out an existing issue" >&2
+    return 1
+  fi
+}
+
+# Create an issue in SCRIBE_JIRA_PROJECT. Body is read from stdin. Labels
+# can be a JSON array or a comma-separated list; they are filtered against
+# SCRIBE_JIRA_LABELS and validated before adding. Returns the issue browse URL.
+#
+# Delegates the actual POST to `fullsend issues create --tracker jira`,
+# which handles Markdown-to-ADF conversion and the Jira REST call.
+# Labels are added separately via the REST API because the CLI does not
+# support a --labels flag.
+forge_create_issue() {
+  local _repo="$1" title="$2" labels="$3"
+  local body response key url
+  body=$(cat)
+  if [[ -z "${FULLSEND_DIR:-}" ]]; then
+    echo "ERROR: forge_create_issue: FULLSEND_DIR is not set; the fullsend CLI needs it for the tracker.jira settings" >&2
+    return 1
+  fi
+  response=$(printf '%s' "${body}" | jira_auth_fullsend fullsend "${JIRA_TOKEN}" "${JIRA_USER_EMAIL:-}" \
+    issues create \
+    --tracker jira \
+    --fullsend-dir "${FULLSEND_DIR}" \
+    --project "${SCRIBE_JIRA_PROJECT}" \
+    --type "${SCRIBE_JIRA_ISSUE_TYPE}" \
+    --title "${title}" \
+    --body -) || {
+    echo "ERROR: forge_create_issue: fullsend issues create failed in project ${SCRIBE_JIRA_PROJECT}" >&2
+    return 1
+  }
+  key=$(printf '%s' "${response}" | jq -r '.key // empty' 2>/dev/null)
+  url=$(printf '%s' "${response}" | jq -r '.url // empty' 2>/dev/null)
+  if [[ -z "${key}" ]] || [[ ! "${key}" =~ ^${SCRIBE_JIRA_PROJECT}-[0-9]+$ ]]; then
+    echo "ERROR: forge_create_issue: fullsend issues create returned no valid issue key" >&2
+    return 1
+  fi
+  # tracker_validate_create sets SCRIBE_JIRA_LABELS_AVAILABLE=false when the
+  # create screen has no Labels field; sending it would fail every create.
+  # Note: SCRIBE_JIRA_LABELS_AVAILABLE is validated against createmeta (create
+  # screen). The label PUT uses the edit screen, which usually agrees with the
+  # create screen for the Labels field but is not separately validated. If the
+  # edit screen differs, the PUT will fail and the issue is created without
+  # labels — surfaced in the step summary and Slack output below.
+  local label_failed=false
+  if [[ "${SCRIBE_JIRA_LABELS_AVAILABLE:-true}" == "true" ]] && [[ -n "${labels}" ]]; then
+    if ! _scribe_jira_add_labels "${key}" "${labels}"; then
+      echo "WARNING: forge_create_issue: failed to add labels to ${key} (issue created without labels)" >&2
+      label_failed=true
+    fi
+  fi
+  if [[ -n "${url}" ]]; then
+    echo "${url}"
+  else
+    echo "${JIRA_BASE_URL}/browse/${key}"
+  fi
+  # Return 2 to signal "created successfully but labels failed" so the
+  # caller (post-scribe) can surface the failure in the run summary.
+  [[ "${label_failed}" == "true" ]] && return 2
+  return 0
+}
+
+forge_issue_url_base() {
+  echo "${JIRA_BASE_URL}/browse"
+}
+
+# Normalize and filter labels for Jira against allowlist, format, and cap.
+# Returns comma-separated string for display and logging.
+forge_normalize_labels() {
+  local labels="$1"
+  printf '%s' "$(_scribe_jira_filter_labels "${labels}")" | jq -r 'join(",")'
+}
+# END bundled: lib/jira-scribe-ops.lib.sh
+    ;;
+  *)
+    echo "ERROR: invalid FULLSEND_TRACKER: '$(_gha_sanitize "${FULLSEND_TRACKER}")' — must be 'jira' or match FULLSEND_FORGE" >&2
+    exit 1
+    ;;
+esac
 # END bundled: lib/scribe-ops.lib.sh
+
+# Jira writes go through the fullsend CLI, which reads tracker.jira from
+# FULLSEND_DIR's config.yaml. Fail here, before the agent runs, rather than
+# in post-scribe.sh after the agent has already produced its result.
+if [[ "${FULLSEND_TRACKER}" == "jira" && -z "${FULLSEND_DIR:-}" ]]; then
+  echo "ERROR: FULLSEND_DIR must be set when FULLSEND_TRACKER=jira (the fullsend CLI reads tracker.jira from its config.yaml)" >&2
+  exit 1
+fi
 
 if [[ -n "${GH_TOKEN:-}" ]]; then
   echo "::add-mask::${GH_TOKEN}"
@@ -420,13 +1289,30 @@ fi
 if [[ -n "${GITLAB_TOKEN:-}" ]]; then
   echo "::add-mask::${GITLAB_TOKEN}"
 fi
+if [[ -n "${JIRA_TOKEN:-}" ]]; then
+  # Sanitize workflow-command delimiters before interpolating into ::add-mask::
+  # so a crafted token cannot inject additional workflow commands.
+  printf '::add-mask::%s\n' "$(printf '%s' "${JIRA_TOKEN}" | tr -d '\n\r')"
+fi
 
 WORK_DIR="${RUNNER_TEMP:-/tmp}/scribe-workspace"
 NOTES_DIR="${WORK_DIR}/notes"
 BACKLOG_FILE="${WORK_DIR}/backlog.json"
 META_FILE="${WORK_DIR}/scribe-meta.json"
+# Meeting-document titles (issue #706) are kept in a separate, runner-only file
+# that is NOT mounted into the sandbox (unlike META_FILE, which the agent reads),
+# so untrusted Drive titles never enter the agent's context. post-scribe reads
+# this file for notifications.
+TITLES_FILE="${WORK_DIR}/scribe-titles.json"
 
 mkdir -p "${NOTES_DIR}"
+
+# Clear files left by a previous run before this run can fail. This script exits
+# non-zero on an auth/search/export failure *before* writing META_FILE, so on a
+# reused workspace a stale docs_downloaded: 0 could otherwise be read by
+# post-scribe as a confirmed empty search for this run (issue #1618); a stale
+# titles file would likewise show the previous run's meeting names.
+rm -f "${META_FILE}" "${TITLES_FILE}"
 
 LOOKBACK="${SCRIBE_LOOKBACK_HOURS:-3}"
 # RFC3339 with Z suffix — matches the Go code's time.RFC3339 format
@@ -448,7 +1334,12 @@ REPO_DOCS_FILE="${WORK_DIR}/repo-docs-index.json"
 # response includes PRs (filtered out below); on GitLab it does not.
 echo "Fetching open issues from ${SCRIBE_REPO}..."
 RAW_PAGINATED_FILE="${WORK_DIR}/raw-paginated-issues.json"
-forge_fetch_open_issues_raw "${SCRIBE_REPO}" "${RAW_PAGINATED_FILE}"
+PAGINATION_RC=0
+forge_fetch_open_issues_raw "${SCRIBE_REPO}" "${RAW_PAGINATED_FILE}" || PAGINATION_RC=$?
+if [[ ${PAGINATION_RC} -ne 0 && ${PAGINATION_RC} -ne 2 ]]; then
+  echo "ERROR: failed to fetch open issues from ${SCRIBE_REPO}" >&2
+  exit 1
+fi
 
 # Count total items from paginated response before filtering.
 # Used later for truncation detection.
@@ -487,7 +1378,16 @@ echo "Fetched ${PR_COUNT} open pull requests."
 # prevents false-positive backlog_truncated=true from API timing.
 REPO_OPEN_COUNT=$(forge_get_issue_count "${SCRIBE_REPO}")
 TRUNCATION_TOLERANCE=5
-if [[ -n "${REPO_OPEN_COUNT}" ]]; then
+if [[ "${PAGINATION_RC}" -eq 2 || "${SCRIBE_BACKLOG_PAGE_CAPPED:-false}" == "true" ]]; then
+  BACKLOG_TRUNCATED=true
+  OBSERVED_PR_COUNT=$((PAGINATED_TOTAL - ISSUE_COUNT))
+  if [[ -n "${REPO_OPEN_COUNT}" ]]; then
+    OPEN_ISSUE_TOTAL=$((REPO_OPEN_COUNT - OBSERVED_PR_COUNT))
+    [[ "${OPEN_ISSUE_TOTAL}" -lt 0 ]] && OPEN_ISSUE_TOTAL="${ISSUE_COUNT}"
+  else
+    OPEN_ISSUE_TOTAL="${ISSUE_COUNT}"
+  fi
+elif [[ -n "${REPO_OPEN_COUNT}" ]]; then
   SHORTFALL=$((REPO_OPEN_COUNT - PAGINATED_TOTAL))
   [[ "${SHORTFALL}" -gt "${TRUNCATION_TOLERANCE}" ]] && BACKLOG_TRUNCATED=true || BACKLOG_TRUNCATED=false
   # Derive issue-only total: subtract observed PR count from API total
@@ -588,7 +1488,23 @@ DOC_COUNT=$(jq '.files | length' "${WORK_DIR}/drive-response.json")
 echo "Found ${DOC_COUNT} matching document(s)"
 
 if [[ "${DOC_COUNT}" -gt 0 ]]; then
-  jq -r '.files[] | "  \(.name) (created: \(.createdTime))"' "${WORK_DIR}/drive-response.json"
+  # Drive names are untrusted input (issue #706). Raw `jq -r` would print them to
+  # the Actions log verbatim — leaking PII that post-scribe redacts from the same
+  # run's notification, letting a newline in a name forge log lines, and letting
+  # a name starting with "::" inject a GHA workflow command (this line has only
+  # whitespace before the name). Route each name through strip_unsafe_chars +
+  # redact_sensitive_title, then _gha_sanitize (encodes `%`/`::` — readability
+  # matters less in the job log than in the notification, so unlike the Slack/
+  # step-summary sanitizers this one is applied here). Read NUL-delimited so a
+  # newline stays one record; strip embedded NULs from each field in jq first —
+  # jq would otherwise emit a literal NUL byte for a `\u0000` in a Drive name,
+  # shifting the delimiter and letting an attacker-controlled name's tail land
+  # unredacted in ${_ctime} (which is only stripped, not redacted).
+  while IFS= read -r -d '' _name && IFS= read -r -d '' _ctime; do
+    _name=$(_gha_sanitize "$(redact_sensitive_title "$(strip_unsafe_chars "${_name}")")")
+    _ctime=$(_gha_sanitize "$(strip_unsafe_chars "${_ctime}")")
+    echo "  ${_name} (created: ${_ctime})"
+  done < <(jq -j '.files[] | ((.name // "") | gsub("\u0000"; "")) + "\u0000" + ((.createdTime // "") | gsub("\u0000"; "")) + "\u0000"' "${WORK_DIR}/drive-response.json")
 fi
 
 if [[ "${DOC_COUNT}" -eq 0 ]]; then
@@ -607,8 +1523,10 @@ if [[ "${DOC_COUNT}" -eq 0 ]]; then
     --argjson closed_count "${CLOSED_COUNT}" \
     --argjson pr_count "${PR_COUNT}" \
     --argjson doc_path_count "${DOC_PATH_COUNT}" \
-    '{cutoff_date: $cutoff, notes_url: "", repo: $repo, docs_downloaded: $doc_count, backlog_issues: $issue_count, open_issue_total: $open_total, backlog_truncated: $truncated, closed_issues: $closed_count, open_prs: $pr_count, repo_docs: $doc_path_count}' \
+    --arg tracker "${FULLSEND_TRACKER}" \
+    '{cutoff_date: $cutoff, notes_url: "", repo: $repo, tracker: $tracker, docs_downloaded: $doc_count, backlog_issues: $issue_count, open_issue_total: $open_total, backlog_truncated: $truncated, closed_issues: $closed_count, open_prs: $pr_count, repo_docs: $doc_path_count}' \
     > "${META_FILE}"
+  echo '{"doc_names": []}' > "${TITLES_FILE}"
   echo "Workspace: ${WORK_DIR}"
   exit 0
 fi
@@ -653,12 +1571,17 @@ export_doc_with_retry() {
 
 DOC_INDEX=0
 DOCS_FAILED=0
+DOC_NAMES=()
 while read -r doc; do
   DOC_ID=$(echo "${doc}" | jq -r '.id')
   DOC_NAME=$(echo "${doc}" | jq -r '.name')
   DOC_URL=$(echo "${doc}" | jq -r '.webViewLink')
 
-  echo "  Downloading: ${DOC_NAME}"
+  # DOC_NAME is untrusted; sanitize/redact/_gha_sanitize for the log only (the
+  # raw value is still needed below for download and for scribe-titles.json).
+  # This line has a non-whitespace prefix so a `::` is less exposed than the
+  # listing above, but _gha_sanitize is applied for the same defense-in-depth.
+  echo "  Downloading: $(_gha_sanitize "$(redact_sensitive_title "$(strip_unsafe_chars "${DOC_NAME}")")")"
 
   set +e
   RAW_TEXT=$(export_doc_with_retry "${DOC_ID}")
@@ -700,25 +1623,18 @@ while read -r doc; do
     | sed -E 's/^([[:space:]]*[-*][[:space:]]*)[A-Z][a-zA-Z]+ [A-Z][a-zA-Z .-]+:/\1[attendee]:/g')
 
   # --- PII pattern scrubbing ---
-  # Ordered: specific patterns first, generic last (matches Go sanitizer.go)
-  SCRUBBED=$(echo "${STRUCTURAL_SCRUB}" \
-    | sed -E 's/\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/[REDACTED]/g' \
-    | sed -E 's/\b(\+?1[-. ]?)?\(?\d{3}\)?[-. ]?\d{3}[-. ]?\d{4}\b/[REDACTED]/g' \
-    | sed -E 's/\+\d{1,3}[-. ]?\d{4,14}\b/[REDACTED]/g' \
-    | sed -E 's/\b([0-9]{1,3}\.){3}[0-9]{1,3}\b/[REDACTED]/g' \
-    | sed -E 's/\b[0-9]{3}-[0-9]{2}-[0-9]{4}\b/[REDACTED]/g' \
-    | sed -E 's/\b([0-9][ -]?){13,19}\b/[REDACTED]/g' \
-    | sed -E 's/\b(AKIA|ABIA|ACCA|ASIA)[0-9A-Z]{16}\b/[REDACTED]/g' \
-    | sed -E 's/[Aa][Ww][Ss].?[Ss][Ee][Cc][Rr][Ee][Tt].?([Aa][Cc][Cc][Ee][Ss][Ss])?.?[Kk][Ee][Yy][[:space:]]*[:=][[:space:]]*[A-Za-z0-9\/+=]{40}/[REDACTED]/g' \
-    | sed -E 's/\b(ghp|gho|ghs|ghr)_[A-Za-z0-9_]{36,255}\b/[REDACTED]/g' \
-    | sed -E 's|https://hooks\.slack\.com/services/T[A-Z0-9]+/B[A-Z0-9]+/[A-Za-z0-9]+|[REDACTED]|g' \
-    | sed -E 's/-----BEGIN[[:space:]]+(RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----.*/[REDACTED]/g' \
-    | sed -E 's/[Pp][Rr][Ii][Vv][Aa][Tt][Ee]_[Kk][Ee][Yy]_[Ii][Dd][[:space:]]*[:=][[:space:]]*['"'"'"]?[a-f0-9]{40}['"'"'"]?/[REDACTED]/g' \
-    | sed -E 's/\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/[REDACTED]/g' \
-    | sed -E 's/([Aa][Pp][Ii][_-]?[Kk][Ee][Yy]|[Tt][Oo][Kk][Ee][Nn]|[Ss][Ee][Cc][Rr][Ee][Tt]|[Pp][Aa][Ss][Ss][Ww][Oo][Rr][Dd]|[Bb][Ee][Aa][Rr][Ee][Rr])[[:space:]]*[:=][[:space:]]*['"'"'"]?[A-Za-z0-9_.~+\/-]{20,}['"'"'"]?/[REDACTED]/g')
+  # scrub_note_pii lives in scribe-ops.lib.sh (sourced above), alongside
+  # redact_sensitive_title, so the two pattern lists stay next to each other
+  # and are independently testable.
+  SCRUBBED=$(scrub_note_pii "${STRUCTURAL_SCRUB}")
 
   echo "${SCRUBBED}" > "${NOTES_DIR}/doc-${DOC_INDEX}.txt"
   echo "${DOC_URL}" > "${NOTES_DIR}/doc-${DOC_INDEX}.url"
+
+  # Record the title of each successfully-processed doc for the run's
+  # notifications (issue #706). This is untrusted Drive input; it is stored as a
+  # jq-escaped JSON string here and sanitized again before display in post-scribe.
+  DOC_NAMES+=("${DOC_NAME}")
 
   DOC_INDEX=$((DOC_INDEX + 1))
 done < <(jq -c '.files[]' "${WORK_DIR}/drive-response.json")
@@ -732,6 +1648,18 @@ if [[ -f "${NOTES_DIR}/doc-0.url" ]]; then
   NOTES_URL=$(cat "${NOTES_DIR}/doc-0.url")
 fi
 
+# Serialize the processed meeting-document titles (issue #706) as a JSON string
+# array, written to the runner-only TITLES_FILE (NOT the sandbox-mounted
+# META_FILE, so untrusted titles never enter the agent context). Feed the titles
+# through stdin (NUL-delimited), not as jq `--args` positionals: jq reads a
+# positional beginning with `-` (e.g. a doc titled "-Weekly" or "-h") as an
+# option and aborts. jq -Rs JSON-escapes every character; the trailing NUL yields
+# an empty final element that is filtered out. The ${arr[@]+...} form keeps
+# `printf` safe under `set -u` when the array is empty.
+DOC_NAMES_JSON=$(printf '%s\0' ${DOC_NAMES[@]+"${DOC_NAMES[@]}"} \
+  | jq -Rs 'split("\u0000") | map(select(length > 0))')
+jq -n --argjson doc_names "${DOC_NAMES_JSON}" '{doc_names: $doc_names}' > "${TITLES_FILE}"
+
 jq -n \
   --arg cutoff "${CUTOFF_DATE}" \
   --arg notes_url "${NOTES_URL}" \
@@ -743,10 +1671,12 @@ jq -n \
   --argjson closed_count "${CLOSED_COUNT}" \
   --argjson pr_count "${PR_COUNT}" \
   --argjson doc_path_count "${DOC_PATH_COUNT}" \
+  --arg tracker "${FULLSEND_TRACKER}" \
   '{
     cutoff_date: $cutoff,
     notes_url: $notes_url,
     repo: $repo,
+    tracker: $tracker,
     docs_downloaded: $doc_count,
     backlog_issues: $issue_count,
     open_issue_total: $open_total,

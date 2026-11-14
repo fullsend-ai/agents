@@ -1,2 +1,5 @@
 runs/
 **/eval-runtime-*.yaml
+release-cases-*/
+retry-cases-*/
+**/eval-retry-*.yaml

@@ -12,39 +12,72 @@ This skill provides GitLab-specific CLI commands for the MR review
 orchestrator. The orchestrator (`pr-review` skill) delegates data
 fetching to these commands when `FULLSEND_FORGE=gitlab`.
 
-## Environment setup
+## Request values
+
+Run this first, in its own Bash tool call, before any other GitLab command.
+It extracts the host, project path, and MR IID from `PR_URL` and prints them:
 
 ```bash
-# Derive project variables from PR_URL
-GITLAB_HOST=$(echo "${PR_URL}" | sed -E 's|^https://([^/]+)/.*|\1|')
+GITLAB_HOST=$(echo "${PR_URL}" | sed -nE 's|^https://([^/]+)/.*|\1|p')
 REPO=$(echo "${PR_URL}" | sed -E 's|^https://[^/]+/(.+)/-/merge_requests/[0-9]+$|\1|')
 REPO_ENCODED=$(printf '%s' "${REPO}" | jq -sRr @uri)
 MR_IID=$(basename "${PR_URL}")
+test -n "${GITLAB_HOST}" || echo "GITLAB_HOST is empty: PR_URL is unset or not an https URL" >&2
+if printf '%s' "${GITLAB_HOST}" | grep -Eqz '^[A-Za-z0-9.-]+$' && printf '%s' "${MR_IID}" | grep -Eqz '^[0-9]+$'; then
+  printf 'GITLAB_HOST=%s\nREPO_ENCODED=%s\nMR_IID=%s\n' "${GITLAB_HOST}" "${REPO_ENCODED}" "${MR_IID}"
+else
+  echo "GITLAB_HOST is not a plain hostname or MR_IID is not numeric" >&2
+fi
 ```
+
+If the command printed no values — `GITLAB_HOST` is empty, is not a plain
+hostname (it must match `^[A-Za-z0-9.-]+$`), or `MR_IID` is not numeric (it
+must match `^[0-9]+$`) — make no request. Produce a failure result (reason
+`tool-failure`) that says the GitLab request values could not be derived from
+`PR_URL`.
+
+Otherwise, write the printed values literally into every request URL below in
+place of `<GITLAB_HOST>`, `<REPO_ENCODED>`, and `<MR_IID>`. Never write
+`${GITLAB_HOST}` in a request URL. The sandbox's SSRF check reads the URL from
+the command text before the shell runs. It sees the unexpanded variable, cannot
+resolve it, and blocks the request even when the variable is set. Shell
+variables also do not carry over between Bash tool calls.
 
 ## MR data fetching
 
 ```bash
+# Write token into a stable curl config file so the header never
+# appears on a command line (avoids the tirith sensitive-upload rule).
+# Use a hardcoded path, not a mktemp path stored in a shell variable:
+# each fenced block in this file runs as an independent Bash call, so
+# shell variables do not survive between them — files (at a fixed,
+# predictable path) do. Written and scrubbed within this same block so
+# the token never outlives the calls that need it.
+OLDMASK=$(umask); umask 077; printf 'header = "PRIVATE-TOKEN: %s"\n' "${GITLAB_TOKEN}" > /tmp/gitlab-api.curlrc; umask "$OLDMASK"
+
 # MR metadata: title, description, author, labels, draft status, head SHA.
-# Persist to a file too (shell vars do not survive between calls): the
-# fencing producer in pr-review step 3d reads title/description/labels
-# from it (map `.description` where step 3d says `.body`).
-MR_DATA=$(curl --fail --silent --show-error \
-  --header "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
-  "https://${GITLAB_HOST}/api/v4/projects/${REPO_ENCODED}/merge_requests/${MR_IID}")
-echo "$MR_DATA" > /sandbox/workspace/pr.json
-HEAD_SHA=$(echo "$MR_DATA" | jq -r '.sha')
-IS_DRAFT=$(echo "$MR_DATA" | jq -r '.draft')
+# Saved to a file, not captured in a variable and piped inside $( ), so
+# the field reads below stay in the scanner's accepted dialect. pr.json
+# is the forge-neutral name pr-review step 3d fences title/description/
+# labels from (map `.description` where step 3d says `.body`).
+curl --fail --silent --show-error \
+  -K /tmp/gitlab-api.curlrc \
+  "https://<GITLAB_HOST>/api/v4/projects/<REPO_ENCODED>/merge_requests/<MR_IID>" \
+  > /sandbox/workspace/pr.json
+HEAD_SHA=$(jq -r '.sha' /sandbox/workspace/pr.json)
+IS_DRAFT=$(jq -r '.draft' /sandbox/workspace/pr.json)
 
 # MR changes (includes diff per file), saved for later Bash calls
 # (shell variables do not survive between calls; files do)
 curl --fail --silent --show-error \
-  --header "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
-  "https://${GITLAB_HOST}/api/v4/projects/${REPO_ENCODED}/merge_requests/${MR_IID}/changes" \
+  -K /tmp/gitlab-api.curlrc \
+  "https://<GITLAB_HOST>/api/v4/projects/<REPO_ENCODED>/merge_requests/<MR_IID>/changes" \
   > /sandbox/workspace/mr-changes.json
 
 # Changed file paths
 jq -r '.changes[].new_path' /sandbox/workspace/mr-changes.json
+
+: > /tmp/gitlab-api.curlrc
 ```
 
 ## Unified diff (small and large MRs)
@@ -69,7 +102,7 @@ test -s /sandbox/workspace/pr-diff.txt || echo "EMPTY DIFF — produce a failure
 # its own call (see below) whether this one succeeded, failed or timed out.
 PR_HEAD=/sandbox/workspace/pr-head; WORK=/sandbox/workspace/pr-head.work; MANIFEST=/sandbox/workspace/pr-head.manifest
 CHANGES=/sandbox/workspace/mr-changes.json; CURLRC=/tmp/pr-head.curlrc
-API="https://${GITLAB_HOST}/api/v4/projects/${REPO_ENCODED}/repository/files"
+API="https://<GITLAB_HOST>/api/v4/projects/<REPO_ENCODED>/repository/files"
 mkdir -p "$PR_HEAD" "$WORK"; : > "$MANIFEST"; : > "$WORK/failed"; FETCH_START=$(date +%s)
 OLDMASK=$(umask); umask 077; printf 'header = "PRIVATE-TOKEN: %s"\nfail\nsilent\n' "$GITLAB_TOKEN" > "$CURLRC"; umask "$OLDMASK"
 jq -r '.changes[] | select(.deleted_file) | "removed \(.new_path)"' "$CHANGES" >> "$MANIFEST"
@@ -103,11 +136,16 @@ timed out — scrub the token: `: > /tmp/pr-head.curlrc`.
 ## Issue context
 
 ```bash
-# Fetch linked issue metadata (persisted so step 3d can fence its
-# title/description the same way as pr.json)
+# Recreate the curl config for this block (see MR data fetching above
+# for why a stable path, not a mktemp variable, is used).
+OLDMASK=$(umask); umask 077; printf 'header = "PRIVATE-TOKEN: %s"\n' "${GITLAB_TOKEN}" > /tmp/gitlab-api.curlrc; umask "$OLDMASK"
+
+# Fetch linked issue metadata. Step 2b resolves bare `#N` and
+# same-repository issue URLs only. Persisted so step 3d can fence its
+# title/description the same way as pr.json.
 curl --fail --silent --show-error \
-  --header "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
-  "https://${GITLAB_HOST}/api/v4/projects/${REPO_ENCODED}/issues/<issue-iid>" \
+  -K /tmp/gitlab-api.curlrc \
+  "https://<GITLAB_HOST>/api/v4/projects/<REPO_ENCODED>/issues/<issue-iid>" \
   | jq '{title, description}' > /sandbox/workspace/issue.json
 
 # Fetch issue notes (comments) — bodies only, oldest first, one JSON
@@ -118,20 +156,82 @@ curl --fail --silent --show-error \
 #   jq -r '.[]' issue-comments.json > value.txt    (all, one block)
 #   jq -r '.[0]' issue-comments.json > value.txt   (one note, 0-based)
 curl --fail --silent --show-error \
-  --header "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
-  "https://${GITLAB_HOST}/api/v4/projects/${REPO_ENCODED}/issues/<issue-iid>/notes?sort=asc&per_page=100" \
+  -K /tmp/gitlab-api.curlrc \
+  "https://<GITLAB_HOST>/api/v4/projects/<REPO_ENCODED>/issues/<issue-iid>/notes?sort=asc&per_page=100" \
   | jq '[.[] | select(.system | not) | .body]' > /sandbox/workspace/issue-comments.json
+
+: > /tmp/gitlab-api.curlrc
 ```
 
 ## Prior review comparison
 
+Accept an incremental diff only when the merge base is the prior reviewed SHA.
+A rewritten history, failed ancestry lookup, or malformed response retains the
+full MR diff and incomplete state. GitLab still uses full first-review dispatch.
+
 ```bash
 # Compare commits between prior review and current HEAD
-COMPARE=$(curl --fail --silent --show-error \
-  --header "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
-  "https://${GITLAB_HOST}/api/v4/projects/${REPO_ENCODED}/repository/compare?from=${PRIOR_REVIEW_SHA}&to=${HEAD_SHA}")
-CHANGED_FILES=$(echo "$COMPARE" | jq -r '.diffs[].new_path')
+COMPARE_FILE=/sandbox/workspace/pr-compare.json
+MERGE_BASE_FILE=/sandbox/workspace/pr-merge-base.json
+INCREMENTAL_DIFF=/sandbox/workspace/pr-incremental-diff.txt
+CHANGED_FILES_FILE=/sandbox/workspace/pr-changed-files.txt
+COMPARE_INCOMPLETE_FILE=/sandbox/workspace/pr-compare-incomplete
+COMPARE_COMPLETE_FILTER='def safe_path: type == "string" and length > 0 and test("^[ -~]+$") and (test("(^/|/$|//|(^|/)\\.\\.?(/|$)|[\\\\\\r\\n<>])") | not); type == "object" and (.diffs | type == "array") and ((.compare_timeout // false) == false) and all(.diffs[]?; (.old_path | safe_path) and (.new_path | safe_path))'
+INCOMPLETE_COMPARE=true
+CHANGED_FILES=all
+if printf '%s\n' true > "$COMPARE_INCOMPLETE_FILE" \
+  && printf '%s\n' all > "$CHANGED_FILES_FILE" \
+  && cp /sandbox/workspace/pr-diff.txt "$INCREMENTAL_DIFF"; then
+  :
+else
+  echo "cannot initialize fail-closed compare state" >&2
+  exit 1
+fi
+
+# Recreate the curl config for this block (see MR data fetching above
+# for why a stable path, not a mktemp variable, is used).
+OLDMASK=$(umask); umask 077; printf 'header = "PRIVATE-TOKEN: %s"\n' "${GITLAB_TOKEN}" > /tmp/gitlab-api.curlrc; umask "$OLDMASK"
+
+if ! curl --fail --silent --show-error --get \
+  -K /tmp/gitlab-api.curlrc \
+  --data-urlencode "refs[]=${PRIOR_REVIEW_SHA}" \
+  --data-urlencode "refs[]=${HEAD_SHA}" \
+  "https://<GITLAB_HOST>/api/v4/projects/<REPO_ENCODED>/repository/merge_base" \
+  > "$MERGE_BASE_FILE" \
+  || ! jq -e --arg prior "$PRIOR_REVIEW_SHA" \
+    'type == "object" and (.id == $prior)' "$MERGE_BASE_FILE" >/dev/null; then
+  echo "prior-review ancestry unproven; using full MR diff" >&2
+elif ! curl --fail --silent --show-error \
+  -K /tmp/gitlab-api.curlrc \
+  "https://<GITLAB_HOST>/api/v4/projects/<REPO_ENCODED>/repository/compare?from=${PRIOR_REVIEW_SHA}&to=${HEAD_SHA}&straight=true" \
+  > "$COMPARE_FILE"; then
+  echo "prior-review compare failed; using full MR diff" >&2
+elif jq -e "$COMPARE_COMPLETE_FILTER" "$COMPARE_FILE" >/dev/null \
+  && jq -r '[.diffs[] | .new_path, .old_path] | unique[]' \
+    "$COMPARE_FILE" > "${CHANGED_FILES_FILE}.tmp" \
+  && jq -r '.diffs[] | select((.diff | type == "string" and length > 0) and ((.too_large // false) == false) and ((.collapsed // false) == false)) | "diff --git a/\(.old_path) b/\(.new_path)\n\(.diff)"' \
+    "$COMPARE_FILE" > "${INCREMENTAL_DIFF}.tmp"; then
+  if mv "${INCREMENTAL_DIFF}.tmp" "$INCREMENTAL_DIFF" \
+    && mv "${CHANGED_FILES_FILE}.tmp" "$CHANGED_FILES_FILE"; then
+    if printf '%s\n' false > "${COMPARE_INCOMPLETE_FILE}.tmp" \
+      && mv "${COMPARE_INCOMPLETE_FILE}.tmp" "$COMPARE_INCOMPLETE_FILE"; then
+      INCOMPLETE_COMPARE=false
+    fi
+  fi
+fi
+
+CHANGED_FILES=$(cat -- "$CHANGED_FILES_FILE")
+
+: > /tmp/gitlab-api.curlrc
 ```
+
+Each block above writes and scrubs `/tmp/gitlab-api.curlrc` within its
+own Bash call. As a fallback in case a block is interrupted before its
+own scrub line runs, once every GitLab API call in this skill is done
+for the review, scrub the token again as its own explicit Bash call:
+`: > /tmp/gitlab-api.curlrc` — not `rm`. Every consumer of the file sits
+inside the block that recreates it, so each block scrubs it on its own;
+this explicit call only covers a block that was interrupted.
 
 ## Notes
 
