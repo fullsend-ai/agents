@@ -205,48 +205,6 @@ match host/repository to PR, normalize/deduplicate to `#N`, then run forge
 [Verify PR claims and dependencies](references/dependency-scope.md).
 Sandbox block: full diff. Other failures: stop review.
 
-### 2c. Filter unreviewable content
-
-Filter `/sandbox/workspace/pr-diff.txt` before it enters any context
-package. Run it as written:
-
-```bash
-# Scanner dialect (fullsend-ai/agents#1190): `test` not `[ ]`, no rm.
-# The skills root is exported under a different name per runtime.
-filter=
-for root in "${CLAUDE_CONFIG_DIR}" "${PI_CODING_AGENT_DIR}" "${CODEX_HOME}"; do
-  test -f "${root}/skills/pr-review/scripts/filter-review-diff.sh" \
-    && filter="${root}/skills/pr-review/scripts/filter-review-diff.sh" && break
-done
-if test -n "${filter}" && bash "${filter}" \
-     /sandbox/workspace/pr-excluded.txt /sandbox/workspace/pr-head \
-     < /sandbox/workspace/pr-diff.txt > /sandbox/workspace/pr-diff.filtered; then
-  mv /sandbox/workspace/pr-diff.filtered /sandbox/workspace/pr-diff.txt
-else
-  : > /sandbox/workspace/pr-excluded.txt
-  echo "FILTER FAILED — pr-diff.txt left as fetched; review it unfiltered"
-fi
-if ! test -s /sandbox/workspace/pr-diff.txt; then
-  if test -s /sandbox/workspace/pr-excluded.txt; then
-    echo "ALL EXCLUDED — skip steps 3–6d; run 6e onward, then step 7"
-  else
-    echo "EMPTY DIFF after filtering — produce a failure result (reason tool-failure)"
-  fi
-fi
-```
-
-It fails open: any failure leaves the diff as fetched and the review
-unfiltered, never a lost diff. ALL EXCLUDED skips dispatch only: 6e
-(injection, metadata, scope, protected paths) still runs, with the
-disclosures as the adjudicated set. What it strips
-(lockfiles, minified/sourcemap, vendored, generated; migrations exempt)
-and its residual risk are in `filter-review-diff.sh`'s header.
-
-`/sandbox/workspace/pr-excluded.txt` (never on stdout) is the
-orchestrator's context only: its paths stay out of every MANIFEST and
-file list a sub-agent gets (3d, 6d), so stripped content never re-enters as
-a whole file; step 7 discloses them.
-
 ### 2a. Prior review context (re-reviews)
 
 Before interpreting prior-review inputs or selecting sub-agents, **read and follow
@@ -254,6 +212,51 @@ Before interpreting prior-review inputs or selecting sub-agents, **read and foll
 It defines provenance, comparison fallback, category mapping, and remediation
 candidates. Missing or invalid context uses full first-review dispatch; GitLab
 `bot-verified` permits severity anchoring only, never narrowed dispatch.
+
+### 2c. Filter unreviewable content
+
+Run after 2b and 2a, before any context package: it filters every diff
+a model reads (`pr-diff.txt`, SCOPED's `pr-full-diff.txt`, 2a's
+`pr-incremental-diff.txt`). Run it as written:
+
+```bash
+# Scanner dialect (fullsend-ai/agents#1190): `test` not `[ ]`, no rm.
+# The skills root is exported under a different name per runtime.
+W=/sandbox/workspace; S="$W/pr-excluded.txt"; filter=
+for root in "${CLAUDE_CONFIG_DIR}" "${PI_CODING_AGENT_DIR}" "${CODEX_HOME}"; do
+  test -f "${root}/skills/pr-review/scripts/filter-review-diff.sh" \
+    && filter="${root}/skills/pr-review/scripts/filter-review-diff.sh" && break
+done
+# The widest diff present writes the summary; the others are subsets.
+: > "$S"; sum="$S"; ok="${filter}"
+for f in "$W/pr-full-diff.txt" "$W/pr-diff.txt" "$W/pr-incremental-diff.txt"; do
+  test -f "$f" || continue
+  test -n "$ok" && bash "$filter" "$sum" "$W/pr-head" < "$f" > "$f.filtered" || ok=
+  sum=/dev/null
+done
+if test -n "$ok"; then
+  for f in "$W/pr-full-diff.txt" "$W/pr-diff.txt" "$W/pr-incremental-diff.txt"; do
+    test -f "$f.filtered" && mv "$f.filtered" "$f"
+  done
+else
+  : > "$S"; echo "FILTER FAILED — diffs left as fetched; review them unfiltered"
+fi
+if ! test -s "$W/pr-diff.txt"; then
+  if test -s "$S"; then echo "ALL EXCLUDED — skip steps 3–6d; run 6e onward, then step 7"
+  else echo "EMPTY DIFF after filtering — produce a failure result (reason tool-failure)"; fi
+fi
+```
+
+It fails open: any failure leaves every diff as fetched and the review
+unfiltered, never a lost diff. ALL EXCLUDED skips dispatch only: 6e
+(injection, metadata, scope, protected paths) still runs, with the
+disclosures as the adjudicated set. What it strips (lockfiles,
+minified/sourcemap, vendored, generated; migrations exempt) and its
+residual risk are in `filter-review-diff.sh`'s header.
+
+`$S` (never on stdout) is the orchestrator's context only: its paths
+stay out of every MANIFEST and file list a sub-agent gets (3d, 6d), so
+stripped content never re-enters as a whole file; step 7 discloses them.
 
 ### 3. Triage
 
