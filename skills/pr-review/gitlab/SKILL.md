@@ -148,17 +148,28 @@ curl --fail --silent --show-error \
   "https://<GITLAB_HOST>/api/v4/projects/<REPO_ENCODED>/issues/<issue-iid>" \
   | jq '{title, description}' > /sandbox/workspace/issue.json
 
-# Fetch issue notes (comments) — bodies only, oldest first, one JSON
-# array; system notes ("changed the description") dropped, since the
-# `system` flag does not survive the projection. Persisted like
-# issue.json: any commenter writes these, and step 3d fences a value
-# only from a file jq wrote, never from retyped text:
+# Fetch issue notes (comments): every page, oldest first, then bodies
+# only as one JSON array. System notes ("changed the description") are
+# dropped, since the `system` flag does not survive the projection. A
+# page that fails leaves issue-comments.json empty, never truncated.
+# Persisted like issue.json: any commenter writes these, and step 3d
+# fences a value only from a file jq wrote, never from retyped text:
 #   jq -r '.[]' issue-comments.json > value.txt    (all, one block)
 #   jq -r '.[0]' issue-comments.json > value.txt   (one note, 0-based)
-curl --fail --silent --show-error \
-  -K /tmp/gitlab-api.curlrc \
-  "https://<GITLAB_HOST>/api/v4/projects/<REPO_ENCODED>/issues/<issue-iid>/notes?sort=asc&per_page=100" \
-  | jq '[.[] | select(.system | not) | .body]' > /sandbox/workspace/issue-comments.json
+NOTES_PAGE=/sandbox/workspace/issue-notes.page; NOTES_ALL=/sandbox/workspace/issue-notes.all
+: > "$NOTES_ALL"; : > /sandbox/workspace/issue-comments.json; page=1; NOTES_OK=false
+while curl --fail --silent --show-error -K /tmp/gitlab-api.curlrc \
+  "https://<GITLAB_HOST>/api/v4/projects/<REPO_ENCODED>/issues/<issue-iid>/notes?sort=asc&per_page=100&page=${page}" \
+  > "$NOTES_PAGE" && jq -e 'type == "array"' "$NOTES_PAGE" >/dev/null; do
+  cat "$NOTES_PAGE" >> "$NOTES_ALL"
+  if jq -e 'length < 100' "$NOTES_PAGE" >/dev/null; then NOTES_OK=true; break; fi
+  page=$(( page + 1 ))
+done
+if test "$NOTES_OK" = true; then
+  jq -s '[.[][] | select(.system | not) | .body]' "$NOTES_ALL" > /sandbox/workspace/issue-comments.json
+else
+  echo "issue notes: page ${page} failed; issue-comments.json left empty" >&2
+fi
 
 : > /tmp/gitlab-api.curlrc
 ```
