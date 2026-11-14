@@ -714,7 +714,9 @@ test_negative_fixtures() {
     test_dir="$(mktemp -d)"
     cp "${fixture_file}" "${test_dir}/"
     # Also copy any schema files the fixture might reference
-    [[ -d "${fixtures_dir}/schemas" ]] && cp -r "${fixtures_dir}/schemas" "${test_dir}/" 2>/dev/null || true
+    if [[ -d "${fixtures_dir}/schemas" ]]; then
+      cp -r "${fixtures_dir}/schemas" "${test_dir}/" 2>/dev/null || true
+    fi
 
     # Run the test with HARNESS_DIR set to temp dir containing only this fixture
     output="$(HARNESS_DIR="${test_dir}" REPO_ROOT="${SCRIPT_DIR}"/test-fixtures ${test_func} 2>&1)" || exit_code=$?
