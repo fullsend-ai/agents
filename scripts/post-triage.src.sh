@@ -891,12 +891,18 @@ fi
 # --- Append action-hints footer (sufficient only) ---
 
 if [[ "${ACTION}" == "sufficient" ]]; then
+  if [[ "${DEFERRED_LABEL}" == "ready-to-code" ]]; then
+    NEXT_STEPS='- With automatic dispatch enabled, the `ready-to-code` label starts the code agent. No command is needed.
+- To start a new run with different instructions, use `/fs-code <your instruction>`.'
+  else
+    NEXT_STEPS='- `/fs-code` — agent creates a PR to implement this issue
+- `/fs-code <your instruction>` — agent implements with your specific guidance'
+  fi
   COMMENT="${COMMENT}
 
 ---
 **Next steps:**
-- \`/fs-code\` — agent creates a PR to implement this issue
-- \`/fs-code <your instruction>\` — agent implements with your specific guidance"
+${NEXT_STEPS}"
 fi
 
 # --- Post comment ---
