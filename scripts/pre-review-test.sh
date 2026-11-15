@@ -1198,6 +1198,7 @@ fi
 #   $2 — GITHUB_SERVER_URL value ("unset" leaves it unset)
 #   $3 — expected exit code
 #   $4 — expected fetch URL ("" expects no fetch at all)
+#   $5 — text the output must contain (optional)
 run_deepen_test() {
   local test_name="$1" server="$2" expect_exit="$3" expected_url="$4"
   local mock_bin git_log="${TMPDIR}/git-calls.log" target="${TMPDIR}/deepen-target"
@@ -1233,6 +1234,9 @@ MOCKEOF
 
   local ok=1
   [[ ${exit_code} -eq ${expect_exit} ]] || ok=0
+  if [[ -n "${5:-}" ]]; then
+    grep -qF -- "$5" "${TMPDIR}/stdout-deepen.log" || ok=0
+  fi
   if [[ -z "${expected_url}" ]]; then
     grep -q "fetch" "${git_log}" && ok=0
   else
@@ -1261,9 +1265,36 @@ run_deepen_test "deepen-github-com-host" "https://github.com" 0 \
   "https://github.com/test-org/test-repo.git"
 run_deepen_test "deepen-ghe-host" "https://ghe.example.internal" 0 \
   "https://ghe.example.internal/test-org/test-repo.git"
-run_deepen_test "deepen-invalid-host-non-https" "http://ghe.example.internal" 1 ""
-run_deepen_test "deepen-invalid-host-userinfo" "https://user@ghe.example.internal" 1 ""
-run_deepen_test "deepen-invalid-host-path" "https://ghe.example.internal/path" 1 ""
+run_deepen_test "deepen-ghe-host-port" "https://ghe.example.internal:8443" 0 \
+  "https://ghe.example.internal:8443/test-org/test-repo.git"
+
+# An invalid GITHUB_SERVER_URL never reaches the deepen step: the pre-script
+# aborts at PR URL validation, before git fetches anything.
+_bad_server_err="GITHUB_SERVER_URL is not an HTTPS origin"
+run_deepen_test "invalid-server-url-non-https-aborts-at-pr-url-validation" \
+  "http://ghe.example.internal" 1 "" "${_bad_server_err}"
+run_deepen_test "invalid-server-url-userinfo-aborts-at-pr-url-validation" \
+  "https://user@ghe.example.internal" 1 "" "${_bad_server_err}"
+run_deepen_test "invalid-server-url-path-aborts-at-pr-url-validation" \
+  "https://ghe.example.internal/path" 1 "" "${_bad_server_err}"
+
+# The origin-scoped header key is applied by real git to that origin only.
+if ! command -v git >/dev/null 2>&1; then
+  echo "SKIP: scoped-extraheader-real-git — git not installed"
+else
+  _ghe="https://ghe.example.internal:8443"
+  # Ignore the host's own git config so only the -c key is in play.
+  _git=(env GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
+    git -c "http.${_ghe}/.extraheader=X" config --get-urlmatch http.extraheader)
+  _on_ghe="$("${_git[@]}" "${_ghe}/o/r.git" || true)"
+  _on_dotcom="$("${_git[@]}" "https://github.com/o/r.git" || true)"
+  if [[ "${_on_ghe}" == "X" && -z "${_on_dotcom}" ]]; then
+    echo "PASS: scoped-extraheader-real-git"
+  else
+    echo "FAIL: scoped-extraheader-real-git — ghe='${_on_ghe}' github.com='${_on_dotcom}'"
+    FAILURES=$((FAILURES + 1))
+  fi
+fi
 
 # --- Summary ---
 
