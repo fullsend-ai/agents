@@ -156,8 +156,11 @@ curl --fail --silent --show-error \
 # fences a value only from a file jq wrote, never from retyped text:
 #   jq -r '.[]' issue-comments.json > value.txt    (all, one block)
 #   jq -r '.[0]' issue-comments.json > value.txt   (one note, 0-based)
-NOTES_PAGE=/sandbox/workspace/issue-notes.page; NOTES_ALL=/sandbox/workspace/issue-notes.all
-: > "$NOTES_ALL"; : > /sandbox/workspace/issue-comments.json; page=1; NOTES_OK=false
+NOTES_PAGE=/sandbox/workspace/issue-notes.page
+NOTES_ALL=/sandbox/workspace/issue-notes.all
+NOTES_OK=false
+page=1
+: > "$NOTES_ALL"; : > /sandbox/workspace/issue-comments.json
 while curl --fail --silent --show-error -K /tmp/gitlab-api.curlrc \
   "https://<GITLAB_HOST>/api/v4/projects/<REPO_ENCODED>/issues/<issue-iid>/notes?sort=asc&per_page=100&page=${page}" \
   > "$NOTES_PAGE" && jq -e 'type == "array"' "$NOTES_PAGE" >/dev/null; do

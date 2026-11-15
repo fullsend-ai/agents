@@ -52,6 +52,8 @@ SANDBOX_RUNTIME_VARS=(
 # names, etc.)
 # ---------------------------------------------------------------------------
 NON_ENV_TOKENS=(
+  # awk keywords and built-in variables
+  END RLENGTH RSTART
   # Status / severity / verdict tokens
   APPROVE CHANGES CRITICAL HIGH MEDIUM LOW WARN PASS FAIL
   BEHIND BLOCKED CONFLICTING MERGEABLE UNSTABLE FAILED
@@ -95,6 +97,7 @@ NON_ENV_TOKENS=(
 # mentions (placeholders, prose, field names) stay exempt.
 # ---------------------------------------------------------------------------
 SKILL_LOCAL_VARS=(
+  NOTES_ALL NOTES_OK NOTES_PAGE
   AGENT_START BASE_BRANCH BLAST_RADIUS BRANCH_NAME
   CHANGED_FILES CHANGED_FILES_FILE
   CI_WORKFLOW_CHANGED CODE_ALLOWED_TARGET_BRANCHES
