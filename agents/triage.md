@@ -103,7 +103,7 @@ An issue triaged more than once can have several comments containing `<!-- fulls
 - **Jira:** the forge skill returns the 50 newest comments by creation time, and an edited marked comment keeps its old creation time, so it can sit past page one. Repeat the request with `&startAt=N` (advancing by `maxResults`) until `startAt + maxResults >= total`.
 - **GitHub:** `gh issue view --json comments` already returns every comment.
 
-Pick the newest by the latest edit time (GitLab `updated_at`, Jira `updated`), or creation time when no edit time is given, since GitHub and Jira still edit the marked comment in place until fullsend-ai/fullsend#9399 lands.
+Pick the newest by the latest edit time (GitLab `updated_at`, Jira `updated`), or creation time when no edit time is given, since some trackers edit the marked comment in place.
 
 If a prior triage comment exists, **accumulate — do not replace:**
 

@@ -318,12 +318,14 @@ The run stops before any write if `FULLSEND_WORK_ITEM_KEY` does not match
 that URL, or if an explicit `FULLSEND_TRACKER` or `ISSUE_URL` points
 somewhere else.
 
-- **Retries:** comments are idempotent. Sticky comments (`sufficient`,
-  `in-progress`) use fixed markers. Other comments use a marker scoped to the
-  CI run (`GITHUB_RUN_ID` or `CI_PIPELINE_ID`). A re-run of the same workflow
-  or pipeline edits its earlier comment, while a new triage run still posts a
-  new one. This is expected to change once fullsend-ai/fullsend#9399 lands
-  (see [Multi-forge support](#multi-forge-support)).
+- **Retries:** on Jira, comments are idempotent. Sticky comments
+  (`sufficient`, `in-progress`) each use their own fixed marker, so every
+  run edits the earlier comment with that marker. Other comments use a
+  marker scoped to the CI run (`GITHUB_RUN_ID` or `CI_PIPELINE_ID`): a
+  re-run of the same workflow or pipeline edits its earlier comment, while a
+  new triage run posts a new one. This is expected to change once
+  fullsend-ai/fullsend#9399 lands (see [Multi-forge
+  support](#multi-forge-support)).
 - **Write failures:** a failed Jira write fails the step. This covers label
   adds and removals, component updates, comments and transitions.
 - **Updates that cannot be applied:** these are listed under **Not applied in
