@@ -10,6 +10,11 @@ labels:
     - ready-to-code
     - bug
 
+# Every sufficient comment ends with an Open causes list (cause_lists judge).
+cause_lists:
+  open:
+    - ["none", "missing", "absent", "email"]
+
 max_turns: 35
 max_cost_usd: 0.50
 
@@ -41,6 +46,12 @@ triage_expectations: |
      handling for ValueError from validate_email — invalid emails
      cause 500 instead of 400 (same pattern as the reported bug, but
      for a different input class).
+
+  Every sufficient comment ends with an Open causes list (the state the
+  next triage run starts from). Here it is one short line naming the
+  reporter's cause ("as reported"). That line is required and is not
+  restating; restating means repeating the reporter's explanation,
+  files, steps or fix in the body of the comment.
 
   Scoring guide:
   A score of 1 means the agent fundamentally misunderstood the issue.

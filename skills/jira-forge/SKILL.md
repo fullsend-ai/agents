@@ -61,9 +61,15 @@ ISSUE_KEY="${ISSUE_URL##*/browse/}"
 curl --fail-with-body --silent "${JIRA_AUTH_FLAG}" "${JIRA_AUTH}" \
   "${JIRA_API_URL:-${JIRA_BASE_URL}}/rest/api/3/issue/${ISSUE_KEY}"
 
-# List issue comments (newest first, so the most recent reply is on page one)
+# List issue comments (newest first, so the most recent reply is on page one).
+# expand=properties adds each comment's entity properties: a comment fullsend
+# posted with a marker carries it as properties[] key "fullsend.sticky-marker",
+# value {"marker": "<!-- fullsend:... -->"}, not in the comment body (check the
+# body too if the property is missing). In a fullsend comment's ADF body, a
+# horizontal rule is a "rule" node and a folded "Previous run" block is an
+# "expand" node whose attrs.title starts with "Previous run".
 curl --fail-with-body --silent "${JIRA_AUTH_FLAG}" "${JIRA_AUTH}" \
-  "${JIRA_API_URL:-${JIRA_BASE_URL}}/rest/api/3/issue/${ISSUE_KEY}/comment?orderBy=-created&maxResults=50"
+  "${JIRA_API_URL:-${JIRA_BASE_URL}}/rest/api/3/issue/${ISSUE_KEY}/comment?orderBy=-created&maxResults=50&expand=properties"
 
 # List open issues in the project
 curl --fail-with-body --silent "${JIRA_AUTH_FLAG}" "${JIRA_AUTH}" \

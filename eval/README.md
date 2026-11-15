@@ -92,7 +92,7 @@ other judges run and are reported, but don't fail the run:
   `triage_quality`)
 - live-model behaviour checks: `finding_expectations`, `required_labels`,
   `forbidden_labels`, `risk_label_present`, `expected_files`,
-  `expected_state`, `expected_review_action`
+  `expected_state`, `expected_review_action`, `cause_lists`
 - the `max_turns`/`max_cost` budget judges
 
 Their thresholds stay in each `eval.yaml`; `run-functional.sh` drops
@@ -146,7 +146,8 @@ eval/scripts/aggregate-nightly.sh eval/review/eval.yaml \
 
 - **Behaviour checks** (`finding_expectations`, `required_labels`,
   `forbidden_labels`, `risk_label_present`, `expected_files`,
-  `expected_state`, `expected_review_action`) with a `min_pass_rate`: a
+  `expected_state`, `expected_review_action`, `cause_lists`) with a
+  `min_pass_rate`: a
   case fails the check when it is `false` in at least
   2 of the given runs. The nightly pass rate is the share of cases that
   do not fail, and is compared with `min_pass_rate`. A flake that hits a
@@ -301,7 +302,9 @@ Each case directory under `eval/<agent>/cases/` contains:
 - `input.yaml` — fixture definition (forge, fixture type, title, body,
   PR files). `${REPO_URL}` in a fixture body expands to the ephemeral GitHub
   repository URL. Issue cases may set `labels`, applied before the agent runs
-  (e.g. `ready-to-code` for a code case). Pull-request cases may add
+  (e.g. `ready-to-code` for a code case). GitHub issue cases may also set
+  `comments`, a list of comment bodies posted oldest first before the agent runs (e.g. earlier triage
+  analyses, marked as the agent recognizes them, for a re-triage case). Pull-request cases may add
   `followup_files`, `commit_message` (default `eval: fixture changes`),
   and a `prior_review` body/provenance to exercise a re-review. Each PR
   file is written ending with exactly one final newline, whatever block

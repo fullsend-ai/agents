@@ -35,6 +35,12 @@ The harness also declares a CEL `trigger:` for fullsend's harness dispatch: an i
 The `/fs-triage` command does not accept arguments — it re-evaluates the issue
 using current content, comments, and any prior triage analysis.
 
+Every `sufficient` triage comment carries an **Open causes** list and, once
+anything has been refuted, a **Ruled out** list, one line of evidence per
+cause, just before the footer the post-script adds. A re-triage starts from the newest such comment: it keeps open causes
+unless it refutes them, and keeps ruled-out causes out unless new evidence,
+such as a maintainer's comment, revives them.
+
 ## Control labels
 
 These labels are managed by the triage agent based on its assessment of the issue.

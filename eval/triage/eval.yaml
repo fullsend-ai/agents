@@ -71,7 +71,8 @@ dataset:
   path: cases
   schema: |
     Each case directory contains:
-    - input.yaml: Fixture definition with forge, fixture type, title, and body.
+    - input.yaml: Fixture definition with forge, fixture type, title, body,
+      and optional comments already on the issue (re-triage cases).
     - annotations.yaml: Expected fixture state (labels, comments, state).
     - repo/: Directory (or symlink) with the git repo contents the agent sees.
 
@@ -174,6 +175,65 @@ judges:
           return False, f"Expected state {expected}, got {actual}"
       return True, f"State is {actual}"
 
+  - name: cause_lists
+    description: The run's sufficient comment carries the expected Open causes and Ruled out lists
+    check: |
+      import json, re
+      spec = outputs.get("annotations", {}).get("cause_lists")
+      if not spec:
+          return True, "No cause_lists expectations specified"
+      raw = outputs["files"].get("output/fixture-state.json")
+      if not raw:
+          return False, "fixture-state.json not found"
+      comments = [(c.get("body") or "") for c in json.loads(raw).get("comments") or []]
+      seeded = int(spec.get("seeded_comments", 0))
+      marker = "<!-- fullsend:triage-agent -->"
+      # The run's analysis is the newest marked comment after the seeded
+      # ones. A fullsend that edits in place (before fullsend#9399) writes
+      # it into the first seeded marked comment instead, above the folded
+      # "Previous run" history; only the text above that fold is this run's.
+      appended = [b for b in comments[seeded:] if marker in b]
+      if appended:
+          text = appended[-1]
+      else:
+          edited = [b for b in comments[:seeded] if "<!-- sticky:history-start -->" in b]
+          if not edited:
+              return False, "No triage analysis from this run: no new marked comment and no seeded comment edited in place"
+          text = edited[0]
+      text = re.split(r"<details>\s*<summary>Previous run", text, maxsplit=1)[0].lower()
+      # Headings are matched loosely: "**Open causes:**", "**Open causes**:",
+      # "**Open causes**" or a "### Open causes" heading. A section runs to
+      # the next such heading or the first horizontal rule.
+      head = r"(?m:^)[ \t]*(?:\*\*\s*{0}\s*:?\s*\*\*:?|#{{1,6}}\s*{0}\s*:?)[ \t]*$"
+      any_head = r"\n\s*(?:\*\*[^*\n]+\*\*:?[ \t]*\n|#{1,6}\s)"
+      def section(name):
+          m = re.search(head.format(name) + r"(.*?)(?=" + any_head + r"|\n-{3,}[ \t]*(?:\n|$)|\Z)", text, re.S | re.M)
+          return m.group(1) if m else None
+      open_s, ruled_s = section("open causes"), section("ruled out")
+      if open_s is None:
+          return False, "No Open causes list in the run's analysis"
+      # Phrases are matched only in each list item's cause name (the text
+      # before its " — " evidence), so evidence that mentions a cause never
+      # counts as listing it.
+      item = re.compile(r"^\s*(?:[-*+]|\d+[.)])\s+(.*)$")
+      def names(s):
+          return [re.split(r"\s[—–-]\s", m.group(1), maxsplit=1)[0]
+                  for m in (item.match(line) for line in (s or "").splitlines()) if m]
+      open_n, ruled_n = names(open_s), names(ruled_s)
+      problems = []
+      for group in spec.get("open") or []:
+          if not any(p.lower() in n for p in group for n in open_n):
+              problems.append(f"Open causes lacks any of {group}")
+      for group in spec.get("ruled_out") or []:
+          if not any(p.lower() in n for p in group for n in ruled_n):
+              problems.append(f"Ruled out lacks any of {group}")
+      for p in spec.get("forbidden_open") or []:
+          if any(p.lower() in n for n in open_n):
+              problems.append(f"Open causes lists {p!r}, which should stay ruled out")
+      if problems:
+          return False, "; ".join(problems)
+      return True, "Open causes and Ruled out lists match"
+
   - name: max_turns
     description: Agent must complete within the declared turn budget
     check: |
@@ -230,3 +290,7 @@ thresholds:
     min_pass_rate: 0.9
   expected_state:
     min_pass_rate: 0.9
+  # Every case with cause_lists must carry the lists: a ruled-out cause
+  # coming back is the regression fullsend-ai/agents#2042 fixed.
+  cause_lists:
+    min_pass_rate: 1.0
