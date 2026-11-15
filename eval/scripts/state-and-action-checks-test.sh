@@ -127,6 +127,14 @@ def comment(body):
     return {"author": "eval-bot", "body": body, "created_at": "2026-01-01T00:00:00Z"}
 
 
+NOTICE = "<!-- fullsend:review-notice -->"
+
+
+def notice(reason):
+    """A stale-head or failure notice as fullsend post-review posts it after #9399 (postreview.go)."""
+    return comment(NOTICE + "\n## Review\n\n**Reason:** " + reason)
+
+
 def review(state):
     return {"author": "eval-bot", "state": state, "body": "See the review comment."}
 
@@ -157,8 +165,16 @@ ACTION_CASES = [
      [sticky(COMMENT + "\n" + APPROVE)], ["comment"], False, "found 2"),
     # post-review omits the marker on purpose in these: abstain, don't fail.
     ("no marker in the sticky is not scored", [sticky("No marker here.")], ["comment"], None, "Not scored"),
-    ("stale-head notice is not scored",
+    ("stale-head notice in the sticky is not scored (fullsend before #9399)",
      [sticky("**Reason:** stale-head")], ["comment"], None, "Not scored"),
+    # fullsend-ai/fullsend#9399: notices post as their own comment under the
+    # review-notice marker, and the run leaves no review-agent sticky.
+    ("stale-head notice comment is not scored", [notice("stale-head")], ["comment"], None, "only a review notice"),
+    ("failure notice comment is not scored", [notice("agent-failure")], ["comment"], None, "only a review notice"),
+    ("a notice beside the run's review: the review is scored",
+     [notice("stale-head"), sticky(COMMENT)], ["comment"], True, "is allowed"),
+    ("notice marker not on the first line is not a notice",
+     [comment("Quoting:\n" + NOTICE + "\n**Reason:** stale-head")], ["comment"], False, "found 0"),
     ("marker text mid-line is not a marker",
      [sticky("See <!-- fullsend:review-findings-v2:Zm9v -->")], ["comment"], None, "Not scored"),
     # Malformed markers never pass.
