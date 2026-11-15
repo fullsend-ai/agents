@@ -1,0 +1,501 @@
+name: Behaviour Tests
+
+# Same-repo PRs run on pull_request (dev-environment secrets available; the
+# gate runs on the base checkout before this job checks out and executes the
+# PR head). Fork PRs get no secrets on pull_request: behaviour skips until a
+# writer comments `/ok-to-test <sha>`, and ok-to-test.yml calls this workflow
+# for that sha (event_name issue_comment, inputs.head_sha). No
+# pull_request_target: GitHub blocks it by default from 2026-12-02 (#1975).
+
+permissions: {}
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'agents/**'
+      - 'behaviour/**'
+      - 'config.yaml'
+      - 'env/**'
+      - 'harness/**'
+      - 'policies/**'
+      - 'schemas/**'
+      - 'scripts/**'
+      - 'go.mod'
+      - 'go.sum'
+      - 'Makefile'
+      - '.github/workflows/behaviour-tests.yml'
+      - '.github/actions/check-e2e-authorization/**'
+      - '.github/scripts/check-e2e-authorization.sh'
+  pull_request:
+    # Fork PRs: /ok-to-test is handled by ok-to-test.yml via workflow_call.
+    types: [opened, synchronize, reopened]
+  merge_group:
+  workflow_dispatch:
+  workflow_call:
+    # Only ok-to-test.yml calls this, from an authorized /ok-to-test comment.
+    inputs:
+      pr_number:
+        description: Pull request number the /ok-to-test comment authorized
+        type: string
+        required: true
+      head_sha:
+        description: PR head sha the /ok-to-test comment authorized (checked out by behaviour)
+        type: string
+        required: true
+    outputs:
+      result:
+        description: behaviour job status (success, failure or cancelled)
+        value: ${{ jobs.behaviour.outputs.result }}
+
+# /ok-to-test runs get their own group: in a called workflow github.workflow
+# is the caller's name, shared with the functional-tests.yml call. They are
+# never cancelled; the caller reports their result.
+concurrency:
+  group: >-
+    ${{ github.event_name == 'pull_request'
+        && format('behaviour-{0}', github.event.pull_request.number)
+        || github.event_name == 'issue_comment'
+        && format('behaviour-ok-to-test-{0}', inputs.pr_number)
+        || format('{0}-{1}', github.workflow, github.ref) }}
+  cancel-in-progress: >-
+    ${{ github.event_name == 'pull_request'
+        || (github.event_name != 'issue_comment' && github.ref != 'refs/heads/main') }}
+
+jobs:
+  gate:
+    # Same-repo PRs only (gh-aw's guard): a fork PR's pull_request token is
+    # read-only and it gets no secrets, so forks go through /ok-to-test.
+    if: >-
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.head.repo.id == github.repository_id
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: write
+    outputs:
+      authorized: ${{ steps.auth.outputs.authorized }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}  # Base only — never check out PR head in gate
+          persist-credentials: false
+
+      - name: Check PR authorization
+        id: auth
+        uses: ./.github/actions/check-e2e-authorization
+        with:
+          pr_number: ${{ github.event.pull_request.number }}
+          repository: ${{ github.repository }}
+          pr_updated_at: ${{ github.event.pull_request.updated_at }}
+          event_action: ${{ github.event.action }}
+          pr_author_association: ${{ github.event.pull_request.author_association }}
+          pr_author_login: ${{ github.event.pull_request.user.login }}
+          label_actor_login: ${{ github.event.sender.login }}
+
+  behaviour:
+    needs: gate
+    if: >-
+      !cancelled() &&
+      github.repository_owner == 'fullsend-ai' &&
+      (
+        (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+        github.event_name == 'merge_group' ||
+        github.event_name == 'workflow_dispatch' ||
+        (github.event_name == 'pull_request' &&
+         needs.gate.outputs.authorized == 'true') ||
+        (github.event_name == 'issue_comment' && inputs.head_sha != '')
+      )
+    environment: dev
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      ENVIRONMENT: dev
+      BEHAVIOUR_SCM: github
+      BEHAVIOUR_CI: githubactions
+      BEHAVIOUR_INSTALL_MODE: per-repo
+      BEHAVIOUR_APP_SET: fullsend-test
+      BEHAVIOUR_SUITE_NAME: agents-bt
+    outputs:
+      result: ${{ steps.result.outputs.result }}
+    steps:
+      - name: Check for behaviour-relevant changes
+        id: changes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
+          REPOSITORY: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          MERGE_GROUP_BASE_SHA: ${{ github.event.merge_group.base_sha }}
+          MERGE_GROUP_HEAD_SHA: ${{ github.event.merge_group.head_sha }}
+          # /ok-to-test runs: diff the authorized sha, not whatever the PR head is now.
+          HEAD_SHA: ${{ inputs.head_sha }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          case "$EVENT_NAME" in
+            pull_request)
+              if ! files="$(gh api --paginate \
+                "repos/${REPOSITORY}/pulls/${PR_NUMBER}/files?per_page=100" \
+                --jq '.[].filename')"; then
+                echo '::warning::could not inspect pull request files; running behaviour tests'
+                echo 'relevant=true' >> "$GITHUB_OUTPUT"
+                exit 0
+              fi
+              ;;
+            merge_group|issue_comment)
+              if [[ "$EVENT_NAME" == merge_group ]]; then
+                range="${MERGE_GROUP_BASE_SHA}...${MERGE_GROUP_HEAD_SHA}"
+              else
+                range="${DEFAULT_BRANCH}...${HEAD_SHA}"
+              fi
+              if ! files="$(gh api \
+                "repos/${REPOSITORY}/compare/${range}" \
+                --jq '.files[].filename')"; then
+                echo "::warning::could not inspect ${EVENT_NAME} files; running behaviour tests"
+                echo 'relevant=true' >> "$GITHUB_OUTPUT"
+                exit 0
+              fi
+              ;;
+            *)
+              exit 0
+              ;;
+          esac
+
+          file_count="$(printf '%s\n' "$files" | sed '/^$/d' | wc -l)"
+          if (( file_count >= 300 )); then
+            echo '::warning::change list is truncated or large; running behaviour tests'
+            echo 'relevant=true' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          relevant=false
+          while IFS= read -r path; do
+            case "$path" in
+              agents/*|behaviour/*|config.yaml|env/*|harness/*|policies/*|schemas/*|scripts/*|go.mod|go.sum|Makefile|.fullsend/*|.github/workflows/behaviour-tests.yml|.github/actions/check-e2e-authorization/*|.github/scripts/check-e2e-authorization.sh)
+                relevant=true
+                break
+                ;;
+            esac
+          done <<< "$files"
+          echo "relevant=${relevant}" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        if: steps.changes.outputs.relevant != 'false'
+        with:
+          ref: >-
+            ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha
+                || github.event_name == 'issue_comment' && inputs.head_sha
+                || github.sha }}
+          persist-credentials: false
+          # Fork code runs only on issue_comment, after ok-to-test.yml has
+          # authorized this exact sha (checkout itself does not enforce it).
+          allow-unsafe-pr-checkout: ${{ github.event_name == 'issue_comment' }}
+
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        if: steps.changes.outputs.relevant != 'false'
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      - name: Authenticate to GCP
+        if: steps.changes.outputs.relevant != 'false'
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          workload_identity_provider: ${{ secrets.AGENTS_BT_E2E_GCP_WIF_PROVIDER }}
+          service_account: ${{ secrets.AGENTS_BT_E2E_GCP_SERVICE_ACCOUNT }}
+
+      - name: Resolve pinned fullsend source
+        id: fullsend
+        if: steps.changes.outputs.relevant != 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          version="$(go list -m -f '{{.Version}}' github.com/fullsend-ai/fullsend)"
+          if [[ "$version" =~ -0\.[0-9]{14}-([0-9a-f]+)$ ]]; then
+            ref="${BASH_REMATCH[1]}"
+          else
+            ref="$version"
+          fi
+          sha="$(gh api "repos/fullsend-ai/fullsend/commits/${ref}" --jq .sha)"
+          {
+            echo "sha=${sha}"
+            echo "version=${version}"
+          } >> "$GITHUB_OUTPUT"
+          echo "Resolved fullsend ${version} to ${sha}"
+
+      - name: Checkout pinned fullsend source
+        if: steps.changes.outputs.relevant != 'false'
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          repository: fullsend-ai/fullsend
+          ref: ${{ steps.fullsend.outputs.sha }}
+          path: .behaviour-fullsend
+          # Materialize all files: the wrapper runs from this checkout and
+          # later runtime reads must not need a promisor fetch.
+          fetch-depth: 1
+          persist-credentials: false
+          token: ${{ github.token }}
+
+      - name: Configure pinned fullsend module
+        if: steps.changes.outputs.relevant != 'false'
+        env:
+          FULLSEND_SHA: ${{ steps.fullsend.outputs.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          checkout="${GITHUB_WORKSPACE}/.behaviour-fullsend"
+          test "$(git -C "$checkout" rev-parse HEAD)" = "$FULLSEND_SHA"
+          grep -qx 'module github.com/fullsend-ai/fullsend' "$checkout/go.mod"
+          test -d "$checkout/cmd/fullsend"
+          modfile="${RUNNER_TEMP}/agents.mod"
+          cp go.mod "$modfile"
+          : > "${RUNNER_TEMP}/agents.sum"
+          go mod edit -modfile="$modfile" \
+            -replace="github.com/fullsend-ai/fullsend=${checkout}"
+          go mod edit -modfile="$modfile" \
+            -replace="github.com/fullsend-ai/fullsend/internal/mintcore=${checkout}/internal/mintcore"
+          go mod tidy -modfile="$modfile"
+          {
+            echo "FULLSEND_CHECKOUT=$checkout"
+            echo "FULLSEND_SHA=$FULLSEND_SHA"
+            echo "BEHAVIOUR_GOFLAGS=-modfile=$modfile"
+          } >> "$GITHUB_ENV"
+          echo "Using fullsend source ${FULLSEND_SHA} from ${checkout}"
+
+      - name: Prepare behaviour config preset
+        if: steps.changes.outputs.relevant != 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_REPOSITORY: ${{ github.repository }}
+          PR_HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_MERGE_SHA: ${{ github.event.pull_request.merge_commit_sha }}
+          OK_TO_TEST_SHA: ${{ inputs.head_sha }}
+          MERGE_GROUP_HEAD_SHA: ${{ github.event.merge_group.head_sha }}
+          WORKFLOW_SHA: ${{ github.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          valid_repo() {
+            [[ "$1" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]
+          }
+          valid_sha() {
+            [[ "$1" =~ ^[0-9a-fA-F]{40}$ ]]
+          }
+
+          source_repository="$BASE_REPOSITORY"
+          source_ref="$WORKFLOW_SHA"
+          case "$EVENT_NAME" in
+            pull_request)
+              # GitHub's synthetic merge commit is preferred because it is the
+              # same source revision normally used for PR validation. It lives
+              # in the base repository, including for fork pull requests.
+              if valid_sha "$PR_MERGE_SHA" && [[ "$PR_MERGE_SHA" != "0000000000000000000000000000000000000000" ]]; then
+                source_ref="$PR_MERGE_SHA"
+              else
+                source_repository="$PR_HEAD_REPOSITORY"
+                source_ref="$PR_HEAD_SHA"
+              fi
+              ;;
+            merge_group)
+              source_ref="$MERGE_GROUP_HEAD_SHA"
+              ;;
+            issue_comment)
+              # The authorized fork head; its commits are reachable from the
+              # base repository through refs/pull/N/head.
+              source_ref="$OK_TO_TEST_SHA"
+              ;;
+          esac
+
+          valid_repo "$source_repository" || {
+            echo "invalid agent source repository: ${source_repository}" >&2
+            exit 1
+          }
+          valid_sha "$source_ref" || {
+            echo "invalid agent source revision: ${source_ref}" >&2
+            exit 1
+          }
+
+          fetch_harnesses() {
+            local repository="$1"
+            local ref="$2"
+            local name file
+            for name in code fix prioritize retro review triage; do
+              file="${RUNNER_TEMP}/behaviour-${name}.yaml"
+              if ! gh api \
+                "repos/${repository}/contents/harness/${name}.yaml?ref=${ref}" \
+                --jq .content | tr -d '\n' | base64 -d > "$file"; then
+                return 1
+              fi
+            done
+          }
+
+          if ! fetch_harnesses "$source_repository" "$source_ref"; then
+            if [[ "$EVENT_NAME" == 'pull_request' ]] && \
+              valid_repo "$PR_HEAD_REPOSITORY" && valid_sha "$PR_HEAD_SHA"; then
+              echo '::notice::synthetic merge ref unavailable; using pull request head for agent sources'
+              source_repository="$PR_HEAD_REPOSITORY"
+              source_ref="$PR_HEAD_SHA"
+              fetch_harnesses "$source_repository" "$source_ref" || {
+                echo "could not fetch agent harnesses from ${source_repository}@${source_ref}" >&2
+                exit 1
+              }
+            else
+              echo "could not fetch agent harnesses from ${source_repository}@${source_ref}" >&2
+              exit 1
+            fi
+          fi
+
+          preset="${RUNNER_TEMP}/agents-behaviour-config.base.yaml"
+          source_prefix="https://raw.githubusercontent.com/${source_repository}/"
+          printf '%s\n' \
+            'version: "1"' \
+            'runtime: dummy' \
+            'roles:' \
+            '  - fullsend' \
+            '  - triage' \
+            '  - coder' \
+            '  - review' \
+            '  - retro' \
+            '  - prioritize' \
+            'agents:' > "$preset"
+
+          for name in code fix prioritize retro review triage; do
+            file="${RUNNER_TEMP}/behaviour-${name}.yaml"
+            hash="$(sha256sum "$file" | awk '{print $1}')"
+            printf '  - name: %s\n    source: %s%s/harness/%s.yaml#sha256=%s\n' \
+              "$name" "$source_prefix" "$source_ref" "$name" "$hash" >> "$preset"
+          done
+
+          {
+            echo 'allowed_remote_resources:'
+            printf '  - %s\n' "$source_prefix"
+          } >> "$preset"
+          echo "BEHAVIOUR_CONFIG_PRESET=${preset}" >> "$GITHUB_ENV"
+          echo "Using agents from ${source_repository}@${source_ref}"
+
+      - name: Run behaviour tests
+        if: steps.changes.outputs.relevant != 'false'
+        env:
+          E2E_GCP_WIF_PROVIDER: ${{ secrets.AGENTS_BT_E2E_GCP_WIF_PROVIDER }}
+          E2E_GCP_SERVICE_ACCOUNT: ${{ secrets.AGENTS_BT_E2E_GCP_SERVICE_ACCOUNT }}
+          E2E_GCP_PROJECT_ID: ${{ secrets.AGENTS_BT_E2E_GCP_PROJECT_ID }}
+          TEST_FULLSEND_PEM: ${{ secrets.AGENTS_BT_FULLSEND_PEM }}
+          TEST_TRIAGE_PEM: ${{ secrets.AGENTS_BT_TRIAGE_PEM }}
+          TEST_CODER_PEM: ${{ secrets.AGENTS_BT_CODER_PEM }}
+          TEST_REVIEW_PEM: ${{ secrets.AGENTS_BT_REVIEW_PEM }}
+          TEST_RETRO_PEM: ${{ secrets.AGENTS_BT_RETRO_PEM }}
+          TEST_PRIORITIZE_PEM: ${{ secrets.AGENTS_BT_PRIORITIZE_PEM }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.AGENTS_BT_CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.AGENTS_BT_CLOUDFLARE_API_TOKEN }}
+          # Actor credentials are passed through for future scenarios; the
+          # current shared framework does not consume them (fullsend#6027).
+          TEST_ACTOR_WRITE_PAT: ${{ secrets.AGENTS_BT_ACTOR_WRITE_PAT }}
+          TEST_ACTOR_TRIAGE_PAT: ${{ secrets.AGENTS_BT_ACTOR_TRIAGE_PAT }}
+          TEST_ACTOR_OUTSIDER_PAT: ${{ secrets.AGENTS_BT_ACTOR_OUTSIDER_PAT }}
+          # The suite writes failed-scenario debug logs and workflow-run logs
+          # here; slot repos are deleted at teardown, so they are lost
+          # otherwise. Redacted and uploaded by the steps below.
+          BEHAVIOUR_ARTIFACT_DIR: ${{ runner.temp }}/behaviour-artifacts
+        shell: bash
+        run: |
+          required=(
+            E2E_GCP_WIF_PROVIDER E2E_GCP_SERVICE_ACCOUNT E2E_GCP_PROJECT_ID
+            TEST_FULLSEND_PEM TEST_TRIAGE_PEM TEST_CODER_PEM TEST_REVIEW_PEM
+            TEST_RETRO_PEM TEST_PRIORITIZE_PEM CLOUDFLARE_ACCOUNT_ID
+            CLOUDFLARE_API_TOKEN
+          )
+          for name in "${required[@]}"; do
+            if [[ -z "${!name:-}" ]]; then
+              echo "missing behaviour credential: ${name}" >&2
+              exit 1
+            fi
+          done
+          mkdir -p "$BEHAVIOUR_ARTIFACT_DIR"
+          make behaviour-test 2>&1 | tee "$BEHAVIOUR_ARTIFACT_DIR/behaviour-test.log"
+
+      - name: Check out redaction script
+        if: always() && steps.changes.outputs.relevant != 'false'
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          # Pinned here, not taken from go.mod: go.mod comes from the PR head,
+          # and PR-head code must not control artifact redaction (see
+          # fullsend#5221). Bump this sha deliberately, like an action pin,
+          # and at least when go.mod moves past it, so redaction keeps up
+          # with what the suite writes into the artifact dir.
+          repository: fullsend-ai/fullsend
+          ref: 10adac08026bb3fd7a2410b80dc2c57148c17c48
+          sparse-checkout: scripts/redact-behaviour-artifacts.sh
+          path: .behaviour-redact
+          persist-credentials: false
+
+      - name: Redact secrets from behaviour debug artifacts
+        id: redact
+        if: always() && steps.changes.outputs.relevant != 'false'
+        env:
+          ARTIFACT_DIR: ${{ runner.temp }}/behaviour-artifacts
+          TEST_FULLSEND_PEM: ${{ secrets.AGENTS_BT_FULLSEND_PEM }}
+          TEST_TRIAGE_PEM: ${{ secrets.AGENTS_BT_TRIAGE_PEM }}
+          TEST_CODER_PEM: ${{ secrets.AGENTS_BT_CODER_PEM }}
+          TEST_REVIEW_PEM: ${{ secrets.AGENTS_BT_REVIEW_PEM }}
+          TEST_RETRO_PEM: ${{ secrets.AGENTS_BT_RETRO_PEM }}
+          TEST_PRIORITIZE_PEM: ${{ secrets.AGENTS_BT_PRIORITIZE_PEM }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.AGENTS_BT_CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.AGENTS_BT_CLOUDFLARE_API_TOKEN }}
+          TEST_ACTOR_WRITE_PAT: ${{ secrets.AGENTS_BT_ACTOR_WRITE_PAT }}
+          TEST_ACTOR_TRIAGE_PAT: ${{ secrets.AGENTS_BT_ACTOR_TRIAGE_PAT }}
+          TEST_ACTOR_OUTSIDER_PAT: ${{ secrets.AGENTS_BT_ACTOR_OUTSIDER_PAT }}
+          E2E_GCP_PROJECT_ID: ${{ secrets.AGENTS_BT_E2E_GCP_PROJECT_ID }}
+          E2E_GCP_WIF_PROVIDER: ${{ secrets.AGENTS_BT_E2E_GCP_WIF_PROVIDER }}
+          E2E_GCP_SERVICE_ACCOUNT: ${{ secrets.AGENTS_BT_E2E_GCP_SERVICE_ACCOUNT }}
+        # Clean environment so variables the PR head set (LD_PRELOAD,
+        # BASH_ENV, PATH) cannot affect redaction by accident. The trust
+        # boundary is the gate job: authorized PR code already sees these
+        # secrets during the test step.
+        run: |
+          exec /usr/bin/env -i \
+            PATH=/usr/bin:/bin \
+            LC_ALL=C \
+            HOME="${{ runner.temp }}" \
+            ARTIFACT_DIR="${ARTIFACT_DIR}" \
+            TEST_FULLSEND_PEM="${TEST_FULLSEND_PEM}" \
+            TEST_TRIAGE_PEM="${TEST_TRIAGE_PEM}" \
+            TEST_CODER_PEM="${TEST_CODER_PEM}" \
+            TEST_REVIEW_PEM="${TEST_REVIEW_PEM}" \
+            TEST_RETRO_PEM="${TEST_RETRO_PEM}" \
+            TEST_PRIORITIZE_PEM="${TEST_PRIORITIZE_PEM}" \
+            CLOUDFLARE_ACCOUNT_ID="${CLOUDFLARE_ACCOUNT_ID}" \
+            CLOUDFLARE_API_TOKEN="${CLOUDFLARE_API_TOKEN}" \
+            TEST_ACTOR_WRITE_PAT="${TEST_ACTOR_WRITE_PAT}" \
+            TEST_ACTOR_TRIAGE_PAT="${TEST_ACTOR_TRIAGE_PAT}" \
+            TEST_ACTOR_OUTSIDER_PAT="${TEST_ACTOR_OUTSIDER_PAT}" \
+            E2E_GCP_PROJECT_ID="${E2E_GCP_PROJECT_ID}" \
+            E2E_GCP_WIF_PROVIDER="${E2E_GCP_WIF_PROVIDER}" \
+            E2E_GCP_SERVICE_ACCOUNT="${E2E_GCP_SERVICE_ACCOUNT}" \
+            /usr/bin/bash "${{ github.workspace }}/.behaviour-redact/scripts/redact-behaviour-artifacts.sh"
+
+      - name: Upload behaviour debug artifacts
+        if: always() && steps.changes.outputs.relevant != 'false' && steps.redact.outcome == 'success'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: behaviour-artifacts-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/behaviour-artifacts/
+          if-no-files-found: ignore
+          retention-days: 5
+
+      - name: Record result
+        id: result
+        if: always()
+        env:
+          JOB_STATUS: ${{ job.status }}
+        run: echo "result=${JOB_STATUS}" >> "$GITHUB_OUTPUT"

@@ -7,8 +7,10 @@
 #
 # Checks:
 #   - Every case directory has annotations.yaml
-#   - Every annotations.yaml declares max_turns and max_cost_usd
-#   - eval.yaml declares max_turns and max_cost judges
+#   - eval.yaml declares a max_cost judge, and every annotations.yaml
+#     declares max_cost_usd
+#   - If eval.yaml declares a max_turns judge, every annotations.yaml
+#     declares max_turns (review has none: its num_turns does not track work)
 set -euo pipefail
 
 AGENT="${1:?agent name required}"
@@ -28,12 +30,14 @@ if [[ ! -f "$EVAL_YAML" ]]; then
   echo "FAIL: eval.yaml not found: $EVAL_YAML"
   ERRORS=$((ERRORS + 1))
 else
-  for judge in max_turns max_cost forbidden_labels; do
-    if ! yq -e ".judges[] | select(.name == \"${judge}\")" "$EVAL_YAML" >/dev/null 2>&1; then
-      echo "FAIL: eval.yaml missing required judge: ${judge}"
-      ERRORS=$((ERRORS + 1))
-    fi
-  done
+  if ! yq -e '.judges[] | select(.name == "max_cost")' "$EVAL_YAML" >/dev/null 2>&1; then
+    echo "FAIL: eval.yaml missing required judge: max_cost"
+    ERRORS=$((ERRORS + 1))
+  fi
+fi
+has_max_turns=false
+if [[ -f "$EVAL_YAML" ]] && yq -e '.judges[] | select(.name == "max_turns")' "$EVAL_YAML" >/dev/null 2>&1; then
+  has_max_turns=true
 fi
 
 # Check that every case has annotations with thresholds
@@ -47,8 +51,12 @@ for case_dir in "$CASES_DIR"/*/; do
   fi
   max_turns=$(yq -r '.max_turns // ""' "$annotations")
   max_cost=$(yq -r '.max_cost_usd // ""' "$annotations")
-  if [[ -z "$max_turns" || -z "$max_cost" ]]; then
-    echo "FAIL: ${case_name}: annotations.yaml missing max_turns and/or max_cost_usd"
+  if [[ -z "$max_cost" ]]; then
+    echo "FAIL: ${case_name}: annotations.yaml missing max_cost_usd"
+    ERRORS=$((ERRORS + 1))
+  fi
+  if [[ "$has_max_turns" == true && -z "$max_turns" ]]; then
+    echo "FAIL: ${case_name}: annotations.yaml missing max_turns (eval.yaml has a max_turns judge)"
     ERRORS=$((ERRORS + 1))
   fi
 done

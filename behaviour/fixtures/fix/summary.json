@@ -1,0 +1,14 @@
+{
+  "pr_number": 1,
+  "trigger_source": "human",
+  "actions": [
+    {
+      "type": "fix",
+      "finding": "Behaviour smoke finding",
+      "description": "Recorded the scripted marker commit on the pull request branch."
+    }
+  ],
+  "summary": "Behaviour smoke: fix pushed the scripted marker commit.",
+  "tests_passed": true,
+  "files_changed": []
+}

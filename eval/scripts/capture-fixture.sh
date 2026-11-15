@@ -25,6 +25,15 @@ OUTPUT_DIR="${CASE_WORKSPACE}/output"
 mkdir -p "$OUTPUT_DIR"
 STATE_FILE="${OUTPUT_DIR}/fixture-state.json"
 
+# Publish only after jq has built the complete snapshot. A bad --argjson
+# input would otherwise truncate fixture-state.json before jq reports it.
+write_state() (
+  local tmp
+  tmp=$(mktemp "${STATE_FILE}.XXXXXX")
+  trap 'rm -f "$tmp"' EXIT
+  jq -n "$@" > "$tmp" && mv "$tmp" "$STATE_FILE"
+)
+
 # Run a command up to 3 times; print stdout on success. Used for flaky gh calls.
 # Suppress stderr on early attempts; keep it on the final attempt for diagnostics.
 retry_cmd() {
@@ -127,40 +136,6 @@ files_changed_since() {
   return 1
 }
 
-# Inline/file-level PR review comments — one per review finding. `gh pr view
-# --json comments` only returns the issue-comment timeline (the review agent's
-# sticky write-up), never the positioned review comments, so the findings
-# themselves are invisible without this call.
-#
-# --paginate is load-bearing: the REST default is 30 per page, and a noisy
-# review posting 40 findings would be silently truncated to 30 — hiding exactly
-# the over-flagging that the review findings judges exist to measure. With
-# --paginate, --jq runs per page, so `jq -s 'add // []'` concatenates the
-# per-page arrays back into one ([] when there are no comments at all).
-#
-# `line` is null for file-level comments (postreview.go falls back to a
-# file-level comment with a "_Line N_ ·" body prefix when GitHub 422s a
-# positioned one); original_line covers outdated positions.
-fetch_review_comments() {
-  local num="$1"
-  local raw
-  if raw=$(retry_cmd gh api --paginate \
-    "repos/${EPHEMERAL_REPO}/pulls/${num}/comments" \
-    --jq '[.[] | {path: .path, line: (.line // .original_line), body: .body}]'); then
-    # Report jq's own failure. Without this the function returns success
-    # with empty output, the caller passes "" to --argjson, and jq aborts
-    # the script under `set -e` before fixture-state.json is written at
-    # all — losing every judge for the case, not just this field.
-    local merged
-    if ! merged=$(printf '%s' "$raw" | jq -s 'add // []'); then
-      return 1
-    fi
-    printf '%s' "$merged"
-    return 0
-  fi
-  return 1
-}
-
 case "${FIXTURE_TYPE}" in
   issue)
     if ! issue_json=$(retry_cmd gh issue view "$FIXTURE_NUMBER" --repo "$EPHEMERAL_REPO" \
@@ -173,17 +148,27 @@ case "${FIXTURE_TYPE}" in
       echo "ERROR: gh issue view (comments) failed for #${FIXTURE_NUMBER} after retries" >&2
       exit 1
     fi
-    comments_json=$(printf '%s' "$comments_raw" | jq \
-      '[.comments[] | {author: .author.login, body: .body, created_at: .createdAt}]')
+    if ! comments_json=$(printf '%s' "$comments_raw" | jq -e \
+      '[.comments[] | {author: .author.login, body: .body, created_at: .createdAt}]'); then
+      echo "ERROR: gh issue view returned invalid comments data for #${FIXTURE_NUMBER}" >&2
+      exit 1
+    fi
     # Code agent post-script opens exactly one PR today; --limit 1 is enough.
     # Raise the limit (or filter by headRefName) if a future case opens multiple.
     # gh pr list is best-effort so a transient API blip still yields fixture-state.json.
+    # A failed or malformed lookup records pull_requests_fetch_failed with
+    # pull_requests=null: PR existence is unknown, which judges must not
+    # read as "the agent created no PR" (a successful empty lookup is []).
+    prs_fetch_failed="false"
     if ! prs_json=$(retry_cmd gh pr list --repo "$EPHEMERAL_REPO" --state all --limit 1 \
       --json number,title,url,state,headRefName,baseRefName); then
-      echo "WARNING: gh pr list failed for ${EPHEMERAL_REPO}; recording pull_requests=[]" >&2
-      prs_json='[]'
+      echo "WARNING: gh pr list failed for ${EPHEMERAL_REPO} after retries; PR existence unknown, marking pull_requests_fetch_failed" >&2
+      prs_fetch_failed="true"
+    elif ! printf '%s' "$prs_json" | jq -e 'type == "array"' >/dev/null 2>&1; then
+      echo "WARNING: gh pr list returned malformed output for ${EPHEMERAL_REPO} (expected a JSON array); PR existence unknown, marking pull_requests_fetch_failed" >&2
+      prs_fetch_failed="true"
     fi
-    if [[ -z "$prs_json" ]]; then
+    if [[ "$prs_fetch_failed" == "true" ]]; then
       prs_json='[]'
     fi
 
@@ -202,18 +187,21 @@ case "${FIXTURE_TYPE}" in
            | del(.headRefName, .baseRefName)')")
       fi
     done < <(printf '%s' "$prs_json" | jq -c '.[]')
-    if [[ ${#pr_lines[@]} -eq 0 ]]; then
+    if [[ "$prs_fetch_failed" == "true" ]]; then
+      prs_with_files='null'
+    elif [[ ${#pr_lines[@]} -eq 0 ]]; then
       prs_with_files='[]'
     else
       prs_with_files=$(printf '%s\n' "${pr_lines[@]}" | jq -s '.')
     fi
 
-    jq -n \
+    write_state \
       --arg fixture_type "issue" \
       --arg fixture_url "$FIXTURE_URL" \
       --argjson issue "$issue_json" \
       --argjson comments "$comments_json" \
       --argjson pull_requests "$prs_with_files" \
+      --arg pull_requests_fetch_failed "$prs_fetch_failed" \
       '{
         fixture_type: $fixture_type,
         fixture_url: $fixture_url,
@@ -223,8 +211,9 @@ case "${FIXTURE_TYPE}" in
         assignees: [($issue.assignees // [])[] | .login],
         milestone: ($issue.milestone.title // null),
         comments: $comments,
-        pull_requests: $pull_requests
-      }' > "$STATE_FILE"
+        pull_requests: $pull_requests,
+        pull_requests_fetch_failed: ($pull_requests_fetch_failed == "true")
+      }'
     ;;
 
   pull_request)
@@ -239,7 +228,7 @@ case "${FIXTURE_TYPE}" in
     if ! pr_raw=$(retry_cmd gh pr view "$FIXTURE_NUMBER" --repo "$EPHEMERAL_REPO" \
       --json state,labels,assignees,milestone,title,mergeable,reviewDecision,headRefOid,headRefName,comments,reviews,files); then
       echo "WARNING: gh pr view failed for PR #${FIXTURE_NUMBER} after retries; writing pr_fetch_failed state" >&2
-      jq -n \
+      write_state \
         --arg fixture_type "pull_request" \
         --arg fixture_url "$FIXTURE_URL" \
         --arg pre_agent_head "$pre_agent_head" \
@@ -256,8 +245,6 @@ case "${FIXTURE_TYPE}" in
           review_decision: null,
           comments: [],
           reviews: [],
-          review_comments: null,
-          review_comments_fetch_failed: true,
           head_sha: null,
           head_ref: null,
           head_sha_poll_exhausted: null,
@@ -266,7 +253,7 @@ case "${FIXTURE_TYPE}" in
           files_changed_since_pre_agent_head: null,
           files_changed_since_pre_agent_head_failed: true,
           pre_agent_head: (if $pre_agent_head == "" then null else $pre_agent_head end)
-        }' > "$STATE_FILE"
+        }'
       echo "Captured ${FIXTURE_TYPE} state -> ${STATE_FILE}"
       exit 0
     fi
@@ -297,16 +284,7 @@ case "${FIXTURE_TYPE}" in
       files_since_failed="true"
     fi
 
-    # null (not []) on failure: an empty list would read as "the agent posted
-    # no findings" and silently pass the forbidden_findings judge.
-    review_comments_failed="false"
-    if ! review_comments=$(fetch_review_comments "$FIXTURE_NUMBER"); then
-      echo "WARNING: gh api pulls/${FIXTURE_NUMBER}/comments failed; marking review_comments_fetch_failed" >&2
-      review_comments='null'
-      review_comments_failed="true"
-    fi
-
-    jq -n \
+    write_state \
       --arg fixture_type "pull_request" \
       --arg fixture_url "$FIXTURE_URL" \
       --argjson pr "$pr_raw" \
@@ -314,8 +292,6 @@ case "${FIXTURE_TYPE}" in
       --arg pre_agent_head "$pre_agent_head" \
       --argjson files_since_pre_agent_head "$files_since" \
       --arg files_since_pre_agent_head_failed "$files_since_failed" \
-      --argjson review_comments "$review_comments" \
-      --arg review_comments_failed "$review_comments_failed" \
       --arg head_sha_poll_exhausted "$head_sha_poll_exhausted" \
       '{
         fixture_type: $fixture_type,
@@ -327,15 +303,9 @@ case "${FIXTURE_TYPE}" in
         assignees: [($pr.assignees // [])[] | .login],
         milestone: ($pr.milestone.title // null),
         mergeable: $pr.mergeable,
-        # gh serialises a GraphQL-null reviewDecision as an empty STRING,
-        # not null (its PullRequest.reviewDecision is a Go string), so an
-        # unprotected repo — every ephemeral fixture — captures "". Fold it
-        # to null so the delivery guard sees one no-decision shape.
-        review_decision: (if $pr.reviewDecision == "" then null else $pr.reviewDecision end),
+        review_decision: $pr.reviewDecision,
         comments: [($pr.comments // [])[] | {author: .author.login, body: .body, created_at: .createdAt}],
         reviews: [($pr.reviews // [])[] | {author: .author.login, state: .state, body: .body}],
-        review_comments: $review_comments,
-        review_comments_fetch_failed: ($review_comments_failed == "true"),
         head_sha: (if $head_sha == "" then $pr.headRefOid else $head_sha end),
         head_ref: $pr.headRefName,
         head_sha_poll_exhausted: ($head_sha_poll_exhausted == "true"),
@@ -344,7 +314,7 @@ case "${FIXTURE_TYPE}" in
         files_changed_since_pre_agent_head: $files_since_pre_agent_head,
         files_changed_since_pre_agent_head_failed: ($files_since_pre_agent_head_failed == "true"),
         pre_agent_head: (if $pre_agent_head == "" then null else $pre_agent_head end)
-      }' > "$STATE_FILE"
+      }'
     ;;
 
   *)

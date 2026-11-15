@@ -1,0 +1,76 @@
+forge: github
+seed_issues:
+  - title: "Write icon font migration spec"
+    body: |
+      Write up the migration spec for replacing the icon font with
+      inline SVG icons, covering the affected components and rollout
+      plan.
+  - title: "Add spec-refine workflow skills"
+    body: |
+      Add general-purpose spec-refine and spec-refine-github skills for
+      iterating a spec document against review feedback. Not specific
+      to any one spec.
+
+fixture:
+  type: pull_request
+  title: "docs: add icon font migration spec and spec-refine skills"
+  body: |
+    Adds the icon font migration spec.
+
+    Closes #1
+
+    Also bundles two new general-purpose workflow skills (spec-refine,
+    spec-refine-github) that were built out while iterating on the
+    spec above.
+
+    Closes #2
+  base: main
+  files:
+    - path: docs/plans/icon-font-migration.md
+      content: |
+        # Icon Font Migration Spec
+
+        ## Problem
+
+        The icon font pulls in a large glyph set for a handful of used
+        icons and cannot be tree-shaken.
+
+        ## Plan
+
+        1. Inventory every icon currently rendered via the font.
+        2. Replace each usage with an inline SVG component.
+        3. Remove the font asset and its loader once usages reach zero.
+
+        ## Rollout
+
+        Ship behind a per-component swap so each surface can migrate
+        independently; remove the font in a follow-up once nothing
+        references it.
+    - path: skills/spec-refine/SKILL.md
+      content: |
+        ---
+        name: spec-refine
+        description: >-
+          Iteratively refine a spec document against reviewer feedback
+          until it reaches a stable, actionable state.
+        ---
+
+        # Spec Refine
+
+        General-purpose workflow for taking a draft spec through
+        rounds of review feedback. Not tied to any single spec or
+        issue: read the current draft, apply the latest feedback, and
+        flag open questions that still need a decision.
+    - path: skills/spec-refine-github/SKILL.md
+      content: |
+        ---
+        name: spec-refine-github
+        description: >-
+          GitHub-specific variant of spec-refine that posts spec
+          review rounds as PR comments.
+        ---
+
+        # Spec Refine (GitHub)
+
+        Wraps the spec-refine workflow for repos that track spec
+        review via GitHub PR comments instead of an external doc tool.

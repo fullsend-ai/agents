@@ -18,15 +18,35 @@ GITHUB_TRIAGE_OPS_SH_LOADED=1
 
 # --- URL handling ---
 
+# Prints the GitHub web origin the run executes against, without a trailing
+# slash: GITHUB_SERVER_URL (set by GitHub Actions) or https://github.com.
+_github_triage_server_url() {
+  local server="${GITHUB_SERVER_URL:-https://github.com}"
+  printf '%s\n' "${server%/}"
+}
+
 tracker_validate_issue_url() {
-  if [[ ! "${ISSUE_URL}" =~ ^https://github\.com/[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+/issues/[0-9]+$ ]]; then
+  local server
+  server=$(_github_triage_server_url)
+  if [[ ! "${server}" =~ ^https://[a-zA-Z0-9.-]+(:[0-9]+)?$ ]]; then
+    echo "ERROR: GITHUB_SERVER_URL is not an HTTPS origin (https://host[:port]): ${server}" >&2
+    return 1
+  fi
+  # Literal prefix match (including the trailing slash) so look-alike hosts
+  # that merely start with the configured host are rejected.
+  local path="${ISSUE_URL#"${server}/"}"
+  if [[ "${path}" == "${ISSUE_URL}" ]] \
+      || [[ ! "${path}" =~ ^[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+/issues/[0-9]+$ ]]; then
     echo "ERROR: ISSUE_URL does not match expected pattern: ${ISSUE_URL}" >&2
     return 1
   fi
 }
 
 tracker_parse_issue_url() {
-  REPO=$(echo "${ISSUE_URL}" | sed 's|https://github.com/||; s|/issues/.*||')
+  local server path
+  server=$(_github_triage_server_url)
+  path="${ISSUE_URL#"${server}/"}"
+  REPO="${path%%/issues/*}"
   ISSUE_NUMBER=$(basename "${ISSUE_URL}")
 }
 
@@ -134,4 +154,32 @@ tracker_create_issue() {
   fi
   rm -f "${err_file}"
   echo "${url}"
+}
+
+# Apply ready-for-triage to a newly created issue so the dispatch shim
+# picks it up. issues.opened from a workflow-driven create may not start
+# a new run; issues.labeled does. Failures are non-fatal for the caller.
+#
+# target_repo must be the same already-allowlisted repo (checked via
+# is_target_allowed) that created_url's issue was created in. Mutating
+# against target_repo directly — rather than re-deriving the repo by
+# parsing created_url — avoids trusting an unvalidated/unanchored parse
+# of forge-returned text to pick which repo gets a label mutation.
+tracker_dispatch_triage() {
+  local created_url="$1"
+  local target_repo="$2"
+  local saved_repo="${REPO}"
+  local saved_number="${ISSUE_NUMBER}"
+  REPO="${target_repo}"
+  ISSUE_NUMBER=$(basename "${created_url}")
+  # Ensure the label exists in the target repo (needed for cross-repo splits).
+  tracker_create_label "ready-for-triage" "Triggers triage agent dispatch" "0E8A16"
+  local rc=0
+  if ! tracker_add_label "ready-for-triage"; then
+    echo "::warning::Failed to add ready-for-triage label to $(_gha_sanitize "${created_url}")" >&2
+    rc=1
+  fi
+  REPO="${saved_repo}"
+  ISSUE_NUMBER="${saved_number}"
+  return "${rc}"
 }

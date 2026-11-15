@@ -4,21 +4,19 @@
 # capture-fixture.sh writes into fixture-state.json.
 state: open
 
+# Selected as the code agent's release-tier smoke case (eval/run-functional.sh
+# EVAL_TIER=release) — the only case for this agent.
+release: true
+
 # End-to-end success: post-script opened a PR that touches the buggy file.
 expected_files:
   - calc.py
 
-labels:
-  forbidden: []
-
-# Code agent budgets (sandbox work + retries).
-# Observed baselines: 12 turns / $2.12 (CI run 29424512121), then 35 turns /
-# $0.98 (CI run 30166455238) for the same trivial fixture — turn count is
-# noisy run-to-run even though cost stays low, so max_turns carries most of
-# the headroom here (~1.7x over the higher observed value) while
-# max_cost_usd keeps ~2x over the higher observed cost.
+# Code agent budgets (sandbox work + retries). Report-only: the eval's
+# max_turns/max_cost judges have no threshold. max_cost_usd is ~3x the
+# Sonnet 5.5 cost of $0.23 (run 37125458624), rounded up to $0.25.
 max_turns: 60
-max_cost_usd: 4.00
+max_cost_usd: 0.75
 
 # Human reference only; not consumed by judges (unlike triage/review quality).
 code_expectations: |

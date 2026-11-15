@@ -3,5 +3,9 @@
 # but that's expected — the sandbox_started judge checks metrics.json.
 state: open
 
+# Selected as the retro agent's release-tier smoke case (eval/run-functional.sh
+# EVAL_TIER=release) — the only case for this agent.
+release: true
+
 max_turns: 40
-max_cost_usd: 2.00
+max_cost_usd: 0.50

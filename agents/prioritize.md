@@ -3,9 +3,9 @@ name: prioritize
 description: Score an issue using the RICE framework (Reach, Impact, Confidence, Effort) and produce structured scores with reasoning.
 skills:
   - customer-research  # extension point: provided by target repos, not built into this repo
-# curl: required by GitLab forge. On GitHub, the profile binary
-# allowlist (profiles/fullsend-github-ro.yaml) excludes **/curl, preventing
-# it from making network requests even though it is granted here.
+# curl: required by GitLab forge. On GitHub, the github-ro provider's
+# binary allowlist excludes **/curl, preventing it from making network
+# requests even though it is granted here.
 tools: Bash(gh,curl,jq), Skill
 model: opus
 ---

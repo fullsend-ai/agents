@@ -5,6 +5,11 @@ id: fullsend-gitlab-code
 display_name: Fullsend GitLab (code agents)
 description: Read-only GitLab API and Git operations for code and fix agents
 category: source_control
+credentials:
+  - name: api_token
+    description: GitLab token
+    env_vars: [GITLAB_TOKEN]
+    required: true
 endpoints:
   - host: gitlab.com
     port: 443

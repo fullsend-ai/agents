@@ -1,0 +1,18 @@
+<!doctype html>
+<title>Sign in</title>
+<form id="login">
+  <input type="email" id="email" placeholder="Email">
+  <input type="password" id="password" placeholder="Password">
+  <button type="submit">Sign In</button>
+</form>
+<script>
+  document.getElementById("login").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const email = document.getElementById("email").value;
+    const password = document.getElementById("password").value;
+    const response = await fetch("/login?email=" + email + "&password=" + password);
+    if (!response.ok) {
+      alert("Sign in failed");
+    }
+  });
+</script>

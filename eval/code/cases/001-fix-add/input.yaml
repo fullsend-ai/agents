@@ -2,6 +2,10 @@ forge: github
 fixture:
   type: issue
   title: "add() returns wrong result for positive integers"
+  # The code agent runs only on an issue triage has marked ready
+  # (skills/code-implementation: no ready-to-code label, stop).
+  labels:
+    - ready-to-code
   body: |
     ## Bug Report
 

@@ -1,0 +1,60 @@
+forge: github
+seed_issues:
+  - title: "Write rate limiter design doc"
+    body: |
+      Write up the design doc for the new request rate limiter,
+      covering the algorithm and rollout plan.
+  - title: "Add changelog-draft workflow skill"
+    body: |
+      Add a general-purpose changelog-draft skill for drafting release
+      notes from merged PRs. Not specific to any one feature.
+
+fixture:
+  type: pull_request
+  title: "docs: add rate limiter design doc and changelog-draft skill"
+  body: |
+    Adds the rate limiter design doc plus a general-purpose
+    changelog-draft skill that was built out while iterating on the
+    doc above.
+  commit_message: |
+    docs: add rate limiter design doc and changelog-draft skill
+
+    Closes #1
+    Closes #2
+  base: main
+  files:
+    - path: docs/plans/rate-limiter-design.md
+      content: |
+        # Rate Limiter Design Doc
+
+        ## Problem
+
+        Unbounded request bursts from a single caller can starve other
+        tenants of capacity.
+
+        ## Plan
+
+        1. Add a token-bucket limiter keyed by caller identity.
+        2. Return 429 with a Retry-After header once the bucket is
+           empty.
+        3. Expose bucket size and refill rate as per-tenant config.
+
+        ## Rollout
+
+        Ship in shadow mode (log-only) first, then flip to enforcing
+        once false-positive throttling is confirmed to be negligible.
+    - path: skills/changelog-draft/SKILL.md
+      content: |
+        ---
+        name: changelog-draft
+        description: >-
+          Draft release notes from a set of merged PRs since the last
+          tag.
+        ---
+
+        # Changelog Draft
+
+        General-purpose workflow for drafting release notes. Not tied
+        to any single feature or spec: read the merged PRs since the
+        last release tag, group them by type, and produce a draft
+        changelog entry for human review.

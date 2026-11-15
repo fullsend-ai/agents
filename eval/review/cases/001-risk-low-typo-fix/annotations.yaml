@@ -9,8 +9,7 @@ labels:
     - ready-for-merge
   risk_label_required: true
 
-max_turns: 60
-max_cost_usd: 5.00
+max_cost_usd: 2.50
 
 review_expectations: |
   Two-file change: a README typo fix and a basic CODEOWNERS file.

@@ -60,15 +60,35 @@ GITHUB_TRIAGE_OPS_SH_LOADED=1
 
 # --- URL handling ---
 
+# Prints the GitHub web origin the run executes against, without a trailing
+# slash: GITHUB_SERVER_URL (set by GitHub Actions) or https://github.com.
+_github_triage_server_url() {
+  local server="${GITHUB_SERVER_URL:-https://github.com}"
+  printf '%s\n' "${server%/}"
+}
+
 tracker_validate_issue_url() {
-  if [[ ! "${ISSUE_URL}" =~ ^https://github\.com/[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+/issues/[0-9]+$ ]]; then
+  local server
+  server=$(_github_triage_server_url)
+  if [[ ! "${server}" =~ ^https://[a-zA-Z0-9.-]+(:[0-9]+)?$ ]]; then
+    echo "ERROR: GITHUB_SERVER_URL is not an HTTPS origin (https://host[:port]): ${server}" >&2
+    return 1
+  fi
+  # Literal prefix match (including the trailing slash) so look-alike hosts
+  # that merely start with the configured host are rejected.
+  local path="${ISSUE_URL#"${server}/"}"
+  if [[ "${path}" == "${ISSUE_URL}" ]] \
+      || [[ ! "${path}" =~ ^[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+/issues/[0-9]+$ ]]; then
     echo "ERROR: ISSUE_URL does not match expected pattern: ${ISSUE_URL}" >&2
     return 1
   fi
 }
 
 tracker_parse_issue_url() {
-  REPO=$(echo "${ISSUE_URL}" | sed 's|https://github.com/||; s|/issues/.*||')
+  local server path
+  server=$(_github_triage_server_url)
+  path="${ISSUE_URL#"${server}/"}"
+  REPO="${path%%/issues/*}"
   ISSUE_NUMBER=$(basename "${ISSUE_URL}")
 }
 
@@ -177,6 +197,34 @@ tracker_create_issue() {
   rm -f "${err_file}"
   echo "${url}"
 }
+
+# Apply ready-for-triage to a newly created issue so the dispatch shim
+# picks it up. issues.opened from a workflow-driven create may not start
+# a new run; issues.labeled does. Failures are non-fatal for the caller.
+#
+# target_repo must be the same already-allowlisted repo (checked via
+# is_target_allowed) that created_url's issue was created in. Mutating
+# against target_repo directly — rather than re-deriving the repo by
+# parsing created_url — avoids trusting an unvalidated/unanchored parse
+# of forge-returned text to pick which repo gets a label mutation.
+tracker_dispatch_triage() {
+  local created_url="$1"
+  local target_repo="$2"
+  local saved_repo="${REPO}"
+  local saved_number="${ISSUE_NUMBER}"
+  REPO="${target_repo}"
+  ISSUE_NUMBER=$(basename "${created_url}")
+  # Ensure the label exists in the target repo (needed for cross-repo splits).
+  tracker_create_label "ready-for-triage" "Triggers triage agent dispatch" "0E8A16"
+  local rc=0
+  if ! tracker_add_label "ready-for-triage"; then
+    echo "::warning::Failed to add ready-for-triage label to $(_gha_sanitize "${created_url}")" >&2
+    rc=1
+  fi
+  REPO="${saved_repo}"
+  ISSUE_NUMBER="${saved_number}"
+  return "${rc}"
+}
 # END bundled: lib/github-triage-ops.lib.sh
     ;;
   gitlab)
@@ -196,6 +244,10 @@ tracker_create_issue() {
 # Expected env vars:
 #   ISSUE_URL      — HTML URL of the issue
 #   GITLAB_TOKEN   — GitLab personal/project access token
+#   CI_SERVER_HOST — GitLab CI predefined variable (set by runner)
+#   CI_SERVER_URL  — GitLab CI predefined variable; API origin, including
+#                    any non-default port (falls back to
+#                    https://${CI_SERVER_HOST} when unset)
 #
 # Token scopes: GITLAB_TOKEN requires minimum scopes:
 #   - api (read/write issues, labels, notes, merge requests)
@@ -220,6 +272,9 @@ GITLAB_TRIAGE_OPS_SH_LOADED=1
 # variable set automatically by the runner.
 #
 # Fails closed: rejects when CI_SERVER_HOST is not set.
+#
+# Also derives the trusted origin (scheme, host, and optional port) from
+# CI_SERVER_URL so self-managed instances on non-default HTTPS ports work.
 #
 # Sourced by all gitlab-*-ops.lib.sh files and inlined by the bundler.
 
@@ -247,6 +302,35 @@ _validate_gitlab_host() {
     return 1
   fi
 }
+
+# Prints the trusted GitLab origin (https://host[:port]) for API requests
+# and generated links. Derived from CI_SERVER_URL, a GitLab CI predefined
+# variable that carries any non-default port; falls back to
+# https://${CI_SERVER_HOST} when CI_SERVER_URL is unset. Fails closed when
+# the origin is not HTTPS or its host does not match CI_SERVER_HOST.
+_gitlab_trusted_origin() {
+  _validate_gitlab_host "${CI_SERVER_HOST:-}" || return 1
+  local origin="${CI_SERVER_URL:-https://${CI_SERVER_HOST}}"
+  if [[ ! "${origin}" =~ ^https://([a-zA-Z0-9._-]+)(:[0-9]+)?$ ]]; then
+    echo "ERROR: CI_SERVER_URL is not an HTTPS origin (https://host[:port]): $(_gha_sanitize "${origin}")" >&2
+    return 1
+  fi
+  local host="${BASH_REMATCH[1]}"
+  _validate_gitlab_host "${host}" || return 1
+  printf '%s\n' "${origin}"
+}
+
+# Validates an origin (https://host[:port]) parsed from an untrusted URL
+# against the trusted CI server origin. Scheme, host, and port must all
+# match: a URL without a port only matches a trusted origin without one.
+_validate_gitlab_origin() {
+  local origin="$1" trusted
+  trusted=$(_gitlab_trusted_origin) || return 1
+  if [[ "${origin,,}" != "${trusted,,}" ]]; then
+    echo "ERROR: GitLab origin '$(_gha_sanitize "${origin}")' does not match CI server origin '$(_gha_sanitize "${trusted}")'" >&2
+    return 1
+  fi
+}
 # END bundled: lib/gitlab-host-validation.lib.sh
 
 _gitlab_api() {
@@ -259,11 +343,13 @@ _gitlab_api() {
     return 1
   fi
   _validate_gitlab_host "${GITLAB_HOST}" || return 1
+  local origin
+  origin=$(_gitlab_trusted_origin) || return 1
   curl --fail --silent --show-error \
     --connect-timeout 10 --max-time 30 \
     --header "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
     --request "${method}" \
-    "https://${GITLAB_HOST}/api/v4${endpoint}" \
+    "${origin}/api/v4${endpoint}" \
     "$@"
 }
 
@@ -277,6 +363,8 @@ _gitlab_api_with_status() {
     return 1
   fi
   _validate_gitlab_host "${GITLAB_HOST}" || return 1
+  local origin
+  origin=$(_gitlab_trusted_origin) || return 1
   local err_file
   err_file=$(mktemp)
   local raw
@@ -285,7 +373,7 @@ _gitlab_api_with_status() {
     --header "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
     --request "${method}" \
     --write-out '\n%{http_code}' \
-    "https://${GITLAB_HOST}/api/v4${endpoint}" \
+    "${origin}/api/v4${endpoint}" \
     "$@" 2>"${err_file}") || {
     echo "GitLab API error: curl failed — $(cat "${err_file}")" >&2
     rm -f "${err_file}"
@@ -306,19 +394,20 @@ _gitlab_api_with_status() {
 # --- URL handling ---
 
 tracker_validate_issue_url() {
-  if [[ ! "${ISSUE_URL}" =~ ^https://[a-zA-Z0-9._-]+(/[a-zA-Z0-9._-]+)+/-/issues/[0-9]+$ ]]; then
+  if [[ ! "${ISSUE_URL}" =~ ^(https://[a-zA-Z0-9._-]+(:[0-9]+)?)(/[a-zA-Z0-9._-]+)+/-/issues/[0-9]+$ ]]; then
     echo "ERROR: ISSUE_URL does not match expected GitLab pattern: $(_gha_sanitize "${ISSUE_URL}")" >&2
     return 1
   fi
-  local host
-  host=$(echo "${ISSUE_URL}" | sed -E 's|^https://([^/:]+)/.*|\1|')
-  _validate_gitlab_host "${host}" || return 1
+  local origin="${BASH_REMATCH[1]}"
+  _validate_gitlab_origin "${origin}" || return 1
 }
 
 tracker_parse_issue_url() {
   # Extract host, project path, and issue IID from URL.
   # e.g., https://gitlab.com/group/subgroup/project/-/issues/42
-  GITLAB_HOST=$(echo "${ISSUE_URL}" | sed -E 's|^https://([^/:]+)/.*|\1|')
+  # The port, if any, is checked by tracker_validate_issue_url; GITLAB_HOST
+  # holds the hostname only and API requests use the trusted CI origin.
+  GITLAB_HOST=$(echo "${ISSUE_URL}" | sed -E 's|^https://([^/:]+)(:[0-9]+)?/.*|\1|')
   REPO=$(echo "${ISSUE_URL}" | sed -E 's|^https://[^/]+/(.+)/-/issues/[0-9]+$|\1|')
   REPO_ENCODED=$(printf '%s' "${REPO}" | jq -sRr @uri)
   ISSUE_NUMBER=$(basename "${ISSUE_URL}")
@@ -513,6 +602,32 @@ tracker_create_issue() {
   }
   echo "${response}" | jq -r '.web_url'
 }
+
+# Apply ready-for-triage to a newly created issue so GitLab dispatch
+# picks it up. Uses _gitlab_api (host-allowlisted) against target_repo —
+# the same already-allowlisted project (checked via is_target_allowed)
+# that created_url's issue was created in — rather than re-deriving the
+# project by parsing created_url, which would trust an unvalidated parse
+# of forge-returned text to pick which project gets a label mutation.
+tracker_dispatch_triage() {
+  local created_url="$1"
+  local target_repo="$2"
+  local saved_repo="${REPO}"
+  local saved_encoded="${REPO_ENCODED}"
+  local saved_number="${ISSUE_NUMBER}"
+  REPO="${target_repo}"
+  REPO_ENCODED=$(printf '%s' "${REPO}" | jq -sRr @uri)
+  ISSUE_NUMBER=$(basename "${created_url}")
+  local rc=0
+  if ! tracker_add_label "ready-for-triage"; then
+    echo "::warning::Failed to add ready-for-triage label to $(_gha_sanitize "${created_url}")" >&2
+    rc=1
+  fi
+  REPO="${saved_repo}"
+  REPO_ENCODED="${saved_encoded}"
+  ISSUE_NUMBER="${saved_number}"
+  return "${rc}"
+}
 # END bundled: lib/gitlab-triage-ops.lib.sh
     ;;
   jira)
@@ -539,18 +654,39 @@ tracker_create_issue() {
 #
 # Expected env vars:
 #   ISSUE_URL       — HTML URL of the issue (https://<host>.atlassian.net/browse/PROJ-123)
-#   JIRA_USER_EMAIL — Jira account email for Basic auth
-#   JIRA_TOKEN      — Jira Cloud API token
+#   JIRA_TOKEN      — Jira API token (the triage harness maps
+#                     FULLSEND_JIRA_TOKEN to it). Or, instead of it:
+#   FULLSEND_JIRA_CLIENT_ID, FULLSEND_JIRA_CLIENT_SECRET
+#                   — service-account OAuth 2.0 client credentials. REST
+#                     calls then use an access token minted on the runner
+#                     and need JIRA_API_URL. Setting both modes fails.
+#   JIRA_USER_EMAIL — (optional) bot-user email (the triage harness maps
+#                     FULLSEND_JIRA_EMAIL to it). When set, requests use
+#                     Basic auth with email and token; when unset or
+#                     empty, Bearer auth with a service-account token.
+#                     See lib/jira-auth.lib.sh.
+#   FULLSEND_DIR    — .fullsend directory whose config.yaml holds
+#                     tracker.jira, for the `fullsend issues` shell-outs
+#   JIRA_API_URL    — (optional) where REST calls go, e.g. the Atlassian
+#                     API gateway https://api.atlassian.com/ex/jira/<cloudId>
+#                     that `fullsend run` resolves and exports. Falls back
+#                     to JIRA_BASE_URL when unset (older fullsend releases),
+#                     except with client credentials, which require it.
+#                     Browse links always use JIRA_BASE_URL.
 #
-# These are the same env var names the `fullsend issues` CLI commands read
-# by default (see `fullsend issues post-comment --help`) — using the same
-# names here means one set of credentials covers both the raw REST calls
-# in this file and the `fullsend` shell-outs below.
+# The `fullsend issues` CLI reads its credentials from FULLSEND_JIRA_TOKEN
+# and, for a bot user, FULLSEND_JIRA_EMAIL, and its Jira site and API
+# gateway from tracker.jira in --fullsend-dir. jira_auth_fullsend passes
+# the same token and email to it, or the client credentials, so one set of
+# credentials covers both the raw REST calls in this file and the
+# `fullsend` shell-outs below.
 #
 # Optional env vars:
 #   JIRA_DUPLICATE_TRANSITION   — transition name for the "duplicate" action
 #   JIRA_NOT_PLANNED_TRANSITION — transition name for the "not planned" action
-#   JIRA_SPLIT_TRANSITION       — transition name for the "split" action
+#   JIRA_SPLIT_TRANSITION       — transition name for the "split" and
+#                                 "completed" actions (both close with
+#                                 GitHub reason "completed")
 #   JIRA_CREATE_ISSUE_TYPE      — issue type name for cross-project issue
 #                                 creation (default: "Task")
 
@@ -561,13 +697,329 @@ JIRA_TRIAGE_OPS_SH_LOADED=1
 # stderr, before any call site can swallow the diagnostic with 2>/dev/null.
 # Matches the idiom pre-triage.src.sh / post-triage.src.sh already use for
 # ISSUE_URL and FULLSEND_TRACKER.
-: "${JIRA_USER_EMAIL:?JIRA_USER_EMAIL must be set}"
-: "${JIRA_TOKEN:?JIRA_TOKEN must be set}"
+# JIRA_USER_EMAIL is optional: without it, requests use Bearer auth.
+# shellcheck source=jira-auth.lib.sh
+# BEGIN bundled: lib/jira-auth.lib.sh
+# shellcheck shell=bash
+# jira-auth.lib.sh — Jira credential-mode selection for host-side scripts.
+#
+# Shared by the Jira triage and scribe ops libraries and post-code.sh, and
+# bundled into each script that sources it. Three credential modes
+# (fullsend#9007, agents#1926):
+#
+#   token + email      — bot user: Basic auth with email:token
+#   token only         — service account: Bearer auth with the token
+#   client credentials — service account OAuth 2.0 client credentials
+#                        (FULLSEND_JIRA_CLIENT_ID and
+#                        FULLSEND_JIRA_CLIENT_SECRET): REST calls use a
+#                        Bearer access token minted on the runner, and the
+#                        fullsend CLI gets the client credentials and mints
+#                        for itself
+#
+# An email that is empty or only whitespace counts as absent. A harness
+# that maps an unset FULLSEND_JIRA_EMAIL to JIRA_USER_EMAIL yields an empty
+# string, and that must select Bearer, never an empty-user Basic header.
+#
+# Every helper takes the token and email as arguments, so callers that
+# withhold the credentials from their environment can pass saved copies.
+# jira_auth_select chooses the mode once; until it is called, the helpers
+# use the token and email they are given (the token modes).
+#
+# The client secret is kept in shell variables only. It never reaches a
+# command line, a file, the output, or an xtrace line: jira_auth_select
+# takes the names of the client ID and secret variables and reads them
+# with xtrace off, jq builds the token request body from its environment
+# and sends it to curl on stdin, and a failed request reports its HTTP
+# status, never the response body.
+
+[[ -n "${JIRA_AUTH_SH_LOADED:-}" ]] && return 0
+JIRA_AUTH_SH_LOADED=1
+
+# Selected mode: "token", "client", or "none". Empty until jira_auth_select.
+JIRA_AUTH_MODE=""
+_JIRA_AUTH_CLIENT_ID=""
+_JIRA_AUTH_CLIENT_SECRET=""
+_JIRA_AUTH_ACCESS_TOKEN=""
+_JIRA_AUTH_EXPIRES_AT=0
+
+# Print the argument with surrounding whitespace removed.
+_jira_auth_trim() {
+  local s="$1"
+  s="${s#"${s%%[![:space:]]*}"}"
+  s="${s%"${s##*[![:space:]]}"}"
+  printf '%s' "${s}"
+}
+
+# Print the email with surrounding whitespace removed. Empty output means
+# no email, which selects Bearer auth.
+#
+# Usage: jira_auth_email <email>
+jira_auth_email() {
+  local email="$1"
+  email="${email#"${email%%[![:space:]]*}"}"
+  email="${email%"${email##*[![:space:]]}"}"
+  printf '%s' "${email}"
+}
+
+# Select the credential mode and set JIRA_AUTH_MODE:
+#   token  — a token is set (the email decides Basic or Bearer per call)
+#   client — the client ID and secret are both set and no token is
+#   none   — nothing is set
+# The client ID and secret are passed as variable names, never values, so
+# a traced call line shows only the names; they are read with xtrace off.
+# Fails, naming the variables but never their values, when a token and
+# client credentials are both set, only one client variable is, or a name
+# is not a shell identifier. Values are trimmed, so one that is only
+# whitespace counts as unset.
+#
+# Usage: jira_auth_select <token> <client-id-var> <client-secret-var>
+jira_auth_select() {
+  local _jas_xtrace=0 _jas_rc=0
+  if [[ $- == *x* ]]; then
+    _jas_xtrace=1
+    set +x
+  fi
+  _jira_auth_select_now "$@" || _jas_rc=$?
+  if [[ "${_jas_xtrace}" -eq 1 ]]; then
+    set -x
+  fi
+  return "${_jas_rc}"
+}
+
+# Locals use a _jas_ prefix, and such names are refused, so the indirect
+# reads see the caller's variables, not these.
+_jira_auth_select_now() {
+  local _jas_name
+  for _jas_name in "$2" "$3"; do
+    if [[ ! "${_jas_name}" =~ ^[A-Za-z_][A-Za-z0-9_]*$ || "${_jas_name}" == _jas_* ]]; then
+      echo "ERROR: jira_auth_select needs the names of the client ID and secret variables" >&2
+      return 1
+    fi
+  done
+  local _jas_token _jas_id _jas_secret
+  _jas_token="$(_jira_auth_trim "$1")"
+  _jas_id="$(_jira_auth_trim "${!2:-}")"
+  _jas_secret="$(_jira_auth_trim "${!3:-}")"
+  if [[ -n "${_jas_token}" && ( -n "${_jas_id}" || -n "${_jas_secret}" ) ]]; then
+    echo "ERROR: set either FULLSEND_JIRA_TOKEN (JIRA_TOKEN) or FULLSEND_JIRA_CLIENT_ID and FULLSEND_JIRA_CLIENT_SECRET, not both" >&2
+    return 1
+  fi
+  if [[ -n "${_jas_id}" && -z "${_jas_secret}" ]] || [[ -z "${_jas_id}" && -n "${_jas_secret}" ]]; then
+    echo "ERROR: FULLSEND_JIRA_CLIENT_ID and FULLSEND_JIRA_CLIENT_SECRET must be set together" >&2
+    return 1
+  fi
+  _JIRA_AUTH_ACCESS_TOKEN=""
+  _JIRA_AUTH_EXPIRES_AT=0
+  if [[ -n "${_jas_token}" ]]; then
+    JIRA_AUTH_MODE="token"
+  elif [[ -n "${_jas_id}" ]]; then
+    JIRA_AUTH_MODE="client"
+    _JIRA_AUTH_CLIENT_ID="${_jas_id}"
+    _JIRA_AUTH_CLIENT_SECRET="${_jas_secret}"
+  else
+    JIRA_AUTH_MODE="none"
+  fi
+}
+
+# In client-credentials mode, fail unless JIRA_API_URL is set. A minted
+# access token works only through the Atlassian API gateway
+# (https://api.atlassian.com/ex/jira/<cloudId>); the site URL in
+# JIRA_BASE_URL rejects it, so there is no fallback.
+#
+# Usage: jira_auth_require_api_url
+jira_auth_require_api_url() {
+  if [[ "${JIRA_AUTH_MODE}" == "client" && -z "${JIRA_API_URL:-}" ]]; then
+    echo "ERROR: JIRA_API_URL (the Atlassian API gateway URL) must be set when FULLSEND_JIRA_CLIENT_ID and FULLSEND_JIRA_CLIENT_SECRET are used; JIRA_BASE_URL does not accept their access tokens" >&2
+    return 1
+  fi
+}
+
+# In client-credentials mode, make sure a usable access token is held:
+# mint one when there is none or it expires within 5 minutes. A no-op in
+# the other modes. The token is kept in a shell variable only and masked
+# before anything else is printed. Mint once in the script's own shell,
+# with stdout not redirected, so the mask line reaches the log and later
+# calls, including those in command substitutions, reuse the token.
+#
+# Usage: jira_auth_mint
+jira_auth_mint() {
+  [[ "${JIRA_AUTH_MODE}" == "client" ]] || return 0
+  local now
+  now="$(date +%s)"
+  if [[ -n "${_JIRA_AUTH_ACCESS_TOKEN}" ]] && (( now < _JIRA_AUTH_EXPIRES_AT - 300 )); then
+    return 0
+  fi
+  local xtrace=0 rc=0
+  if [[ $- == *x* ]]; then
+    xtrace=1
+    set +x
+  fi
+  _jira_auth_mint_now "${now}" || rc=$?
+  if [[ "${xtrace}" -eq 1 ]]; then
+    set -x
+  fi
+  return "${rc}"
+}
+
+# Request an access token the way fullsend does
+# (internal/forge/jira/oauth.go). Called by jira_auth_mint with xtrace off.
+# jq builds the body from the trimmed ID and secret in its environment and
+# curl reads it on stdin; curl -q ignores curl config files.
+_jira_auth_mint_now() {
+  local now="$1"
+  local raw rc=0
+  raw="$(_JIRA_AUTH_ID="${_JIRA_AUTH_CLIENT_ID}" \
+    _JIRA_AUTH_SECRET="${_JIRA_AUTH_CLIENT_SECRET}" \
+    jq -cn '{grant_type: "client_credentials", client_id: env._JIRA_AUTH_ID, client_secret: env._JIRA_AUTH_SECRET}' \
+    | curl -q --proto =https --silent --connect-timeout 10 --max-time 30 \
+      --header "Content-Type: application/json" \
+      --data @- \
+      --write-out '\n%{http_code}' \
+      "https://auth.atlassian.com/oauth/token" 2>/dev/null)" || rc=$?
+  if [[ "${rc}" -ne 0 ]]; then
+    echo "ERROR: Jira OAuth token request failed (curl exit ${rc})" >&2
+    return 1
+  fi
+  local http_code="${raw##*$'\n'}"
+  local body="${raw%$'\n'*}"
+  [[ "${http_code}" =~ ^[0-9]{3}$ ]] || http_code="unknown"
+  if [[ "${http_code}" != 2?? ]]; then
+    echo "ERROR: Jira OAuth token request failed (HTTP ${http_code})" >&2
+    return 1
+  fi
+  local token expires_in
+  token="$(printf '%s' "${body}" | jq -r '.access_token // empty' 2>/dev/null)" || token=""
+  expires_in="$(printf '%s' "${body}" | jq -r '.expires_in // empty' 2>/dev/null)" || expires_in=""
+  # Atlassian access tokens are JWTs. Anything outside this charset could
+  # break or inject into the ::add-mask:: line, so it is refused unprinted.
+  if [[ ! "${token}" =~ ^[A-Za-z0-9._~+/=-]+$ ]]; then
+    echo "ERROR: Jira OAuth token response has no usable access_token" >&2
+    return 1
+  fi
+  # In the script's own shell the mask goes to stdout. In a subshell, such
+  # as a command substitution, stdout may be captured, so it goes to the
+  # main shell's current stdout through /proc when that is a pipe or a
+  # terminal (the runner log), else to stderr. A file or /dev/null there
+  # means the caller redirected stdout around the call.
+  local main_out="/proc/$$/fd/1"
+  if (( BASH_SUBSHELL == 0 )); then
+    printf '::add-mask::%s\n' "${token}"
+  elif [[ -w "${main_out}" ]] && [[ -p "${main_out}" || -c "${main_out}" ]] \
+    && ! [[ "${main_out}" -ef /dev/null ]]; then
+    printf '::add-mask::%s\n' "${token}" >> "${main_out}"
+  else
+    printf '::add-mask::%s\n' "${token}" >&2
+  fi
+  [[ "${expires_in}" =~ ^[0-9]+$ ]] || expires_in=3600
+  _JIRA_AUTH_ACCESS_TOKEN="${token}"
+  _JIRA_AUTH_EXPIRES_AT=$((now + expires_in))
+}
+
+# Run curl with the Authorization for the selected mode, followed by the
+# caller's arguments. In client-credentials mode the token and email
+# arguments are ignored and the minted access token is sent as Bearer.
+# Otherwise fails without calling curl when the token is empty.
+#
+# Usage: jira_auth_curl <token> <email> [curl args...]
+jira_auth_curl() {
+  local token="$1"
+  local email
+  email="$(jira_auth_email "$2")"
+  shift 2
+  if [[ "${JIRA_AUTH_MODE}" == "client" ]]; then
+    jira_auth_mint || return 1
+    curl --oauth2-bearer "${_JIRA_AUTH_ACCESS_TOKEN}" "$@"
+    return
+  fi
+  if [[ -z "${token}" ]]; then
+    echo "ERROR: Jira token is empty" >&2
+    return 1
+  fi
+  if [[ -n "${email}" ]]; then
+    curl --user "${email}:${token}" "$@"
+  else
+    curl --oauth2-bearer "${token}" "$@"
+  fi
+}
+
+# Run the fullsend CLI with the Jira credentials it reads from its
+# environment: FULLSEND_JIRA_TOKEN always, FULLSEND_JIRA_EMAIL only for a
+# bot user. In Bearer mode an inherited FULLSEND_JIRA_EMAIL is removed, so
+# the CLI cannot pick Basic auth. In client-credentials mode the CLI gets
+# FULLSEND_JIRA_CLIENT_ID and FULLSEND_JIRA_CLIENT_SECRET, with
+# FULLSEND_JIRA_TOKEN and FULLSEND_JIRA_EMAIL removed, and mints for
+# itself, with xtrace off. The values go through the environment, never
+# the command line.
+#
+# Usage: jira_auth_fullsend <fullsend-bin> <token> <email> [cli args...]
+jira_auth_fullsend() {
+  local bin="$1"
+  local token="$2"
+  local email
+  email="$(jira_auth_email "$3")"
+  shift 3
+  if [[ "${JIRA_AUTH_MODE}" == "client" ]]; then
+    local xtrace=0 rc=0
+    if [[ $- == *x* ]]; then
+      xtrace=1
+      set +x
+    fi
+    (
+      unset FULLSEND_JIRA_TOKEN FULLSEND_JIRA_EMAIL
+      FULLSEND_JIRA_CLIENT_ID="${_JIRA_AUTH_CLIENT_ID}" \
+        FULLSEND_JIRA_CLIENT_SECRET="${_JIRA_AUTH_CLIENT_SECRET}" "${bin}" "$@"
+    ) || rc=$?
+    if [[ "${xtrace}" -eq 1 ]]; then
+      set -x
+    fi
+    return "${rc}"
+  fi
+  if [[ -z "${token}" ]]; then
+    echo "ERROR: Jira token is empty" >&2
+    return 1
+  fi
+  if [[ -n "${email}" ]]; then
+    FULLSEND_JIRA_TOKEN="${token}" FULLSEND_JIRA_EMAIL="${email}" "${bin}" "$@"
+  else
+    (
+      unset FULLSEND_JIRA_EMAIL
+      FULLSEND_JIRA_TOKEN="${token}" "${bin}" "$@"
+    )
+  fi
+}
+# END bundled: lib/jira-auth.lib.sh
+jira_auth_select "${JIRA_TOKEN:-}" FULLSEND_JIRA_CLIENT_ID FULLSEND_JIRA_CLIENT_SECRET || exit 1
+if [[ "${JIRA_AUTH_MODE}" == "none" ]]; then
+  echo "ERROR: JIRA_TOKEN must be set, or FULLSEND_JIRA_CLIENT_ID and FULLSEND_JIRA_CLIENT_SECRET" >&2
+  exit 1
+fi
+# JIRA_API_URL is optional, but the credentials are sent to it, so refuse
+# anything that is not https.
+if [[ -n "${JIRA_API_URL:-}" && "${JIRA_API_URL}" != https://* ]]; then
+  echo "ERROR: JIRA_API_URL must start with https://" >&2
+  exit 1
+fi
+jira_auth_require_api_url || exit 1
+# Client credentials: mint the access token here, in the script's own
+# shell, so later REST calls reuse it. A failure is reported here and each
+# REST call then fails on its own, keeping the caller's fail-open or
+# fail-closed handling.
+jira_auth_mint || true
 
 # JIRA_BASE_URL is derived at runtime by tracker_parse_issue_url, so it
 # cannot be validated at source time — keep a per-call guard for it.
 _jira_require_vars() {
   if [[ -z "${JIRA_BASE_URL:-}" ]]; then echo "ERROR: JIRA_BASE_URL is not set" >&2; return 1; fi
+}
+
+# Print the base URL for REST calls: JIRA_API_URL when set, else
+# JIRA_BASE_URL, with trailing slash(es) stripped.
+_jira_api_base() {
+  local base="${JIRA_API_URL:-${JIRA_BASE_URL}}"
+  while [[ "${base}" == */ ]]; do
+    base="${base%/}"
+  done
+  printf '%s\n' "${base}"
 }
 
 _jira_api() {
@@ -577,13 +1029,15 @@ _jira_api() {
   shift
 
   _jira_require_vars || return 1
+  local api_base
+  api_base=$(_jira_api_base) || return 1
 
-  curl --fail --silent --show-error \
+  jira_auth_curl "${JIRA_TOKEN:-}" "${JIRA_USER_EMAIL:-}" \
+    --fail --silent --show-error \
     --connect-timeout 10 --max-time 30 \
-    --user "${JIRA_USER_EMAIL}:${JIRA_TOKEN}" \
     --header "Content-Type: application/json" \
     --request "${method}" \
-    "${JIRA_BASE_URL}/rest/api/3${endpoint}" \
+    "${api_base}/rest/api/3${endpoint}" \
     "$@"
 }
 
@@ -594,19 +1048,21 @@ _jira_api_with_status() {
   shift
 
   _jira_require_vars || return 1
+  local api_base
+  api_base=$(_jira_api_base) || return 1
 
   local err_file
   err_file=$(mktemp)
   local raw
-  raw=$(curl --silent --show-error \
+  raw=$(jira_auth_curl "${JIRA_TOKEN:-}" "${JIRA_USER_EMAIL:-}" \
+    --silent --show-error \
     --connect-timeout 10 --max-time 30 \
-    --user "${JIRA_USER_EMAIL}:${JIRA_TOKEN}" \
     --header "Content-Type: application/json" \
     --request "${method}" \
     --write-out '\n%{http_code}' \
-    "${JIRA_BASE_URL}/rest/api/3${endpoint}" \
+    "${api_base}/rest/api/3${endpoint}" \
     "$@" 2>"${err_file}") || {
-    echo "Jira API error: curl failed — $(cat "${err_file}")" >&2
+    echo "Jira API error: curl failed — $(grep -v '^::add-mask::' "${err_file}")" >&2
     rm -f "${err_file}"
     return 1
   }
@@ -670,8 +1126,13 @@ tracker_add_label() {
 
 tracker_remove_label() {
   local label="$1"
-  _jira_api PUT "/issue/${ISSUE_NUMBER}" \
-    --data "$(jq -cn --arg l "${label}" '{update:{labels:[{remove:$l}]}}')" > /dev/null 2>/dev/null || true
+  # Jira treats removing an absent label as a no-op, so an error here is a
+  # real write failure. Fail the step instead of reporting success.
+  if ! _jira_api PUT "/issue/${ISSUE_NUMBER}" \
+    --data "$(jq -cn --arg l "${label}" '{update:{labels:[{remove:$l}]}}')" > /dev/null; then
+    echo "ERROR: failed to remove label '${label}' from issue ${ISSUE_NUMBER} via PUT /issue/${ISSUE_NUMBER}" >&2
+    return 1
+  fi
 }
 
 tracker_strip_labels() {
@@ -784,32 +1245,50 @@ tracker_post_comment() {
   local body="$1"
   _jira_require_vars || return 1
   # `fullsend issues post-comment` always does marker-based find-and-update;
-  # there is no "always create new" mode. A marker unique to this invocation
-  # guarantees no prior comment matches it, so this always creates a new
-  # comment — matching tracker_post_comment's always-new contract on
-  # GitHub/GitLab.
+  # there is no "always create new" mode. Each triage run gets a new comment,
+  # matching tracker_post_comment's always-new contract on GitHub/GitLab.
+  # The marker is scoped to the CI run (GITHUB_RUN_ID survives a workflow
+  # re-run, CI_PIPELINE_ID a GitLab job retry), so a retried run edits its
+  # own earlier comment instead of posting a duplicate.
   local marker stamp
-  stamp=$(date +%s%N)
-  # BSD date without %N support leaves the literal "N" in place, which would
-  # make the marker identical for every invocation within the same second and
-  # break the always-create-new contract. Fall back to a random suffix.
-  if [[ "${stamp}" == *N* ]]; then
-    stamp="$(date +%s)${RANDOM}${RANDOM}"
+  local run_id="${GITHUB_RUN_ID:-${CI_PIPELINE_ID:-}}"
+  if [[ "${run_id}" =~ ^[0-9]+$ ]]; then
+    marker="<!-- fullsend:triage-run-${run_id} -->"
+  else
+    # No CI run ID: a marker unique to this invocation guarantees no prior
+    # comment matches it.
+    stamp=$(date +%s%N)
+    # BSD date without %N support leaves the literal "N" in place, which would
+    # make the marker identical for every invocation within the same second and
+    # break the always-create-new contract. Fall back to a random suffix.
+    if [[ "${stamp}" == *N* ]]; then
+      stamp="$(date +%s)${RANDOM}${RANDOM}"
+    fi
+    marker="<!-- fullsend:triage-${stamp} -->"
   fi
-  marker="<!-- fullsend:triage-${stamp} -->"
-  printf '%s' "${body}" | fullsend issues post-comment --tracker jira \
-    --project "${REPO}" --number "${JIRA_ISSUE_NUM}" \
-    --jira-url "${JIRA_BASE_URL}" --jira-email "${JIRA_USER_EMAIL}" --token "${JIRA_TOKEN}" \
-    --marker "${marker}" --result -
+  _jira_post_comment "${body}" "${marker}"
 }
 
 tracker_post_sticky_comment() {
   local body="$1"
   local marker="$2"
   _jira_require_vars || return 1
-  printf '%s' "${body}" | fullsend issues post-comment --tracker jira \
+  _jira_post_comment "${body}" "${marker}"
+}
+
+# Post or update the comment carrying <marker> through the fullsend CLI,
+# which takes the Jira site and API gateway from tracker.jira in
+# FULLSEND_DIR's config.yaml and the credentials from its environment.
+_jira_post_comment() {
+  local body="$1"
+  local marker="$2"
+  if [[ -z "${FULLSEND_DIR:-}" ]]; then
+    echo "ERROR: FULLSEND_DIR is not set; the fullsend CLI needs it for the tracker.jira settings" >&2
+    return 1
+  fi
+  printf '%s' "${body}" | jira_auth_fullsend fullsend "${JIRA_TOKEN:-}" "${JIRA_USER_EMAIL:-}" \
+    issues post-comment --tracker jira --fullsend-dir "${FULLSEND_DIR}" \
     --project "${REPO}" --number "${JIRA_ISSUE_NUM}" \
-    --jira-url "${JIRA_BASE_URL}" --jira-email "${JIRA_USER_EMAIL}" --token "${JIRA_TOKEN}" \
     --marker "${marker}" --result -
 }
 
@@ -916,6 +1395,43 @@ tracker_create_issue() {
   fi
   echo "${JIRA_BASE_URL}/browse/${key}"
 }
+
+# Apply ready-for-triage to a newly created issue so Jira dispatch can
+# pick it up. Failures are non-fatal for the caller.
+#
+# target_project must be the same already-allowlisted project key (checked
+# via is_target_allowed) that created_url's issue was created in. Unlike
+# GitHub/GitLab, the issue key used to address the label PUT (not just a
+# REPO global) has to be derived from created_url, so this validates the
+# URL against the same anchored pattern tracker_validate_issue_url uses and
+# then rebuilds the issue key from target_project plus only the numeric
+# suffix of created_url — rather than trusting the project name parsed out
+# of created_url — before mutating.
+tracker_dispatch_triage() {
+  local created_url="$1"
+  local target_project="$2"
+  local saved_number="${ISSUE_NUMBER}"
+  if [[ ! "${created_url}" =~ ^https://[a-zA-Z0-9.-]+/browse/[A-Z][A-Z0-9]*-[0-9]+$ ]]; then
+    echo "ERROR: created_url does not match expected Jira pattern: $(_gha_sanitize "${created_url}")" >&2
+    return 1
+  fi
+  local parsed_key="${created_url##*/browse/}"
+  if [[ -n "${target_project}" ]]; then
+    # Rebuild the issue key from the already-allowlisted target project
+    # plus only the numeric suffix from created_url, rather than trusting
+    # the project name parsed out of created_url.
+    ISSUE_NUMBER="${target_project}-${parsed_key##*-}"
+  else
+    ISSUE_NUMBER="${parsed_key}"
+  fi
+  local rc=0
+  if ! tracker_add_label "ready-for-triage"; then
+    echo "::warning::Failed to add ready-for-triage label to $(_gha_sanitize "${created_url}")" >&2
+    rc=1
+  fi
+  ISSUE_NUMBER="${saved_number}"
+  return "${rc}"
+}
 # END bundled: lib/jira-triage-ops.lib.sh
     ;;
   *)
@@ -931,7 +1447,7 @@ tracker_parse_issue_url
 
 echo "Resetting triage labels on ${REPO}#${ISSUE_NUMBER}"
 
-TRIAGE_LABELS=(needs-info ready-to-code duplicate feature question not-planned pr-open)
+TRIAGE_LABELS=(needs-info ready-to-code duplicate feature question not-planned completed pr-open)
 
 tracker_strip_labels "${TRIAGE_LABELS[@]}"
 tracker_verify_labels_stripped "${TRIAGE_LABELS[@]}"

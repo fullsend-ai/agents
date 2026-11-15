@@ -131,15 +131,42 @@ runner, no override workaround needed:
 
 ```bash
 export FULLSEND_WORK_ITEM_URL="https://your-site.atlassian.net/browse/TESTPROJ-42"
-export JIRA_USER_EMAIL="you@example.com"
-export JIRA_TOKEN="your-jira-api-token"
 export JIRA_BASE_URL="https://your-site.atlassian.net"
+# The post-scripts require the .fullsend directory; nothing sets it for you.
+export FULLSEND_DIR="<path to the .fullsend directory>"
 export FULLSEND_FORGE="jira"
 
 # Transition names for closing issues — set to match your Jira workflow.
 export JIRA_DUPLICATE_TRANSITION="Duplicate"
 export JIRA_NOT_PLANNED_TRANSITION="Won't Do"
 export JIRA_SPLIT_TRANSITION="Done"
+```
+
+Then export the credentials for one mode; setting both fails the run. They
+stay on the host, where the post-scripts and the builtin `jira` provider read
+them (the provider needs a fullsend release that includes
+fullsend-ai/fullsend#9233).
+
+**Static token:**
+
+```bash
+export FULLSEND_JIRA_TOKEN="your-jira-api-token"
+# Bot user only. For a service account's token, skip both email lines.
+export FULLSEND_JIRA_EMAIL="you@example.com"
+# fullsend run sets this only for a Jira event; set it for the sandbox skills.
+export JIRA_USER_EMAIL="${FULLSEND_JIRA_EMAIL}"
+```
+
+**OAuth 2.0 client credentials:**
+
+```bash
+export FULLSEND_JIRA_CLIENT_ID="your-client-id"
+export FULLSEND_JIRA_CLIENT_SECRET="your-client-secret"
+# Atlassian's public tenant-info endpoint returns the site's cloud ID.
+CLOUD_ID="$(curl -fsS https://your-site.atlassian.net/_edge/tenant_info | jq -er .cloudId)"
+echo "${CLOUD_ID}"
+export JIRA_API_URL="https://api.atlassian.com/ex/jira/${CLOUD_ID}"
+unset FULLSEND_JIRA_TOKEN FULLSEND_JIRA_EMAIL JIRA_USER_EMAIL
 ```
 
 Run `fullsend run triage` the same way as step 3 above — `--target-repo`
@@ -162,26 +189,49 @@ require `ISSUE_NUMBER`. It derives the work-item key from
 external key as a GitHub or GitLab issue number.
 
 ```bash
-# Jira-source env vars (JIRA_USER_EMAIL and JIRA_BASE_URL enter the code
-# sandbox as non-secret config; JIRA_TOKEN is read by the jira-ro
-# provider on the host — it never enters the code agent's runner or
-# sandbox environment)
 export FULLSEND_WORK_ITEM_URL="https://your-site.atlassian.net/browse/TESTPROJ-42"
-export JIRA_USER_EMAIL="you@example.com"
-export JIRA_TOKEN="your-jira-api-token"
 export JIRA_BASE_URL="https://your-site.atlassian.net"
+# The post-scripts require the .fullsend directory; nothing sets it for you.
+export FULLSEND_DIR="<path to the .fullsend directory>"
 
 # Target forge — the code agent still pushes/creates PRs on this forge
 export FULLSEND_FORGE="github"
 export GH_TOKEN="$(gh auth token)"
 ```
 
+Then export the credentials for one mode; setting both fails the run. They
+stay on the host, where the post-scripts and the builtin `jira` provider read
+them (the provider needs a fullsend release that includes
+fullsend-ai/fullsend#9233).
+
+**Static token:**
+
+```bash
+export FULLSEND_JIRA_TOKEN="your-jira-api-token"
+# Bot user only. For a service account's token, skip both email lines.
+export FULLSEND_JIRA_EMAIL="you@example.com"
+# fullsend run sets this only for a Jira event; set it for the sandbox skills.
+export JIRA_USER_EMAIL="${FULLSEND_JIRA_EMAIL}"
+```
+
+**OAuth 2.0 client credentials:**
+
+```bash
+export FULLSEND_JIRA_CLIENT_ID="your-client-id"
+export FULLSEND_JIRA_CLIENT_SECRET="your-client-secret"
+# Atlassian's public tenant-info endpoint returns the site's cloud ID.
+CLOUD_ID="$(curl -fsS https://your-site.atlassian.net/_edge/tenant_info | jq -er .cloudId)"
+echo "${CLOUD_ID}"
+export JIRA_API_URL="https://api.atlassian.com/ex/jira/${CLOUD_ID}"
+unset FULLSEND_JIRA_TOKEN FULLSEND_JIRA_EMAIL JIRA_USER_EMAIL
+```
+
 Run `fullsend run code` the same way as step 3 above. `--target-repo`
 should point at a local checkout of the repo where the PR will be
 created. The Jira pre-script validates the issue URL and installs
 pre-commit tool dependencies. The sandbox reads the Jira work item
-directly through provider-backed API access (the `jira-ro` provider
-handles credential injection at the network layer).
+directly through provider-backed API access (fullsend's builtin `jira`
+provider handles credential injection at the network layer).
 
 ## Testing a new configuration option
 
@@ -234,8 +284,12 @@ for a significant change, not for every iteration.
 ## Runtime and model overrides
 
 When running agents locally with `--fullsend-dir .`, the CLI reads the
-root `config.yaml`. To switch from the default Claude Code runtime to
-pi, add a `runtime` key:
+root `config.yaml`. That file is also the functional-eval workspace, so
+every agent runs on `claude-sonnet-5-5` (its `models.aliases` points both
+`sonnet` and `opus` there, and review uses the eval-only overlay
+`eval/harness/review.yaml`). Your Vertex project must serve that id; to
+run another model, pass a full id with `--model`. To switch from the
+default Claude Code runtime to pi, add a `runtime` key:
 
 ```yaml
 # config.yaml

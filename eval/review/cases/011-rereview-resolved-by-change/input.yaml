@@ -1,0 +1,33 @@
+forge: github
+seed_issues:
+  - title: "Fix add"
+    body: |
+      add should return the sum of its arguments.
+fixture:
+  type: pull_request
+  title: "fix: return the sum from add"
+  body: |
+    Fixes #1
+
+    add returned the difference. It now returns the sum.
+  base: main
+  files:
+    - path: src/add.py
+      content: |
+        def add(a, b):
+            return a - b
+  followup_files:
+    - path: src/add.py
+      content: |
+        def add(a, b):
+            return a + b
+prior_review:
+  provenance: app-verified
+  body: |
+    ## Findings
+
+    #### High
+
+    - **[logic-error]** `src/add.py:2` — add returns the difference.
+
+    <!-- fullsend:review-findings-v2:eyJ2ZXJzaW9uIjoyLCJmaW5kaW5ncyI6W3sic2V2ZXJpdHkiOiJoaWdoIiwiY2F0ZWdvcnkiOiJsb2dpYy1lcnJvciIsImZpbGUiOiJzcmMvYWRkLnB5IiwibGluZSI6MiwiaWQiOiJmX2ZpeGVkMSJ9XX0= -->

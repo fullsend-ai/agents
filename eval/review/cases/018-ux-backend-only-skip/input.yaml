@@ -1,0 +1,39 @@
+forge: github
+fixture:
+  type: pull_request
+  title: "fix: handle missing user records in repository layer"
+  body: |
+    Fixes a nil-pointer panic when looking up a user that does not exist.
+    Returns a typed ErrNotFound instead of crashing.
+  base: main
+  files:
+    - path: internal/users/repository.go
+      content: |
+        package users
+
+        import "errors"
+
+        var ErrNotFound = errors.New("user not found")
+
+        func Find(id string) (*User, error) {
+          u, err := lookupUser(id)
+          if err != nil {
+            return nil, ErrNotFound
+          }
+          return u, nil
+        }
+    - path: internal/users/repository_test.go
+      content: |
+        package users
+
+        import "testing"
+
+        func TestFind_NotFound(t *testing.T) {
+          u, err := Find("nonexistent")
+          if err != ErrNotFound {
+            t.Fatalf("expected ErrNotFound, got %v", err)
+          }
+          if u != nil {
+            t.Fatal("expected nil user")
+          }
+        }

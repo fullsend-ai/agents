@@ -84,6 +84,10 @@ run_test "schema-valid-with-closes-issue-false" \
   '{"target_branch":"develop","pr_body":"Partial.","closes_issue":false}' \
   "true"
 
+run_test "schema-valid-with-inject-issue-scope-false" \
+  '{"target_branch":"main","inject_issue_scope":false}' \
+  "true"
+
 # Schema fail cases
 run_test "schema-missing-target-branch" \
   '{"pr_body":"No target branch."}' \

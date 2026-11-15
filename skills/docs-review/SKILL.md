@@ -118,7 +118,7 @@ Run the script in a single Bash call:
 ```bash
 for id in "identifier1" "identifier2" "identifier3"; do
   matches=$(grep -rl "$id" --include="*.md" --include="*.rst" --include="*.adoc" . 2>/dev/null)
-  if [ -n "$matches" ]; then
+  if test -n "$matches"; then
     echo "MATCH: $id -> $matches"
   else
     echo "NO_MATCH: $id"
@@ -186,9 +186,8 @@ gets its own finding with its own file path:
   stale docs do not constitute a security or correctness risk in the
   code itself. Do not produce `info`-level findings — if the staleness
   is not worth flagging at `low`, do not flag it at all.
-- **Category:** a descriptive label for the type of staleness, e.g.,
-  `stale-doc`, `missing-doc`. Use whatever category best describes the
-  finding.
+- **Category:** exactly one of `stale-doc`, `missing-doc`,
+  `incorrect-doc`, or `incomplete-doc`. No other values are accepted.
 - **File:** path to the stale doc file.
 - **Line:** line number of the stale reference, if identifiable.
 - **Description:** what is stale and why — reference the specific code

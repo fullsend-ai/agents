@@ -20,11 +20,19 @@ allow `curl` because their API access requires it (the `gh` CLI is not
 available for GitLab or Jira).
 
 All agents share the base policy
-[`policies/base.yaml`](../policies/base.yaml). Forge-specific network
-access (GitHub, GitLab, Jira endpoints) is provided by profiles under
-[`profiles/`](../profiles/) and wired in via forge-level or overlay
-sections in each harness file. See the individual profile files for the
-full list of allowed hosts and binaries.
+[`policies/base.yaml`](https://github.com/fullsend-ai/agents/blob/main/policies/base.yaml). GitHub and GitLab network
+access is provided by profiles under
+[`profiles/`](https://github.com/fullsend-ai/agents/tree/main/profiles) and wired in via forge-level or overlay
+sections in each harness file; see the individual profile files for the
+full list of allowed hosts and binaries. Jira access comes from the
+`jira` provider (profile `fullsend-jira`) built into fullsend, which the
+Jira overlays attach; see fullsend's
+[Jira integration guide](https://github.com/fullsend-ai/fullsend/blob/main/docs/guides/user/jira-integration.md).
+The older `providers/jira-ro.yaml` and `profiles/fullsend-jira-ro.yaml`
+are deprecated. They still work in this release and are removed in the
+next one. If your custom harness lists either file, replace it with `jira`
+under `providers`: listing both fails when fullsend mints the Jira token
+from client credentials.
 
 ## Before you start
 
@@ -41,7 +49,7 @@ full list of allowed hosts and binaries.
 ### 1. Create a policy file
 
 Copy the default policy for the agent you are configuring (for example,
-[`policies/base.yaml`](../policies/base.yaml) for the code agent) to
+[`policies/base.yaml`](https://github.com/fullsend-ai/agents/blob/main/policies/base.yaml) for the code agent) to
 `.fullsend/policies/<agent>.yaml` in your repository and append a
 block for the host you need:
 
@@ -98,7 +106,7 @@ All agents share `policies/base.yaml` with forge-specific network
 access provided by profiles. If multiple agents need the same custom
 hosts, create a separate override for each one. For example, the
 [code](code.md) and [fix](fix.md) agents both use
-[`policies/base.yaml`](../policies/base.yaml)
+[`policies/base.yaml`](https://github.com/fullsend-ai/agents/blob/main/policies/base.yaml)
 (GitLab network access is provided by forge-level profiles such as
 `fullsend-gitlab-code` and `fullsend-gitlab-ro`).
 
@@ -125,7 +133,7 @@ To identify which host to add:
 
 - [Code agent](code.md) -- custom harness and sandbox image setup
 - [Fix agent](fix.md) -- fix agent overview
-- [`policies/base.yaml`](../policies/base.yaml) -- shared base policy
+- [`policies/base.yaml`](https://github.com/fullsend-ai/agents/blob/main/policies/base.yaml) -- shared base policy
   for all agents
-- [`profiles/`](../profiles/) -- network profiles for forge-specific
+- [`profiles/`](https://github.com/fullsend-ai/agents/tree/main/profiles) -- network profiles for forge-specific
   access

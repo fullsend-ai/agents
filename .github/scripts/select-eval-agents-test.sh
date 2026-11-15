@@ -570,6 +570,53 @@ fi
 cleanup_fixture "$FIXTURE"
 
 # ---------------------------------------------------------------------------
+# Eval-only overlay and files every eval depends on
+# ---------------------------------------------------------------------------
+
+run_test
+FIXTURE="$(setup_fixture)"
+RESULT=$(echo "eval/harness/review.yaml" | "$SELECT_SCRIPT" --repo-root "$FIXTURE")
+if [[ "$RESULT" == "review" ]]; then
+  pass "eval-only overlay change selects its agent"
+else
+  fail "eval-only overlay change selects its agent (got: '$RESULT')"
+fi
+cleanup_fixture "$FIXTURE"
+
+for shared in config.yaml eval/run-functional.sh eval/scripts/run-fullsend.sh eval/.agent-eval-harness; do
+  run_test
+  FIXTURE="$(setup_fixture)"
+  RESULT=$(echo "$shared" | "$SELECT_SCRIPT" --repo-root "$FIXTURE" | sort)
+  EXPECTED=$(printf "review\ntriage")
+  if [[ "$RESULT" == "$EXPECTED" ]]; then
+    pass "$shared change selects every agent with an eval config"
+  else
+    fail "$shared change selects every agent with an eval config (got: '$RESULT')"
+  fi
+  cleanup_fixture "$FIXTURE"
+done
+
+run_test
+FIXTURE="$(setup_fixture)"
+RESULT=$(echo "eval/scripts/scrub-eval-results-test.sh" | "$SELECT_SCRIPT" --repo-root "$FIXTURE")
+if [[ -z "$RESULT" ]]; then
+  pass "an eval script's own test file selects nothing"
+else
+  fail "an eval script's own test file selects nothing (got: '$RESULT')"
+fi
+cleanup_fixture "$FIXTURE"
+
+run_test
+FIXTURE="$(setup_fixture)"
+RESULT=$(echo "eval/README.md" | "$SELECT_SCRIPT" --repo-root "$FIXTURE")
+if [[ -z "$RESULT" ]]; then
+  pass "an eval/ file outside any agent and the runner selects nothing"
+else
+  fail "an eval/ file outside any agent and the runner selects nothing (got: '$RESULT')"
+fi
+cleanup_fixture "$FIXTURE"
+
+# ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
 echo ""

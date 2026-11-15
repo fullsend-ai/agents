@@ -378,18 +378,57 @@ github_csma_run_cmd() {
   return 1
 }
 # END bundled: lib/github-api-csma.lib.sh
+# shellcheck source=github-host.lib.sh
+# BEGIN bundled: lib/github-host.lib.sh
+# shellcheck shell=bash
+# github-host.lib.sh — Shared GitHub host handling for GitHub ops.
+#
+# Derives the GitHub origin the run executes against from GITHUB_SERVER_URL,
+# a GitHub Actions default variable (https://github.com on github.com, the
+# instance URL on GitHub Enterprise Server). Defaults to https://github.com
+# when unset. Issue/PR URL validation, URL parsing and generated links use
+# this origin instead of a hard-coded github.com.
+#
+# Sourced by the github-*-ops.lib.sh files and inlined by the bundler.
+
+[[ -n "${GITHUB_HOST_SH_LOADED:-}" ]] && return 0
+GITHUB_HOST_SH_LOADED=1
+
+# Prints the GitHub origin (https://host[:port]) without a trailing slash.
+# Fails closed when GITHUB_SERVER_URL is not an HTTPS origin.
+_github_server_url() {
+  local origin="${GITHUB_SERVER_URL:-https://github.com}"
+  origin="${origin%/}"
+  if [[ ! "${origin}" =~ ^https://[a-zA-Z0-9.-]+(:[0-9]+)?$ ]]; then
+    echo "ERROR: GITHUB_SERVER_URL is not an HTTPS origin (https://host[:port]): $(printf '%s' "${origin}" | tr -d '\n\r')" >&2
+    return 1
+  fi
+  printf '%s\n' "${origin}"
+}
+
+# Prints the remainder of a URL after "<origin>/" when the URL is on the
+# GitHub origin; fails (printing nothing) when it is on another host.
+_github_url_path() {
+  local url="$1" base
+  base="$(_github_server_url)/" || return 1
+  [[ "${url}" == "${base}"* ]] || return 1
+  printf '%s\n' "${url#"${base}"}"
+}
+# END bundled: lib/github-host.lib.sh
 
 # --- URL handling ---
 
 forge_validate_issue_url() {
-  if [[ ! "${ISSUE_URL}" =~ ^https://github\.com/[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+/issues/[0-9]+$ ]]; then
+  local path
+  if ! path=$(_github_url_path "${ISSUE_URL}") \
+    || [[ ! "${path}" =~ ^[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+/issues/[0-9]+$ ]]; then
     echo "ERROR: ISSUE_URL does not match expected pattern: $(_gha_sanitize "${ISSUE_URL}")" >&2
     return 1
   fi
 }
 
 forge_parse_issue_url() {
-  REPO=$(echo "${ISSUE_URL}" | sed 's|https://github.com/||; s|/issues/.*||')
+  REPO=$(_github_url_path "${ISSUE_URL}" | sed 's|/issues/.*||')
   ISSUE_NUMBER=$(basename "${ISSUE_URL}")
 }
 
@@ -533,6 +572,9 @@ GITLAB_PRIORITIZE_OPS_SH_LOADED=1
 #
 # Fails closed: rejects when CI_SERVER_HOST is not set.
 #
+# Also derives the trusted origin (scheme, host, and optional port) from
+# CI_SERVER_URL so self-managed instances on non-default HTTPS ports work.
+#
 # Sourced by all gitlab-*-ops.lib.sh files and inlined by the bundler.
 
 [[ -n "${GITLAB_HOST_VALIDATION_SH_LOADED:-}" ]] && return 0
@@ -556,6 +598,35 @@ _validate_gitlab_host() {
   fi
   if [[ "${host,,}" != "${CI_SERVER_HOST,,}" ]]; then
     echo "ERROR: GitLab host '$(_gha_sanitize "${host}")' does not match CI_SERVER_HOST" >&2
+    return 1
+  fi
+}
+
+# Prints the trusted GitLab origin (https://host[:port]) for API requests
+# and generated links. Derived from CI_SERVER_URL, a GitLab CI predefined
+# variable that carries any non-default port; falls back to
+# https://${CI_SERVER_HOST} when CI_SERVER_URL is unset. Fails closed when
+# the origin is not HTTPS or its host does not match CI_SERVER_HOST.
+_gitlab_trusted_origin() {
+  _validate_gitlab_host "${CI_SERVER_HOST:-}" || return 1
+  local origin="${CI_SERVER_URL:-https://${CI_SERVER_HOST}}"
+  if [[ ! "${origin}" =~ ^https://([a-zA-Z0-9._-]+)(:[0-9]+)?$ ]]; then
+    echo "ERROR: CI_SERVER_URL is not an HTTPS origin (https://host[:port]): $(_gha_sanitize "${origin}")" >&2
+    return 1
+  fi
+  local host="${BASH_REMATCH[1]}"
+  _validate_gitlab_host "${host}" || return 1
+  printf '%s\n' "${origin}"
+}
+
+# Validates an origin (https://host[:port]) parsed from an untrusted URL
+# against the trusted CI server origin. Scheme, host, and port must all
+# match: a URL without a port only matches a trusted origin without one.
+_validate_gitlab_origin() {
+  local origin="$1" trusted
+  trusted=$(_gitlab_trusted_origin) || return 1
+  if [[ "${origin,,}" != "${trusted,,}" ]]; then
+    echo "ERROR: GitLab origin '$(_gha_sanitize "${origin}")' does not match CI server origin '$(_gha_sanitize "${trusted}")'" >&2
     return 1
   fi
 }
