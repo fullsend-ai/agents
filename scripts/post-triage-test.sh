@@ -1054,6 +1054,9 @@ run_test_with_env "auto-code-on-bug-gets-ready-to-code" \
 run_test "auto-code-footer-explains-label-trigger" \
   "${AUTO_CODE_BUG_FIXTURE}" 'the `ready-to-code` label starts the code agent'
 
+run_test "auto-code-footer-warns-about-restarting" \
+  "${AUTO_CODE_BUG_FIXTURE}" 'This can cancel the current code run.'
+
 run_test_no_pattern "auto-code-footer-omits-manual-start" \
   "${AUTO_CODE_BUG_FIXTURE}" '- `/fs-code`'
 
