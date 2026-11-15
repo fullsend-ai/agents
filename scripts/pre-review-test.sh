@@ -1283,15 +1283,22 @@ if ! command -v git >/dev/null 2>&1; then
   echo "SKIP: scoped-extraheader-real-git — git not installed"
 else
   _ghe="https://ghe.example.internal:8443"
-  # Ignore the host's own git config so only the -c key is in play.
-  _git=(env GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
-    git -c "http.${_ghe}/.extraheader=X" config --get-urlmatch http.extraheader)
+  # Only the -c key may be in play: no global or system config, and no
+  # repository config either (a CI checkout sets its own extraheader in
+  # .git/config), so run from an empty directory outside any repository.
+  _nogit="$(mktemp -d)"
+  _git=(env -u GIT_DIR -u GIT_WORK_TREE GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
+    GIT_CEILING_DIRECTORIES="$(dirname "${_nogit}")"
+    git -C "${_nogit}" -c "http.${_ghe}/.extraheader=X"
+    config --get-urlmatch http.extraheader)
   _on_ghe="$("${_git[@]}" "${_ghe}/o/r.git" || true)"
   _on_dotcom="$("${_git[@]}" "https://github.com/o/r.git" || true)"
+  rm -rf "${_nogit}"
   if [[ "${_on_ghe}" == "X" && -z "${_on_dotcom}" ]]; then
     echo "PASS: scoped-extraheader-real-git"
   else
-    echo "FAIL: scoped-extraheader-real-git — ghe='${_on_ghe}' github.com='${_on_dotcom}'"
+    # Report only whether each lookup matched; never print a header value.
+    echo "FAIL: scoped-extraheader-real-git — ghe matched X: $([[ "${_on_ghe}" == "X" ]] && echo yes || echo no), github.com matched: $([[ -n "${_on_dotcom}" ]] && echo yes || echo no)"
     FAILURES=$((FAILURES + 1))
   fi
 fi
