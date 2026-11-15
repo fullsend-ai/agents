@@ -1,0 +1,12 @@
+{
+  "reach": 2,
+  "impact": 3,
+  "confidence": 0.5,
+  "effort": 2,
+  "reasoning": {
+    "reach": "Behaviour smoke reach.",
+    "impact": "Behaviour smoke impact.",
+    "confidence": "Behaviour smoke confidence.",
+    "effort": "Behaviour smoke effort."
+  }
+}

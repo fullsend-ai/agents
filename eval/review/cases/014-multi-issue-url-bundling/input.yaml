@@ -1,0 +1,49 @@
+forge: github
+seed_issues:
+  - title: "Write icon font migration spec"
+    body: |
+      Write up the migration spec for replacing the icon font with
+      inline SVG icons, covering the affected components and rollout
+      plan.
+  - title: "Add spec-refine workflow skills"
+    body: |
+      Add general-purpose spec-refine and spec-refine-github skills for
+      iterating a spec document against review feedback. Not specific
+      to any one spec.
+
+fixture:
+  type: pull_request
+  title: "docs: add icon font migration spec and spec-refine skills"
+  body: |
+    Adds the icon font migration spec.
+
+    Closes ${REPO_URL}/issues/1
+
+    Also bundles two new general-purpose workflow skills (spec-refine,
+    spec-refine-github) that were built out while iterating on the
+    spec above.
+
+    Closes ${REPO_URL}/issues/2
+  base: main
+  files:
+    - path: docs/plans/icon-font-migration.md
+      content: |
+        # Icon Font Migration Spec
+
+        Replace the icon font with inline SVG icons.
+    - path: skills/spec-refine/SKILL.md
+      content: |
+        ---
+        name: spec-refine
+        description: Iteratively refine a spec document against feedback.
+        ---
+
+        # Spec Refine
+    - path: skills/spec-refine-github/SKILL.md
+      content: |
+        ---
+        name: spec-refine-github
+        description: Post spec review rounds as GitHub PR comments.
+        ---
+
+        # Spec Refine (GitHub)

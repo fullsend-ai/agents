@@ -107,6 +107,12 @@ forge_issue_url_base() {
   echo "https://github.com/${repo}/issues"
 }
 
+# Normalize labels for display and creation. Returns comma-separated string.
+forge_normalize_labels() {
+  local labels="$1"
+  printf '%s' "${labels}"
+}
+
 # Return the CI run URL for notifications.
 forge_run_url() {
   echo "${GITHUB_SERVER_URL:-https://github.com}/${GITHUB_REPOSITORY:-${1}}/actions/runs/${GITHUB_RUN_ID:-0}"

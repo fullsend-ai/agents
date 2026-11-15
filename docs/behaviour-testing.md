@@ -81,7 +81,7 @@ organization while retaining the existing fullsend caller:
 ```bash
 # Run from an exact fullsend checkout with the operator credentials required
 # by the fullsend admin command.
-for org in halfsend-{01..12}; do
+for org in halfsend-{01..22}; do
   go run ./cmd/fullsend admin foreign allow \
     --org "$org" \
     --role e2e \

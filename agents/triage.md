@@ -24,6 +24,8 @@ Use the data-fetching commands from your forge-specific skill to retrieve the is
 
 If the command fails, write a JSON error result and stop.
 
+If the sandbox refuses the request — its SSRF protection, network policy, or command scanner denies it (for example, the host resolves to a private address the policy does not authorize) — the denial is final. Stop fetching. Make no further requests to that host. Do not retry with an alternate URL, host or IP form, header, curl option, environment variable, or wrapping shell. Do not continue as if you had read the issue. Write no `agent-result.json`, skip `fullsend-check-output`, and end with a short message stating that the issue could not be read because the sandbox denied the request, naming the host. The missing result file makes the post-script fail the run without applying a triage decision. A forge error such as an HTTP 5xx is not a policy denial; handle it with the rule above.
+
 ## Step 2: Gather context and find related work
 
 Extract the project/repo identifier from `ISSUE_URL`.
@@ -113,13 +115,16 @@ Use this phased approach to evaluate the issue:
 - **Is this a question?** If the issue is asking for information rather than reporting a defect or requesting a change, use the `question` action instead of proceeding to deeper investigation. Questions typically use interrogative phrasing and describe no concrete problem or desired behavior change.
 
 ### Phase 2 — Deep investigation
+- **Inventory what the issue already provides.** Before you score clarity or form any question, read the title, the full body, and every comment, and list what they already contain: exact error messages, logs and stack traces, reproduction steps, versions and environment details, and links to code, PRs/MRs, or other issues. Information counts as provided wherever it appears — quoted inline in a sentence, inside a code block, or in a comment rather than the body. Use this inventory to answer the questions below.
 - Are exact error messages or logs provided?
 - Are reproduction steps present and specific (not vague)?
 - Is the environment described (OS, browser, version, configuration)?
 
 ### Question classification
 
-Before forming any clarifying question, classify it:
+Before forming any clarifying question, check it against the Phase 2 inventory. If the issue title, body, or comments already contain the answer, it is not an information gap: do not ask it, use the information, and continue the analysis. Only information missing from the issue counts as an open user-facing question for the anti-premature-resolution rule below.
+
+Then classify the question:
 
 **User-facing questions** — the reporter can answer from their own experience:
 - What behavior did you observe vs. expect?
@@ -142,6 +147,9 @@ Before forming any clarifying question, classify it:
 - Can you form a plausible root cause hypothesis from the available information?
 - Could a developer start investigating without contacting the reporter?
 - **Is progress blocked on other work?** Consider whether the fix depends on an unresolved issue or unmerged PR — in this repo or another. If a developer cannot meaningfully start work until some other issue is resolved, this issue has prerequisites regardless of how clear the problem description is. If the blocking work has no tracking issue yet, you can recommend creating one via the `prerequisites` action's `create` array.
+- **Does the recommended fix target exist in this repository?** Before you recommend changing a specific file, path, or file pattern, use your forge skill to confirm it exists in this repository. Do not take its location from the issue text or your own hypothesis. This applies to files the fix modifies, not to new files the fix is meant to create. On a tracker that hosts no code (Jira), skip this check. If the target is missing, look for where it lives: files in this repository that pull it in from another repository, such as a URL with a pinned SHA or tag in source code, a pipeline or task resolver, a kustomization ref, or a submodule.
+  - **External owner found:** name the external repository and say plainly in `comment` that the fix cannot land in this repository and must be made there. If this repository also needs a follow-up change, such as bumping the pinned reference, say so. This is a cross-repo dependency, so the anti-premature-prerequisites rule below applies: use `prerequisites`, linking an existing upstream issue in `existing` or proposing one for that repository in `create`.
+  - **No owner found:** say explicitly in `comment` that the fix target was not found in this repository and its owner could not be identified. Do not phrase `recommended_fix` as an edit to a file in this repository.
 - **Would resolving this issue require modifying CI/workflow files?** Scan the issue title, body, referenced files, and labels for signals that the fix involves changes under CI/pipeline configuration (e.g., `.github/workflows/`, `.gitlab-ci.yml`, `.fullsend/.github/workflows/`, or enrolled-repo shim workflows). Prefer deterministic signals — explicit path references, CI/workflow-scoped labels, mentions of CI pipeline configuration — over vague mentions of "workflow" in non-CI contexts (e.g., "user onboarding workflow"). If the fix likely requires workflow file changes, set `requires_workflow_changes: true` in `triage_summary` and include a warning in the triage comment that the code agent cannot modify workflow files under current permissions and that manual intervention (human PR/MR or maintainer action) is required.
 - **Does this issue bundle multiple independent concerns?** An issue bundles independent concerns when it lists several distinct problems, tasks, or gaps that share no blocking relationship — each could be filed, triaged, and resolved independently. Use `action: "split"` to decompose the issue into separate sub-issues. Signs of a bundled issue:
   - A numbered or bulleted list of distinct items (e.g., "1. fix X, 2. add Y, 3. update Z")
@@ -340,7 +348,7 @@ The issue bundles multiple independent concerns that should each be tracked sepa
 
 Each sub-issue must have a clear, self-contained title and body. Write sub-issue bodies for a developer who has not read the original issue — include enough context to understand and act on the sub-issue independently. Do not include the sub-issue URLs in `comment` — the post-script appends a "Split into:" list automatically.
 
-**Cross-repo sub-issues:** Sub-issues default to the source repo when `repo` is omitted. To file a sub-issue in a different repository, include the `repo` field in `owner/name` format on GitHub/GitLab, or as a bare Jira project key (e.g. `OTHERPROJ`) on Jira — an `owner/name` value is not a valid Jira project and the create call will be rejected. The target must be listed in `create_issues.allow_targets` in config.yaml (by org or by repo) — the source repo is always implicitly allowed. Sub-issues targeting disallowed repos are skipped and reported in the comment so a human can file them manually.
+**Cross-repo sub-issues:** Sub-issues default to the source repo when `repo` is omitted. To file a sub-issue in a different repository, include the `repo` field in `owner/name` format on GitHub/GitLab, or as a bare Jira project key (e.g. `OTHERPROJ`) on Jira — an `owner/name` value is not a valid Jira project and the create call will be rejected. The target must be listed in the active tracker's `tracker.<provider>.allowed_targets` in config.yaml (GitHub org or repo, GitLab group or project path, or Jira project key) — the source repo is always implicitly allowed. Sub-issues targeting disallowed repos are skipped and reported in the comment so a human can file them manually.
 
 ```json
 {
@@ -436,7 +444,7 @@ Information is sufficient for a developer to investigate and fix.
 ## Questioning guidelines
 
 - Ask ONE question per invocation. The most diagnostic question — the one that would move the lowest clarity dimension the most.
-- Never re-ask for information already provided in the issue body or prior comments.
+- Never re-ask for information already provided in the issue title, body, or prior comments. Quoted error text, log excerpts, and inline code or links count as provided, even when they appear mid-sentence rather than under a heading. Check the Phase 2 inventory before asking.
 - Push back on vague descriptions: if the reporter says "it crashes," ask what specifically happens (error dialog? freeze? silent exit?).
 - Reference prior comments: "You mentioned X earlier — can you elaborate on [specific aspect]?"
 - Be empathetic but efficient. Acknowledge the reporter's experience, then ask your question.

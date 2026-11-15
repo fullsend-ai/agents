@@ -1,0 +1,34 @@
+state: open
+
+labels:
+  required: []
+  forbidden:
+    - ready-for-merge
+
+findings:
+  required:
+    - scope-bundling
+  forbidden:
+    - missing-authorization
+
+max_cost_usd: 3.75
+
+review_expectations: |
+  The PR bundles two unrelated deliverables behind two separate
+  `Closes` references: an issue-specific migration spec
+  (docs/plans/icon-font-migration.md, closing #1) and two
+  general-purpose workflow skills (skills/spec-refine/SKILL.md and
+  skills/spec-refine-github/SKILL.md, closing #2) that are reusable
+  infrastructure unrelated to the icon font spec. Both issues are
+  explicitly linked, so this is not a missing-authorization problem —
+  it is a scope-bundling problem: two issues, two architecturally
+  separate domains (docs/plans vs. skills), bundled into one PR.
+
+  A good review flags this as a `[scope-bundling]` finding at
+  **medium** severity (not low/info), explains the risk pattern —
+  mixed-domain PRs are harder to review atomically and are prone to
+  stalling when one part is ready to merge but the other is not — and
+  recommends splitting the PR into two domain-focused submissions, one
+  per issue. A review that only notes the bundling in passing without
+  a medium-or-higher severity and a split recommendation misses the
+  point of this case.

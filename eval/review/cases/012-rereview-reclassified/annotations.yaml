@@ -1,0 +1,21 @@
+state: open
+
+labels:
+  required: []
+  forbidden: []
+  risk_label_required: false
+
+findings:
+  # Posted review omits below-threshold rows, so a correct reclassify to
+  # info/docs is invisible here. Category is scored by review_quality.
+  required: []
+  forbidden: []
+
+max_cost_usd: 2.75
+
+review_expectations: |
+  This is an app-verified GitHub re-review. The prior finding f_reclass1 was
+  recorded as high logic-error at README.md:3. The README still says
+  `pytset`, and the follow-up only changes src/note.py. That is a docs typo,
+  not a logic error. A good review copies id f_reclass1, reclassifies it to
+  a docs category with a rationale, and does not keep it as logic-error.

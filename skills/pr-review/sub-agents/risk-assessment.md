@@ -4,6 +4,10 @@ description: >-
   Computes composite PR risk score from metadata, git history,
   and linked issue signals.
 model: sonnet
+when: >-
+  Risk assessment is enabled (step 3c-2); dispatched with the step 4
+  batch.
+role: synthesis
 tools: Read, Bash, Grep, Glob
 permissionMode: dontAsk
 background: false
@@ -70,8 +74,10 @@ Return a JSON object:
 
 `score` (1–5 integer), `level` (low/moderate/elevated/high/critical),
 `rationale`, `tier1_score` and `risk_floor` are required (the last two
-only when the script did not return `UNKNOWN`). Signal arrays are optional for graceful
-degradation when individual tiers cannot be evaluated.
+only when the script did not return `UNKNOWN`). Signal arrays are optional. Set `degraded` to a reason string (e.g. "tier1-only") when a tier
+that was attempted could not produce valid results. Do NOT set
+`degraded` when a tier is intentionally skipped (e.g. Tier 3 is
+always skipped when no issue is linked).
 
 Score-to-level mapping: 1=low, 2=moderate, 3=elevated, 4=high, 5=critical.
 

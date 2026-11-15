@@ -6,6 +6,16 @@
   "type": "object",
   "required": ["pr_number", "trigger_source", "actions", "summary", "tests_passed", "files_changed"],
   "additionalProperties": false,
+  "allOf": [
+    {
+      "if": { "required": ["pr_title"] },
+      "then": { "required": ["pr_title_base_sha256"] }
+    },
+    {
+      "if": { "required": ["pr_body"] },
+      "then": { "required": ["pr_body_base_sha256"] }
+    }
+  ],
   "properties": {
     "pr_number": {
       "type": "integer",
@@ -118,16 +128,81 @@
     },
     "rebased_onto_target": {
       "type": "boolean",
-      "description": "Set to true whenever this run's HEAD reflects an authorized human rebase onto the PR's target that still needs to be published on the remote PR (see 'How to rebase' step 8 in agents/fix.md) — a completed `git rebase origin/<target>`, a step-3 no-op whose result still needs publishing (e.g. a GitLab MR reconstructed against the target), or a validation-loop retry carrying the field forward from the iteration that performed or no-op'd the rebase. Never set for a failed/aborted rebase or a bot-triggered run. The post-script requires this field together with a harness-verified human rebase request (TRIGGER_SOURCE plus the literal /fs-fix instruction text) before skipping the replay onto the remote PR tip — ancestry alone cannot distinguish an authorized rebase from a GitLab MR reconstruction against a target that has since moved on."
+      "description": "Set to true whenever this run's HEAD reflects an authorized rebase onto the PR's target that still needs to be published on the remote PR (see 'How to rebase' in the fix-history-rewrite skill) — a completed `git rebase origin/<target>`, a step-3 no-op whose result still needs publishing (e.g. a GitLab MR reconstructed against the target), or a validation-loop retry carrying the field forward from the iteration that performed or no-op'd the rebase. Authorization is either a harness-verified human `/fs-fix` rebase request, or a runner-verified forge merge conflict with FIX_CONFLICT_UPDATE_STRATEGY=rebase (issue #1518). Never set for a failed/aborted rebase. The post-script requires this field together with one of those runner-side signals before skipping the replay onto the remote PR tip — ancestry alone cannot distinguish an authorized rebase from a GitLab MR reconstruction against a target that has since moved on."
+    },
+    "merged_target": {
+      "type": "boolean",
+      "description": "Set to true whenever this run's HEAD is a merge of the PR branch with its target, performed because the forge reported a merge conflict (FIX_CONFLICT_UPDATE_STRATEGY=merge, the default) or a validation-loop retry carrying the field forward. Never set for a failed/aborted merge. The post-script requires this field together with a runner-verified forge conflict before skipping replay onto the remote PR tip — a default `git rebase` drops merge commits and would otherwise undo the resolution."
+    },
+    "conflict_update": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Record of the forge mergeability inspection and any reconciliation performed this run (issue #1518). Include whenever mergeability was inspected.",
+      "properties": {
+        "forge_state": {
+          "type": "string",
+          "maxLength": 64,
+          "description": "Raw forge mergeability signal (GitHub mergeable enum, GitLab detailed_merge_status, or unknown)."
+        },
+        "target_branch": {
+          "type": "string",
+          "maxLength": 256,
+          "description": "PR/MR base branch that was used as the reconciliation target."
+        },
+        "target_sha": {
+          "type": "string",
+          "maxLength": 64,
+          "description": "Commit SHA of origin/<target_branch> as observed in the sandbox."
+        },
+        "strategy": {
+          "type": "string",
+          "enum": ["merge", "rebase", "none"],
+          "description": "Strategy selected for this run. none when no conflict was reported."
+        },
+        "outcome": {
+          "type": "string",
+          "enum": ["merged", "rebased", "noop", "skipped", "failed"],
+          "description": "merged/rebased on success, noop when already up to date, skipped when the forge did not report a conflict, failed when reconciliation could not complete."
+        }
+      }
     },
     "history_rewritten": {
       "type": "boolean",
-      "description": "Set to true whenever this run's HEAD reflects an authorized human squash or redo/reset that still needs to be published on the remote PR (see 'Rewrite fix-agent history' in agents/fix.md), or a validation-loop retry carrying the field forward. A squash targets the whole PR range (fix-agent, code-agent, and human commits alike) and must land as exactly one commit ahead of the target branch; a redo/reset only discards and re-implements the contiguous fix-agent commit suffix, preserving every commit below it. Never set for a failed/aborted rewrite, a squash no-op (PR already a single commit), or a bot-triggered run. The post-script requires this field together with a harness-verified human squash/redo request (TRIGGER_SOURCE plus the literal /fs-fix instruction text) before skipping the replay onto the remote PR tip — for a squash it additionally refuses to publish unless exactly one commit results, and for a redo/reset it refuses to publish if a human-authored or code-agent commit below the rewrite base would be lost."
+      "description": "Set to true whenever this run's HEAD reflects an authorized human squash or redo/reset that still needs to be published on the remote PR (see 'Rewrite fix-agent history' in the fix-history-rewrite skill), or a validation-loop retry carrying the field forward. A squash targets the whole PR range (fix-agent, code-agent, and human commits alike) and must land as exactly one commit ahead of the target branch; a redo/reset only discards and re-implements the contiguous fix-agent commit suffix, preserving every commit below it. Never set for a failed/aborted rewrite, a squash no-op (PR already a single commit), or a bot-triggered run. The post-script requires this field together with a harness-verified human squash/redo request (TRIGGER_SOURCE plus the literal /fs-fix instruction text) before skipping the replay onto the remote PR tip — for a squash it additionally refuses to publish unless exactly one commit results, and for a redo/reset it refuses to publish if a human-authored or code-agent commit below the rewrite base would be lost."
+    },
+    "pr_title": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200,
+      "pattern": "\\S",
+      "not": { "pattern": "[\\r\\n]" },
+      "description": "Optional replacement PR/MR title. Set only when this run made the current title materially inaccurate. Single line (no CR/LF). Requires pr_title_base_sha256. Applied by the post-script after schema validation and the secret scan pass, and only if the live title still matches pr_title_base_sha256."
+    },
+    "pr_title_base_sha256": {
+      "type": "string",
+      "minLength": 64,
+      "maxLength": 64,
+      "pattern": "^[0-9a-f]{64}$",
+      "description": "Lowercase hex SHA-256 of the exact PR/MR title the agent read before proposing pr_title. The post-script skips the title update when the live title no longer matches (a concurrent edit)."
+    },
+    "pr_body": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 8000,
+      "pattern": "\\S",
+      "description": "Optional replacement PR/MR description. Set only when this run made the current description materially inaccurate. Requires pr_body_base_sha256. The post-script keeps the existing issue-closing reference and post-script verification section, drops any copies of them from this text, and applies it only after schema validation and the secret scan pass and the live body still matches pr_body_base_sha256."
+    },
+    "pr_body_base_sha256": {
+      "type": "string",
+      "minLength": 64,
+      "maxLength": 64,
+      "pattern": "^[0-9a-f]{64}$",
+      "description": "Lowercase hex SHA-256 of the exact PR/MR description the agent read before proposing pr_body (empty string when the description was empty or null). The post-script skips the body update when the live description no longer matches (a concurrent edit)."
     },
     "ci_inspections": {
       "type": "array",
       "maxItems": 50,
-      "description": "Project CI jobs inspected during context gathering. Omit Fullsend agent/dispatch workflows. Include up to 50 entries, prioritizing failed and pending jobs over passing ones.",
+      "description": "Project CI jobs inspected during context gathering (see the fix-ci-inspection skill). Omit Fullsend agent/dispatch workflows. Include up to 50 entries, prioritizing failed and pending jobs over passing ones.",
       "items": {
         "type": "object",
         "required": ["job", "classification"],

@@ -1,0 +1,22 @@
+state: open
+
+labels:
+  required: []
+  forbidden:
+    - ready-for-merge
+  risk_label_required: true
+
+findings:
+  required_any:
+    - scope-creep
+    - unauthorized-change
+
+max_cost_usd: 2.50
+
+review_expectations: |
+  The only follow-up file is CHANGELOG.md. It does not match the trusted prior
+  missing-doc finding and the linked issue explicitly forbids changelog changes,
+  so the review must report its addition as scope-creep or unauthorized-change. Rewriting the placeholder
+  as a Foo release note would still violate that restriction. This case fails if
+  unmatched follow-up files are incorrectly covered by the prior-finding
+  remediation exemption.

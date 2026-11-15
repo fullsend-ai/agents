@@ -14,6 +14,10 @@
 # Expected env vars:
 #   ISSUE_URL      — HTML URL of the issue
 #   GITLAB_TOKEN   — GitLab personal/project access token
+#   CI_SERVER_HOST — GitLab CI predefined variable (set by runner)
+#   CI_SERVER_URL  — GitLab CI predefined variable; API origin, including
+#                    any non-default port (falls back to
+#                    https://${CI_SERVER_HOST} when unset)
 #
 # Token scopes: GITLAB_TOKEN requires minimum scopes:
 #   - api (read/write issues, labels, notes, merge requests)
@@ -42,11 +46,13 @@ _gitlab_api() {
     return 1
   fi
   _validate_gitlab_host "${GITLAB_HOST}" || return 1
+  local origin
+  origin=$(_gitlab_trusted_origin) || return 1
   curl --fail --silent --show-error \
     --connect-timeout 10 --max-time 30 \
     --header "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
     --request "${method}" \
-    "https://${GITLAB_HOST}/api/v4${endpoint}" \
+    "${origin}/api/v4${endpoint}" \
     "$@"
 }
 
@@ -60,6 +66,8 @@ _gitlab_api_with_status() {
     return 1
   fi
   _validate_gitlab_host "${GITLAB_HOST}" || return 1
+  local origin
+  origin=$(_gitlab_trusted_origin) || return 1
   local err_file
   err_file=$(mktemp)
   local raw
@@ -68,7 +76,7 @@ _gitlab_api_with_status() {
     --header "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
     --request "${method}" \
     --write-out '\n%{http_code}' \
-    "https://${GITLAB_HOST}/api/v4${endpoint}" \
+    "${origin}/api/v4${endpoint}" \
     "$@" 2>"${err_file}") || {
     echo "GitLab API error: curl failed — $(cat "${err_file}")" >&2
     rm -f "${err_file}"
@@ -89,19 +97,20 @@ _gitlab_api_with_status() {
 # --- URL handling ---
 
 tracker_validate_issue_url() {
-  if [[ ! "${ISSUE_URL}" =~ ^https://[a-zA-Z0-9._-]+(/[a-zA-Z0-9._-]+)+/-/issues/[0-9]+$ ]]; then
+  if [[ ! "${ISSUE_URL}" =~ ^(https://[a-zA-Z0-9._-]+(:[0-9]+)?)(/[a-zA-Z0-9._-]+)+/-/issues/[0-9]+$ ]]; then
     echo "ERROR: ISSUE_URL does not match expected GitLab pattern: $(_gha_sanitize "${ISSUE_URL}")" >&2
     return 1
   fi
-  local host
-  host=$(echo "${ISSUE_URL}" | sed -E 's|^https://([^/:]+)/.*|\1|')
-  _validate_gitlab_host "${host}" || return 1
+  local origin="${BASH_REMATCH[1]}"
+  _validate_gitlab_origin "${origin}" || return 1
 }
 
 tracker_parse_issue_url() {
   # Extract host, project path, and issue IID from URL.
   # e.g., https://gitlab.com/group/subgroup/project/-/issues/42
-  GITLAB_HOST=$(echo "${ISSUE_URL}" | sed -E 's|^https://([^/:]+)/.*|\1|')
+  # The port, if any, is checked by tracker_validate_issue_url; GITLAB_HOST
+  # holds the hostname only and API requests use the trusted CI origin.
+  GITLAB_HOST=$(echo "${ISSUE_URL}" | sed -E 's|^https://([^/:]+)(:[0-9]+)?/.*|\1|')
   REPO=$(echo "${ISSUE_URL}" | sed -E 's|^https://[^/]+/(.+)/-/issues/[0-9]+$|\1|')
   REPO_ENCODED=$(printf '%s' "${REPO}" | jq -sRr @uri)
   ISSUE_NUMBER=$(basename "${ISSUE_URL}")
