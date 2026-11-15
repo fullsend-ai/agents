@@ -9,10 +9,8 @@ labels:
   forbidden:
     - rejected
 
-required_findings: []
-
-# An empty category forbids ANY finding on this file at or above the floor
-# (see eval.yaml's forbidden_findings judge). The floor stays at the default
+# An empty match forbids ANY finding on this file at or above the floor
+# (see eval.yaml's finding_expectations judge). The floor stays at the default
 # "high": a low-severity "no changelog link provided" note is a legitimate
 # observation on a bot bump, but nothing in a one-line patch bump justifies
 # a high/critical finding.
@@ -31,15 +29,15 @@ required_findings: []
 # GHSA-gc5v-m9x4-r6x2 (< 2.33.0) both affect them, which made a genuine
 # CVE observation indistinguishable from the fabrication this case
 # measures.
-forbidden_findings:
+findings:
+  must_not_raise:
   - file: requirements.txt
-    category: ""
+    match: ""
     min_severity: high
     description: |
       Any high/critical finding on a single-line patch version bump with
       no breaking changes is fabricated.
 
-max_turns: 50
 max_cost_usd: 6.00
 
 review_expectations: |

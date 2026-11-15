@@ -2,7 +2,9 @@
 # Tests for eval/review/eval.yaml's finding_expectations judge: categories
 # must come from the evaluated run's write-up only — the current section of
 # the review agent's sticky comment — never from formal reviews, other
-# comments, or the sticky's previous-run history. Fully offline: the real
+# comments, or the sticky's previous-run history. The anchored
+# must_report / must_not_raise checks take severity, category and file
+# from that section's review-findings marker. Fully offline: the real
 # judge block is extracted with yq and run against synthetic states.
 #
 # Usage:
@@ -29,6 +31,7 @@ if [[ ! -s "$CHECK_FILE" ]]; then
 fi
 
 python3 - "$CHECK_FILE" <<'PY'
+import base64
 import json
 import sys
 import textwrap
@@ -151,10 +154,120 @@ cases = [
      {"required": ["logic-error"]}, False, "found 0"),
 ]
 
+
+# --- must_report / must_not_raise: anchored on the review-findings marker ---
+def projected(findings):
+    payload = json.dumps({"version": 2, "action": "comment", "findings": findings})
+    return "<!-- fullsend:review-findings-v2:" + base64.b64encode(payload.encode()).decode() + " -->"
+
+
+def asticky(findings, bullets, *history):
+    """Sticky whose marker projects `findings`; bullets are the prose."""
+    body = MARKER + "\n" + projected(findings) + "\n\n## Review\n\n### Findings\n\n" + bullets
+    for old in history:
+        body += ("\n\n<details>\n<summary>Previous run</summary>\n\n"
+                 "<!-- sticky:history-start -->\n" + old +
+                 "\n<!-- sticky:history-end -->\n\n</details>")
+    return {"author": "eval-bot", "body": body, "created_at": "2026-01-01T00:00:00Z"}
+
+
+def f(file, category, severity, line=None):
+    out = {"id": "f_x", "file": file, "category": category, "severity": severity}
+    if line is not None:
+        out["line"] = line
+    return out
+
+
+REPO = "src/orders/repository.py"
+RECEIPTS = "src/orders/receipts.py"
+SQLI = [f(REPO, "sql-query", "high", 9)]
+SQLI_TEXT = "#### High\n\n- **[sql-query]** `src/orders/repository.py:9` — order_id reaches the query: SQL injection."
+REPORT_SQLI = {"must_report": [{"file": REPO, "match": "injection", "min_severity": "high"}]}
+BAIT = {"must_not_raise": [{"file": RECEIPTS, "match": "md5"}]}
+MD5_NOTE = "- **[weak-crypto]** `src/orders/receipts.py:12` — hashlib.md5 is broken."
+DOCS_ANY = {"must_not_raise": [{"file": "docs/api.md", "min_severity": "low"}]}
+
+cases += [
+    ("must_report: matched in the bullet, not the category token",
+     [asticky(SQLI, SQLI_TEXT)], [], REPORT_SQLI, True, "1 anchored finding"),
+    ("must_report: the category token alone can match",
+     [asticky([f(REPO, "injection-vuln", "critical", 9)], "")], [], REPORT_SQLI, True, "anchored"),
+    ("must_report: below the floor is not reported",
+     [asticky([f(REPO, "sql-query", "medium", 9)], SQLI_TEXT)], [], REPORT_SQLI, False, "not_reported=["),
+    ("must_report: a finding on another file does not count",
+     [asticky([f("src/app.py", "sql-query", "high", 9)],
+              "- **[sql-query]** `src/app.py:9` — SQL injection.")], [], REPORT_SQLI, False, "not_reported=["),
+    ("must_report: whole words only (md5sum is not md5)",
+     [asticky([f(RECEIPTS, "weak-crypto", "high", 12)],
+              "- **[weak-crypto]** `src/orders/receipts.py:12` — md5sum of the payload.")], [],
+     {"must_report": [{"file": RECEIPTS, "match": "md5"}]}, False, "not_reported=["),
+    ("must_report: whole words only (rehash is not hash)",
+     [asticky([f(RECEIPTS, "perf", "high", 12)],
+              "- **[perf]** `src/orders/receipts.py:12` — rehash on every call.")], [],
+     {"must_report": [{"file": RECEIPTS, "match": "hash"}]}, False, "not_reported=["),
+    ("must_report: an indented Remediation line counts",
+     [asticky([f("src/auth/session.py", "auth", "medium", 7)],
+              "- **[auth]** `src/auth/session.py:7` — MAC compared with ==.\n"
+              "  Remediation: use hmac.compare_digest.")], [],
+     {"must_report": [{"file": "src/auth/session.py", "match": "timing | compare_digest",
+                       "min_severity": "medium"}]}, True, "anchored"),
+    ("must_report: a finding only in sticky history does not count",
+     [asticky([], "Looks good to me", SQLI_TEXT)], [], REPORT_SQLI, False, "not_reported=["),
+    ("must_report: a formal review cannot supply the finding",
+     [asticky([], "Looks good to me")], [review(SQLI_TEXT, "CHANGES_REQUESTED")], REPORT_SQLI, False,
+     "not_reported=["),
+    ("must_not_raise: bait noted at low passes",
+     [asticky([f(RECEIPTS, "weak-crypto", "low", 12)], MD5_NOTE)], [], BAIT, True, "anchored"),
+    ("must_not_raise: bait promoted to high fails",
+     [asticky([f(RECEIPTS, "weak-crypto", "high", 12)], MD5_NOTE)], [], BAIT, False, "raised=["),
+    ("must_not_raise: same file and category, other line, other words",
+     [asticky([f(RECEIPTS, "weak-crypto", "low", 12), f(RECEIPTS, "weak-crypto", "high", 30)],
+              MD5_NOTE + "\n- **[weak-crypto]** `src/orders/receipts.py:30` — sha1 for the token.")],
+     [], BAIT, True, "anchored"),
+    ("must_not_raise: empty match forbids any finding at the floor",
+     [asticky([f("docs/api.md", "stale-doc", "low", 3)],
+              "- **[stale-doc]** `docs/api.md:3` — unclear.")], [], DOCS_ANY, False, "raised=["),
+    ("must_not_raise: empty match still allows an info note",
+     [asticky([f("docs/api.md", "stale-doc", "info", 3)], "")], [], DOCS_ANY, True, "anchored"),
+    ("must_not_raise: ./ prefixes are normalised",
+     [asticky([f("./" + RECEIPTS, "weak-crypto", "critical", 12)], MD5_NOTE)], [], BAIT, False, "raised=["),
+    # The marker is the source of severity; without it there is nothing to grade.
+    ("anchored: no marker in the current section is not scored",
+     [comment(MARKER + "\n\n" + CLEAN)], [], BAIT, None, "no review-findings marker"),
+    ("anchored: two markers fail",
+     [{"author": "eval-bot", "body": MARKER + "\n" + projected([]) + "\n" + projected([]) + "\n"}], [],
+     BAIT, False, "found 2"),
+    ("anchored: an undecodable marker fails",
+     [{"author": "eval-bot", "body": MARKER + "\n<!-- fullsend:review-findings-v2:abcde -->\n"}], [],
+     BAIT, False, "Could not decode"),
+    ("anchored: a marker without a findings list fails",
+     [sticky(CLEAN)], [], BAIT, False, "no findings list"),
+    ("anchored: category checks still run first",
+     [asticky([], "Looks good to me")], [], {"required": ["logic-error"], **BAIT}, False,
+     "missing=['logic-error']"),
+    # Malformed ground truth fails loudly instead of skipping the case.
+    ("anchored: unknown key fails",
+     [asticky([], "")], [], {"must_not_raise": [{"file": RECEIPTS, "category": "md5"}]}, False, "Malformed"),
+    ("anchored: unknown severity fails",
+     [asticky([], "")], [], {"must_report": [{"file": REPO, "min_severity": "severe"}]}, False, "Malformed"),
+    ("anchored: missing file fails",
+     [asticky([], "")], [], {"must_report": [{"match": "injection"}]}, False, "Malformed"),
+    ("anchored: a non-list fails",
+     [asticky([], "")], [], {"must_report": {"file": REPO}}, False, "must be a list"),
+    # A run whose review write-up never posted leaves only the risk-assessment
+    # comment (post-review posts it before the review). That is not a clean
+    # review: no sticky, no verdict.
+    ("risk-assessment comment alone fails closed",
+     {"comments": [comment("<!-- fullsend:risk-assessment -->\n## Risk assessment\n\nLow (1/5)")],
+      "reviews": [], "review_decision": ""}, None, BAIT, False, "found 0"),
+]
+
 failures = 0
 for name, comments, reviews, findings, want, substr in cases:
     if comments is None:
         state = {"pr_fetch_failed": True, "comments": [], "reviews": []}
+    elif isinstance(comments, dict):
+        state = comments
     else:
         state = {"comments": comments, "reviews": reviews}
     outputs = {"files": {"output/fixture-state.json": json.dumps(state)},
