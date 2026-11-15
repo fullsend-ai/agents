@@ -6,7 +6,7 @@ Scores an issue using the RICE framework (Reach, Impact, Confidence, Effort) and
 
 On GitHub, scores are written to Projects V2 custom fields and posted as a reasoning comment. On GitLab, scores are posted as a sticky issue comment. GitLab custom fields API integration is deferred — the Issues API silently ignores unknown keys, and the correct Custom Fields API requires Premium/Ultimate with runtime field ID resolution.
 
-On Jira, when that forge is explicitly selected, the computed RICE score is written to one number custom field named exactly `RICE PRIORITY SCORE`. The complete breakdown is in the sticky comment: the Reach, Impact, Confidence, and Effort scores with their reasoning, the RICE formula, and the final score. No separate Reach, Impact, Confidence, or Effort fields are created or written, and Rank, Priority, and other Jira fields are never written. The post-script fails closed if the `RICE PRIORITY SCORE` field is missing, duplicated, not a custom field, or not a number field.
+On Jira, when that forge is explicitly selected, the computed RICE score is written to one number custom field named exactly `RICE Score` (located on the `Prioritization` tab). The complete breakdown is in the sticky comment: the Reach, Impact, Confidence, and Effort scores with their reasoning, the RICE formula, and the final score. No separate Reach, Impact, Confidence, or Effort fields are created or written, and Rank, Priority, and other Jira fields are never written. The post-script fails closed if the `RICE Score` field is missing, duplicated, not a custom field, or not a number field.
 
 ## Setup
 
@@ -44,7 +44,7 @@ The prioritize agent does not apply or consume control labels. It reads the
 issue content and produces a score. On GitHub, the project board is updated
 directly via Projects V2 custom fields. On GitLab, scores are posted as
 a sticky comment on the issue. On Jira (opt-in forge only), the single
-`RICE PRIORITY SCORE` number field is updated and the sticky comment carries
+`RICE Score` number field is updated and the sticky comment carries
 the full breakdown; Rank and Priority are not written.
 
 ## Configuration

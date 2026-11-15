@@ -1017,7 +1017,7 @@ run_test "github-after-gitlab-smoke" "" 8
 # Jira forge tests
 # Verify FULLSEND_FORGE=jira routes REST through the upstream gateway
 # (<api_url>/ex/jira/<cloudId>/rest/api/3), writes only the single
-# RICE PRIORITY SCORE custom field, posts the full breakdown in the sticky
+# RICE Score custom field, posts the full breakdown in the sticky
 # comment, and never calls gh or writes Rank/Priority.
 # ---------------------------------------------------------------------------
 
@@ -1040,7 +1040,7 @@ JIRA_DEFAULT_GATEWAY="https://api.atlassian.com"
 JIRA_DEFAULT_REST="${JIRA_DEFAULT_GATEWAY}/ex/jira/${JIRA_CLOUD_ID_VALUE}/rest/api/3"
 
 DEFAULT_JIRA_FIELDS='[
-  {"id":"customfield_10105","name":"RICE PRIORITY SCORE","schema":{"type":"number"}},
+  {"id":"customfield_10105","name":"RICE Score","schema":{"type":"number"}},
   {"id":"customfield_10101","name":"RICE Reach","schema":{"type":"number"}},
   {"id":"priority","name":"Priority","schema":{"type":"priority"}},
   {"id":"customfield_10019","name":"Rank","schema":{"type":"any"}},
@@ -1500,7 +1500,7 @@ export JIRA_USER_EMAIL="bot@example.com"
 
 # --- Single-field update payload ---
 
-# The PUT body is exactly one field: RICE PRIORITY SCORE, set to the score
+# The PUT body is exactly one field: RICE Score, set to the score
 # (3 * 2 * 0.8 / 2 = 2.4). No Reach/Impact/Confidence/Effort fields.
 run_jira_test "jira-writes-single-rice-priority-score-field"
 if [[ ! -f "${CURL_DATA_FILE}" ]]; then
@@ -1557,7 +1557,7 @@ else
   echo "PASS: jira-posts-sticky-comment-marker"
 fi
 for expected in \
-  'RICE PRIORITY SCORE: 2.4' \
+  'RICE Score: 2.4' \
   'Reach: 3** — Many users affected.' \
   'Impact: 2** — Moderate workflow improvement.' \
   'Confidence: 0.8** — Some customer signal.' \
@@ -1595,32 +1595,32 @@ fi
 
 # --- Field resolution fails closed ---
 
-# Missing RICE PRIORITY SCORE field: nothing is written.
+# Missing RICE Score field: nothing is written.
 echo '[{"id":"priority","name":"Priority","schema":{"type":"priority"}},{"id":"customfield_10019","name":"Rank","schema":{"type":"any"}}]' > "${MOCK_FIELDS_FILE}"
-run_jira_test_stdout "jira-missing-field-fails" "Jira field 'RICE PRIORITY SCORE' not found" "true"
+run_jira_test_stdout "jira-missing-field-fails" "Jira field 'RICE Score' not found" "true"
 assert_jira_no_writes "jira-missing-field"
 if grep -qF 'post-comment' "${GH_LOG}"; then
   echo "FAIL: jira-missing-field — comment posted after a failed field write"
   FAILURES=$((FAILURES + 1))
 fi
 
-# The old five-field names are not enough.
-echo '[{"id":"customfield_10101","name":"RICE Reach","schema":{"type":"number"}},{"id":"customfield_10105","name":"RICE Score","schema":{"type":"number"}}]' > "${MOCK_FIELDS_FILE}"
-run_jira_test_stdout "jira-legacy-five-fields-not-accepted" "Jira field 'RICE PRIORITY SCORE' not found" "true"
-assert_jira_no_writes "jira-legacy-five-fields"
+# The old five-field names and the superseded score field name are not enough.
+echo '[{"id":"customfield_10101","name":"RICE Reach","schema":{"type":"number"}},{"id":"customfield_10105","name":"RICE PRIORITY SCORE","schema":{"type":"number"}}]' > "${MOCK_FIELDS_FILE}"
+run_jira_test_stdout "jira-legacy-field-names-not-accepted" "Jira field 'RICE Score' not found" "true"
+assert_jira_no_writes "jira-legacy-field-names"
 
 # Duplicate field name: ambiguous, so fail closed.
-echo '[{"id":"customfield_10105","name":"RICE PRIORITY SCORE","schema":{"type":"number"}},{"id":"customfield_10106","name":"RICE PRIORITY SCORE","schema":{"type":"number"}}]' > "${MOCK_FIELDS_FILE}"
+echo '[{"id":"customfield_10105","name":"RICE Score","schema":{"type":"number"}},{"id":"customfield_10106","name":"RICE Score","schema":{"type":"number"}}]' > "${MOCK_FIELDS_FILE}"
 run_jira_test_stdout "jira-duplicate-field-fails" "not found or not unique (matches=2)" "true"
 assert_jira_no_writes "jira-duplicate-field"
 
-# A system field that happens to be named "RICE PRIORITY SCORE" must not be written.
-echo '[{"id":"priority","name":"RICE PRIORITY SCORE","schema":{"type":"priority"}}]' > "${MOCK_FIELDS_FILE}"
+# A system field that happens to be named "RICE Score" must not be written.
+echo '[{"id":"priority","name":"RICE Score","schema":{"type":"priority"}}]' > "${MOCK_FIELDS_FILE}"
 run_jira_test_stdout "jira-rejects-system-field-named-rice" "not a custom number field" "true"
 assert_jira_no_writes "jira-rejects-system-field-named-rice"
 
 # A custom field of the wrong type must not be written.
-echo '[{"id":"customfield_10105","name":"RICE PRIORITY SCORE","schema":{"type":"string"}}]' > "${MOCK_FIELDS_FILE}"
+echo '[{"id":"customfield_10105","name":"RICE Score","schema":{"type":"string"}}]' > "${MOCK_FIELDS_FILE}"
 run_jira_test_stdout "jira-rejects-non-number-custom-field" "expected number" "true"
 assert_jira_no_writes "jira-rejects-non-number-custom-field"
 echo "${DEFAULT_JIRA_FIELDS}" > "${MOCK_FIELDS_FILE}"

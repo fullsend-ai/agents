@@ -744,7 +744,7 @@ ${body}"
 # These functions run only when FULLSEND_FORGE=jira.
 #
 # Writes only one number custom field, resolved by exact name:
-#   RICE PRIORITY SCORE
+#   RICE Score
 # The Reach, Impact, Confidence, and Effort scores and their reasoning go in
 # the sticky comment, never in separate Jira fields. Never writes Rank,
 # Priority, status, assignee, or any other Jira field.
@@ -1022,7 +1022,7 @@ forge_parse_issue_url() {
   JIRA_ISSUE_NUM="${ISSUE_NUMBER##*-}"
 }
 
-# Resolve the RICE PRIORITY SCORE field by exact name. Fail closed unless it
+# Resolve the RICE Score field by exact name. Fail closed unless it
 # is a unique customfield_[0-9]+ number field — never Rank, Priority, or
 # system fields.
 _jira_custom_number_field_id() {
@@ -1097,12 +1097,12 @@ forge_update_project_scores() {
 
   local fields_json
   fields_json=$(_jira_api GET "/field") || {
-    echo "ERROR: failed to list Jira fields while resolving the RICE PRIORITY SCORE field" >&2
+    echo "ERROR: failed to list Jira fields while resolving the RICE Score field" >&2
     return 1
   }
 
   local score_id
-  score_id=$(_jira_custom_number_field_id "${fields_json}" "RICE PRIORITY SCORE") || return 1
+  score_id=$(_jira_custom_number_field_id "${fields_json}" "RICE Score") || return 1
 
   local payload
   payload=$(jq -n --arg sid "${score_id}" --argjson s "${score}" \
@@ -1113,12 +1113,12 @@ forge_update_project_scores() {
 
   _jira_assert_rice_only_payload "${payload}" || return 1
 
-  echo "Writing RICE PRIORITY SCORE to Jira field ${score_id} on ${ISSUE_NUMBER}..."
+  echo "Writing RICE Score to Jira field ${score_id} on ${ISSUE_NUMBER}..."
   if ! _jira_api PUT "/issue/${ISSUE_NUMBER}" --data "${payload}" >/dev/null; then
-    echo "ERROR: failed to write RICE PRIORITY SCORE on ${ISSUE_NUMBER} via PUT /issue/${ISSUE_NUMBER}" >&2
+    echo "ERROR: failed to write RICE Score on ${ISSUE_NUMBER} via PUT /issue/${ISSUE_NUMBER}" >&2
     return 1
   fi
-  echo "Jira RICE PRIORITY SCORE updated."
+  echo "Jira RICE Score updated."
 }
 
 # --- Comments ---
@@ -1262,7 +1262,7 @@ COMMENT=$(jq -n \
 
 </details>"')
 
-# Jira keeps only the computed score in its RICE PRIORITY SCORE field, so the
+# Jira keeps only the computed score in its RICE Score field, so the
 # sticky comment carries the whole breakdown. Jira renders the comment from
 # markdown, where a <details> block and a table do not survive, so use a
 # heading and a bullet list. Reasoning has HTML tags and newlines removed.
@@ -1274,7 +1274,7 @@ if [[ "${FULLSEND_FORGE}" == "jira" ]]; then
     --arg confidence "${CONFIDENCE}" \
     --arg effort "${EFFORT}" \
     'def clean: tostring | gsub("<[^>]*>"; "") | gsub("[\r\n]+"; " ");
-    "**RICE PRIORITY SCORE: \($score)**
+    "**RICE Score: \($score)**
 
 **Score breakdown**
 

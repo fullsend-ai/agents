@@ -151,7 +151,7 @@ COMMENT=$(jq -n \
 
 </details>"')
 
-# Jira keeps only the computed score in its RICE PRIORITY SCORE field, so the
+# Jira keeps only the computed score in its RICE Score field, so the
 # sticky comment carries the whole breakdown. Jira renders the comment from
 # markdown, where a <details> block and a table do not survive, so use a
 # heading and a bullet list. Reasoning has HTML tags and newlines removed.
@@ -163,7 +163,7 @@ if [[ "${FULLSEND_FORGE}" == "jira" ]]; then
     --arg confidence "${CONFIDENCE}" \
     --arg effort "${EFFORT}" \
     'def clean: tostring | gsub("<[^>]*>"; "") | gsub("[\r\n]+"; " ");
-    "**RICE PRIORITY SCORE: \($score)**
+    "**RICE Score: \($score)**
 
 **Score breakdown**
 
