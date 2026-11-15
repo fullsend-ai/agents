@@ -239,16 +239,16 @@ if test -n "$ok"; then
     test -f "$f.filtered" && mv "$f.filtered" "$f"
   done
 else
-  : > "$S"; echo "FILTER FAILED — diffs left as fetched; review them unfiltered"
+  : > "$S"; echo "Filter failed — diffs left as fetched; review them unfiltered"
 fi
 if ! test -s "$W/pr-diff.txt"; then
-  if test -s "$S"; then echo "ALL EXCLUDED — skip steps 3–6d; run 6e onward, then step 7"
+  if test -s "$S"; then echo "All excluded — skip steps 3–6d; run 6e onward, then step 7"
   else echo "EMPTY DIFF after filtering — produce a failure result (reason tool-failure)"; fi
 fi
 ```
 
 It fails open: any failure leaves every diff as fetched and the review
-unfiltered, never a lost diff. ALL EXCLUDED skips dispatch only: 6e
+unfiltered, never a lost diff. "All excluded" skips dispatch only: 6e
 (injection, metadata, scope, protected paths) still runs, with the
 disclosures as the adjudicated set. What it strips (lockfiles,
 minified/sourcemap, vendored, generated; migrations exempt) and its
