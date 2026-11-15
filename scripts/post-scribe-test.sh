@@ -28,7 +28,7 @@ cat > "${MOCK_BIN}/fullsend" <<MOCKEOF
 #!/usr/bin/env bash
 echo "fullsend \$*" >> "${FULLSEND_LOG}"
 # Record the Jira credentials the CLI reads from its environment.
-echo "token=\${FULLSEND_JIRA_TOKEN-unset} email=\${FULLSEND_JIRA_EMAIL-unset}" >> "${FULLSEND_ENV_LOG}"
+echo "token=\${FULLSEND_JIRA_TOKEN-unset} email=\${FULLSEND_JIRA_EMAIL-unset} client-id=\${FULLSEND_JIRA_CLIENT_ID-unset} client-secret=\${FULLSEND_JIRA_CLIENT_SECRET:+set}" >> "${FULLSEND_ENV_LOG}"
 if [[ "\$1" == "issues" ]] && [[ "\$2" == "create" ]]; then
   if [[ "\$3" == "--help" ]]; then
     echo "Usage: fullsend issues create [flags]"
@@ -84,6 +84,13 @@ for arg in "\$@"; do
   [[ "\${PREV}" == "--data" ]] && DATA="\${arg}"
   PREV="\${arg}"
 done
+
+# OAuth 2.0 client-credentials token request: the body comes on stdin.
+if [[ "\${URL}" == "https://auth.atlassian.com/oauth/token" ]]; then
+  cat > /dev/null
+  printf '{"access_token":"minted-access-token","expires_in":3600}\n200'
+  exit 0
+fi
 
 # Jira Cloud REST API
 if [[ "\${URL}" == *"atlassian.net/rest/api/3"* ]]; then
@@ -977,6 +984,34 @@ for email_case in unset empty blank; do
   fi
 done
 export JIRA_USER_EMAIL="bot@mock.example"
+
+# OAuth 2.0 client credentials (#1926): REST calls send a minted Bearer
+# token to JIRA_API_URL, `fullsend issues create` gets the client variables
+# and no token or email, and the secret reaches no argv and no output.
+JIRA_CLIENT_SECRET_VALUE="client-secret-DO-NOT-LEAK"
+_saved_jira_token="${JIRA_TOKEN}"
+export JIRA_TOKEN=""
+export FULLSEND_JIRA_CLIENT_ID="client-id-1"
+export FULLSEND_JIRA_CLIENT_SECRET="${JIRA_CLIENT_SECRET_VALUE}"
+export JIRA_API_URL="https://mock-gateway.atlassian.net"
+: > "${FULLSEND_ENV_LOG}"
+run_test_stdout "jira/live-client-credentials" "${JIRA_NEW_ISSUE}" \
+  "Created: https://mock.atlassian.net/browse/PROJ-100"
+if grep -qF -- "--oauth2-bearer minted-access-token" "${CURL_LOG}" \
+  && grep -F -- "--oauth2-bearer minted-access-token" "${CURL_LOG}" | grep -qF "${JIRA_API_URL}/rest/api/3/" \
+  && ! grep -qF -- '--user' "${CURL_LOG}" \
+  && grep -qF "token=unset email=unset client-id=client-id-1 client-secret=set" "${FULLSEND_ENV_LOG}" \
+  && ! grep -qF "${JIRA_CLIENT_SECRET_VALUE}" "${CURL_LOG}" "${FULLSEND_LOG}" "${TMPDIR}/stdout.log"; then
+  echo "PASS: jira/live-client-credentials-minted-token-and-cli-env"
+else
+  echo "FAIL: jira/live-client-credentials-minted-token-and-cli-env — expected minted Bearer to JIRA_API_URL, client vars for the CLI, and no secret in argv or output"
+  cat "${FULLSEND_ENV_LOG}" "${CURL_LOG}" 2>/dev/null || true
+  FAILURES=$((FAILURES + 1))
+fi
+unset JIRA_API_URL
+run_test_stdout "jira/live-client-credentials-without-api-url-fails" "${JIRA_NEW_ISSUE}" "" true
+unset FULLSEND_JIRA_CLIENT_ID FULLSEND_JIRA_CLIENT_SECRET
+export JIRA_TOKEN="${_saved_jira_token}"
 
 # The config-backed CLI needs FULLSEND_DIR for tracker.jira.
 unset FULLSEND_DIR

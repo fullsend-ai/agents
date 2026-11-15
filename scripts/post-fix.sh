@@ -40,7 +40,7 @@
 #   REPO_FULL_NAME    — owner/repo
 #   PR_NUMBER         — PR number
 #   REPO_DIR          — path to extracted repo (default: current directory)
-#   TRIGGER_SOURCE    — forge username that triggered the fix (GitHub: [bot] suffix; GitLab: _bot suffix)
+#   TRIGGER_SOURCE    — forge username that triggered the fix (GitHub: [bot] suffix; GitLab: _bot suffix or service_account_ prefix)
 #
 # Optional environment variables:
 #   FIX_ITERATION     — current iteration count
@@ -469,10 +469,51 @@ _forge_push_branch() {
     return 0
   fi
   git reset -q --soft "${tip}" || return 1
-  git branch -q --set-upstream-to="origin/${branch}" || return 1
+  # Set the upstream as `git push -u` does: --set-upstream-to refuses a
+  # remote-tracking ref outside the fetch refspec, as in a single-branch
+  # clone.
+  git config "branch.${branch}.remote" origin || return 1
+  git config "branch.${branch}.merge" "refs/heads/${branch}" || return 1
   echo "Branch ${branch} is at ${tip} on origin"
 }
 # END bundled: lib/github-signed-push.lib.sh
+# shellcheck source=github-host.lib.sh
+# BEGIN bundled: lib/github-host.lib.sh
+# shellcheck shell=bash
+# github-host.lib.sh — Shared GitHub host handling for GitHub ops.
+#
+# Derives the GitHub origin the run executes against from GITHUB_SERVER_URL,
+# a GitHub Actions default variable (https://github.com on github.com, the
+# instance URL on GitHub Enterprise Server). Defaults to https://github.com
+# when unset. Issue/PR URL validation, URL parsing and generated links use
+# this origin instead of a hard-coded github.com.
+#
+# Sourced by the github-*-ops.lib.sh files and inlined by the bundler.
+
+[[ -n "${GITHUB_HOST_SH_LOADED:-}" ]] && return 0
+GITHUB_HOST_SH_LOADED=1
+
+# Prints the GitHub origin (https://host[:port]) without a trailing slash.
+# Fails closed when GITHUB_SERVER_URL is not an HTTPS origin.
+_github_server_url() {
+  local origin="${GITHUB_SERVER_URL:-https://github.com}"
+  origin="${origin%/}"
+  if [[ ! "${origin}" =~ ^https://[a-zA-Z0-9.-]+(:[0-9]+)?$ ]]; then
+    echo "ERROR: GITHUB_SERVER_URL is not an HTTPS origin (https://host[:port]): $(printf '%s' "${origin}" | tr -d '\n\r')" >&2
+    return 1
+  fi
+  printf '%s\n' "${origin}"
+}
+
+# Prints the remainder of a URL after "<origin>/" when the URL is on the
+# GitHub origin; fails (printing nothing) when it is on another host.
+_github_url_path() {
+  local url="$1" base
+  base="$(_github_server_url)/" || return 1
+  [[ "${url}" == "${base}"* ]] || return 1
+  printf '%s\n' "${url#"${base}"}"
+}
+# END bundled: lib/github-host.lib.sh
 
 if ! declare -F gha_echo >/dev/null 2>&1; then
   gha_echo() {
@@ -487,8 +528,9 @@ fi
 # --- PR/MR operations ---
 
 forge_validate_pr_url() {
-  local url="${1:-${PR_URL:-}}"
-  if [[ ! "${url}" =~ ^https://github\.com/[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+/pull/[1-9][0-9]*$ ]]; then
+  local url="${1:-${PR_URL:-}}" path
+  if ! path=$(_github_url_path "${url}") \
+    || [[ ! "${path}" =~ ^[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+/pull/[1-9][0-9]*$ ]]; then
     echo "ERROR: PR_URL does not match expected GitHub pattern: ${url}" >&2
     return 1
   fi
@@ -496,7 +538,7 @@ forge_validate_pr_url() {
 
 forge_parse_pr_url() {
   local url="${1:-${PR_URL:-}}"
-  REPO_FULL_NAME=$(echo "${url}" | sed 's|https://github.com/||; s|/pull/.*||')
+  REPO_FULL_NAME=$(_github_url_path "${url}" | sed 's|/pull/.*||')
   # shellcheck disable=SC2034
   PR_NUMBER=$(basename "${url}")
 }
@@ -555,9 +597,10 @@ forge_get_pr_labels() {
 # --- Push operations ---
 
 forge_set_push_remote() {
-  local token="$1"
+  local token="$1" server
+  server=$(_github_server_url) || return 1
   git remote set-url origin \
-    "https://x-access-token:${token}@github.com/${REPO_FULL_NAME}.git"
+    "https://x-access-token:${token}@${server#https://}/${REPO_FULL_NAME}.git"
 }
 
 forge_setup_push_token() {
@@ -943,9 +986,13 @@ forge_append_path() {
     ;;
 esac
 
+# is_bot_user USERNAME — true if USERNAME is an automated forge identity.
+# GitLab: access-token bot users (project_<id>_bot) and service accounts
+# (service_account_..., e.g. the installer-created fullsend-analyst /
+# fullsend-coder accounts named service_account_project_<id>_<hash>).
 is_bot_user() {
   if [ "${FULLSEND_FORGE:-}" = "gitlab" ]; then
-    [[ "${1:-}" =~ _bot$ ]]
+    [[ "${1:-}" =~ _bot$ || "${1:-}" =~ ^service_account_ ]]
   else
     [[ "${1:-}" =~ \[bot\]$ ]]
   fi

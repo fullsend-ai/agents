@@ -19,9 +19,13 @@
 #   JIRA_BASE_URL      — Jira instance base URL; derived from ISSUE_URL when unset,
 #                         cross-checked when set
 #   JIRA_TOKEN         — Jira token for the child-issue check and the skip
-#                         comment; both are skipped when it is unset
+#                         comment; both are skipped when it and the client
+#                         credentials are unset
 #   JIRA_USER_EMAIL    — bot-user email (Basic auth); unset means a
 #                         service-account token (Bearer auth)
+#   FULLSEND_JIRA_CLIENT_ID, FULLSEND_JIRA_CLIENT_SECRET
+#                      — service-account OAuth 2.0 client credentials,
+#                         instead of JIRA_TOKEN (needs JIRA_API_URL)
 #   GH_TOKEN / GITLAB_TOKEN — target forge token for the existing-PR check;
 #                         the check is skipped when unset
 #   COMMENT_BODY       — trigger comment; when unset, read from the dispatch
@@ -38,23 +42,32 @@ set -euo pipefail
 # environment readable through /proc. Existing Jira helpers use the restored
 # unexported variables; only trusted API calls receive the token. This is not
 # isolation from a same-user process with ptrace access.
+_jira_xtrace_was_on=0; [[ $- == *x* ]] && _jira_xtrace_was_on=1; set +x
 if [[ -n "${_PRE_CODE_JIRA_FD:-}" ]]; then
   _jira_stash_fd="${_PRE_CODE_JIRA_FD}"
   unset _PRE_CODE_JIRA_FD
-  { IFS= read -r -d '' JIRA_TOKEN || true; IFS= read -r -d '' JIRA_USER_EMAIL || true; } \
+  { IFS= read -r -d '' JIRA_TOKEN || true; IFS= read -r -d '' JIRA_USER_EMAIL || true;
+    IFS= read -r -d '' FULLSEND_JIRA_CLIENT_ID || true; IFS= read -r -d '' FULLSEND_JIRA_CLIENT_SECRET || true; } \
     <&"${_jira_stash_fd}"
   exec {_jira_stash_fd}<&-
   unset _jira_stash_fd
-elif [[ -n "${JIRA_TOKEN:-}${JIRA_USER_EMAIL:-}${FULLSEND_JIRA_TOKEN:-}${FULLSEND_JIRA_EMAIL:-}" ]]; then
+elif [[ -n "${JIRA_TOKEN:-}${JIRA_USER_EMAIL:-}${FULLSEND_JIRA_TOKEN:-}${FULLSEND_JIRA_EMAIL:-}${FULLSEND_JIRA_CLIENT_ID:-}${FULLSEND_JIRA_CLIENT_SECRET:-}" ]]; then
   _jira_stash_file="$(mktemp)"
-  printf '%s\0%s\0' "${JIRA_TOKEN-}" "${JIRA_USER_EMAIL-}" >"${_jira_stash_file}"
+  printf '%s\0%s\0%s\0%s\0' "${JIRA_TOKEN-}" "${JIRA_USER_EMAIL-}" \
+    "${FULLSEND_JIRA_CLIENT_ID-}" "${FULLSEND_JIRA_CLIENT_SECRET-}" >"${_jira_stash_file}"
   # Open a fresh reader at offset zero before unlinking. Direct descriptor
   # redirection works on both Linux and macOS without /proc/self/fd.
   exec {_jira_stash_fd}<"${_jira_stash_file}"
   rm -f "${_jira_stash_file}"
+  _jira_bash_flags=()
+  (( _jira_xtrace_was_on )) && _jira_bash_flags+=(-x)
   exec env -u JIRA_TOKEN -u JIRA_USER_EMAIL -u FULLSEND_JIRA_TOKEN -u FULLSEND_JIRA_EMAIL \
-    _PRE_CODE_JIRA_FD="${_jira_stash_fd}" "${BASH}" "${BASH_SOURCE[0]}" "$@"
+    -u FULLSEND_JIRA_CLIENT_ID -u FULLSEND_JIRA_CLIENT_SECRET \
+    _PRE_CODE_JIRA_FD="${_jira_stash_fd}" "${BASH}" "${_jira_bash_flags[@]}" "${BASH_SOURCE[0]}" "$@"
 fi
+
+(( _jira_xtrace_was_on )) && set -x
+unset _jira_xtrace_was_on
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/prescript-output.lib.sh
@@ -120,22 +133,32 @@ source "${SCRIPT_DIR}/lib/code-ops.lib.sh"
 #     CODE_FORCE=true, bypasses both checks.
 # A skip writes skipped=true through prescript_output and posts one sticky
 # comment on the Jira issue; a failed Jira write still skips. A missing
-# forge token skips the PR check; a missing JIRA_TOKEN skips the child
+# forge token skips the PR check; missing Jira credentials skip the child
 # check and the comment.
 #
 # The child check and the comment use jira-triage-ops.lib.sh: Basic auth
 # when JIRA_USER_EMAIL is set (bot user), Bearer when it is not (service
 # account), sent to JIRA_API_URL or else JIRA_BASE_URL (#1900, #1876).
+# With client credentials, REST calls send a minted Bearer token to
+# JIRA_API_URL only (#1926).
 #
 # On a GitLab target, the trigger comment reaches neither COMMENT_BODY nor
 # the dispatch payload file, so `/fs-code --force` has no effect there until
 # fullsend exports COMMENT_BODY for Jira jobs (fullsend-ai/fullsend#9187).
 # The GitHub check reads the newest 500 open PRs.
 
-# jira-triage-ops.lib.sh exits at load time without JIRA_TOKEN, so load it
-# only when the token is set. JIRA_USER_EMAIL is optional.
+# jira-triage-ops.lib.sh exits at load time without Jira credentials, so
+# load it only when a token or a client credential is set. It also exits
+# when both modes are set, or only one client variable. JIRA_USER_EMAIL is
+# optional.
 JIRA_CREDS_OK=0
-if [[ -n "${JIRA_TOKEN:-}" ]]; then
+# Test the credentials with xtrace off so the secret is not traced.
+_jira_xtrace_was_on=0; [[ $- == *x* ]] && _jira_xtrace_was_on=1; set +x
+_jira_creds_set=0
+[[ -n "${JIRA_TOKEN:-}${FULLSEND_JIRA_CLIENT_ID:-}${FULLSEND_JIRA_CLIENT_SECRET:-}" ]] && _jira_creds_set=1
+(( _jira_xtrace_was_on )) && set -x
+unset _jira_xtrace_was_on
+if (( _jira_creds_set )); then
   # shellcheck source=lib/jira-triage-ops.lib.sh
   source "${SCRIPT_DIR}/lib/jira-triage-ops.lib.sh"
   JIRA_CREDS_OK=1
@@ -405,26 +428,35 @@ _jira_transition_started() {
     echo "::warning::Jira source identity does not match ISSUE_URL; skipping the optional started transition"
     return 0
   fi
-  if [[ -z "${JIRA_TOKEN:-}" || -z "${FULLSEND_DIR:-}" || -z "${_JIRA_STARTED_FULLSEND_BIN}" ]]; then
-    echo "::warning::Optional Jira started transition requires JIRA_TOKEN, FULLSEND_DIR and the fullsend CLI; skipping"
+  if [[ "${JIRA_CREDS_OK}" != 1 || -z "${FULLSEND_DIR:-}" || -z "${_JIRA_STARTED_FULLSEND_BIN}" ]]; then
+    echo "::warning::Optional Jira started transition requires Jira credentials, FULLSEND_DIR and the fullsend CLI; skipping"
     return 0
   fi
   # No retry: transitions can have side effects even when the status stays
   # the same. Redact in-process before passing diagnostics to PATH utilities.
-  local output line
-  if ! output="$(jira_auth_fullsend "${_JIRA_STARTED_FULLSEND_BIN}" "${JIRA_TOKEN}" "${JIRA_USER_EMAIL:-}" \
+  local output line email transition_xtrace=0
+  [[ $- == *x* ]] && transition_xtrace=1
+  set +x
+  if ! output="$(jira_auth_fullsend "${_JIRA_STARTED_FULLSEND_BIN}" "${JIRA_TOKEN:-}" "${JIRA_USER_EMAIL:-}" \
     issues transition --tracker jira --fullsend-dir "${FULLSEND_DIR}" \
     --project "${PROJECT_KEY}" --number "${ISSUE_KEY##*-}" \
     --transition "${transition}" 2>&1)"; then
-    output="${output//"${JIRA_TOKEN}"/[REDACTED]}"
-    if [[ -n "${JIRA_USER_EMAIL:-}" ]]; then
-      output="${output//"${JIRA_USER_EMAIL}"/[REDACTED]}"
+    if [[ -n "${JIRA_TOKEN:-}" ]]; then
+      output="${output//"${JIRA_TOKEN}"/[REDACTED]}"
+    fi
+    if [[ -n "${_JIRA_AUTH_CLIENT_SECRET:-}" ]]; then
+      output="${output//"${_JIRA_AUTH_CLIENT_SECRET}"/[REDACTED]}"
+    fi
+    email="$(jira_auth_email "${JIRA_USER_EMAIL:-}")"
+    if [[ -n "${email}" ]]; then
+      output="${output//"${email}"/[REDACTED]}"
     fi
     while IFS= read -r line || [[ -n "${line}" ]]; do
       printf '%s\n' "$(_gha_sanitize "${line}")"
     done <<< "${output}"
     echo "::warning::Optional Jira started transition failed; coding will proceed. Inspect the issue before retrying"
   fi
+  (( transition_xtrace )) && set -x
   return 0
 }
 _jira_transition_started

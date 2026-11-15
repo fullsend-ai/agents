@@ -25,6 +25,15 @@ OUTPUT_DIR="${CASE_WORKSPACE}/output"
 mkdir -p "$OUTPUT_DIR"
 STATE_FILE="${OUTPUT_DIR}/fixture-state.json"
 
+# Publish only after jq has built the complete snapshot. A bad --argjson
+# input would otherwise truncate fixture-state.json before jq reports it.
+write_state() (
+  local tmp
+  tmp=$(mktemp "${STATE_FILE}.XXXXXX")
+  trap 'rm -f "$tmp"' EXIT
+  jq -n "$@" > "$tmp" && mv "$tmp" "$STATE_FILE"
+)
+
 # Run a command up to 3 times; print stdout on success. Used for flaky gh calls.
 # Suppress stderr on early attempts; keep it on the final attempt for diagnostics.
 retry_cmd() {
@@ -139,8 +148,11 @@ case "${FIXTURE_TYPE}" in
       echo "ERROR: gh issue view (comments) failed for #${FIXTURE_NUMBER} after retries" >&2
       exit 1
     fi
-    comments_json=$(printf '%s' "$comments_raw" | jq \
-      '[.comments[] | {author: .author.login, body: .body, created_at: .createdAt}]')
+    if ! comments_json=$(printf '%s' "$comments_raw" | jq -e \
+      '[.comments[] | {author: .author.login, body: .body, created_at: .createdAt}]'); then
+      echo "ERROR: gh issue view returned invalid comments data for #${FIXTURE_NUMBER}" >&2
+      exit 1
+    fi
     # Code agent post-script opens exactly one PR today; --limit 1 is enough.
     # Raise the limit (or filter by headRefName) if a future case opens multiple.
     # gh pr list is best-effort so a transient API blip still yields fixture-state.json.
@@ -183,7 +195,7 @@ case "${FIXTURE_TYPE}" in
       prs_with_files=$(printf '%s\n' "${pr_lines[@]}" | jq -s '.')
     fi
 
-    jq -n \
+    write_state \
       --arg fixture_type "issue" \
       --arg fixture_url "$FIXTURE_URL" \
       --argjson issue "$issue_json" \
@@ -201,7 +213,7 @@ case "${FIXTURE_TYPE}" in
         comments: $comments,
         pull_requests: $pull_requests,
         pull_requests_fetch_failed: ($pull_requests_fetch_failed == "true")
-      }' > "$STATE_FILE"
+      }'
     ;;
 
   pull_request)
@@ -216,7 +228,7 @@ case "${FIXTURE_TYPE}" in
     if ! pr_raw=$(retry_cmd gh pr view "$FIXTURE_NUMBER" --repo "$EPHEMERAL_REPO" \
       --json state,labels,assignees,milestone,title,mergeable,reviewDecision,headRefOid,headRefName,comments,reviews,files); then
       echo "WARNING: gh pr view failed for PR #${FIXTURE_NUMBER} after retries; writing pr_fetch_failed state" >&2
-      jq -n \
+      write_state \
         --arg fixture_type "pull_request" \
         --arg fixture_url "$FIXTURE_URL" \
         --arg pre_agent_head "$pre_agent_head" \
@@ -241,7 +253,7 @@ case "${FIXTURE_TYPE}" in
           files_changed_since_pre_agent_head: null,
           files_changed_since_pre_agent_head_failed: true,
           pre_agent_head: (if $pre_agent_head == "" then null else $pre_agent_head end)
-        }' > "$STATE_FILE"
+        }'
       echo "Captured ${FIXTURE_TYPE} state -> ${STATE_FILE}"
       exit 0
     fi
@@ -272,7 +284,7 @@ case "${FIXTURE_TYPE}" in
       files_since_failed="true"
     fi
 
-    jq -n \
+    write_state \
       --arg fixture_type "pull_request" \
       --arg fixture_url "$FIXTURE_URL" \
       --argjson pr "$pr_raw" \
@@ -302,7 +314,7 @@ case "${FIXTURE_TYPE}" in
         files_changed_since_pre_agent_head: $files_since_pre_agent_head,
         files_changed_since_pre_agent_head_failed: ($files_since_pre_agent_head_failed == "true"),
         pre_agent_head: (if $pre_agent_head == "" then null else $pre_agent_head end)
-      }' > "$STATE_FILE"
+      }'
     ;;
 
   *)
