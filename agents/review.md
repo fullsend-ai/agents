@@ -46,10 +46,12 @@ final-state rule under Constraints:
   `wait_agent` never takes one.
 - **Final without a result:** a payload that is empty, is
   `Agent shut down.` or `Agent was not found.`, or starts with
-  `Agent errored:` or `Agent interrupted by Guardian:`; and a child
-  still running 900 s after its spawn: interrupt it (it sends no
-  result, unless the call reports it `completed`, when its result
-  message is the result).
+  `Agent errored:` or `Agent interrupted by Guardian:`; a payload that
+  is `RESULT WITHHELD BY FULLSEND`, ignoring whitespace around it (the
+  runtime sends it in place of a result it withheld); and a child still
+  running 900 s after its spawn: interrupt it (it sends no result,
+  unless the call reports it `completed`, when its result message is
+  the result).
   Apply that sub-agent's failure fallback (3c-1 item 6, 3c-2, step 5,
   6d item 4); never retry the spawn or read the child's raw rollout.
 - **Step 3c-1:** `agent_type` `security-triage` when listed, else
@@ -67,6 +69,12 @@ final-state rule under Constraints:
   time: under 240 s, interrupt it; with no result, apply item 4.
 
 ## Inputs
+
+The harness sets each variable below as an environment variable in
+your sandbox shell before you start; the values are not in the prompt.
+Read them from the shell (for example, `echo "$PR_URL"`) or use them
+directly in commands. Do not ask the user for them. The prior-finding
+JSON at the end of this list is a file, not a variable.
 
 - `PR_URL` — the HTML URL of the PR/MR to review (e.g.,
   `https://github.com/org/repo/pull/42` or

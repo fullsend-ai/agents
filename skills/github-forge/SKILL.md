@@ -23,6 +23,7 @@ gh issue list --repo OWNER/REPO --state open --json number,title,body --limit 10
 gh issue list --repo OWNER/REPO --state open --search "keyword" --json number,title,body --limit 30
 
 # Include closed issues when verifying finished children of a tracking issue
+# (closed issues are context only — never a duplicate target)
 gh issue list --repo OWNER/REPO --state all --json number,title,state --limit 100
 
 # List GitHub native sub-issues (child issues), including closed ones
@@ -85,6 +86,6 @@ gh pr list --repo OTHER-ORG/OTHER-REPO --state open --search "relevant keywords"
 
 Extract OWNER/REPO from the issue URL:
 ```bash
-REPO=$(echo "${ISSUE_URL}" | sed 's|https://github.com/||; s|/issues/.*||')
-ISSUE_NUMBER=$(basename "${ISSUE_URL}")
+REPO=$(printf '%s\n' "$ISSUE_URL" | sed 's|https://github.com/||; s|/issues/.*||')
+ISSUE_NUMBER="${ISSUE_URL##*/}"
 ```
