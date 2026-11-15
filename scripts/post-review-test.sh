@@ -4500,6 +4500,15 @@ unset MOCK_PR_FILES
 run_label_test "risk-floor-no-security-path-stays-low" \
   "${RISK_FLOOR_OMITTED}" \
   "gh label create risk/low"
+# risk-tier1.sh only emits a floor of 1 or 2, so a sub-agent floor above 2
+# is dropped: it cannot inflate the label or claim a security path.
+RISK_FLOOR_INFLATED='{"action":"comment","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc1234def","body":"Looks fine.","risk_assessment":{"score":1,"level":"low","rationale":"Docs typo.","tier1_score":1.5,"risk_floor":5}}'
+run_label_test_no_pattern "risk-floor-above-2-ignored-no-critical" \
+  "${RISK_FLOOR_INFLATED}" \
+  "gh label create risk/critical"
+run_label_test "risk-floor-above-2-ignored-stays-low" \
+  "${RISK_FLOOR_INFLATED}" \
+  "gh label create risk/low"
 # The floor's own fetch fails closed. A non-approve action fetches the file
 # list in the floor block; when it is still empty after one retry, nothing
 # was measured, so the change is treated as security-sensitive instead of

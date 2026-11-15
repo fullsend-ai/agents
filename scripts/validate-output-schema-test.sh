@@ -358,6 +358,12 @@ run_test_custom_filename "review-risk-bad-provenance-rejected" \
   "${REVIEW_SCHEMA}" \
   "false"
 
+# The script only ever emits a floor of 1 or 2; a higher one must not pass.
+run_test_custom_filename "review-risk-floor-above-2-rejected" \
+  '{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"LGTM","risk_assessment":{"score":1,"level":"low","rationale":"Docs typo.","tier1_score":1.12,"risk_floor":5}}' \
+  "agent-result.json" \
+  "${REVIEW_SCHEMA}" \
+  "false"
 
 # --- scribe-result.schema.json: omitted/unsafe topic summaries (issue #1838) ---
 

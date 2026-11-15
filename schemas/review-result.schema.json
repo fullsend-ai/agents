@@ -56,7 +56,7 @@
         },
         "rationale": { "type": "string", "minLength": 1 },
         "tier1_score": { "type": "number", "minimum": 1, "maximum": 5 },
-        "risk_floor": { "type": "integer", "minimum": 1, "maximum": 5 },
+        "risk_floor": { "type": "integer", "enum": [1, 2] },
         "degraded": { "type": "string", "minLength": 1 }
       },
       "additionalProperties": false,

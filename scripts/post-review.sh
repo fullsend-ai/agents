@@ -2063,9 +2063,10 @@ if [[ "${HAS_RISK}" == "true" ]]; then
   esac
 
   # Provenance fields from risk-tier1.sh via the sub-agent — optional,
-  # validated, never interpolated raw.
+  # validated, never interpolated raw. risk_floor() only emits 1 or 2, so
+  # anything else is dropped rather than allowed to inflate the label.
   RISK_FLOOR=$(jq -r '.risk_assessment.risk_floor // empty' "${RESULT_FILE}")
-  [[ "${RISK_FLOOR}" =~ ^[1-5]$ ]] || RISK_FLOOR=""
+  [[ "${RISK_FLOOR}" =~ ^[12]$ ]] || RISK_FLOOR=""
   TIER1_SCORE=$(jq -r '.risk_assessment.tier1_score // empty' "${RESULT_FILE}")
   [[ "${TIER1_SCORE}" =~ ^[1-5](\.[0-9]{1,2})?$ ]] || TIER1_SCORE=""
   RISK_DEGRADED=$(jq -r '.risk_assessment.degraded // empty' "${RESULT_FILE}")
