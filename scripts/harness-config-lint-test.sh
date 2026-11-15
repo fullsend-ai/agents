@@ -776,12 +776,16 @@ test_positive_fixtures() {
     return 1
   }
   local abs_schema_path="${SCRIPT_DIR}/test-fixtures/schemas/review-result.schema.json"
-  cat > "${abs_test_dir}/absolute-schema-path-valid.yaml" << EOF
+  cat > "${abs_test_dir}/absolute-schema-path-valid.yaml" << EOF || {
 ---
 validation_loop:
   script: scripts/validate-output-schema.sh
   schema: ${abs_schema_path}
 EOF
+    echo "Failed to write absolute path fixture"
+    rm -rf "${abs_test_dir}"
+    return 1
+  }
 
   for fixture_name in "${expected_passes[@]}"; do
     local fixture_file="${fixtures_dir}/${fixture_name}"
@@ -810,6 +814,7 @@ EOF
   done
 
   # Test absolute path fixture separately
+  local exit_code=0
   output="$(HARNESS_DIR="${abs_test_dir}" REPO_ROOT="${SCRIPT_DIR}"/test-fixtures test_validation_loop_schema 2>&1)" || exit_code=$?
   if [[ ${exit_code} -ne 0 ]]; then
     echo "Fixture absolute-schema-path-valid.yaml: test_validation_loop_schema failed with exit_code=${exit_code}"
