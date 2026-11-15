@@ -287,6 +287,55 @@ for gitlab_skill in fix-review issue-labels retro-analysis finding-agent-runs; d
   assert_contains "${gitlab_skill} GitLab request URLs use the literal host placeholder" \
     "${REPO_ROOT}/skills/${gitlab_skill}/gitlab/SKILL.md" '//<GITLAB_HOST>/api/v4'
 done
+# GitLab review sandboxes set only PR_URL, so the issue-labels Step 0 block
+# must derive request values from it, and both request-value blocks must print
+# nothing when no project path can be extracted (#2019).
+extract_request_values_snippet() {
+  local file="$1" heading="$2"
+  awk -v heading="${heading}" '
+    $0 == heading { found = 1; next }
+    found && /^```bash$/ { code = 1; next }
+    code && /^```$/ { exit }
+    code { print }
+  ' "${file}"
+}
+
+assert_request_values() {
+  local name="$1" snippet="$2" issue_url="$3" pr_url="$4" expected="$5"
+  local actual
+  actual=$(env -i PATH="${PATH}" ISSUE_URL="${issue_url}" PR_URL="${pr_url}" \
+    bash -c "${snippet}" 2>/dev/null || true)
+  if [[ "${actual}" == "${expected}" ]]; then
+    echo "PASS: ${name}"
+  else
+    echo "FAIL: ${name} — expected '${expected}', got '${actual}'"
+    FAILURES=$((FAILURES + 1))
+  fi
+}
+
+LABELS_STEP0=$(extract_request_values_snippet \
+  "${REPO_ROOT}/skills/issue-labels/gitlab/SKILL.md" "## Step 0: Request values")
+FORGE_REQUEST_VALUES=$(extract_request_values_snippet \
+  "${REPO_ROOT}/skills/gitlab-forge/SKILL.md" "## Request values")
+assert_request_values "issue-labels Step 0 derives values from a merge request PR_URL" \
+  "${LABELS_STEP0}" "" "https://gitlab.example.com/grp/sub/proj/-/merge_requests/42" \
+  $'GITLAB_HOST=gitlab.example.com\nREPO_ENCODED=grp%2Fsub%2Fproj\nIID=42'
+assert_request_values "issue-labels Step 0 derives values from an issue ISSUE_URL" \
+  "${LABELS_STEP0}" "https://gitlab.example.com/grp/proj/-/issues/7" "" \
+  $'GITLAB_HOST=gitlab.example.com\nREPO_ENCODED=grp%2Fproj\nIID=7'
+assert_request_values "issue-labels Step 0 prefers ISSUE_URL over PR_URL" \
+  "${LABELS_STEP0}" "https://gitlab.example.com/grp/proj/-/issues/7" \
+  "https://gitlab.example.com/grp/proj/-/merge_requests/42" \
+  $'GITLAB_HOST=gitlab.example.com\nREPO_ENCODED=grp%2Fproj\nIID=7'
+assert_request_values "issue-labels Step 0 prints nothing for a non issue/MR URL" \
+  "${LABELS_STEP0}" "" "https://gitlab.example.com/grp/proj/-/pipelines/42" ""
+assert_request_values "issue-labels Step 0 prints nothing when no URL is set" \
+  "${LABELS_STEP0}" "" "" ""
+assert_request_values "gitlab-forge request values derive from an issue URL" \
+  "${FORGE_REQUEST_VALUES}" "https://gitlab.example.com/grp/proj/-/issues/7" "" \
+  $'GITLAB_HOST=gitlab.example.com\nREPO_ENCODED=grp%2Fproj\nISSUE_NUMBER=7'
+assert_request_values "gitlab-forge request values print nothing without a project path" \
+  "${FORGE_REQUEST_VALUES}" "https://gitlab.example.com/grp/proj/-/pipelines/7" "" ""
 assert_not_contains "fix-review GitLab request URLs avoid the JOB_ID variable" \
   "${REPO_ROOT}/skills/fix-review/gitlab/SKILL.md" '/${JOB_ID}'
 assert_not_contains "retro-analysis GitLab request URLs avoid the TARGET_ENCODED variable" \

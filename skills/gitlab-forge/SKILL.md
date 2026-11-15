@@ -19,14 +19,14 @@ prints them:
 
 ```bash
 GITLAB_HOST=$(printf '%s\n' "$ISSUE_URL" | sed -nE 's|^https://([^/]+)/.*|\1|p')
-REPO=$(printf '%s\n' "$ISSUE_URL" | sed -E 's|^https://[^/]+/(.+)/-/issues/[0-9]+$|\1|')
+REPO=$(printf '%s\n' "$ISSUE_URL" | sed -nE 's|^https://[^/]+/(.+)/-/issues/[0-9]+$|\1|p')
 REPO_ENCODED=$(printf '%s' "$REPO" | jq -sRr @uri)
 ISSUE_NUMBER="${ISSUE_URL##*/}"
 test -n "${GITLAB_HOST}" || echo "GITLAB_HOST is empty: ISSUE_URL is unset or not an https URL" >&2
-if printf '%s' "${GITLAB_HOST}" | grep -Eqz '^[A-Za-z0-9.-]+$' && printf '%s' "${ISSUE_NUMBER}" | grep -Eqz '^[0-9]+$'; then
+if test -n "${REPO_ENCODED}" && printf '%s' "${GITLAB_HOST}" | grep -Eqz '^[A-Za-z0-9.-]+$' && printf '%s' "${ISSUE_NUMBER}" | grep -Eqz '^[0-9]+$'; then
   printf 'GITLAB_HOST=%s\nREPO_ENCODED=%s\nISSUE_NUMBER=%s\n' "${GITLAB_HOST}" "${REPO_ENCODED}" "${ISSUE_NUMBER}"
 else
-  echo "GITLAB_HOST is not a plain hostname or ISSUE_NUMBER is not numeric" >&2
+  echo "ISSUE_URL is not a GitLab issue URL, GITLAB_HOST is not a plain hostname, or ISSUE_NUMBER is not numeric" >&2
 fi
 ```
 
@@ -36,7 +36,8 @@ GitLab skill setup. If `GITLAB_HOST` is still empty, make no request. Report
 that the GitLab host could not be derived.
 
 Also make no request if the command printed no values and instead warned that
-`GITLAB_HOST` is not a plain hostname (it must match `^[A-Za-z0-9.-]+$`) or that
+`ISSUE_URL` is not a GitLab issue URL (no project path could be extracted), that
+`GITLAB_HOST` is not a plain hostname (it must match `^[A-Za-z0-9.-]+$`), or that
 `ISSUE_NUMBER` is not numeric (it must match `^[0-9]+$`). Report that the values
 are invalid instead of pasting anything into a command.
 

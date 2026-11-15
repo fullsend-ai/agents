@@ -118,7 +118,7 @@ SKILL_LOCAL_VARS=(
   PR_NUMBER_OR_URL PROJECT_KEY PROTECTED_PATH_COUNT
   REMAINING REPO REPO_ENCODED REVIEW_BODY_FILE REVIEW_COMMENT
   REVIEW_SUB_AGENT_TRUE RUN_FALLBACK RUN_ID
-  SECURITY_SENSITIVE_COUNT SHAPE SKIP STATE TARGET_ENCODED TEST_FILE_RATIO
+  SECURITY_SENSITIVE_COUNT SHAPE SKIP SOURCE_URL STATE TARGET_ENCODED TEST_FILE_RATIO
 )
 
 # ---------------------------------------------------------------------------
@@ -131,12 +131,14 @@ declare -A KNOWN_GAPS=(
   # don't operate on standalone issues.
   ["github-forge:ISSUE_URL"]="#1664 — forge skill documents triage-context var; not supplied by fix/retro/review harnesses"
   ["gitlab-forge:ISSUE_URL"]="#1664 — forge skill documents triage-context var; not supplied by fix/retro/review harnesses"
-  ["issue-labels/gitlab:ISSUE_URL"]="#1664 — label skill references ISSUE_URL for triage; review harness does not supply it"
+  # issue-labels/gitlab Step 0 reads ISSUE_URL (triage) and falls back to
+  # PR_URL (review); each harness supplies only one of them (#2019).
+  ["issue-labels/gitlab:ISSUE_URL"]="#2019 — label skill reads ISSUE_URL for triage; review harness supplies PR_URL instead"
+  ["issue-labels/gitlab:PR_URL"]="#2019 — label skill falls back to PR_URL for review; triage harness supplies ISSUE_URL instead"
   # Forge skills derive ISSUE_NUMBER locally from ISSUE_URL via basename;
   # only code.yaml passes it through env.sandbox directly.
   ["github-forge:ISSUE_NUMBER"]="#1664 — forge skill derives ISSUE_NUMBER locally from ISSUE_URL; not in fix/retro/review/prioritize/triage env.sandbox"
   ["gitlab-forge:ISSUE_NUMBER"]="#1664 — forge skill derives ISSUE_NUMBER locally from ISSUE_URL; not in fix/retro/review/prioritize/triage env.sandbox"
-  ["issue-labels/gitlab:ISSUE_NUMBER"]="#1664 — label skill derives ISSUE_NUMBER locally from ISSUE_URL; review/triage harnesses do not supply it"
   # pr-risk-assessment scripts hard-reference the runtime-specific config
   # dir (CLAUDE_CONFIG_DIR on claude; CODEX_HOME/PI_CODING_AGENT_DIR on
   # codex/pi). No runtime-neutral skill path exists yet.
