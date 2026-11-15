@@ -1279,15 +1279,21 @@ run_deepen_test "invalid-server-url-path-aborts-at-pr-url-validation" \
   "https://ghe.example.internal/path" 1 "" "${_bad_server_err}"
 
 # The origin-scoped header key is applied by real git to that origin only.
+_nogit=""
 if ! command -v git >/dev/null 2>&1; then
   echo "SKIP: scoped-extraheader-real-git — git not installed"
+elif ! _nogit="$(mktemp -d)" || [[ ! -d "${_nogit}" ]]; then
+  echo "FAIL: scoped-extraheader-real-git — mktemp failed"
+  FAILURES=$((FAILURES + 1))
 else
   _ghe="https://ghe.example.internal:8443"
   # Only the -c key may be in play: no global or system config, and no
   # repository config either (a CI checkout sets its own extraheader in
   # .git/config), so run from an empty directory outside any repository.
-  _nogit="$(mktemp -d)"
-  _git=(env -u GIT_DIR -u GIT_WORK_TREE GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
+  # Config passed through the environment is dropped too (git -c re-sets
+  # GIT_CONFIG_PARAMETERS for itself).
+  _git=(env -u GIT_DIR -u GIT_WORK_TREE -u GIT_CONFIG_PARAMETERS -u GIT_CONFIG_COUNT
+    GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
     GIT_CEILING_DIRECTORIES="$(dirname "${_nogit}")"
     git -C "${_nogit}" -c "http.${_ghe}/.extraheader=X"
     config --get-urlmatch http.extraheader)
