@@ -190,73 +190,15 @@ check_validation_loop_at_path() {
         return 1
       fi
     fi
-    # For same-script inheritance, also validate that per-location schema is not explicitly empty
+    # For same-script inheritance, both empty schema and null are already rejected above
+    # If we reach here with same script, inheritance is valid
     if [[ -n "${top_level_script}" && "${per_location_script}" == "${top_level_script}" ]]; then
-      # Check if per-location has explicit schema (not just inherited)
-      # If per_location_schema is empty string, it's an explicit override to empty
-      if [[ -z "${per_location_schema}" ]]; then
-        echo "${harness_name}: ${location} validation_loop.schema is empty"
-        return 1
-      fi
       return 0
     fi
   fi
 
-  local has_schema
-  if [[ "${path}" == "." ]]; then
-    has_schema="$(yq ".validation_loop | has(\"schema\")" "${harness}")" || {
-      echo "${harness_name}: yq failed to check schema at ${location}"
-      return 1
-    }
-  else
-    has_schema="$(yq "${path}.validation_loop | has(\"schema\")" "${harness}")" || {
-      echo "${harness_name}: yq failed to check schema at ${location}"
-      return 1
-    }
-  fi
-  if [[ "${has_schema}" != "true" ]]; then
-    echo "${harness_name}: ${location} validation_loop has script but no schema"
-    return 1
-  fi
-
-  # Check schema type to distinguish YAML null from string "null"
-  local schema_type_selector
-  if [[ "${path}" == "." ]]; then
-    schema_type_selector=".validation_loop.schema | type"
-  else
-    schema_type_selector="${path}.validation_loop.schema | type"
-  fi
-  local schema_type
-  schema_type="$(yq "${schema_type_selector}" "${harness}")" || {
-    echo "${harness_name}: yq failed to check schema type at ${location}"
-    return 1
-  }
-
-  # YAML null values are invalid (require schema key with non-null value)
-  # String "null" is valid (it's a file path)
-  if [[ "${schema_type}" == *"null"* && "${schema_type}" != *"str"* ]]; then
-    echo "${harness_name}: ${location} validation_loop.schema is null"
-    return 1
-  fi
-
-  # Empty string is also invalid
-  local schema_value
-  if [[ "${path}" == "." ]]; then
-    schema_value="$(yq ".validation_loop.schema" "${harness}")" || {
-      echo "${harness_name}: yq failed to extract schema at ${location}"
-      return 1
-    }
-  else
-    schema_value="$(yq "${path}.validation_loop.schema" "${harness}")" || {
-      echo "${harness_name}: yq failed to extract schema at ${location}"
-      return 1
-    }
-  fi
-  if [[ -z "${schema_value}" ]]; then
-    echo "${harness_name}: ${location} validation_loop.schema is empty"
-    return 1
-  fi
-
+  # Use helper to validate schema
+  validate_schema_value "${harness}" "${path}" "${location}" || return 1
   return 0
 }
 
@@ -302,6 +244,70 @@ for_each_forge_and_overlay_location() {
   fi
 
   return "${rc}"
+}
+
+# Helper: validate schema value (has key, non-null type, non-empty string)
+# Returns 0 if valid, 1 if invalid (and prints error message)
+validate_schema_value() {
+  local harness="$1"
+  local path="$2"
+  local location="$3"
+  local harness_name
+  harness_name="$(basename "${harness}")"
+
+  local has_schema_selector
+  if [[ "${path}" == "." ]]; then
+    has_schema_selector=".validation_loop | has(\"schema\")"
+  else
+    has_schema_selector="${path}.validation_loop | has(\"schema\")"
+  fi
+
+  local has_schema
+  has_schema="$(yq "${has_schema_selector}" "${harness}")" || {
+    echo "${harness_name}: yq failed to check schema at ${location}"
+    return 1
+  }
+  if [[ "${has_schema}" != "true" ]]; then
+    echo "${harness_name}: ${location} validation_loop has script but no schema"
+    return 1
+  fi
+
+  local schema_type_selector
+  if [[ "${path}" == "." ]]; then
+    schema_type_selector=".validation_loop.schema | type"
+  else
+    schema_type_selector="${path}.validation_loop.schema | type"
+  fi
+  local schema_type
+  schema_type="$(yq "${schema_type_selector}" "${harness}")" || {
+    echo "${harness_name}: yq failed to check schema type at ${location}"
+    return 1
+  }
+
+  if [[ "${schema_type}" == *"null"* && "${schema_type}" != *"str"* ]]; then
+    echo "${harness_name}: ${location} validation_loop.schema is null"
+    return 1
+  fi
+
+  local schema_value
+  if [[ "${path}" == "." ]]; then
+    schema_value="$(yq ".validation_loop.schema" "${harness}")" || {
+      echo "${harness_name}: yq failed to extract schema at ${location}"
+      return 1
+    }
+  else
+    schema_value="$(yq "${path}.validation_loop.schema" "${harness}")" || {
+      echo "${harness_name}: yq failed to extract schema at ${location}"
+      return 1
+    }
+  fi
+
+  if [[ -z "${schema_value}" ]]; then
+    echo "${harness_name}: ${location} validation_loop.schema is empty"
+    return 1
+  fi
+
+  return 0
 }
 
 # Helper: check that a YAML file contains exactly one document
@@ -711,8 +717,17 @@ test_negative_fixtures() {
     local exit_code=0
     # Create a temporary directory with only this fixture to isolate its validation
     local test_dir
-    test_dir="$(mktemp -d)"
-    cp "${fixture_file}" "${test_dir}/"
+    test_dir="$(mktemp -d)" || {
+      echo "Failed to create temporary directory for fixture ${fixture_name}"
+      found_error=1
+      continue
+    }
+    cp "${fixture_file}" "${test_dir}/" || {
+      echo "Failed to copy fixture ${fixture_name} to temporary directory"
+      rm -rf "${test_dir}"
+      found_error=1
+      continue
+    }
     # Also copy any schema files the fixture might reference
     if [[ -d "${fixtures_dir}/schemas" ]]; then
       cp -r "${fixtures_dir}/schemas" "${test_dir}/" 2>/dev/null || true
@@ -756,8 +771,10 @@ test_positive_fixtures() {
 
   # Test absolute-schema-path-valid: create a temporary fixture with an absolute path
   local abs_test_dir
-  abs_test_dir="$(mktemp -d)"
-  trap '[[ -n "${abs_test_dir:-}" ]] && rm -rf "${abs_test_dir}"' EXIT
+  abs_test_dir="$(mktemp -d)" || {
+    echo "Failed to create temporary directory for absolute path fixture"
+    return 1
+  }
   local abs_schema_path="${SCRIPT_DIR}/test-fixtures/schemas/review-result.schema.json"
   cat > "${abs_test_dir}/absolute-schema-path-valid.yaml" << EOF
 ---
@@ -804,6 +821,9 @@ EOF
       found_error=1
     fi
   fi
+
+  # Clean up temporary directory before returning
+  rm -rf "${abs_test_dir}"
 
   if [[ ${found_error} -eq 0 ]]; then
     return 0
