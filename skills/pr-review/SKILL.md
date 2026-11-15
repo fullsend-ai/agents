@@ -589,7 +589,7 @@ be absent from the result JSON.
 6. Store the sub-agent's JSON (with `tier1_score`, `risk_floor`) as
    `risk_assessment` for `agent-result.json` (step 7).
 
-**Failure fallback:** If the sub-agent fails (timeout, parse error,
+**Failure fallback:** If risk assessment fails (timeout, parse error,
 empty response, `score` not 1–5), run
 `bash "${CLAUDE_CONFIG_DIR}/skills/pr-risk-assessment/scripts/risk-tier1.sh"`.
 If `TIER1_SCORE` is numeric, set `score` = max(round(`TIER1_SCORE`),
