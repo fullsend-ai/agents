@@ -2762,13 +2762,23 @@ forge_list_prs_for_issue() {
   # targeting #<IID>. Plain mentions without closing keywords are excluded
   # to avoid false positives (e.g., "Related: #42" should not block).
   # A coder MR counts only when draft is explicitly false.
+  # A reference with a project prefix (e.g. "Closes acme/web#42") counts only
+  # when the prefix is this project (REPO_FULL_NAME, compared
+  # case-insensitively); bare "#42" refers to this project.
   echo "${all_mrs}" | jq -r --arg issue_number "${issue_number}" \
     --arg bot1 "${bot_login}" --arg bot2 "${coder_bot_login}" \
-    --arg include_coder "${include_coder}" '
-    [.[] | select(
-      ((.title // "") | test("\\b(?:close[sd]?|closing|fix(?:e[sd])?|fixing|resolve[sd]?|resolving):?\\s+(?:(?:[a-zA-Z0-9._/-]+)?#\\d+(?:\\s+and\\s+|\\s*,\\s*|\\s+))*(?:[a-zA-Z0-9._/-]+)?#" + $issue_number + "(?:$|\\W)"; "i")) or
-      ((.description // "") | test("\\b(?:close[sd]?|closing|fix(?:e[sd])?|fixing|resolve[sd]?|resolving):?\\s+(?:(?:[a-zA-Z0-9._/-]+)?#\\d+(?:\\s+and\\s+|\\s*,\\s*|\\s+))*(?:[a-zA-Z0-9._/-]+)?#" + $issue_number + "(?:$|\\W)"; "i"))
-    ) | ((.source_branch // "") | test("^agent/" + $issue_number + "-")) as $coder_mr
+    --arg include_coder "${include_coder}" \
+    --arg project "${REPO_FULL_NAME:-}" '
+    def closes_issue:
+      (. // "") | any(
+        capture("\\b(?:close[sd]?|closing|fix(?:e[sd])?|fixing|resolve[sd]?|resolving):?\\s+(?<refs>[a-zA-Z0-9._/-]*#\\d+(?:(?:\\s+and\\s+|\\s*,\\s*|\\s+)[a-zA-Z0-9._/-]*#\\d+)*)"; "gi")
+        | .refs | [scan("([a-zA-Z0-9._/-]*)#([0-9]+)")]
+        | any(.[]; .[1] == $issue_number
+            and ($project == "" or .[0] == ""
+                 or (.[0] | ascii_downcase) == ($project | ascii_downcase)));
+        .);
+    [.[] | select((.title | closes_issue) or (.description | closes_issue))
+    | ((.source_branch // "") | test("^agent/" + $issue_number + "-")) as $coder_mr
     | select(
       (($coder_mr | not) and
        (if $bot1 != "" then (.author.username // "") != $bot1 else true end) and

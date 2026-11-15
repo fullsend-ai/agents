@@ -1118,6 +1118,7 @@ run_gl_list_prs_test() {
     eval "${mock_body}"
 
     export REPO_ENCODED="test-group%2Ftest-project"
+    export REPO_FULL_NAME="test-group/test-project"
     forge_list_prs_for_issue "42" "bot-login" "coder-bot-login" "${include_coder}" 2>"${gl_stderr_log}"
   ) || gl_exit=$?
 
@@ -1170,6 +1171,29 @@ run_gl_list_prs_test "gitlab-list-prs-draft-coder-mr-excluded" \
 run_gl_list_prs_test "gitlab-list-prs-human-mr-included-either-way" \
   "$(_gl_mrs_mock "[${GL_HUMAN_MR}]")" 0 \
   "8	human-dev	https://gitlab.com/g/p/-/merge_requests/8"
+
+# A closing reference with a project prefix counts only for that project:
+# "Closes other-group/web#42" must not match issue #42 of this project.
+_gl_ref_mr() {
+  # $1 — MR description
+  jq -nc --arg d "$1" '[{iid:9,title:"fix: thing",description:$d,source_branch:"dev/thing",draft:false,author:{username:"human-dev"},web_url:"https://gitlab.com/g/p/-/merge_requests/9"}]'
+}
+GL_REF_MATCH="9	human-dev	https://gitlab.com/g/p/-/merge_requests/9"
+
+run_gl_list_prs_test "gitlab-list-prs-other-project-ref-excluded" \
+  "$(_gl_mrs_mock "$(_gl_ref_mr "Closes other-group/web#42")")" 0 ""
+
+run_gl_list_prs_test "gitlab-list-prs-same-project-ref-included" \
+  "$(_gl_mrs_mock "$(_gl_ref_mr "Closes test-group/test-project#42")")" 0 "${GL_REF_MATCH}"
+
+run_gl_list_prs_test "gitlab-list-prs-same-project-ref-case-insensitive" \
+  "$(_gl_mrs_mock "$(_gl_ref_mr "Closes Test-Group/Test-Project#42")")" 0 "${GL_REF_MATCH}"
+
+run_gl_list_prs_test "gitlab-list-prs-bare-ref-and-other-project-included" \
+  "$(_gl_mrs_mock "$(_gl_ref_mr "Closes other-group/web#42, #42")")" 0 "${GL_REF_MATCH}"
+
+run_gl_list_prs_test "gitlab-list-prs-other-project-list-excluded" \
+  "$(_gl_mrs_mock "$(_gl_ref_mr "Fixes other-group/web#1 and other-group/web#42")")" 0 ""
 
 # --- GitLab forge_list_prs_for_issue — production pre-script regression (#1585) ---
 # End-to-end run of pre-code.sh with FULLSEND_FORGE=gitlab and every curl
