@@ -177,6 +177,8 @@ Jira triage agent built on it. Changes to `scripts/cve/cve_workflow.py`:
 - The code publisher is the stock `post-code.sh` from the same pinned scripts
   directory, instead of a hash-checked copy from the harness cache.
 - The schema ships next to the module, and messages name `/fs-cve-triage`.
+- The cve-security skill tells the coder to set `closes_issue: false`, as the
+  later cve-code prompt does. The publication check requires it.
 
 Not included from the later version of the workflow: a recovery journal and
 operator-launched jobs, approval checks beyond Fullsend's `authorization` (a
