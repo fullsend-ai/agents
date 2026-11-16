@@ -659,7 +659,8 @@ test_negative_fixtures() {
     if [[ -n "${referenced_files}" ]]; then
       mkdir -p "${test_dir}/harness-config-bad"
       while IFS= read -r ref; do
-        local source_file="${test_fixtures_parent}/harness-config-bad/$(basename "${ref}")"
+        local source_file
+        source_file="${test_fixtures_parent}/harness-config-bad/$(basename "${ref}")"
         if [[ -f "${source_file}" ]]; then
           cp "${source_file}" "${test_dir}/$(dirname "${ref}")/" 2>/dev/null || true
         fi
