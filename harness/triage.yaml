@@ -100,6 +100,9 @@ overlays:
       sandbox:
         ISSUE_URL: "${GITHUB_ISSUE_URL}"
         FULLSEND_FORGE: github
+        # The install's App prefix, so step 2e of agents/triage.md can trust
+        # <app-set>-triage. Empty when the job does not set it.
+        FULLSEND_APP_SET: "${FULLSEND_APP_SET}"
   - when: '(has(event.source) && event.source.system == "gitlab") || (!has(event.source) && runtime.forge == "gitlab")'
     providers:
       - providers/gitlab-rw.yaml
