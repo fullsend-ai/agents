@@ -443,8 +443,9 @@ check_schema_files_at_path() {
 
   # Reject relative paths that escape the bundle root directory via .. components
   # (engine's ResolveRelativeTo enforces containment for relative paths)
-  if [[ "${schema_path}" != /* ]] && [[ "${schema_path}" == *..* ]]; then
-    echo "${harness_name}: ${location} schema path must be relative and not escape bundle root: ${schema_path}"
+  # Match .. only as a path component: (^|/)\.\.(/|$)
+  if [[ "${schema_path}" != /* ]] && [[ "${schema_path}" =~ (^|/)\.\.(/|$) ]]; then
+    echo "${harness_name}: ${location} schema path escapes bundle root via ..: ${schema_path}"
     return 1
   fi
 
@@ -601,7 +602,7 @@ test_negative_fixtures() {
   local expected_failures=(
     "script-no-schema.yaml:test_validation_loop_schema:script-no-schema\.yaml.*top-level validation_loop has script but no schema"
     "schema-path-explicit-empty.yaml:test_validation_loop_schema:schema-path-explicit-empty\.yaml.*top-level validation_loop\.schema is empty"
-    "schema-escaped-path.yaml:test_schema_files_exist_and_valid:schema-escaped-path\.yaml.*schema path must be relative and not escape bundle root"
+    "schema-escaped-path.yaml:test_schema_files_exist_and_valid:schema-escaped-path\.yaml.*schema path escapes bundle root via"
     "forge-script-no-inherited-schema.yaml:test_validation_loop_schema:forge-script-no-inherited-schema\.yaml.*validation_loop has script but no schema.*no top-level schema"
     "overlay-script-no-inherited-schema.yaml:test_validation_loop_schema:overlay-script-no-inherited-schema\.yaml.*validation_loop has script but no schema.*no top-level schema"
     "forge-null-inherited-schema.yaml:test_validation_loop_schema:forge-null-inherited-schema\.yaml.*validation_loop has script but schema is null"
@@ -728,6 +729,7 @@ test_positive_fixtures() {
     "overlay-schema-only-empty-with-inherited-script.yaml"
     "schema-with-env-var.yaml"
     "forge-empty-schema-inherits-top-level.yaml"
+    "schema-with-consecutive-dots.yaml"
   )
 
   for fixture_name in "${expected_passes[@]}"; do
