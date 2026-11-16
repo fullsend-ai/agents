@@ -1219,11 +1219,16 @@ if [[ "${REVIEW_GIT_FETCH_DEPTH:-}" == "0" ]]; then
   elif git -C "${_TARGET_DIR}" rev-parse --is-shallow-repository 2>/dev/null | grep -q true; then
     echo "Deepening shallow clone for git history analysis..."
     if [[ "${FULLSEND_FORGE}" == "github" && -n "${GH_TOKEN:-}" && -n "${REPO_FULL_NAME:-}" ]]; then
-      git -C "${_TARGET_DIR}" \
-        -c "http.extraheader=Authorization: basic $(printf 'x-access-token:%s' "${GH_TOKEN}" | base64 -w0)" \
-        fetch --unshallow "https://github.com/${REPO_FULL_NAME}.git" 2>/dev/null \
-        && echo "Clone deepened successfully" \
-        || echo "::warning::Failed to deepen clone — Tier 2 risk signals may be degraded"
+      # Fetch from the run's own GitHub host and scope the token to it.
+      if server=$(_github_server_url); then
+        git -C "${_TARGET_DIR}" \
+          -c "http.${server}/.extraheader=Authorization: basic $(printf 'x-access-token:%s' "${GH_TOKEN}" | base64 -w0)" \
+          fetch --unshallow "${server}/${REPO_FULL_NAME}.git" 2>/dev/null \
+          && echo "Clone deepened successfully" \
+          || echo "::warning::Failed to deepen clone — Tier 2 risk signals may be degraded"
+      else
+        echo "::warning::Cannot deepen clone — GITHUB_SERVER_URL is not a valid HTTPS origin"
+      fi
     else
       echo "::warning::Cannot deepen clone — missing credentials or unsupported forge"
     fi
