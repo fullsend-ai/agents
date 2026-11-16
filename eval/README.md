@@ -152,6 +152,9 @@ eval/scripts/aggregate-nightly.sh eval/review/eval.yaml \
   2 of the given runs. The nightly pass rate is the share of cases that
   do not fail, and is compared with `min_pass_rate`. A flake that hits a
   different case each night passes; a case that keeps failing does not.
+  `cause_lists` has no `min_pass_rate` yet: it is scored in each run's
+  summary but is not part of the nightly verdict until its cases have run
+  live (fullsend-ai/agents#2043).
 - **Quality judges** (`*_quality`) with a `min_mean`: the verdict fails
   when the median of 3 non-null per-run means is below `min_mean`. With
   fewer than 3, the judge reports "insufficient history" and does not
