@@ -315,7 +315,8 @@ Each case directory under `eval/<agent>/cases/` contains:
   approve after a post-review downgrade), for triage cases an optional
   `cause_lists` block checked against the run's own comment (`seeded_comments`,
   required: how many `fixture.comments` precede the run, 0 for none; `open`
-  and `ruled_out`, lists of phrase groups; `forbidden_open`), and the
+  and `ruled_out`, lists of phrase groups; `forbidden_open`; a case without
+  the block is not scored by that check), and the
   report-only budgets:
   `max_cost_usd`, plus `max_turns` where the eval has a `max_turns` judge.
   Set `release: true` to include the case in `EVAL_TIER=release` runs (see

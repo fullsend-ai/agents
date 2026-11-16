@@ -181,7 +181,9 @@ judges:
       import json, re
       spec = outputs.get("annotations", {}).get("cause_lists")
       if not spec:
-          return True, "No cause_lists expectations specified"
+          # Abstain, so cases without lists stay out of the pass rate and one
+          # re-triage case that keeps failing cannot hide behind them.
+          return None, "Not scored: no cause_lists expectations"
       raw = outputs["files"].get("output/fixture-state.json")
       if not raw:
           return False, "fixture-state.json not found"
@@ -297,8 +299,9 @@ thresholds:
     min_pass_rate: 0.9
   expected_state:
     min_pass_rate: 0.9
-  # Every case with cause_lists must carry the lists: a ruled-out cause
-  # coming back is the regression fullsend-ai/agents#2042 fixed.
+  # Scored only on cases that declare cause_lists (others abstain), so one
+  # re-triage case bringing back a ruled-out cause (the regression
+  # fullsend-ai/agents#2042 fixed) fails the nightly.
   cause_lists:
     # 0.9 like the other live checks until the cases have run live (#2043).
     min_pass_rate: 0.9

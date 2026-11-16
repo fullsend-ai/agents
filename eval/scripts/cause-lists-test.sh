@@ -176,7 +176,7 @@ cases = [
      {"seeded_comments": 0, "open": [["none", "missing"]]}, True, "match"),
     ("cause_lists without seeded_comments fails loudly",
      SEEDS + [c(GOOD)], {"open": [["none"]]}, False, "needs seeded_comments"),
-    ("no cause_lists expectations: skipped", SEEDS, None, True, "No cause_lists"),
+    ("no cause_lists expectations: not scored", SEEDS, None, None, "Not scored"),
 ]
 
 failures = 0
