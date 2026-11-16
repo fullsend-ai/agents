@@ -60,7 +60,10 @@ PRIOR_REVIEW_BODY=$(yq -r '.prior_review.body // ""' "$INPUT")
 PRIOR_REVIEW_PROVENANCE=$(yq -r '.prior_review.provenance // "none"' "$INPUT")
 # fixture.comments is a list of comment bodies, seeded only on GitHub
 # issues; refuse anything else before anything is created.
-if [[ "$(yq -r '(.fixture.comments // []) | type' "$INPUT")" != "!!seq" ]] \
+# An absent or null field means no comments; any other non-list value
+# (false included) is refused rather than read as an empty list.
+comments_type="$(yq -r '.fixture.comments | type' "$INPUT")"
+if [[ "$comments_type" != "!!seq" && "$comments_type" != "!!null" ]] \
   || [[ "$(yq -r '[(.fixture.comments // [])[] | select(type != "!!str")] | length' "$INPUT")" != "0" ]]; then
   echo "ERROR: fixture.comments must be a list of comment bodies" >&2
   exit 1

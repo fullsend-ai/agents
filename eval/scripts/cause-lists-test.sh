@@ -29,7 +29,7 @@ if [[ ! -s "$CHECK_FILE" ]]; then
   exit 1
 fi
 
-python3 - "$CHECK_FILE" <<'PY'
+python3 - "$CHECK_FILE" "${SCRIPT_DIR}/../triage/cases" <<'PY'
 import json
 import sys
 import textwrap
@@ -67,6 +67,15 @@ SPEC = {"seeded_comments": 3,
         "ruled_out": [["'+'", "plus"]],
         "forbidden_open": ["'+'"]}
 
+# The annotations of the real cases, read from the repository.
+import subprocess
+def case_spec(name):
+    out = subprocess.run(["yq", "-o=json", ".cause_lists", f"{sys.argv[2]}/{name}/annotations.yaml"],
+                         capture_output=True, text=True, check=True).stdout
+    return json.loads(out)
+SPEC013 = case_spec("013-retriage-keeps-ruled-out")
+SPEC007 = case_spec("007-self-evident-bug-redundancy")
+
 GOOD = analysis(["None reaches validate_email — unchecked"], ["regex rejects '+' — class includes '+'"])
 RESTORED = analysis(["None reaches validate_email", "regex rejects '+'"])
 NO_LISTS = MARKER + "\nThe None cause still holds." + FOOTER
@@ -97,6 +106,25 @@ cases = [
     ("a required cause named only in another cause's evidence does not count",
      SEEDS + [c(analysis(["ValueError reaches the framework — the missing email cause was ruled out"],
                          ["regex rejects '+' — class includes '+'"]))], SPEC, False, "Open causes lacks"),
+    ("other correct wordings of both causes pass",
+     SEEDS + [c(analysis(["Missing email field reaches validate_email unchecked"], ["Regex rejects + in the local part — class includes it"]))],
+     SPEC013, True, "match"),
+    ("an unrelated email cause does not satisfy case 007",
+     [c(analysis(["validate_email accepts addresses without a TLD"]))], SPEC007, False, "Open causes lacks"),
+    ("a heading with a trailing note is still read",
+     SEEDS + [c(MARKER + "\n\n**Open causes** (1 kept):\n- None reaches validate_email\n\n### Ruled out (from run 2)\n- regex rejects '+' — class includes it" + FOOTER)],
+     SPEC, True, "match"),
+    ("a bold Ruled out heading with a trailing note ends the Open causes section",
+     SEEDS + [c(MARKER + "\n\n**Open causes:**\n- None reaches validate_email\n\n**Ruled out** (from run 2):\n- regex rejects '+' — class includes it" + FOOTER)],
+     SPEC, True, "match"),
+    ("a revived cause written with a double-quoted plus is caught",
+     SEEDS + [c(analysis(["None reaches validate_email", 'regex rejects "+"'], ["regex rejects '+' — class includes it"]))],
+     SPEC013, False, "should stay ruled out"),
+    ("case 007 accepts the reporter's words for the open cause",
+     [c(analysis(["Blank email input reaches the validator, as reported"]))], SPEC007, True, "match"),
+    ("a ruled-out cause reworded with plus is still caught",
+     SEEDS + [c(analysis(["None reaches validate_email", "regex rejects plus addresses"], ["regex rejects '+' — class includes it"]))],
+     SPEC013, False, "should stay ruled out"),
     ("an unmarked status comment after the run is ignored",
      SEEDS + [c(GOOD), c("🤖 Finished Triage")], SPEC, True, "match"),
     ("a fresh triage with no seeds passes on its lists",

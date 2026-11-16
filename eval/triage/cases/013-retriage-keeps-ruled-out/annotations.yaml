@@ -15,10 +15,10 @@ labels:
 cause_lists:
   seeded_comments: 3
   open:
-    - ["none", "missing email", "typeerror"]
+    - ["none", "missing email", "email field", "no email", "typeerror"]
   ruled_out:
-    - ["'+'", "`+`", "plus"]
-  forbidden_open: ["'+'", "`+`", "plus sign", "plus address", "plus in the local part"]
+    - ["'+'", "`+`", "\"+\"", " + ", "plus", "regex", "docstring"]
+  forbidden_open: ["'+'", "`+`", "plus sign", "plus address", "plus in the local part", "plus", "\"+\""]
 
 max_turns: 35
 max_cost_usd: 0.50

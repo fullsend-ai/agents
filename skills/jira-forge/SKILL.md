@@ -65,9 +65,9 @@ curl --fail-with-body --silent "${JIRA_AUTH_FLAG}" "${JIRA_AUTH}" \
 # expand=properties adds each comment's entity properties: a comment fullsend
 # posted with a marker carries it as properties[] key "fullsend.sticky-marker",
 # value {"marker": "<!-- fullsend:... -->"}, not in the comment body (check the
-# body too if the property is missing). In a fullsend comment's ADF body, a
-# horizontal rule is a "rule" node and a folded "Previous run" block is an
-# "expand" node whose attrs.title starts with "Previous run".
+# body too if the property is missing). In a fullsend comment's body (Atlassian
+# Document Format), a horizontal rule is a "rule" node and a folded "Previous
+# run" block is an "expand" node whose attrs.title starts with "Previous run".
 curl --fail-with-body --silent "${JIRA_AUTH_FLAG}" "${JIRA_AUTH}" \
   "${JIRA_API_URL:-${JIRA_BASE_URL}}/rest/api/3/issue/${ISSUE_KEY}/comment?orderBy=-created&maxResults=50&expand=properties"
 

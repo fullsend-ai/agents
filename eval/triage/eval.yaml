@@ -204,8 +204,8 @@ judges:
       # Headings are matched loosely: "**Open causes:**", "**Open causes**:",
       # "**Open causes**" or a "### Open causes" heading. A section runs to
       # the next such heading or the first horizontal rule.
-      head = r"(?m:^)[ \t]*(?:\*\*\s*{0}\s*:?\s*\*\*:?|#{{1,6}}\s*{0}\s*:?)[ \t]*$"
-      any_head = r"\n\s*(?:\*\*[^*\n]+\*\*:?[ \t]*\n|#{1,6}\s)"
+      head = r"(?m:^)[ \t]*(?:\*\*\s*{0}\s*(?:\([^)\n]*\))?\s*:?\s*\*\*\s*(?:\([^)\n]*\))?:?|#{{1,6}}\s*{0}\s*(?:\([^)\n]*\))?\s*:?)[ \t]*$"
+      any_head = r"\n\s*(?:\*\*[^*\n]+\*\*\s*(?:\([^)\n]*\))?:?[ \t]*\n|#{1,6}\s)"
       def section(name):
           m = re.search(head.format(name) + r"(.*?)(?=" + any_head + r"|\n-{3,}[ \t]*(?:\n|$)|\Z)", text, re.S | re.M)
           return m.group(1) if m else None

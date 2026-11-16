@@ -293,6 +293,21 @@ else
 fi
 rm -rf "$ROOT"
 
+# --- fixture.comments: false is refused, not read as an empty list ---
+ROOT="$(mktemp -d)"; setup_fixture "$ROOT"
+cat >> "${ROOT}/case/input.yaml" <<'YAML'
+  comments: false
+YAML
+RC=0
+OUT=$(run_sf "$ROOT" 2>&1) || RC=$?
+if [[ $RC -eq 1 ]] && echo "$OUT" | grep -q "fixture.comments must be a list of comment bodies" \
+  && ! gh_calls "$ROOT" | grep -q "repo create"; then
+  pass "fixture.comments: false is refused before gh repo create"
+else
+  fail "fixture.comments: false is refused before gh repo create (rc=$RC, output: $OUT)"
+fi
+rm -rf "$ROOT"
+
 # --- fixture.comments on a pull request fixture is refused before anything is created ---
 ROOT="$(mktemp -d)"; setup_fixture "$ROOT"
 cat > "${ROOT}/case/input.yaml" <<'YAML'
