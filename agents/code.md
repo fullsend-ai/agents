@@ -156,15 +156,14 @@ no credentials, tokens, or secret-bearing URLs. For a repository-boundary
 escalation, use the format in "Repository boundary". If you stop before the
 skill's step 3 wrote the result file, run step 3's default-branch discovery
 and write the file as step 3 does first; a guessed `target_branch` can fail
-the run. Then add the explanation:
+the run. Write (overwrite) `/tmp/no-pr-reason.md` with your runtime's
+file-writing tool, putting the reason first and what would unblock it next.
+Then add the explanation without a shell heredoc:
 
 ```bash
-no_pr_reason=$(cat <<'REASON'
-<why no PR, then what would unblock it>
-REASON
-)
 f="${FULLSEND_OUTPUT_DIR}/agent-result.json"
-jq --arg reason "$no_pr_reason" '. + {no_pr_reason: $reason}' "$f" > "$f.tmp" && mv "$f.tmp" "$f"
+jq --rawfile reason /tmp/no-pr-reason.md '. + {no_pr_reason: ($reason | sub("\n+$"; ""))}' \
+  "$f" > "$f.tmp" && mv "$f.tmp" "$f"
 fullsend-check-output "$f"
 ```
 
