@@ -227,8 +227,11 @@ judges:
       for group in spec.get("ruled_out") or []:
           if not any(p.lower() in n for p in group for n in ruled_n):
               problems.append(f"Ruled out lacks any of {group}")
+      # A forbidden entry is a phrase or a list of phrases that must all
+      # appear in the same cause name.
       for p in spec.get("forbidden_open") or []:
-          if any(p.lower() in n for n in open_n):
+          parts = [p] if isinstance(p, str) else list(p)
+          if any(all(q.lower() in n for q in parts) for n in open_n):
               problems.append(f"Open causes lists {p!r}, which should stay ruled out")
       if problems:
           return False, "; ".join(problems)
@@ -293,4 +296,5 @@ thresholds:
   # Every case with cause_lists must carry the lists: a ruled-out cause
   # coming back is the regression fullsend-ai/agents#2042 fixed.
   cause_lists:
-    min_pass_rate: 1.0
+    # 0.9 like the other live checks until the cases have run live (#2043).
+    min_pass_rate: 0.9

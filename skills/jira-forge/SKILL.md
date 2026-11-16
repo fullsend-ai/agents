@@ -71,6 +71,12 @@ curl --fail-with-body --silent "${JIRA_AUTH_FLAG}" "${JIRA_AUTH}" \
 curl --fail-with-body --silent "${JIRA_AUTH_FLAG}" "${JIRA_AUTH}" \
   "${JIRA_API_URL:-${JIRA_BASE_URL}}/rest/api/3/issue/${ISSUE_KEY}/comment?orderBy=-created&maxResults=50&expand=properties"
 
+# The account this credential belongs to: the one fullsend posts results as.
+# Compare its accountId with a comment's author.accountId to tell
+# fullsend's own comments from anyone else's.
+curl --fail-with-body --silent "${JIRA_AUTH_FLAG}" "${JIRA_AUTH}" \
+  "${JIRA_API_URL:-${JIRA_BASE_URL}}/rest/api/3/myself"
+
 # List open issues in the project
 curl --fail-with-body --silent "${JIRA_AUTH_FLAG}" "${JIRA_AUTH}" \
   --header "Content-Type: application/json" \

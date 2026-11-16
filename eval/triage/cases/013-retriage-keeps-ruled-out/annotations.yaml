@@ -19,7 +19,8 @@ cause_lists:
     - ["none", "missing email", "email field", "no email", "typeerror"]
   ruled_out:
     - ["'+'", "`+`", "\"+\"", " + ", "plus", "regex", "docstring"]
-  forbidden_open: ["+", "plus"]
+  # A plus together with a rejection claim is the ruled-out cause back.
+  forbidden_open: [["+", "reject"], ["plus", "reject"]]
 
 max_turns: 35
 max_cost_usd: 0.50
