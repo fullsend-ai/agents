@@ -357,6 +357,7 @@ _check_hardcoded_callback() {
 
 # Helper: check schema file existence at a given validation_loop path
 # Resolves schema paths relative to the provided resolve_root (matching engine's ResolveRelativeTo)
+# Rejects relative paths that escape the bundle root via .. (enforcing containment)
 check_schema_files_at_path() {
   local harness="$1"
   local path="$2"
@@ -438,6 +439,13 @@ check_schema_files_at_path() {
   # Skip ${VAR} schema paths - these are runtime variables and cannot be validated at lint time
   if [[ "${schema_path}" == *\$\{* ]]; then
     return 0
+  fi
+
+  # Reject relative paths that escape the bundle root directory via .. components
+  # (engine's ResolveRelativeTo enforces containment for relative paths)
+  if [[ "${schema_path}" != /* ]] && [[ "${schema_path}" == *..* ]]; then
+    echo "${harness_name}: ${location} schema path must be relative and not escape bundle root: ${schema_path}"
+    return 1
   fi
 
   # Resolve relative to the provided root (matching engine's ResolveRelativeTo)
@@ -593,6 +601,7 @@ test_negative_fixtures() {
   local expected_failures=(
     "script-no-schema.yaml:test_validation_loop_schema:script-no-schema\.yaml.*top-level validation_loop has script but no schema"
     "schema-path-explicit-empty.yaml:test_validation_loop_schema:schema-path-explicit-empty\.yaml.*top-level validation_loop\.schema is empty"
+    "schema-escaped-path.yaml:test_schema_files_exist_and_valid:schema-escaped-path\.yaml.*schema path must be relative and not escape bundle root"
     "forge-script-no-inherited-schema.yaml:test_validation_loop_schema:forge-script-no-inherited-schema\.yaml.*validation_loop has script but no schema.*no top-level schema"
     "overlay-script-no-inherited-schema.yaml:test_validation_loop_schema:overlay-script-no-inherited-schema\.yaml.*validation_loop has script but no schema.*no top-level schema"
     "forge-null-inherited-schema.yaml:test_validation_loop_schema:forge-null-inherited-schema\.yaml.*validation_loop has script but schema is null"
