@@ -42,9 +42,10 @@ slug: fullsend-ai-coder
 # so this expression has no role checks.
 # harness/triggertest/trigger_test.go evaluates this against the
 # NormalizedEvent fixtures.
-# DRAFT: a work item labelled `cve` is coded only after the cve
-# agent has published an affected verdict (label `cve:affected`), however
-# ready-to-code or /fs-code arrived.
+# DRAFT: a Jira work item labelled `fullsend-cve` belongs to the cve agent.
+# It is coded only from a person's /fs-code comment, never from a label, and
+# the cve overlay below checks the recorded assessment before any code is
+# written.
 trigger: >
   event.entity.kind == "work_item"
     && !has(event.entity.linked_change_proposal)
@@ -56,8 +57,8 @@ trigger: >
       || (event.transition.kind == "label_changed"
         && event.transition.label.name == "ready-to-code"
         && event.transition.label.action == "added"))
-    && (!("cve" in event.state.labels || event.state.labels.exists(l, l.startsWith("cve:")))
-      || "cve:affected" in event.state.labels)
+    && (!("fullsend-cve" in event.state.labels)
+      || event.transition.kind == "comment_added")
 
 host_files:
   - src: env/gcp-vertex.env
@@ -227,16 +228,30 @@ overlays:
         ISSUE_NUMBER: ""
         ISSUE_URL: "${FULLSEND_WORK_ITEM_URL}"
         JIRA_BASE_URL: "${JIRA_BASE_URL}"
-  # DRAFT. A work item labelled `cve` is coded from the cve
-  # agent's verdict. The skill narrows the task to the assessed plan; the two
-  # scripts enforce it on the host: before the sandbox, that a current
-  # affected verdict with a ready plan exists; before the push, that the
-  # change targets the assessed branch and stays inside the plan's files.
-  # Each hands over to the ordinary pre- and post-script. Ordered last so it
-  # wins over the Jira overlay's pre_script; pre-code-cve.sh runs
-  # pre-code-jira.sh itself for a Jira work item.
-  - when: 'has(event.state) && ("cve" in event.state.labels || event.state.labels.exists(l, l.startsWith("cve:")))'
+  # DRAFT. The cve agent's coding gate, from the CVE workflow in
+  # fullsend-playground/cve-workflow-experiment. A Jira work item labelled
+  # fullsend-cve is coded only from its recorded assessment. Before the
+  # sandbox, pre-cve-code.sh requires a current affected verdict with a
+  # ready, viable plan bound to the same intake, target branch and revision,
+  # and checks out that branch. Before the push, post-cve-code.sh requires a
+  # change that stays inside the plan's paths and limits the target branch
+  # to the assessed one, then runs the stock publisher. Ordered last so it
+  # wins over the Jira overlay's pre_script.
+  - when: 'has(event.source) && event.source.system == "jira" && has(event.state) && "fullsend-cve" in event.state.labels'
     skills:
-      - skills/cve-remediation
-    pre_script: scripts/pre-code-cve.sh
-    post_script: scripts/post-code-cve.sh
+      - skills/cve-security
+    pre_script: scripts/pre-cve-code.sh
+    post_script: scripts/post-cve-code.sh
+    host_files:
+      - src: ${TARGET_REPO_DIR}/.cve-context.json
+        dest: /sandbox/workspace/cve-context.json
+    env:
+      runner:
+        CODE_AUTO_MERGE: "false"
+        # The trigger already requires a person's /fs-code comment. This
+        # binds that request to the assessment's recommended plan only.
+        CVE_CODE_COMMAND_AUTHORIZATION: "recommended-plan"
+        # The adopter's CVE policy: Jira site, release mappings, labels,
+        # coding types and change paths.
+        CVE_POLICY_FILE: "${FULLSEND_DIR}/cve-policy.json"
+        CVE_ISSUE_URL: "${FULLSEND_WORK_ITEM_URL}"
