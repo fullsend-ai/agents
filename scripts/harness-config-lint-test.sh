@@ -26,10 +26,6 @@ if ! command -v jq &>/dev/null; then
   echo "ERROR: jq is required but not found in PATH" >&2
   exit 1
 fi
-if ! command -v jq &>/dev/null; then
-  echo "ERROR: jq is required but not found in PATH" >&2
-  exit 1
-fi
 
 # Verify yq is the mikefarah version (not the python kiss lyuk version)
 YQ_VERSION=$(yq --version 2>&1)
@@ -139,9 +135,15 @@ check_validation_loop_at_path() {
       echo "${harness_name}: yq failed to check schema type at ${location}"
       return 1
     }
+    # Get per-location schema value for empty string check
+    local per_location_value
+    per_location_value="$(yq "${path}.validation_loop.schema" "${harness}")" || {
+      echo "${harness_name}: yq failed to extract per-location schema at ${location}"
+      return 1
+    }
 
-    # Allow inheritance only when schema is YAML null AND there is a usable top-level schema
-    if [[ "${per_location_type}" == *"null"* && "${per_location_type}" != *"str"* ]]; then
+    # Allow inheritance only when schema is YAML null or empty string AND there is a usable top-level schema
+    if [[ "${per_location_type}" == '!!null' || -z "${per_location_value}" ]]; then
       # Check if top-level schema exists AND is usable (non-empty, non-null)
       local top_level_has_schema
       top_level_has_schema="$(yq '.validation_loop | has("schema")' "${harness}")" || {
@@ -181,7 +183,7 @@ check_validation_loop_at_path() {
         return 1
       fi
     fi
-    # For same-script inheritance, both empty schema and null are already rejected above
+    # For same-script inheritance, schema was either not null/empty or has valid top-level schema
     # If we reach here with same script, inheritance is valid
     if [[ -n "${top_level_script}" && "${per_location_script}" == "${top_level_script}" ]]; then
       return 0
@@ -350,6 +352,118 @@ _check_hardcoded_callback() {
   fi
 }
 
+# Helper: check schema file existence at a given validation_loop path
+# Resolves schema paths relative to the provided resolve_root (matching engine's ResolveRelativeTo)
+check_schema_files_at_path() {
+  local harness="$1"
+  local path="$2"
+  local location="${3:-.}"
+  local resolve_root="$4"
+  local harness_name
+  harness_name="$(basename "${harness}")"
+
+  local has_validation_loop_selector
+  if [[ "${path}" == "." ]]; then
+    has_validation_loop_selector="has(\"validation_loop\")"
+  else
+    has_validation_loop_selector="${path} | has(\"validation_loop\")"
+  fi
+
+  local has_validation_loop
+  has_validation_loop="$(yq "${has_validation_loop_selector}" "${harness}")" || {
+    echo "${harness_name}: yq failed to check validation_loop at ${location}"
+    return 1
+  }
+  if [[ "${has_validation_loop}" != "true" ]]; then
+    return 0
+  fi
+
+  local has_schema_selector
+  if [[ "${path}" == "." ]]; then
+    has_schema_selector=".validation_loop | has(\"schema\")"
+  else
+    has_schema_selector="${path}.validation_loop | has(\"schema\")"
+  fi
+
+  local has_schema
+  has_schema="$(yq "${has_schema_selector}" "${harness}")" || {
+    echo "${harness_name}: yq failed to check schema at ${location}"
+    return 1
+  }
+  if [[ "${has_schema}" != "true" ]]; then
+    return 0
+  fi
+
+  local schema_selector
+  if [[ "${path}" == "." ]]; then
+    schema_selector=".validation_loop.schema"
+  else
+    schema_selector="${path}.validation_loop.schema"
+  fi
+
+  local schema_path
+  schema_path="$(yq "${schema_selector}" "${harness}")" || {
+    echo "${harness_name}: yq failed to extract schema path at ${location}"
+    return 1
+  }
+
+  # Check YAML type to distinguish YAML null from literal string "null"
+  local type_selector
+  if [[ "${path}" == "." ]]; then
+    type_selector=".validation_loop.schema | type"
+  else
+    type_selector="${path}.validation_loop.schema | type"
+  fi
+  local schema_type
+  schema_type="$(yq "${type_selector}" "${harness}")" || {
+    echo "${harness_name}: yq failed to check schema type at ${location}"
+    return 1
+  }
+
+  # Skip if schema is YAML null (inherited schema will be checked separately)
+  # Type output may contain tags like "!!null", so check for null substring
+  # But don't skip literal string "null" (which has type "!!str") - it's a file path
+  if [[ "${schema_type}" == *"null"* && "${schema_type}" != *"str"* ]]; then
+    return 0
+  fi
+
+  # Also skip empty string (inherited schema will be checked separately)
+  if [[ -z "${schema_path}" ]]; then
+    return 0
+  fi
+
+  # Skip ${VAR} schema paths - these are runtime variables and cannot be validated at lint time
+  if [[ "${schema_path}" == *\$\{* ]]; then
+    return 0
+  fi
+
+  # Resolve relative to the provided root (matching engine's ResolveRelativeTo)
+  # If no root provided, fall back to dirname(dirname(harness)) for backwards compatibility
+  local resolve_dir="${resolve_root}"
+  if [[ -z "${resolve_dir}" ]]; then
+    resolve_dir="$(dirname "$(dirname "${harness}")")"
+  fi
+  local full_schema_path
+  # Only prepend resolve_dir for relative paths; preserve absolute paths
+  if [[ "${schema_path}" == /* ]]; then
+    full_schema_path="${schema_path}"
+  else
+    full_schema_path="${resolve_dir}/${schema_path}"
+  fi
+
+  if [[ ! -f "${full_schema_path}" ]]; then
+    echo "${harness_name}: ${location} schema file not found: ${schema_path}"
+    return 1
+  fi
+
+  if ! jq -s -e 'length == 1' "${full_schema_path}"; then
+    echo "${harness_name}: ${location} schema file is not valid JSON: ${schema_path}"
+    return 1
+  fi
+
+  return 0
+}
+
 _check_schema_callback() {
   local h="$1" p="$2" loc="$3" root="$4"
   check_schema_files_at_path "${h}" "${p}" "${loc}" "${root}" || return 1
@@ -460,115 +574,8 @@ test_no_hardcoded_schema() {
   fi
 }
 
-# Helper: check schema file existence at a given validation_loop path
-# Resolves schema paths relative to the provided resolve_root (matching engine's ResolveRelativeTo)
-check_schema_files_at_path() {
-  local harness="$1"
-  local path="$2"
-  local location="${3:-.}"
-  local resolve_root="$4"
-  local harness_name
-  harness_name="$(basename "${harness}")"
-
-  local has_validation_loop_selector
-  if [[ "${path}" == "." ]]; then
-    has_validation_loop_selector="has(\"validation_loop\")"
-  else
-    has_validation_loop_selector="${path} | has(\"validation_loop\")"
-  fi
-
-  local has_validation_loop
-  has_validation_loop="$(yq "${has_validation_loop_selector}" "${harness}")" || {
-    echo "${harness_name}: yq failed to check validation_loop at ${location}"
-    return 1
-  }
-  if [[ "${has_validation_loop}" != "true" ]]; then
-    return 0
-  fi
-
-  local has_schema_selector
-  if [[ "${path}" == "." ]]; then
-    has_schema_selector=".validation_loop | has(\"schema\")"
-  else
-    has_schema_selector="${path}.validation_loop | has(\"schema\")"
-  fi
-
-  local has_schema
-  has_schema="$(yq "${has_schema_selector}" "${harness}")" || {
-    echo "${harness_name}: yq failed to check schema at ${location}"
-    return 1
-  }
-  if [[ "${has_schema}" != "true" ]]; then
-    return 0
-  fi
-
-  local schema_selector
-  if [[ "${path}" == "." ]]; then
-    schema_selector=".validation_loop.schema"
-  else
-    schema_selector="${path}.validation_loop.schema"
-  fi
-
-  local schema_path
-  schema_path="$(yq "${schema_selector}" "${harness}")" || {
-    echo "${harness_name}: yq failed to extract schema path at ${location}"
-    return 1
-  }
-
-  # Check YAML type to distinguish YAML null from literal string "null"
-  local type_selector
-  if [[ "${path}" == "." ]]; then
-    type_selector=".validation_loop.schema | type"
-  else
-    type_selector="${path}.validation_loop.schema | type"
-  fi
-  local schema_type
-  schema_type="$(yq "${type_selector}" "${harness}")" || {
-    echo "${harness_name}: yq failed to check schema type at ${location}"
-    return 1
-  }
-
-  # Skip if schema is YAML null (inherited schema will be checked separately)
-  # Type output may contain tags like "!!null", so check for null substring
-  # But don't skip literal string "null" (which has type "!!str") - it's a file path
-  if [[ "${schema_type}" == *"null"* && "${schema_type}" != *"str"* ]]; then
-    return 0
-  fi
-
-  # Also skip empty string (inherited schema will be checked separately)
-  if [[ -z "${schema_path}" ]]; then
-    return 0
-  fi
-
-  # Resolve relative to the provided root (matching engine's ResolveRelativeTo)
-  # If no root provided, fall back to dirname(dirname(harness)) for backwards compatibility
-  local resolve_dir="${resolve_root}"
-  if [[ -z "${resolve_dir}" ]]; then
-    resolve_dir="$(dirname "$(dirname "${harness}")")"
-  fi
-  local full_schema_path
-  # Only prepend resolve_dir for relative paths; preserve absolute paths
-  if [[ "${schema_path}" == /* ]]; then
-    full_schema_path="${schema_path}"
-  else
-    full_schema_path="${resolve_dir}/${schema_path}"
-  fi
-
-  if [[ ! -f "${full_schema_path}" ]]; then
-    echo "${harness_name}: ${location} schema file not found: ${schema_path}"
-    return 1
-  fi
-
-  if ! jq -s -e 'length == 1' "${full_schema_path}"; then
-    echo "${harness_name}: ${location} schema file is not valid JSON: ${schema_path}"
-    return 1
-  fi
-
-  return 0
-}
-
-# Schema file validation and YAML syntax checking delegated to `fullsend lint`
-# This script maintains only 2 core style checks via test_validation_loop_schema and test_no_hardcoded_schema
+# Schema file validation and YAML syntax checking
+# This script maintains 3 core checks: test_validation_loop_schema, test_no_hardcoded_schema, test_schema_files_exist_and_valid
 
 # Test 5: Verify negative fixtures fail (prove the checks can detect errors)
 test_negative_fixtures() {
@@ -671,25 +678,9 @@ test_positive_fixtures() {
     "forge-schema-only-empty-override.yaml"
     "forge-same-script-empty-schema.yaml"
     "overlay-schema-only-empty-with-inherited-script.yaml"
+    "schema-with-env-var.yaml"
+    "forge-empty-schema-inherits-top-level.yaml"
   )
-
-  # Test absolute-schema-path-valid: create a temporary fixture with an absolute path
-  local abs_test_dir
-  abs_test_dir="$(mktemp -d)" || {
-    echo "Failed to create temporary directory for absolute path fixture"
-    return 1
-  }
-  local abs_schema_path="${SCRIPT_DIR}/test-fixtures/schemas/review-result.schema.json"
-  cat > "${abs_test_dir}/absolute-schema-path-valid.yaml" << EOF || {
----
-validation_loop:
-  script: scripts/validate-output-schema.sh
-  schema: ${abs_schema_path}
-EOF
-    echo "Failed to write absolute path fixture"
-    rm -rf "${abs_test_dir}"
-    return 1
-  }
 
   for fixture_name in "${expected_passes[@]}"; do
     local fixture_file="${fixtures_dir}/${fixture_name}"
@@ -702,20 +693,110 @@ EOF
 
     local output
     local exit_code=0
-    output="$(HARNESS_DIR="${fixtures_dir}" REPO_ROOT="${SCRIPT_DIR}"/test-fixtures test_validation_loop_schema 2>&1)" || exit_code=$?
+    # Create a temporary directory with only this fixture to isolate its validation
+    local test_dir
+    test_dir="$(mktemp -d)" || {
+      echo "Failed to create temporary directory for fixture ${fixture_name}"
+      found_error=1
+      continue
+    }
+    # Create schemas/ directory and copy schema files
+    mkdir -p "${test_dir}/schemas"
+    cp "${fixture_file}" "${test_dir}/" || {
+      echo "Failed to copy fixture ${fixture_name} to temporary directory"
+      rm -rf "${test_dir}"
+      found_error=1
+      continue
+    }
+    # Copy schema files from test-fixtures/schemas (not from harness-config-good/schemas)
+    if [[ -d "${SCRIPT_DIR}/test-fixtures/schemas" ]]; then
+      cp -r "${SCRIPT_DIR}/test-fixtures/schemas"/* "${test_dir}/schemas/" 2>/dev/null || true
+    fi
+
+    # Run all three tests on this fixture with test_dir as both HARNESS_DIR and REPO_ROOT
+    output="$(HARNESS_DIR="${test_dir}" REPO_ROOT="${test_dir}" test_validation_loop_schema 2>&1)" || exit_code=$?
     if [[ ${exit_code} -ne 0 ]]; then
-      echo "Fixture ${fixture_name}: test_validation_loop_schema failed with exit_code=${exit_code}"
+      echo "Fixture ${fixture_name}: test_validation_loop_schema failed"
+      echo "${output}"
+      rm -rf "${test_dir}"
       found_error=1
       continue
     fi
+
+    exit_code=0
+    output="$(HARNESS_DIR="${test_dir}" REPO_ROOT="${test_dir}" test_no_hardcoded_schema 2>&1)" || exit_code=$?
+    if [[ ${exit_code} -ne 0 ]]; then
+      echo "Fixture ${fixture_name}: test_no_hardcoded_schema failed"
+      echo "${output}"
+      rm -rf "${test_dir}"
+      found_error=1
+      continue
+    fi
+
+    exit_code=0
+    output="$(HARNESS_DIR="${test_dir}" REPO_ROOT="${test_dir}" test_schema_files_exist_and_valid 2>&1)" || exit_code=$?
+    if [[ ${exit_code} -ne 0 ]]; then
+      echo "Fixture ${fixture_name}: test_schema_files_exist_and_valid failed"
+      echo "${output}"
+      rm -rf "${test_dir}"
+      found_error=1
+      continue
+    fi
+
+    rm -rf "${test_dir}"
   done
 
-  # Test absolute path fixture separately
+  # Test absolute-schema-path-valid: create a temporary fixture with an absolute path
+  local abs_test_dir
+  abs_test_dir="$(mktemp -d)" || {
+    echo "Failed to create temporary directory for absolute path fixture"
+    return 1
+  }
+  mkdir -p "${abs_test_dir}/schemas"
+  local abs_schema_path="${SCRIPT_DIR}/test-fixtures/schemas/review-result.schema.json"
+  if ! cat > "${abs_test_dir}/absolute-schema-path-valid.yaml" << 'EOF'
+---
+validation_loop:
+  script: scripts/validate-output-schema.sh
+  schema: ${FULLSEND_DIR}/schemas/review-result.schema.json
+EOF
+  then
+    echo "Failed to write absolute path fixture"
+    rm -rf "${abs_test_dir}"
+    return 1
+  fi
+
+  # Copy schema file for the absolute path fixture test (even though absolute path references it)
+  if [[ -f "${abs_schema_path}" ]]; then
+    cp "${abs_schema_path}" "${abs_test_dir}/schemas/" 2>/dev/null || true
+  fi
+
+  # Run all three tests on absolute path fixture
   local exit_code=0
-  output="$(HARNESS_DIR="${abs_test_dir}" REPO_ROOT="${SCRIPT_DIR}"/test-fixtures test_validation_loop_schema 2>&1)" || exit_code=$?
+  output="$(HARNESS_DIR="${abs_test_dir}" REPO_ROOT="${abs_test_dir}" test_validation_loop_schema 2>&1)" || exit_code=$?
   if [[ ${exit_code} -ne 0 ]]; then
-    echo "Fixture absolute-schema-path-valid.yaml: test_validation_loop_schema failed with exit_code=${exit_code}"
-    found_error=1
+    echo "Fixture absolute-schema-path-valid.yaml: test_validation_loop_schema failed"
+    echo "${output}"
+    rm -rf "${abs_test_dir}"
+    return 1
+  fi
+
+  exit_code=0
+  output="$(HARNESS_DIR="${abs_test_dir}" REPO_ROOT="${abs_test_dir}" test_no_hardcoded_schema 2>&1)" || exit_code=$?
+  if [[ ${exit_code} -ne 0 ]]; then
+    echo "Fixture absolute-schema-path-valid.yaml: test_no_hardcoded_schema failed"
+    echo "${output}"
+    rm -rf "${abs_test_dir}"
+    return 1
+  fi
+
+  exit_code=0
+  output="$(HARNESS_DIR="${abs_test_dir}" REPO_ROOT="${abs_test_dir}" test_schema_files_exist_and_valid 2>&1)" || exit_code=$?
+  if [[ ${exit_code} -ne 0 ]]; then
+    echo "Fixture absolute-schema-path-valid.yaml: test_schema_files_exist_and_valid failed"
+    echo "${output}"
+    rm -rf "${abs_test_dir}"
+    return 1
   fi
 
   # Clean up temporary directory before returning
@@ -728,129 +809,11 @@ EOF
   fi
 }
 
-# Helper: check schema file existence at a given validation_loop path
-# Resolves schema paths relative to the provided resolve root (matching engine's ResolveRelativeTo)
-check_schema_files_at_path() {
-  local harness="$1"
-  local path="$2"
-  local location="${3:-.}"
-  local resolve_root="$4"
-  local harness_name
-  harness_name="$(basename "${harness}")"
-
-  local has_validation_loop_selector
-  if [[ "${path}" == "." ]]; then
-    has_validation_loop_selector="has(\"validation_loop\")"
-  else
-    has_validation_loop_selector="${path} | has(\"validation_loop\")"
-  fi
-
-  local has_validation_loop
-  has_validation_loop="$(yq "${has_validation_loop_selector}" "${harness}")" || {
-    echo "${harness_name}: yq failed to check validation_loop at ${location}"
-    return 1
-  }
-  if [[ "${has_validation_loop}" != "true" ]]; then
-    return 0
-  fi
-
-  local has_schema_selector
-  if [[ "${path}" == "." ]]; then
-    has_schema_selector=".validation_loop | has(\"schema\")"
-  else
-    has_schema_selector="${path}.validation_loop | has(\"schema\")"
-  fi
-
-  local has_schema
-  has_schema="$(yq "${has_schema_selector}" "${harness}")" || {
-    echo "${harness_name}: yq failed to check schema at ${location}"
-    return 1
-  }
-  if [[ "${has_schema}" != "true" ]]; then
-    return 0
-  fi
-
-  local schema_selector
-  if [[ "${path}" == "." ]]; then
-    schema_selector=".validation_loop.schema"
-  else
-    schema_selector="${path}.validation_loop.schema"
-  fi
-
-  local schema_path
-  schema_path="$(yq "${schema_selector}" "${harness}")" || {
-    echo "${harness_name}: yq failed to extract schema path at ${location}"
-    return 1
-  }
-
-  # Check YAML type to distinguish YAML null from literal string "null"
-  local type_selector
-  if [[ "${path}" == "." ]]; then
-    type_selector=".validation_loop.schema | type"
-  else
-    type_selector="${path}.validation_loop.schema | type"
-  fi
-  local schema_type
-  schema_type="$(yq "${type_selector}" "${harness}")" || {
-    echo "${harness_name}: yq failed to check schema type at ${location}"
-    return 1
-  }
-
-  # Skip if schema is YAML null (inherited schema will be checked separately)
-  # Type output may contain tags like "!!null", so check for null substring
-  # But don't skip literal string "null" (which has type "!!str") - it's a file path
-  if [[ "${schema_type}" == *"null"* && "${schema_type}" != *"str"* ]]; then
-    return 0
-  fi
-
-  # Also skip empty string (inherited schema will be checked separately)
-  if [[ -z "${schema_path}" ]]; then
-    return 0
-  fi
-
-  # Resolve relative to the provided root (matching engine's ResolveRelativeTo)
-  # If no root provided, fall back to dirname(dirname(harness)) for backwards compatibility
-  local resolve_dir="${resolve_root}"
-  if [[ -z "${resolve_dir}" ]]; then
-    resolve_dir="$(dirname "$(dirname "${harness}")")"
-  fi
-  local full_schema_path
-  # Only prepend resolve_dir for relative paths; preserve absolute paths
-  if [[ "${schema_path}" == /* ]]; then
-    full_schema_path="${schema_path}"
-  else
-    full_schema_path="${resolve_dir}/${schema_path}"
-  fi
-
-  if [[ ! -f "${full_schema_path}" ]]; then
-    echo "${harness_name}: ${location} schema file not found: ${schema_path}"
-    return 1
-  fi
-
-  if ! jq -s -e 'length == 1' "${full_schema_path}"; then
-    echo "${harness_name}: ${location} schema file is not valid JSON: ${schema_path}"
-    return 1
-  fi
-
-  return 0
-}
-
-# Callback wrapper for schema validation
-_check_schema_callback() {
-  local h="$1" p="$2" loc="$3" root="$4"
-  check_schema_files_at_path "${h}" "${p}" "${loc}" "${root}" || return 1
-}
 
 # Test 3: All referenced schemas exist and are valid JSON
 test_schema_files_exist_and_valid() {
   local found_error=0
   local file_count=0
-
-  # Callback for schema validation
-  _check_schema_validate() {
-    local h="$1" p="$2" loc="$3" root="$4"
-    check_schema_files_at_path "${h}" "${p}" "${loc}" "${root}" || return 1
-  }
 
   # Process harness/ with REPO_ROOT as resolve root
   for harness in "${HARNESS_DIR}"/*.yaml; do
