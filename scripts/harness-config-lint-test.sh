@@ -606,6 +606,12 @@ test_negative_fixtures() {
     "hardcoded-overlay-clean-first.yaml:test_no_hardcoded_schema:hardcoded-overlay-clean-first\.yaml.*overlays\[1\]\.runner_env.*contains hardcoded"
     "hardcoded-forge-clean-first.yaml:test_no_hardcoded_schema:hardcoded-forge-clean-first\.yaml.*forge\.gitlab.*runner_env.*contains hardcoded"
     "script-with-null-schema.yaml:test_validation_loop_schema:script-with-null-schema\.yaml.*top-level validation_loop\.schema is null"
+    "missing-schema-file.yaml:test_schema_files_exist_and_valid:missing-schema-file\.yaml.*schema file not found"
+    "bad-json-schema.yaml:test_schema_files_exist_and_valid:bad-json-schema\.yaml.*schema file is not valid JSON"
+    "empty-json-schema.yaml:test_schema_files_exist_and_valid:empty-json-schema\.yaml.*schema file is not valid JSON"
+    "multiple-json-values.yaml:test_schema_files_exist_and_valid:multiple-json-values\.yaml.*schema file is not valid JSON"
+    "forge-missing-schema-file.yaml:test_schema_files_exist_and_valid:forge-missing-schema-file\.yaml.*schema file not found"
+    "overlay-bad-json-schema.yaml:test_schema_files_exist_and_valid:overlay-bad-json-schema\.yaml.*schema file is not valid JSON"
   )
 
   for fixture_spec in "${expected_failures[@]}"; do
@@ -637,12 +643,32 @@ test_negative_fixtures() {
       continue
     }
     # Also copy any schema files the fixture might reference
-    if [[ -d "${fixtures_dir}/schemas" ]]; then
-      cp -r "${fixtures_dir}/schemas" "${test_dir}/" 2>/dev/null || true
+    # The fixtures_dir is already harness-config-bad, so we copy from its parent
+    local test_fixtures_parent
+    test_fixtures_parent="$(dirname "${fixtures_dir}")"
+
+    # Copy schemas directory if it exists (one level up from harness-config-bad)
+    if [[ -d "${test_fixtures_parent}/schemas" ]]; then
+      cp -r "${test_fixtures_parent}/schemas" "${test_dir}/" 2>/dev/null || true
+    fi
+
+    # Copy harness-config-bad files that might be referenced
+    # Extract the list of referenced files from the YAML
+    local referenced_files
+    referenced_files="$(yq -r '.validation_loop.schema, .forge[]?.validation_loop.schema, .overlays[]?.validation_loop.schema' "${fixture_file}" 2>/dev/null | grep "^harness-config-bad/" || true)"
+    if [[ -n "${referenced_files}" ]]; then
+      mkdir -p "${test_dir}/harness-config-bad"
+      while IFS= read -r ref; do
+        local source_file="${test_fixtures_parent}/harness-config-bad/$(basename "${ref}")"
+        if [[ -f "${source_file}" ]]; then
+          cp "${source_file}" "${test_dir}/$(dirname "${ref}")/" 2>/dev/null || true
+        fi
+      done <<< "${referenced_files}"
     fi
 
     # Run the test with HARNESS_DIR set to temp dir containing only this fixture
-    output="$(HARNESS_DIR="${test_dir}" REPO_ROOT="${SCRIPT_DIR}"/test-fixtures ${test_func} 2>&1)" || exit_code=$?
+    # Use test_dir as both HARNESS_DIR and REPO_ROOT so resolve_root is the fixture directory
+    output="$(HARNESS_DIR="${test_dir}" REPO_ROOT="${test_dir}" ${test_func} 2>&1)" || exit_code=$?
     rm -rf "${test_dir}"
 
     if [[ ${exit_code} -ne 0 ]]; then
