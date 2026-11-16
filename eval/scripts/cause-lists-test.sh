@@ -191,6 +191,26 @@ for name, comments, spec, want, substr in cases:
         failures += 1
         print(f"FAIL: {name}: expected {want} containing {substr!r}, got {ok} {msg!r}")
 
+# Every case that declares cause_lists must count its seeded comments right,
+# or the judge could grade a seeded comment as the run's output.
+import glob, os
+fixture_checks = 0
+for d in sorted(glob.glob(f"{sys.argv[2]}/*/")):
+    name = os.path.basename(d.rstrip("/"))
+    spec = subprocess.run(["yq", "-o=json", ".cause_lists", f"{d}annotations.yaml"],
+                          capture_output=True, text=True, check=True).stdout.strip()
+    if spec in ("", "null"):
+        continue
+    want = len(json.loads(subprocess.run(["yq", "-o=json", ".fixture.comments // []", f"{d}input.yaml"],
+                                         capture_output=True, text=True, check=True).stdout))
+    got = json.loads(spec).get("seeded_comments")
+    fixture_checks += 1
+    if got == want:
+        print(f"PASS: {name} seeded_comments matches its {want} fixture comment(s)")
+    else:
+        failures += 1
+        print(f"FAIL: {name} seeded_comments is {got}, but the fixture seeds {want} comment(s)")
+
 ok, msg = ns["check"]({"files": {}, "annotations": {"cause_lists": SPEC}})
 if ok is False and "not found" in msg:
     print("PASS: missing fixture-state.json fails")
@@ -198,6 +218,6 @@ else:
     failures += 1
     print(f"FAIL: missing fixture-state.json: got {ok} {msg!r}")
 
-print(f"\n=== {len(cases) + 1} tests, {failures} failures ===")
+print(f"\n=== {len(cases) + fixture_checks + 1} tests, {failures} failures ===")
 sys.exit(1 if failures else 0)
 PY
