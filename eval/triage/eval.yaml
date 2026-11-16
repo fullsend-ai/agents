@@ -219,11 +219,13 @@ judges:
       if open_s is None:
           return False, "No Open causes list in the run's analysis"
       # Phrases are matched only in each list item's cause name (the text
-      # before its evidence: a spaced dash, an em or en dash, or ": "), so
-      # evidence that mentions a cause never counts as listing it.
+      # before its evidence: a spaced dash or an em or en dash, as the prompt's
+      # template writes it), so evidence that mentions a cause never counts as
+      # listing it. A colon is part of the name: cutting there would hide a
+      # restored cause written "Cause: regex rejects '+'".
       item = re.compile(r"^\s*(?:[-*+]|\d+[.)])\s+(.*)$")
       def names(s):
-          return [re.split(r"\s[—–-]\s|[—–]|:\s", m.group(1), maxsplit=1)[0]
+          return [re.split(r"\s[—–-]\s|[—–]", m.group(1), maxsplit=1)[0]
                   for m in (item.match(line) for line in (s or "").splitlines()) if m]
       open_n, ruled_n = names(open_s), names(ruled_s)
       problems = []
