@@ -2545,7 +2545,11 @@ fi
 # GITHUB_SIGNED_COMMITS=false so forge_push_branch is git push. A git
 # wrapper supplies the first-push failure text so each wording of the
 # production grep is hit; the retry is the real `git push --force-with-lease`.
+# A retry case first gives the branch an earlier code agent commit on the
+# remote and an open PR, as a rerun has.
 # ---------------------------------------------------------------------------
+RERUN_BOT_EMAIL="123+fullsend-ai-coder[bot]@users.noreply.github.com"
+
 run_code_push_retry_test() {
   local test_name="$1"
   local first_push_fail="${2:-}"
@@ -2554,6 +2558,15 @@ run_code_push_retry_test() {
 
   local run_dir="${SEC_CODE_TMPDIR}/run-${test_name}"
   setup_sec_code_repo "${run_dir}" "agent/99-push-retry"
+  local open_pr=""
+  if [[ "${expect_retry}" == "true" ]]; then
+    local earlier
+    earlier="$(cd "${run_dir}/repo" && GIT_AUTHOR_NAME=fullsend-code GIT_AUTHOR_EMAIL="${RERUN_BOT_EMAIL}" \
+      GIT_COMMITTER_NAME=fullsend-code GIT_COMMITTER_EMAIL="${RERUN_BOT_EMAIL}" \
+      ${REAL_GIT} commit-tree -p main -m "fix: earlier run" "main^{tree}")"
+    ${REAL_GIT} -C "${run_dir}/repo" push -q origin "${earlier}:refs/heads/agent/99-push-retry"
+    open_pr="7"
+  fi
   local mock_bin="${run_dir}/mock-bin"
   local push_log="${run_dir}/push-calls.log"
   mkdir -p "${mock_bin}"
@@ -2568,9 +2581,11 @@ run_code_push_retry_test() {
 case "$1 $2" in
   "api -X")      echo "unexpected Git Data API call on the plain-push path: $*" >&2; exit 99 ;;
   "api repos/"*) echo "main"; exit 0 ;;
-  "pr list")     echo ""; exit 0 ;;
+  "pr list")     echo "${MOCK_OPEN_PR:-}"; exit 0 ;;
   "pr create")   echo "https://github.com/test-org/test-repo/pull/1"; exit 0 ;;
-  "pr view")     echo "https://github.com/test-org/test-repo/pull/1"; exit 0 ;;
+  "pr view")
+    if printf '%s\n' "$@" | grep -qx body; then echo '{"body":"Closes #99"}'; exit 0; fi
+    echo "https://github.com/test-org/test-repo/pull/1"; exit 0 ;;
   "issue comment"|"pr comment")
     printf '%s\n' "$@"
     cat 2>/dev/null || true
@@ -2589,7 +2604,7 @@ if [[ "\$1" == "push" ]]; then
   printf 'git %s\n' "\$*" >> "${push_log}"
   _force=false
   for _a in "\$@"; do
-    if [[ "\$_a" == "--force-with-lease" ]]; then
+    if [[ "\$_a" == --force-with-lease* ]]; then
       _force=true
     fi
   done
@@ -2618,6 +2633,8 @@ MOCKEOF
     export REPO_DIR="repo"
     export FULLSEND_FORGE="github"
     export GITHUB_SIGNED_COMMITS="false"
+    export GIT_BOT_EMAIL="${RERUN_BOT_EMAIL}"
+    export MOCK_OPEN_PR="${open_pr}"
     if [[ -n "${first_push_fail}" ]]; then
       export MOCK_PUSH_FAIL="${first_push_fail}"
     else
@@ -2708,6 +2725,173 @@ run_code_push_retry_test "push-api-not-a-fast-forward" \
   "gh: Update is not a fast forward (HTTP 422)" "true" 0
 run_code_push_retry_test "push-unexpected-error" \
   "fatal: repository not found" "false" 1
+
+# ---------------------------------------------------------------------------
+# Rerun onto a branch that backs an open PR (#409, #342), against the real
+# script and a local bare remote.
+#
+# seed_rerun_repo RUN_DIR CLONE AUTHOR — the remote branch holds an earlier
+# code agent commit, then one by AUTHOR (code, fix or human); main has moved
+# on. CLONE "full" clones before AUTHOR's commit lands, so the tracking ref is
+# stale; "shallow" is a depth-1 single-branch clone of main, as Jira-sourced
+# runs check out, with no tracking ref for the branch; "checkout" is the same
+# depth-1 fetch in a repo set up as actions/checkout does (init, remote add
+# with the default fetch refspec), which the signed path's upstream step
+# needs. The clone then holds a
+# fresh code agent commit on agent/99-rerun. Sets RERUN_BEFORE (remote branch
+# tip) and RERUN_OLD_MAIN (a main commit a depth-1 clone does not have).
+# ---------------------------------------------------------------------------
+_rerun_commit() {
+  local dir="$1" file="$2" name="$3" email="$4" msg="$5"
+  local cname="${6:-$3}" cemail="${7:-$4}"
+  echo "${msg}" > "${dir}/${file}"
+  sec_fixture_git -C "${dir}" add "${file}"
+  GIT_AUTHOR_NAME="${name}" GIT_AUTHOR_EMAIL="${email}" \
+    GIT_COMMITTER_NAME="${cname}" GIT_COMMITTER_EMAIL="${cemail}" \
+    sec_fixture_git -C "${dir}" commit -q -m "${msg}"
+}
+
+seed_rerun_repo() {
+  local run_dir="$1" clone="$2" author="$3"
+  local bare="${run_dir}/remote.git" seed="${run_dir}/seed" repo="${run_dir}/repo"
+  local branch="agent/99-rerun" bot="${RERUN_BOT_EMAIL}"
+  mkdir -p "${run_dir}"
+  sec_fixture_git init -q --bare -b main "${bare}"
+  sec_fixture_git init -q -b main "${seed}"
+  sec_fixture_git -C "${seed}" remote add origin "${bare}"
+  _rerun_commit "${seed}" README.md Dev dev@example.com "init"
+  RERUN_OLD_MAIN="$(sec_fixture_git -C "${seed}" rev-parse HEAD)"
+  sec_fixture_git -C "${seed}" push -q origin main
+  sec_fixture_git -C "${seed}" checkout -q -b "${branch}"
+  _rerun_commit "${seed}" run1.txt fullsend-code "${bot}" "fix: first run"
+  sec_fixture_git -C "${seed}" push -q origin "${branch}"
+  sec_fixture_git -C "${seed}" checkout -q main
+  _rerun_commit "${seed}" main2.txt Dev dev@example.com "main moves on"
+  sec_fixture_git -C "${seed}" push -q origin main
+  if [[ "${clone}" == "full" ]]; then
+    sec_fixture_git clone -q "${bare}" "${repo}"
+  fi
+  sec_fixture_git -C "${seed}" checkout -q "${branch}"
+  case "${author}" in
+    code)  _rerun_commit "${seed}" more.txt fullsend-code "${bot}" "fix: follow-up run" ;;
+    fix)   _rerun_commit "${seed}" more.txt fullsend-fix "${bot}" "fix: address review" ;;
+    human) _rerun_commit "${seed}" more.txt "Human Dev" human@example.com "fix: human change" ;;
+    amended)
+      _rerun_commit "${seed}" more.txt fullsend-code "${bot}" "fix: follow-up run" \
+        "Human Dev" human@example.com ;;
+    signed)
+      _rerun_commit "${seed}" more.txt "fullsend-ai-coder[bot]" "${bot}" \
+        "fix: follow-up run
+
+Authored-by: fullsend-code <${bot}>" GitHub noreply@github.com ;;
+  esac
+  sec_fixture_git -C "${seed}" push -q origin "${branch}"
+  RERUN_BEFORE="$(sec_fixture_git -C "${bare}" rev-parse "refs/heads/${branch}")"
+  if [[ "${clone}" == "shallow" ]]; then
+    sec_fixture_git clone -q --depth 1 --single-branch --branch main "file://${bare}" "${repo}"
+  elif [[ "${clone}" == "checkout" ]]; then
+    sec_fixture_git init -q "${repo}"
+    sec_fixture_git -C "${repo}" remote add origin "file://${bare}"
+    sec_fixture_git -C "${repo}" fetch -q --depth=1 origin "+refs/heads/main:refs/remotes/origin/main"
+  fi
+  sec_fixture_git -C "${repo}" checkout -q -b "${branch}" origin/main
+  _rerun_commit "${repo}" file.txt fullsend-code "${bot}" "fix: rerun"
+}
+
+# check_rerun_result NAME RUN_DIR CLONE EXPECT EXIT LOG [TIP_AUTHOR]
+# EXPECT "publish": the remote branch is the clone's HEAD and no longer holds
+# the earlier commits; a shallow clone gained no old main history.
+# EXPECT "refuse": the remote branch is unchanged and the failure names the
+# commit and its author.
+check_rerun_result() {
+  local name="$1" run_dir="$2" clone="$3" expect="$4" rc="$5" log="$6" tip_author="${7:-}"
+  local after head problem=""
+  after="$(${REAL_GIT} -C "${run_dir}/remote.git" rev-parse refs/heads/agent/99-rerun)"
+  head="$(${REAL_GIT} -C "${run_dir}/repo" rev-parse HEAD)"
+  if [[ "${expect}" == "publish" ]]; then
+    if [[ "${rc}" -ne 0 ]]; then
+      problem="exit ${rc}, want 0"
+    elif [[ "${after}" != "${head}" ]]; then
+      problem="remote tip ${after} is not the clone's HEAD ${head}"
+    elif ${REAL_GIT} -C "${run_dir}/remote.git" merge-base --is-ancestor "${RERUN_BEFORE}" "${after}"; then
+      problem="the earlier commits were kept"
+    elif [[ -n "${tip_author}" ]] \
+      && [[ "$(${REAL_GIT} -C "${run_dir}/remote.git" log -1 --format=%an "${after}")" != "${tip_author}" ]]; then
+      problem="remote tip not authored by ${tip_author}"
+    elif [[ "${clone}" != "full" ]] \
+      && ${REAL_GIT} -C "${run_dir}/repo" cat-file -e "${RERUN_OLD_MAIN}^{commit}" 2>/dev/null; then
+      problem="the shallow clone fetched old main history"
+    fi
+  else
+    local refused_author
+    refused_author="$(${REAL_GIT} -C "${run_dir}/remote.git" log -1 --format=%an "${RERUN_BEFORE}")"
+    if [[ "${rc}" -eq 0 ]]; then
+      problem="exit 0, want a refusal"
+    elif [[ "${after}" != "${RERUN_BEFORE}" ]]; then
+      problem="remote branch moved from ${RERUN_BEFORE} to ${after}"
+    elif ! grep -qF "commit ${RERUN_BEFORE:0:7} by ${refused_author}" "${log}"; then
+      problem="failure does not name commit ${RERUN_BEFORE:0:7} by ${refused_author}"
+    fi
+  fi
+  if [[ -n "${problem}" ]]; then
+    echo "FAIL: ${name} — ${problem}"
+    cat "${log}"
+    echo
+    FAILURES=$((FAILURES + 1))
+  else
+    echo "PASS: ${name}"
+  fi
+}
+
+RERUN_BIN="${SEC_CODE_TMPDIR}/bin-rerun"
+mkdir -p "${RERUN_BIN}"
+cp "${SEC_CODE_MOCK_BIN}/gitleaks" "${SEC_CODE_MOCK_BIN}/sleep" "${SEC_CODE_MOCK_BIN}/git" "${RERUN_BIN}/"
+cat > "${RERUN_BIN}/gh" <<'MOCKEOF'
+#!/usr/bin/env bash
+case "$1 $2" in
+  "api -X")      exec bash "${FAKE_GH_GIT_API}" "$@" ;;
+  "api repos/"*) echo "main"; exit 0 ;;
+  "pr list")     echo "7"; exit 0 ;;
+  "pr view")
+    if printf '%s\n' "$@" | grep -qx body; then echo '{"body":"Closes #99"}'; exit 0; fi
+    echo "https://github.com/test-org/test-repo/pull/7"; exit 0 ;;
+  "issue comment"|"pr comment") printf '%s\n' "$@"; cat 2>/dev/null || true; exit 0 ;;
+  *)             exit 0 ;;
+esac
+MOCKEOF
+chmod +x "${RERUN_BIN}/gh"
+
+# run_code_rerun_test NAME CLONE AUTHOR SIGNED EXPECT [TIP_AUTHOR]
+run_code_rerun_test() {
+  local test_name="$1" clone="$2" author="$3" signed="$4" expect="$5" tip_author="${6:-}"
+  local run_dir="${SEC_CODE_TMPDIR}/run-${test_name}"
+  local log="${SEC_CODE_TMPDIR}/stdout-${test_name}.log"
+  seed_rerun_repo "${run_dir}" "${clone}" "${author}"
+  local exit_code=0
+  # shellcheck disable=SC2030,SC2031
+  (
+    cd "${run_dir}"
+    export HOME="${SEC_CODE_TMPDIR}"
+    export PATH="${RERUN_BIN}:${PATH}"
+    export PUSH_TOKEN="fake..."
+    export REPO_FULL_NAME="test-org/test-repo"
+    export ISSUE_NUMBER="99"
+    export REPO_DIR="repo"
+    export FULLSEND_FORGE="github"
+    export GITHUB_SIGNED_COMMITS="${signed}"
+    export GIT_BOT_EMAIL="${RERUN_BOT_EMAIL}"
+    bash "${POST_SCRIPT}"
+  ) > "${log}" 2>&1 < /dev/null || exit_code=$?
+  check_rerun_result "${test_name}" "${run_dir}" "${clone}" "${expect}" "${exit_code}" "${log}" "${tip_author}"
+}
+
+run_code_rerun_test "rerun-full-clone-stale-tracking-ref" full code false publish
+run_code_rerun_test "rerun-shallow-agent-commits-replaced" shallow code false publish
+run_code_rerun_test "rerun-shallow-human-commit-refused" shallow human false refuse
+run_code_rerun_test "rerun-shallow-fix-agent-commit-refused" shallow fix false refuse
+run_code_rerun_test "rerun-shallow-amended-agent-commit-refused" shallow amended false refuse
+run_code_rerun_test "rerun-shallow-signed-agent-commits-replaced" checkout signed true publish \
+  "fullsend-ai-coder[bot]"
 
 rm -rf "${SEC_CODE_TMPDIR}"
 
@@ -3165,6 +3349,62 @@ run_gitlab_push_url_test "gitlab-push-url-nested-group" \
   "https://oauth2:token123@gitlab.cee.redhat.com/org/sub/project.git" # gitleaks:allow
 
 # ---------------------------------------------------------------------------
+# GitHub forge_set_push_remote — origin must use the host from
+# GITHUB_SERVER_URL (default github.com), not a hardcoded github.com.
+# ---------------------------------------------------------------------------
+run_github_push_remote_test() {
+  local test_name="$1"
+  local server_url="$2"  # "UNSET" leaves GITHUB_SERVER_URL unset
+  local expected="$3"
+
+  local tmp actual rc=0
+  tmp="$(mktemp -d)"
+  git -C "${tmp}" init -q
+  git -C "${tmp}" remote add origin "https://example.invalid/placeholder.git"
+
+  actual=$(
+    # shellcheck disable=SC2030,SC2031
+    {
+      unset GITHUB_CODE_OPS_SH_LOADED
+      unset FORGE_TRANSIENT_RETRY_SH_LOADED
+      unset GITHUB_SERVER_URL
+      # shellcheck disable=SC1091
+      source "${SCRIPT_DIR}/lib/github-code-ops.lib.sh"
+      if [ "${server_url}" != "UNSET" ]; then
+        export GITHUB_SERVER_URL="${server_url}"
+      fi
+      export REPO_FULL_NAME="acme/widgets"
+      cd "${tmp}" && forge_set_push_remote "TOKEN" && git remote get-url origin
+    } 2>&1
+  ) || rc=$?
+  rm -rf "${tmp}"
+
+  if [ "${rc}" -ne 0 ] || [ "${actual}" != "${expected}" ]; then
+    echo "FAIL: ${test_name}"
+    echo "  expected: '${expected}'"
+    echo "  actual:   '${actual}' (rc=${rc})"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
+run_github_push_remote_test "github-push-remote-default-host" \
+  "UNSET" "https://x-access-token:TOKEN@github.com/acme/widgets.git" # gitleaks:allow
+run_github_push_remote_test "github-push-remote-public-host" \
+  "https://github.com" "https://x-access-token:TOKEN@github.com/acme/widgets.git" # gitleaks:allow
+run_github_push_remote_test "github-push-remote-configured-host" \
+  "https://ghe.example.internal" \
+  "https://x-access-token:TOKEN@ghe.example.internal/acme/widgets.git" # gitleaks:allow
+run_github_push_remote_test "github-push-remote-host-with-port" \
+  "https://ghe.example.internal:8443" \
+  "https://x-access-token:TOKEN@ghe.example.internal:8443/acme/widgets.git" # gitleaks:allow
+run_github_push_remote_test "github-push-remote-trailing-slash" \
+  "https://ghe.example.internal/" \
+  "https://x-access-token:TOKEN@ghe.example.internal/acme/widgets.git" # gitleaks:allow
+
+# ---------------------------------------------------------------------------
 # Forge dispatch pattern — tests that the declare -F dispatch pattern used
 # in post-failure-report.lib.sh and pr-assignee.lib.sh works correctly.
 # ---------------------------------------------------------------------------
@@ -3342,6 +3582,58 @@ else
   FAILURES=$((FAILURES + 1))
 fi
 
+# --- GitLab rerun onto an open MR from a depth-1 clone (#342) ---
+# The single-branch clone has no fetch refspec for the branch, so only the
+# explicit lease on the fetched tracking ref lets the forced retry through.
+GL_RERUN_BIN="${GL_INT_TMPDIR}/bin-rerun"
+mkdir -p "${GL_RERUN_BIN}"
+cp "${GL_INT_MOCK_BIN}/sleep" "${GL_INT_MOCK_BIN}/gitleaks" "${GL_INT_MOCK_BIN}/git" "${GL_RERUN_BIN}/"
+cat > "${GL_RERUN_BIN}/curl" <<'MOCKEOF'
+#!/usr/bin/env bash
+url=""
+for arg in "$@"; do
+  case "${arg}" in
+    https://*) url="${arg}" ;;
+  esac
+done
+mr_url="https://gitlab.com/test-group/test-project/-/merge_requests/5"
+case "${url}" in
+  *merge_requests\?state=opened*)
+    echo "[{\"iid\":5,\"source_project_id\":1,\"web_url\":\"${mr_url}\"}]" ;;
+  */merge_requests/5)
+    echo "{\"iid\":5,\"description\":\"Closes #99\",\"web_url\":\"${mr_url}\"}" ;;
+  *projects/*)
+    echo '{"id":1,"default_branch":"main","merge_method":"merge"}' ;;
+  *)
+    echo '{}' ;;
+esac
+MOCKEOF
+chmod +x "${GL_RERUN_BIN}/curl"
+
+_gl_rerun_dir="${GL_INT_TMPDIR}/run-gl-rerun"
+_gl_rerun_log="${GL_INT_TMPDIR}/stdout-gl-rerun.log"
+seed_rerun_repo "${_gl_rerun_dir}" shallow code
+_gl_rerun_rc=0
+# shellcheck disable=SC2030,SC2031
+(
+  cd "${_gl_rerun_dir}"
+  export HOME="${GL_INT_TMPDIR}"
+  export PATH="${GL_RERUN_BIN}:${PATH}"
+  export PUSH_TOKEN="glpa..."
+  export REPO_FULL_NAME="test-group/test-project"
+  export ISSUE_NUMBER="99"
+  export ISSUE_URL="https://gitlab.com/test-group/test-project/-/issues/99"
+  export REPO_DIR="repo"
+  export FULLSEND_FORGE="gitlab"
+  export GITLAB_TOKEN="${PUSH_TOKEN}"
+  export GITLAB_HOST="gitlab.com"
+  export CI_SERVER_HOST="gitlab.com"
+  export GIT_BOT_EMAIL="${RERUN_BOT_EMAIL}"
+  bash "${POST_SCRIPT}"
+) > "${_gl_rerun_log}" 2>&1 < /dev/null || _gl_rerun_rc=$?
+check_rerun_result "gitlab-rerun-shallow-explicit-lease" "${_gl_rerun_dir}" shallow publish \
+  "${_gl_rerun_rc}" "${_gl_rerun_log}"
+
 rm -rf "${GL_INT_TMPDIR}"
 
 # =============================================================================
@@ -3439,7 +3731,7 @@ for arg in "\$@"; do
   fi
   PREV="\${arg}"
 done
-echo "fullsend \$* env-token=\${FULLSEND_JIRA_TOKEN:-unset} env-email=\${FULLSEND_JIRA_EMAIL-unset} <<BODY:\${BODY}:BODY>>" >> "${JIRA_INT_FULLSEND_LOG}"
+echo "fullsend \$* env-token=\${FULLSEND_JIRA_TOKEN:-unset} env-email=\${FULLSEND_JIRA_EMAIL-unset} env-client-id=\${FULLSEND_JIRA_CLIENT_ID-unset} env-client-secret=\${FULLSEND_JIRA_CLIENT_SECRET:+set} <<BODY:\${BODY}:BODY>>" >> "${JIRA_INT_FULLSEND_LOG}"
 if [[ -n "\${MOCK_FULLSEND_FAIL:-}" ]]; then
   echo "Error: Jira API returned 401" >&2
   exit 1
@@ -3451,7 +3743,7 @@ chmod +x "${JIRA_INT_MOCK_BIN}/fullsend"
 # hooks (it runs repo-controlled code in the real tool).
 cat > "${JIRA_INT_MOCK_BIN}/pre-commit" <<MOCKEOF
 #!/usr/bin/env bash
-echo "pre-commit jira-token=\${JIRA_TOKEN:-unset} jira-email=\${JIRA_USER_EMAIL:-unset} fullsend-token=\${FULLSEND_JIRA_TOKEN:-unset} fullsend-email=\${FULLSEND_JIRA_EMAIL:-unset}" >> "${JIRA_INT_PRECOMMIT_LOG}"
+echo "pre-commit jira-token=\${JIRA_TOKEN:-unset} jira-email=\${JIRA_USER_EMAIL:-unset} fullsend-token=\${FULLSEND_JIRA_TOKEN:-unset} fullsend-email=\${FULLSEND_JIRA_EMAIL:-unset} client-id=\${FULLSEND_JIRA_CLIENT_ID:-unset} client-secret=\${FULLSEND_JIRA_CLIENT_SECRET:+set}" >> "${JIRA_INT_PRECOMMIT_LOG}"
 exit 0
 MOCKEOF
 chmod +x "${JIRA_INT_MOCK_BIN}/pre-commit"
@@ -3500,11 +3792,11 @@ cat > /dev/null
 read -r _ _ _ gp _ < "/proc/\${PPID}/stat"
 leak=no
 for pid in "\${PPID}" "\${gp}"; do
-  if tr '\\0' '\\n' < "/proc/\${pid}/environ" 2>/dev/null | grep -qE '^(JIRA_TOKEN|JIRA_USER_EMAIL|FULLSEND_JIRA_TOKEN|FULLSEND_JIRA_EMAIL)=.'; then
+  if tr '\\0' '\\n' < "/proc/\${pid}/environ" 2>/dev/null | grep -qE '^(JIRA_TOKEN|JIRA_USER_EMAIL|FULLSEND_JIRA_TOKEN|FULLSEND_JIRA_EMAIL|FULLSEND_JIRA_CLIENT_ID|FULLSEND_JIRA_CLIENT_SECRET)=.'; then
     leak=yes
   fi
 done
-echo "${hook_name} jira-token=\${JIRA_TOKEN:-unset} jira-email=\${JIRA_USER_EMAIL:-unset} fullsend-token=\${FULLSEND_JIRA_TOKEN:-unset} fullsend-email=\${FULLSEND_JIRA_EMAIL:-unset} proc-environ-leak=\${leak}" >> "${log_path}"
+echo "${hook_name} jira-token=\${JIRA_TOKEN:-unset} jira-email=\${JIRA_USER_EMAIL:-unset} fullsend-token=\${FULLSEND_JIRA_TOKEN:-unset} fullsend-email=\${FULLSEND_JIRA_EMAIL:-unset} proc-environ-leak=\${leak} client-id=\${FULLSEND_JIRA_CLIENT_ID:-unset} client-secret=\${FULLSEND_JIRA_CLIENT_SECRET:+set}" >> "${log_path}"
 exit 0
 HOOKEOF
   chmod +x "${hook_path}"
@@ -3557,7 +3849,12 @@ run_jira_int() {
     for kv in "$@"; do
       export "${kv?}"
     done
-    bash "${POST_SCRIPT}"
+    # JIRA_INT_XTRACE=1 traces the script and its re-exec via SHELLOPTS.
+    if [ -n "${JIRA_INT_XTRACE:-}" ]; then
+      env SHELLOPTS=xtrace bash "${POST_SCRIPT}"
+    else
+      bash "${POST_SCRIPT}"
+    fi
   ) > "${JIRA_INT_OUT}" 2>&1 || JIRA_INT_RC=$?
 }
 
@@ -3751,6 +4048,64 @@ elif ! grep -qF "JIRA_TOKEN is required" "${JIRA_INT_OUT}" || [ -s "${JIRA_INT_F
 else
   echo "PASS: jira-missing-token-fails-step (expected failure, got exit ${JIRA_INT_RC})"
 fi
+
+# OAuth 2.0 client credentials (#1926): with no token, the stage update
+# runs the CLI with the client variables and no FULLSEND_JIRA_TOKEN or
+# FULLSEND_JIRA_EMAIL. Hooks see neither client variable, and the secret
+# reaches no output and no command line.
+JIRA_CLIENT_SECRET_VALUE="client-secret-DO-NOT-LEAK"
+JIRA_CLIENT_ENV=(JIRA_TOKEN= FULLSEND_JIRA_TOKEN= JIRA_USER_EMAIL= FULLSEND_JIRA_EMAIL=
+  FULLSEND_JIRA_CLIENT_ID=client-id-1 "FULLSEND_JIRA_CLIENT_SECRET=${JIRA_CLIENT_SECRET_VALUE}")
+: > "${JIRA_INT_PRECOMMIT_LOG}"
+: > "${JIRA_INT_PREPUSH_LOG}"
+JIRA_INT_WITH_PRECOMMIT=1 JIRA_INT_PREPUSH_HOOK="${JIRA_INT_PREPUSH_LOG}" \
+  run_jira_int "jira-client-credentials" github "${JIRA_CLIENT_ENV[@]}"
+if [ "${JIRA_INT_RC}" -ne 0 ]; then
+  jira_int_fail "jira-client-credentials-stage-update" "post-code failed"
+elif ! grep -qF "env-token=unset env-email=unset env-client-id=client-id-1 env-client-secret=set" "${JIRA_INT_FULLSEND_LOG}" \
+     || ! grep -qF -- "${JIRA_CODE_MARKER}" "${JIRA_INT_FULLSEND_LOG}"; then
+  jira_int_fail "jira-client-credentials-stage-update" "the CLI did not get the client variables alone"
+elif ! grep -qF "client-id=unset client-secret=" "${JIRA_INT_PRECOMMIT_LOG}" \
+     || grep -qF "client-secret=set" "${JIRA_INT_PRECOMMIT_LOG}" \
+     || ! grep -qF "proc-environ-leak=no client-id=unset client-secret=" "${JIRA_INT_PREPUSH_LOG}" \
+     || grep -qF "client-secret=set" "${JIRA_INT_PREPUSH_LOG}"; then
+  jira_int_fail "jira-client-credentials-stage-update" "client credentials visible to pre-commit or a pre-push hook"
+elif grep -qF "${JIRA_CLIENT_SECRET_VALUE}" "${JIRA_INT_OUT}" "${JIRA_INT_FULLSEND_LOG}" "${JIRA_INT_FORGE_LOG}"; then
+  jira_int_fail "jira-client-credentials-stage-update" "client secret in output or on a command line"
+else
+  echo "PASS: jira-client-credentials-stage-update"
+fi
+
+# Under xtrace, the client secret must not appear on any traced line.
+JIRA_XTRACE_SECRET_VALUE="xtrace-secret-Q7Zk9wPv"
+JIRA_INT_XTRACE=1 run_jira_int "jira-client-credentials-xtrace" github \
+  "${JIRA_CLIENT_ENV[@]}" "FULLSEND_JIRA_CLIENT_SECRET=${JIRA_XTRACE_SECRET_VALUE}"
+if [ "${JIRA_INT_RC}" -ne 0 ]; then
+  jira_int_fail "jira-client-credentials-xtrace-no-secret" "post-code failed"
+elif ! grep -q '^+' "${JIRA_INT_OUT}"; then
+  jira_int_fail "jira-client-credentials-xtrace-no-secret" "no xtrace output"
+elif grep -qF "${JIRA_XTRACE_SECRET_VALUE}" "${JIRA_INT_OUT}" "${JIRA_INT_FULLSEND_LOG}" "${JIRA_INT_FORGE_LOG}"; then
+  grep -nF "${JIRA_XTRACE_SECRET_VALUE}" "${JIRA_INT_OUT}" | head -5 || true
+  jira_int_fail "jira-client-credentials-xtrace-no-secret" "client secret on a traced line"
+else
+  echo "PASS: jira-client-credentials-xtrace-no-secret"
+fi
+
+# A token and client credentials together, or one client variable alone,
+# fail the Jira write without calling the CLI.
+for _jira_conflict_case in "both|JIRA_TOKEN=fake-jira-token" "id-only|FULLSEND_JIRA_CLIENT_SECRET="; do
+  _jira_conflict_name="${_jira_conflict_case%%|*}"
+  run_jira_int "jira-client-conflict-${_jira_conflict_name}" github \
+    "${JIRA_CLIENT_ENV[@]}" "${_jira_conflict_case#*|}"
+  if [ "${JIRA_INT_RC}" -eq 0 ]; then
+    jira_int_fail "jira-client-conflict-${_jira_conflict_name}-fails-step" "expected failure but got success"
+  elif ! grep -qF "FULLSEND_JIRA_CLIENT_" "${JIRA_INT_OUT}" || [ -s "${JIRA_INT_FULLSEND_LOG}" ] \
+       || grep -qF "${JIRA_CLIENT_SECRET_VALUE}" "${JIRA_INT_OUT}"; then
+    jira_int_fail "jira-client-conflict-${_jira_conflict_name}-fails-step" "missing error naming the variables, a write was attempted, or the secret was printed"
+  else
+    echo "PASS: jira-client-conflict-${_jira_conflict_name}-fails-step (expected failure, got exit ${JIRA_INT_RC})"
+  fi
+done
 
 # The config-backed CLI needs FULLSEND_DIR for tracker.jira.
 run_jira_int "jira-missing-fullsend-dir" github FULLSEND_DIR=

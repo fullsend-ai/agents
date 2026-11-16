@@ -1,4 +1,7 @@
 ---
+# Deprecated: the built-in harnesses now use fullsend's builtin `jira`
+# provider. This file still works in this release and is removed in the
+# next one. In a custom harness, list `jira` under `providers` instead.
 id: fullsend-jira-ro
 display_name: Fullsend Jira (read-only)
 description: Read-only Jira Cloud API access for fullsend agents

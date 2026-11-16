@@ -827,7 +827,7 @@ done
 # --- Commit-count handling in the base fetch snippets -------------------------
 
 assert_contains "PR data fetching records the total commit count" "${GITHUB_FORGE}" \
-  'PR_COMMIT_COUNT=$(echo "$PR_DATA" | jq -r '"'"'.commits'"'"')'
+  'PR_COMMIT_COUNT=$(printf '"'"'%s'"'"' "$PR_DATA" | jq -r '"'"'.commits'"'"')'
 assert_contains "PR data fetching writes the commit count file" "${GITHUB_FORGE}" \
   '"$PR_COMMIT_COUNT" > "$PR_COMMIT_COUNT_FILE"'
 assert_contains "issue context keeps the same-repository guard" "${GITHUB_FORGE}" \

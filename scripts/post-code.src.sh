@@ -33,7 +33,9 @@
 # config.yaml holds tracker.jira for the fullsend CLI) to write the
 # code-stage update and PR/MR URL to the Jira issue. JIRA_USER_EMAIL is
 # optional: when set, the write uses bot-user Basic auth; when unset or
-# empty, service-account Bearer auth. JIRA_BASE_URL is optional and
+# empty, service-account Bearer auth. FULLSEND_JIRA_CLIENT_ID and
+# FULLSEND_JIRA_CLIENT_SECRET can replace JIRA_TOKEN (service-account OAuth
+# 2.0 client credentials); setting both modes fails the Jira write. JIRA_BASE_URL is optional and
 # cross-checked against the work-item URL. GitLab targets take the GitLab
 # host from CI_SERVER_HOST.
 #
@@ -88,21 +90,30 @@ set -euo pipefail
 # ---------------------------------------------------------------------------
 _jira_token_saved=""
 _jira_email_saved=""
+_jira_client_id_saved=""
+_jira_client_secret_saved=""
+# Keep credentials off the trace: xtrace off for the stash, restored after.
+_jira_xtrace_was_on=0; [[ $- == *x* ]] && _jira_xtrace_was_on=1; set +x
 if [[ -n "${_POST_CODE_JIRA_FD:-}" ]]; then
   _jira_stash_fd="${_POST_CODE_JIRA_FD}"
   unset _POST_CODE_JIRA_FD
-  { IFS= read -r -d '' _jira_token_saved || true; IFS= read -r -d '' _jira_email_saved || true; } \
+  { IFS= read -r -d '' _jira_token_saved || true; IFS= read -r -d '' _jira_email_saved || true
+    IFS= read -r -d '' _jira_client_id_saved || true; IFS= read -r -d '' _jira_client_secret_saved || true; } \
     < "/proc/self/fd/${_jira_stash_fd}"
   exec {_jira_stash_fd}<&-
   unset _jira_stash_fd
-elif [[ -n "${JIRA_TOKEN:-}${JIRA_USER_EMAIL:-}${FULLSEND_JIRA_TOKEN:-}${FULLSEND_JIRA_EMAIL:-}" ]]; then
+elif [[ -n "${JIRA_TOKEN:-}${JIRA_USER_EMAIL:-}${FULLSEND_JIRA_TOKEN:-}${FULLSEND_JIRA_EMAIL:-}${FULLSEND_JIRA_CLIENT_ID:-}${FULLSEND_JIRA_CLIENT_SECRET:-}" ]]; then
   _jira_stash_file="$(mktemp)"
   exec {_jira_stash_fd}<>"${_jira_stash_file}"
   rm -f "${_jira_stash_file}"
-  printf '%s\0%s\0' "${JIRA_TOKEN-}" "${JIRA_USER_EMAIL-}" >&"${_jira_stash_fd}"
+  printf '%s\0%s\0%s\0%s\0' "${JIRA_TOKEN-}" "${JIRA_USER_EMAIL-}" \
+    "${FULLSEND_JIRA_CLIENT_ID-}" "${FULLSEND_JIRA_CLIENT_SECRET-}" >&"${_jira_stash_fd}"
   exec env -u JIRA_TOKEN -u JIRA_USER_EMAIL -u FULLSEND_JIRA_TOKEN -u FULLSEND_JIRA_EMAIL \
+    -u FULLSEND_JIRA_CLIENT_ID -u FULLSEND_JIRA_CLIENT_SECRET \
     _POST_CODE_JIRA_FD="${_jira_stash_fd}" "${BASH}" "${BASH_SOURCE[0]}" "$@"
 fi
+(( _jira_xtrace_was_on )) && set -x
+unset _jira_xtrace_was_on
 
 SCRIPT_DIR_POST="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/git-graph-policy.lib.sh
@@ -548,9 +559,15 @@ post_jira_stage_update() {
   # The credentials were withheld from the environment at the start of the
   # script (see "Jira credential isolation"); they are passed to the trusted
   # CLI below and nowhere else. The email is optional: without it the CLI
-  # uses service-account Bearer auth.
-  if [ -z "${_jira_token_saved:-}" ]; then
-    gha_echo error "JIRA_TOKEN is required to write to Jira"
+  # uses service-account Bearer auth. Client credentials replace the token,
+  # and the CLI mints its own access token from them.
+  if ! jira_auth_select "${_jira_token_saved:-}" \
+    _jira_client_id_saved _jira_client_secret_saved; then
+    gha_echo error "Conflicting Jira credentials; cannot write to Jira"
+    return 1
+  fi
+  if [ "${JIRA_AUTH_MODE}" = "none" ]; then
+    gha_echo error "JIRA_TOKEN is required to write to Jira (or FULLSEND_JIRA_CLIENT_ID and FULLSEND_JIRA_CLIENT_SECRET)"
     return 1
   fi
   if [ -z "${FULLSEND_DIR:-}" ]; then
@@ -573,7 +590,8 @@ post_jira_stage_update() {
 Review and merge happen on the ${noun}."
 
   # The credentials reach the CLI through FULLSEND_JIRA_TOKEN and, for a
-  # bot user only, FULLSEND_JIRA_EMAIL, never through command-line flags,
+  # bot user only, FULLSEND_JIRA_EMAIL, or through FULLSEND_JIRA_CLIENT_ID
+  # and FULLSEND_JIRA_CLIENT_SECRET, never through command-line flags,
   # keeping them out of the process list. The Jira site and API gateway
   # come from tracker.jira in FULLSEND_DIR's config.yaml.
   printf '%s' "${body}" | jira_auth_fullsend "${_jira_fullsend_bin}" \
@@ -945,6 +963,41 @@ fi
 # ---------------------------------------------------------------------------
 # 7b. Push, with --force-with-lease fallback for non-fast-forward errors.
 # ---------------------------------------------------------------------------
+
+# The code agent's git author name; harness/code.yaml sets it in the sandbox.
+CODE_AGENT_AUTHOR_NAME="fullsend-code"
+
+# refuse_unless_agent_commits — the forced retry drops every commit on the
+# fetched origin/BRANCH that HEAD lacks; fail unless the code agent wrote
+# each one, so a person's or the fix agent's work is never replaced (#342).
+refuse_unless_agent_commits() {
+  local bot_email dropped sha name email committer committer_email short pr_note=""
+  bot_email="$(signoff_bot_email)"
+  if [ -z "${bot_email}" ]; then
+    post_fail_to_issue push-rejected \
+      "Cannot tell whether the commits on '${BRANCH}' are the code agent's (no bot email set) — refusing to replace them."
+  fi
+  if ! dropped="$(git rev-list "refs/remotes/origin/${BRANCH}" --not HEAD)"; then
+    post_fail_to_issue push-rejected \
+      "Could not list the commits on '${BRANCH}' that a forced push would replace — refusing to push."
+  fi
+  for sha in ${dropped}; do
+    IFS=$'\t' read -r name email <<< "$(commit_author_identity "${sha}")"
+    IFS=$'\t' read -r committer committer_email <<< "$(git log -1 --format='%cn%x09%ce' "${sha}")"
+    # Amending an agent commit keeps its author, so the committer must match
+    # too. GitHub is the committer of API-signed commits.
+    if [ "${name}" != "${CODE_AGENT_AUTHOR_NAME}" ] || [ "${email}" != "${bot_email}" ] \
+       || { [ "${committer_email}" != "${bot_email}" ] && [ "${committer_email}" != "noreply@github.com" ]; }; then
+      short="$(git rev-parse --short "${sha}")"
+      if [ -n "${OPEN_PR:-}" ]; then
+        pr_note=" (open PR #${OPEN_PR})"
+      fi
+      post_fail_to_issue push-rejected \
+        "Branch '${BRANCH}'${pr_note} holds commit ${short} by ${name:-unknown} (committed by ${committer:-unknown}), which is not the code agent's own; refusing to replace it. Close the pull request and run the code agent again, or ask for changes on the existing pull request instead."
+    fi
+  done
+}
+
 echo "Pushing branch ${BRANCH}..."
 PUSH_OUTPUT="$(forge_push_branch "${BRANCH}" 2>&1)" && PUSH_RC=0 || PUSH_RC=$?
 print_sanitized_gha_log "${PUSH_OUTPUT}"
@@ -952,6 +1005,28 @@ print_sanitized_gha_log "${PUSH_OUTPUT}"
 if [ "${PUSH_RC}" -ne 0 ]; then
   if echo "${PUSH_OUTPUT}" | grep -qi "non-fast-forward\|rejected\|fetch first\|not a fast forward"; then
     gha_echo warning "Plain push failed (non-fast-forward) — retrying with --force-with-lease"
+    # The lease and the commit check need the current remote tip (#409, #342).
+    # In a shallow clone a plain fetch pulls in old target-branch history,
+    # which the check would count as commits to replace; in a full clone
+    # --shallow-exclude would make the clone shallow.
+    SHALLOW_EXCLUDE_ARG=""
+    if [ "$(git rev-parse --is-shallow-repository)" = "true" ]; then
+      SHALLOW_EXCLUDE_ARG="--shallow-exclude=refs/heads/${TARGET_BRANCH}"
+    fi
+    echo "Fetching remote branch ${BRANCH} before the forced retry..."
+    BRANCH_FETCH_OUTPUT="$(git fetch ${SHALLOW_EXCLUDE_ARG:+"${SHALLOW_EXCLUDE_ARG}"} origin \
+      "+refs/heads/${BRANCH}:refs/remotes/origin/${BRANCH}" 2>&1)" && BRANCH_FETCH_RC=0 || BRANCH_FETCH_RC=$?
+    # The push remote URL carries PUSH_TOKEN.
+    BRANCH_FETCH_OUTPUT="$(_redact_literal_token "${BRANCH_FETCH_OUTPUT}" "${PUSH_TOKEN}")"
+    print_sanitized_gha_log "${BRANCH_FETCH_OUTPUT}"
+    if [ "${BRANCH_FETCH_RC}" -ne 0 ]; then
+      PUSH_CATEGORY="$(categorize_push_failure "${PUSH_OUTPUT}
+${BRANCH_FETCH_OUTPUT}")"
+      post_fail_to_issue "${PUSH_CATEGORY}" "${PUSH_OUTPUT}
+Could not fetch '${BRANCH}' before the forced retry:
+${BRANCH_FETCH_OUTPUT}"
+    fi
+    refuse_unless_agent_commits
     FORCE_PUSH_OUTPUT=""
     if ! FORCE_PUSH_OUTPUT="$(forge_push_branch "${BRANCH}" --force-with-lease 2>&1)"; then
       print_sanitized_gha_log "${FORCE_PUSH_OUTPUT}"

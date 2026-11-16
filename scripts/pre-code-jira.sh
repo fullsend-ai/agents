@@ -20,9 +20,13 @@
 #   JIRA_BASE_URL      — Jira instance base URL; derived from ISSUE_URL when unset,
 #                         cross-checked when set
 #   JIRA_TOKEN         — Jira token for the child-issue check and the skip
-#                         comment; both are skipped when it is unset
+#                         comment; both are skipped when it and the client
+#                         credentials are unset
 #   JIRA_USER_EMAIL    — bot-user email (Basic auth); unset means a
 #                         service-account token (Bearer auth)
+#   FULLSEND_JIRA_CLIENT_ID, FULLSEND_JIRA_CLIENT_SECRET
+#                      — service-account OAuth 2.0 client credentials,
+#                         instead of JIRA_TOKEN (needs JIRA_API_URL)
 #   GH_TOKEN / GITLAB_TOKEN — target forge token for the existing-PR check;
 #                         the check is skipped when unset
 #   COMMENT_BODY       — trigger comment; when unset, read from the dispatch
@@ -542,8 +546,18 @@ _signed_push_update_ref() {
 forge_push_branch() {
   local rc=0 _SIGNED_PUSH_DIR _SIGNED_PUSH_MAP _SIGNED_PUSH_BLOBS
   if [ "${GITHUB_SIGNED_COMMITS:-false}" != "true" ]; then
-    local branch="$1"
+    local branch="$1" lease
     shift
+    if [ "${1:-}" = "--force-with-lease" ]; then
+      # Lease on the tracking ref explicitly: a single-branch clone has no
+      # fetch refspec for BRANCH, so a bare --force-with-lease reports stale info.
+      lease="$(git rev-parse -q --verify "refs/remotes/origin/${branch}")" || {
+        echo "error: no remote-tracking ref origin/${branch} to lease on; refusing the non-fast-forward update" >&2
+        return 1
+      }
+      git push --force-with-lease="refs/heads/${branch}:${lease}" -u origin -- "${branch}"
+      return
+    fi
     git push "$@" -u origin -- "${branch}"
     return
   fi
@@ -606,16 +620,58 @@ _forge_push_branch() {
     return 0
   fi
   git reset -q --soft "${tip}" || return 1
-  git branch -q --set-upstream-to="origin/${branch}" || return 1
+  # Set the upstream as `git push -u` does: --set-upstream-to refuses a
+  # remote-tracking ref outside the fetch refspec, as in a single-branch
+  # clone.
+  git config "branch.${branch}.remote" origin || return 1
+  git config "branch.${branch}.merge" "refs/heads/${branch}" || return 1
   echo "Branch ${branch} is at ${tip} on origin"
 }
 # END bundled: lib/github-signed-push.lib.sh
+# shellcheck source=github-host.lib.sh
+# BEGIN bundled: lib/github-host.lib.sh
+# shellcheck shell=bash
+# github-host.lib.sh — Shared GitHub host handling for GitHub ops.
+#
+# Derives the GitHub origin the run executes against from GITHUB_SERVER_URL,
+# a GitHub Actions default variable (https://github.com on github.com, the
+# instance URL on GitHub Enterprise Server). Defaults to https://github.com
+# when unset. Issue/PR URL validation, URL parsing and generated links use
+# this origin instead of a hard-coded github.com.
+#
+# Sourced by the github-*-ops.lib.sh files and inlined by the bundler.
+
+[[ -n "${GITHUB_HOST_SH_LOADED:-}" ]] && return 0
+GITHUB_HOST_SH_LOADED=1
+
+# Prints the GitHub origin (https://host[:port]) without a trailing slash.
+# Fails closed when GITHUB_SERVER_URL is not an HTTPS origin.
+_github_server_url() {
+  local origin="${GITHUB_SERVER_URL:-https://github.com}"
+  origin="${origin%/}"
+  if [[ ! "${origin}" =~ ^https://[a-zA-Z0-9.-]+(:[0-9]+)?$ ]]; then
+    echo "ERROR: GITHUB_SERVER_URL is not an HTTPS origin (https://host[:port]): $(printf '%s' "${origin}" | tr -d '\n\r')" >&2
+    return 1
+  fi
+  printf '%s\n' "${origin}"
+}
+
+# Prints the remainder of a URL after "<origin>/" when the URL is on the
+# GitHub origin; fails (printing nothing) when it is on another host.
+_github_url_path() {
+  local url="$1" base
+  base="$(_github_server_url)/" || return 1
+  [[ "${url}" == "${base}"* ]] || return 1
+  printf '%s\n' "${url#"${base}"}"
+}
+# END bundled: lib/github-host.lib.sh
 
 # --- URL handling ---
 
 forge_validate_issue_url() {
-  local url="${1:-${ISSUE_URL:-}}"
-  if [[ ! "${url}" =~ ^https://github\.com/[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+/issues/[0-9]+$ ]]; then
+  local url="${1:-${ISSUE_URL:-}}" path
+  if ! path=$(_github_url_path "${url}") \
+    || [[ ! "${path}" =~ ^[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+/issues/[0-9]+$ ]]; then
     echo "ERROR: ISSUE_URL does not match expected GitHub pattern: ${url}" >&2
     return 1
   fi
@@ -623,13 +679,13 @@ forge_validate_issue_url() {
 
 forge_parse_issue_url() {
   local url="${1:-${ISSUE_URL:-}}"
-  REPO_FULL_NAME=$(echo "${url}" | sed 's|https://github.com/||; s|/issues/.*||')
+  REPO_FULL_NAME=$(_github_url_path "${url}" | sed 's|/issues/.*||')
   ISSUE_NUMBER=$(basename "${url}")
 }
 
 forge_extract_repo_from_url() {
   local url="$1"
-  echo "${url}" | sed -E 's|https://github.com/([^/]+/[^/]+)/issues/.*|\1|'
+  _github_url_path "${url}" | sed -E 's|^([^/]+/[^/]+)/issues/.*|\1|'
 }
 
 forge_extract_issue_from_url() {
@@ -825,9 +881,10 @@ forge_get_default_branch() {
 }
 
 forge_set_push_remote() {
-  local token="$1"
+  local token="$1" server
+  server=$(_github_server_url) || return 1
   git remote set-url origin \
-    "https://x-access-token:${token}@github.com/${REPO_FULL_NAME}.git"
+    "https://x-access-token:${token}@${server#https://}/${REPO_FULL_NAME}.git"
 }
 
 forge_check_remote_branch() {
@@ -1387,8 +1444,18 @@ forge_set_push_remote() {
 
 # forge_push_branch BRANCH [--force-with-lease] — plain git push.
 forge_push_branch() {
-  local branch="$1"
+  local branch="$1" lease
   shift
+  if [ "${1:-}" = "--force-with-lease" ]; then
+    # Lease on the tracking ref explicitly: a single-branch clone has no
+    # fetch refspec for BRANCH, so a bare --force-with-lease reports stale info.
+    lease="$(git rev-parse -q --verify "refs/remotes/origin/${branch}")" || {
+      echo "error: no remote-tracking ref origin/${branch} to lease on; refusing the non-fast-forward update" >&2
+      return 1
+    }
+    git push --force-with-lease="refs/heads/${branch}:${lease}" -u origin -- "${branch}"
+    return
+  fi
   git push "$@" -u origin -- "${branch}"
 }
 
@@ -1658,22 +1725,32 @@ esac
 #     CODE_FORCE=true, bypasses both checks.
 # A skip writes skipped=true through prescript_output and posts one sticky
 # comment on the Jira issue; a failed Jira write still skips. A missing
-# forge token skips the PR check; a missing JIRA_TOKEN skips the child
+# forge token skips the PR check; missing Jira credentials skip the child
 # check and the comment.
 #
 # The child check and the comment use jira-triage-ops.lib.sh: Basic auth
 # when JIRA_USER_EMAIL is set (bot user), Bearer when it is not (service
 # account), sent to JIRA_API_URL or else JIRA_BASE_URL (#1900, #1876).
+# With client credentials, REST calls send a minted Bearer token to
+# JIRA_API_URL only (#1926).
 #
 # On a GitLab target, the trigger comment reaches neither COMMENT_BODY nor
 # the dispatch payload file, so `/fs-code --force` has no effect there until
 # fullsend exports COMMENT_BODY for Jira jobs (fullsend-ai/fullsend#9187).
 # The GitHub check reads the newest 500 open PRs.
 
-# jira-triage-ops.lib.sh exits at load time without JIRA_TOKEN, so load it
-# only when the token is set. JIRA_USER_EMAIL is optional.
+# jira-triage-ops.lib.sh exits at load time without Jira credentials, so
+# load it only when a token or a client credential is set. It also exits
+# when both modes are set, or only one client variable. JIRA_USER_EMAIL is
+# optional.
 JIRA_CREDS_OK=0
-if [[ -n "${JIRA_TOKEN:-}" ]]; then
+# Test the credentials with xtrace off so the secret is not traced.
+_jira_xtrace_was_on=0; [[ $- == *x* ]] && _jira_xtrace_was_on=1; set +x
+_jira_creds_set=0
+[[ -n "${JIRA_TOKEN:-}${FULLSEND_JIRA_CLIENT_ID:-}${FULLSEND_JIRA_CLIENT_SECRET:-}" ]] && _jira_creds_set=1
+(( _jira_xtrace_was_on )) && set -x
+unset _jira_xtrace_was_on
+if (( _jira_creds_set )); then
   # shellcheck source=lib/jira-triage-ops.lib.sh
 # BEGIN bundled: lib/jira-triage-ops.lib.sh
 # shellcheck shell=bash
@@ -1699,7 +1776,11 @@ if [[ -n "${JIRA_TOKEN:-}" ]]; then
 # Expected env vars:
 #   ISSUE_URL       — HTML URL of the issue (https://<host>.atlassian.net/browse/PROJ-123)
 #   JIRA_TOKEN      — Jira API token (the triage harness maps
-#                     FULLSEND_JIRA_TOKEN to it)
+#                     FULLSEND_JIRA_TOKEN to it). Or, instead of it:
+#   FULLSEND_JIRA_CLIENT_ID, FULLSEND_JIRA_CLIENT_SECRET
+#                   — service-account OAuth 2.0 client credentials. REST
+#                     calls then use an access token minted on the runner
+#                     and need JIRA_API_URL. Setting both modes fails.
 #   JIRA_USER_EMAIL — (optional) bot-user email (the triage harness maps
 #                     FULLSEND_JIRA_EMAIL to it). When set, requests use
 #                     Basic auth with email and token; when unset or
@@ -1710,14 +1791,16 @@ if [[ -n "${JIRA_TOKEN:-}" ]]; then
 #   JIRA_API_URL    — (optional) where REST calls go, e.g. the Atlassian
 #                     API gateway https://api.atlassian.com/ex/jira/<cloudId>
 #                     that `fullsend run` resolves and exports. Falls back
-#                     to JIRA_BASE_URL when unset (older fullsend releases).
+#                     to JIRA_BASE_URL when unset (older fullsend releases),
+#                     except with client credentials, which require it.
 #                     Browse links always use JIRA_BASE_URL.
 #
 # The `fullsend issues` CLI reads its credentials from FULLSEND_JIRA_TOKEN
 # and, for a bot user, FULLSEND_JIRA_EMAIL, and its Jira site and API
 # gateway from tracker.jira in --fullsend-dir. jira_auth_fullsend passes
-# the same token and email to it, so one set of credentials covers both
-# the raw REST calls in this file and the `fullsend` shell-outs below.
+# the same token and email to it, or the client credentials, so one set of
+# credentials covers both the raw REST calls in this file and the
+# `fullsend` shell-outs below.
 #
 # Optional env vars:
 #   JIRA_DUPLICATE_TRANSITION   — transition name for the "duplicate" action
@@ -1736,19 +1819,23 @@ JIRA_TRIAGE_OPS_SH_LOADED=1
 # Matches the idiom pre-triage.src.sh / post-triage.src.sh already use for
 # ISSUE_URL and FULLSEND_TRACKER.
 # JIRA_USER_EMAIL is optional: without it, requests use Bearer auth.
-: "${JIRA_TOKEN:?JIRA_TOKEN must be set}"
-
 # shellcheck source=jira-auth.lib.sh
 # BEGIN bundled: lib/jira-auth.lib.sh
 # shellcheck shell=bash
 # jira-auth.lib.sh — Jira credential-mode selection for host-side scripts.
 #
 # Shared by the Jira triage and scribe ops libraries and post-code.sh, and
-# bundled into each script that sources it. Two credential modes
-# (fullsend#9007):
+# bundled into each script that sources it. Three credential modes
+# (fullsend#9007, agents#1926):
 #
-#   token + email — bot user: Basic auth with email:token
-#   token only    — service account: Bearer auth with the token
+#   token + email      — bot user: Basic auth with email:token
+#   token only         — service account: Bearer auth with the token
+#   client credentials — service account OAuth 2.0 client credentials
+#                        (FULLSEND_JIRA_CLIENT_ID and
+#                        FULLSEND_JIRA_CLIENT_SECRET): REST calls use a
+#                        Bearer access token minted on the runner, and the
+#                        fullsend CLI gets the client credentials and mints
+#                        for itself
 #
 # An email that is empty or only whitespace counts as absent. A harness
 # that maps an unset FULLSEND_JIRA_EMAIL to JIRA_USER_EMAIL yields an empty
@@ -1756,9 +1843,33 @@ JIRA_TRIAGE_OPS_SH_LOADED=1
 #
 # Every helper takes the token and email as arguments, so callers that
 # withhold the credentials from their environment can pass saved copies.
+# jira_auth_select chooses the mode once; until it is called, the helpers
+# use the token and email they are given (the token modes).
+#
+# The client secret is kept in shell variables only. It never reaches a
+# command line, a file, the output, or an xtrace line: jira_auth_select
+# takes the names of the client ID and secret variables and reads them
+# with xtrace off, jq builds the token request body from its environment
+# and sends it to curl on stdin, and a failed request reports its HTTP
+# status, never the response body.
 
 [[ -n "${JIRA_AUTH_SH_LOADED:-}" ]] && return 0
 JIRA_AUTH_SH_LOADED=1
+
+# Selected mode: "token", "client", or "none". Empty until jira_auth_select.
+JIRA_AUTH_MODE=""
+_JIRA_AUTH_CLIENT_ID=""
+_JIRA_AUTH_CLIENT_SECRET=""
+_JIRA_AUTH_ACCESS_TOKEN=""
+_JIRA_AUTH_EXPIRES_AT=0
+
+# Print the argument with surrounding whitespace removed.
+_jira_auth_trim() {
+  local s="$1"
+  s="${s#"${s%%[![:space:]]*}"}"
+  s="${s%"${s##*[![:space:]]}"}"
+  printf '%s' "${s}"
+}
 
 # Print the email with surrounding whitespace removed. Empty output means
 # no email, which selects Bearer auth.
@@ -1771,8 +1882,164 @@ jira_auth_email() {
   printf '%s' "${email}"
 }
 
+# Select the credential mode and set JIRA_AUTH_MODE:
+#   token  — a token is set (the email decides Basic or Bearer per call)
+#   client — the client ID and secret are both set and no token is
+#   none   — nothing is set
+# The client ID and secret are passed as variable names, never values, so
+# a traced call line shows only the names; they are read with xtrace off.
+# Fails, naming the variables but never their values, when a token and
+# client credentials are both set, only one client variable is, or a name
+# is not a shell identifier. Values are trimmed, so one that is only
+# whitespace counts as unset.
+#
+# Usage: jira_auth_select <token> <client-id-var> <client-secret-var>
+jira_auth_select() {
+  local _jas_xtrace=0 _jas_rc=0
+  if [[ $- == *x* ]]; then
+    _jas_xtrace=1
+    set +x
+  fi
+  _jira_auth_select_now "$@" || _jas_rc=$?
+  if [[ "${_jas_xtrace}" -eq 1 ]]; then
+    set -x
+  fi
+  return "${_jas_rc}"
+}
+
+# Locals use a _jas_ prefix, and such names are refused, so the indirect
+# reads see the caller's variables, not these.
+_jira_auth_select_now() {
+  local _jas_name
+  for _jas_name in "$2" "$3"; do
+    if [[ ! "${_jas_name}" =~ ^[A-Za-z_][A-Za-z0-9_]*$ || "${_jas_name}" == _jas_* ]]; then
+      echo "ERROR: jira_auth_select needs the names of the client ID and secret variables" >&2
+      return 1
+    fi
+  done
+  local _jas_token _jas_id _jas_secret
+  _jas_token="$(_jira_auth_trim "$1")"
+  _jas_id="$(_jira_auth_trim "${!2:-}")"
+  _jas_secret="$(_jira_auth_trim "${!3:-}")"
+  if [[ -n "${_jas_token}" && ( -n "${_jas_id}" || -n "${_jas_secret}" ) ]]; then
+    echo "ERROR: set either FULLSEND_JIRA_TOKEN (JIRA_TOKEN) or FULLSEND_JIRA_CLIENT_ID and FULLSEND_JIRA_CLIENT_SECRET, not both" >&2
+    return 1
+  fi
+  if [[ -n "${_jas_id}" && -z "${_jas_secret}" ]] || [[ -z "${_jas_id}" && -n "${_jas_secret}" ]]; then
+    echo "ERROR: FULLSEND_JIRA_CLIENT_ID and FULLSEND_JIRA_CLIENT_SECRET must be set together" >&2
+    return 1
+  fi
+  _JIRA_AUTH_ACCESS_TOKEN=""
+  _JIRA_AUTH_EXPIRES_AT=0
+  if [[ -n "${_jas_token}" ]]; then
+    JIRA_AUTH_MODE="token"
+  elif [[ -n "${_jas_id}" ]]; then
+    JIRA_AUTH_MODE="client"
+    _JIRA_AUTH_CLIENT_ID="${_jas_id}"
+    _JIRA_AUTH_CLIENT_SECRET="${_jas_secret}"
+  else
+    JIRA_AUTH_MODE="none"
+  fi
+}
+
+# In client-credentials mode, fail unless JIRA_API_URL is set. A minted
+# access token works only through the Atlassian API gateway
+# (https://api.atlassian.com/ex/jira/<cloudId>); the site URL in
+# JIRA_BASE_URL rejects it, so there is no fallback.
+#
+# Usage: jira_auth_require_api_url
+jira_auth_require_api_url() {
+  if [[ "${JIRA_AUTH_MODE}" == "client" && -z "${JIRA_API_URL:-}" ]]; then
+    echo "ERROR: JIRA_API_URL (the Atlassian API gateway URL) must be set when FULLSEND_JIRA_CLIENT_ID and FULLSEND_JIRA_CLIENT_SECRET are used; JIRA_BASE_URL does not accept their access tokens" >&2
+    return 1
+  fi
+}
+
+# In client-credentials mode, make sure a usable access token is held:
+# mint one when there is none or it expires within 5 minutes. A no-op in
+# the other modes. The token is kept in a shell variable only and masked
+# before anything else is printed. Mint once in the script's own shell,
+# with stdout not redirected, so the mask line reaches the log and later
+# calls, including those in command substitutions, reuse the token.
+#
+# Usage: jira_auth_mint
+jira_auth_mint() {
+  [[ "${JIRA_AUTH_MODE}" == "client" ]] || return 0
+  local now
+  now="$(date +%s)"
+  if [[ -n "${_JIRA_AUTH_ACCESS_TOKEN}" ]] && (( now < _JIRA_AUTH_EXPIRES_AT - 300 )); then
+    return 0
+  fi
+  local xtrace=0 rc=0
+  if [[ $- == *x* ]]; then
+    xtrace=1
+    set +x
+  fi
+  _jira_auth_mint_now "${now}" || rc=$?
+  if [[ "${xtrace}" -eq 1 ]]; then
+    set -x
+  fi
+  return "${rc}"
+}
+
+# Request an access token the way fullsend does
+# (internal/forge/jira/oauth.go). Called by jira_auth_mint with xtrace off.
+# jq builds the body from the trimmed ID and secret in its environment and
+# curl reads it on stdin; curl -q ignores curl config files.
+_jira_auth_mint_now() {
+  local now="$1"
+  local raw rc=0
+  raw="$(_JIRA_AUTH_ID="${_JIRA_AUTH_CLIENT_ID}" \
+    _JIRA_AUTH_SECRET="${_JIRA_AUTH_CLIENT_SECRET}" \
+    jq -cn '{grant_type: "client_credentials", client_id: env._JIRA_AUTH_ID, client_secret: env._JIRA_AUTH_SECRET}' \
+    | curl -q --proto =https --silent --connect-timeout 10 --max-time 30 \
+      --header "Content-Type: application/json" \
+      --data @- \
+      --write-out '\n%{http_code}' \
+      "https://auth.atlassian.com/oauth/token" 2>/dev/null)" || rc=$?
+  if [[ "${rc}" -ne 0 ]]; then
+    echo "ERROR: Jira OAuth token request failed (curl exit ${rc})" >&2
+    return 1
+  fi
+  local http_code="${raw##*$'\n'}"
+  local body="${raw%$'\n'*}"
+  [[ "${http_code}" =~ ^[0-9]{3}$ ]] || http_code="unknown"
+  if [[ "${http_code}" != 2?? ]]; then
+    echo "ERROR: Jira OAuth token request failed (HTTP ${http_code})" >&2
+    return 1
+  fi
+  local token expires_in
+  token="$(printf '%s' "${body}" | jq -r '.access_token // empty' 2>/dev/null)" || token=""
+  expires_in="$(printf '%s' "${body}" | jq -r '.expires_in // empty' 2>/dev/null)" || expires_in=""
+  # Atlassian access tokens are JWTs. Anything outside this charset could
+  # break or inject into the ::add-mask:: line, so it is refused unprinted.
+  if [[ ! "${token}" =~ ^[A-Za-z0-9._~+/=-]+$ ]]; then
+    echo "ERROR: Jira OAuth token response has no usable access_token" >&2
+    return 1
+  fi
+  # In the script's own shell the mask goes to stdout. In a subshell, such
+  # as a command substitution, stdout may be captured, so it goes to the
+  # main shell's current stdout through /proc when that is a pipe or a
+  # terminal (the runner log), else to stderr. A file or /dev/null there
+  # means the caller redirected stdout around the call.
+  local main_out="/proc/$$/fd/1"
+  if (( BASH_SUBSHELL == 0 )); then
+    printf '::add-mask::%s\n' "${token}"
+  elif [[ -w "${main_out}" ]] && [[ -p "${main_out}" || -c "${main_out}" ]] \
+    && ! [[ "${main_out}" -ef /dev/null ]]; then
+    printf '::add-mask::%s\n' "${token}" >> "${main_out}"
+  else
+    printf '::add-mask::%s\n' "${token}" >&2
+  fi
+  [[ "${expires_in}" =~ ^[0-9]+$ ]] || expires_in=3600
+  _JIRA_AUTH_ACCESS_TOKEN="${token}"
+  _JIRA_AUTH_EXPIRES_AT=$((now + expires_in))
+}
+
 # Run curl with the Authorization for the selected mode, followed by the
-# caller's arguments. Fails without calling curl when the token is empty.
+# caller's arguments. In client-credentials mode the token and email
+# arguments are ignored and the minted access token is sent as Bearer.
+# Otherwise fails without calling curl when the token is empty.
 #
 # Usage: jira_auth_curl <token> <email> [curl args...]
 jira_auth_curl() {
@@ -1780,6 +2047,11 @@ jira_auth_curl() {
   local email
   email="$(jira_auth_email "$2")"
   shift 2
+  if [[ "${JIRA_AUTH_MODE}" == "client" ]]; then
+    jira_auth_mint || return 1
+    curl --oauth2-bearer "${_JIRA_AUTH_ACCESS_TOKEN}" "$@"
+    return
+  fi
   if [[ -z "${token}" ]]; then
     echo "ERROR: Jira token is empty" >&2
     return 1
@@ -1794,8 +2066,11 @@ jira_auth_curl() {
 # Run the fullsend CLI with the Jira credentials it reads from its
 # environment: FULLSEND_JIRA_TOKEN always, FULLSEND_JIRA_EMAIL only for a
 # bot user. In Bearer mode an inherited FULLSEND_JIRA_EMAIL is removed, so
-# the CLI cannot pick Basic auth. The values go through the environment,
-# never the command line.
+# the CLI cannot pick Basic auth. In client-credentials mode the CLI gets
+# FULLSEND_JIRA_CLIENT_ID and FULLSEND_JIRA_CLIENT_SECRET, with
+# FULLSEND_JIRA_TOKEN and FULLSEND_JIRA_EMAIL removed, and mints for
+# itself, with xtrace off. The values go through the environment, never
+# the command line.
 #
 # Usage: jira_auth_fullsend <fullsend-bin> <token> <email> [cli args...]
 jira_auth_fullsend() {
@@ -1804,6 +2079,22 @@ jira_auth_fullsend() {
   local email
   email="$(jira_auth_email "$3")"
   shift 3
+  if [[ "${JIRA_AUTH_MODE}" == "client" ]]; then
+    local xtrace=0 rc=0
+    if [[ $- == *x* ]]; then
+      xtrace=1
+      set +x
+    fi
+    (
+      unset FULLSEND_JIRA_TOKEN FULLSEND_JIRA_EMAIL
+      FULLSEND_JIRA_CLIENT_ID="${_JIRA_AUTH_CLIENT_ID}" \
+        FULLSEND_JIRA_CLIENT_SECRET="${_JIRA_AUTH_CLIENT_SECRET}" "${bin}" "$@"
+    ) || rc=$?
+    if [[ "${xtrace}" -eq 1 ]]; then
+      set -x
+    fi
+    return "${rc}"
+  fi
   if [[ -z "${token}" ]]; then
     echo "ERROR: Jira token is empty" >&2
     return 1
@@ -1818,12 +2109,23 @@ jira_auth_fullsend() {
   fi
 }
 # END bundled: lib/jira-auth.lib.sh
+jira_auth_select "${JIRA_TOKEN:-}" FULLSEND_JIRA_CLIENT_ID FULLSEND_JIRA_CLIENT_SECRET || exit 1
+if [[ "${JIRA_AUTH_MODE}" == "none" ]]; then
+  echo "ERROR: JIRA_TOKEN must be set, or FULLSEND_JIRA_CLIENT_ID and FULLSEND_JIRA_CLIENT_SECRET" >&2
+  exit 1
+fi
 # JIRA_API_URL is optional, but the credentials are sent to it, so refuse
 # anything that is not https.
 if [[ -n "${JIRA_API_URL:-}" && "${JIRA_API_URL}" != https://* ]]; then
   echo "ERROR: JIRA_API_URL must start with https://" >&2
   exit 1
 fi
+jira_auth_require_api_url || exit 1
+# Client credentials: mint the access token here, in the script's own
+# shell, so later REST calls reuse it. A failure is reported here and each
+# REST call then fails on its own, keeping the caller's fail-open or
+# fail-closed handling.
+jira_auth_mint || true
 
 # JIRA_BASE_URL is derived at runtime by tracker_parse_issue_url, so it
 # cannot be validated at source time — keep a per-call guard for it.
@@ -1851,7 +2153,7 @@ _jira_api() {
   local api_base
   api_base=$(_jira_api_base) || return 1
 
-  jira_auth_curl "${JIRA_TOKEN}" "${JIRA_USER_EMAIL:-}" \
+  jira_auth_curl "${JIRA_TOKEN:-}" "${JIRA_USER_EMAIL:-}" \
     --fail --silent --show-error \
     --connect-timeout 10 --max-time 30 \
     --header "Content-Type: application/json" \
@@ -1873,7 +2175,7 @@ _jira_api_with_status() {
   local err_file
   err_file=$(mktemp)
   local raw
-  raw=$(jira_auth_curl "${JIRA_TOKEN}" "${JIRA_USER_EMAIL:-}" \
+  raw=$(jira_auth_curl "${JIRA_TOKEN:-}" "${JIRA_USER_EMAIL:-}" \
     --silent --show-error \
     --connect-timeout 10 --max-time 30 \
     --header "Content-Type: application/json" \
@@ -1881,7 +2183,7 @@ _jira_api_with_status() {
     --write-out '\n%{http_code}' \
     "${api_base}/rest/api/3${endpoint}" \
     "$@" 2>"${err_file}") || {
-    echo "Jira API error: curl failed — $(cat "${err_file}")" >&2
+    echo "Jira API error: curl failed — $(grep -v '^::add-mask::' "${err_file}")" >&2
     rm -f "${err_file}"
     return 1
   }
@@ -2105,7 +2407,7 @@ _jira_post_comment() {
     echo "ERROR: FULLSEND_DIR is not set; the fullsend CLI needs it for the tracker.jira settings" >&2
     return 1
   fi
-  printf '%s' "${body}" | jira_auth_fullsend fullsend "${JIRA_TOKEN}" "${JIRA_USER_EMAIL:-}" \
+  printf '%s' "${body}" | jira_auth_fullsend fullsend "${JIRA_TOKEN:-}" "${JIRA_USER_EMAIL:-}" \
     issues post-comment --tracker jira --fullsend-dir "${FULLSEND_DIR}" \
     --project "${REPO}" --number "${JIRA_ISSUE_NUM}" \
     --marker "${marker}" --result -

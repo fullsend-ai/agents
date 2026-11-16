@@ -19,9 +19,13 @@
 #   JIRA_BASE_URL      — Jira instance base URL; derived from ISSUE_URL when unset,
 #                         cross-checked when set
 #   JIRA_TOKEN         — Jira token for the child-issue check and the skip
-#                         comment; both are skipped when it is unset
+#                         comment; both are skipped when it and the client
+#                         credentials are unset
 #   JIRA_USER_EMAIL    — bot-user email (Basic auth); unset means a
 #                         service-account token (Bearer auth)
+#   FULLSEND_JIRA_CLIENT_ID, FULLSEND_JIRA_CLIENT_SECRET
+#                      — service-account OAuth 2.0 client credentials,
+#                         instead of JIRA_TOKEN (needs JIRA_API_URL)
 #   GH_TOKEN / GITLAB_TOKEN — target forge token for the existing-PR check;
 #                         the check is skipped when unset
 #   COMMENT_BODY       — trigger comment; when unset, read from the dispatch
@@ -95,22 +99,32 @@ source "${SCRIPT_DIR}/lib/code-ops.lib.sh"
 #     CODE_FORCE=true, bypasses both checks.
 # A skip writes skipped=true through prescript_output and posts one sticky
 # comment on the Jira issue; a failed Jira write still skips. A missing
-# forge token skips the PR check; a missing JIRA_TOKEN skips the child
+# forge token skips the PR check; missing Jira credentials skip the child
 # check and the comment.
 #
 # The child check and the comment use jira-triage-ops.lib.sh: Basic auth
 # when JIRA_USER_EMAIL is set (bot user), Bearer when it is not (service
 # account), sent to JIRA_API_URL or else JIRA_BASE_URL (#1900, #1876).
+# With client credentials, REST calls send a minted Bearer token to
+# JIRA_API_URL only (#1926).
 #
 # On a GitLab target, the trigger comment reaches neither COMMENT_BODY nor
 # the dispatch payload file, so `/fs-code --force` has no effect there until
 # fullsend exports COMMENT_BODY for Jira jobs (fullsend-ai/fullsend#9187).
 # The GitHub check reads the newest 500 open PRs.
 
-# jira-triage-ops.lib.sh exits at load time without JIRA_TOKEN, so load it
-# only when the token is set. JIRA_USER_EMAIL is optional.
+# jira-triage-ops.lib.sh exits at load time without Jira credentials, so
+# load it only when a token or a client credential is set. It also exits
+# when both modes are set, or only one client variable. JIRA_USER_EMAIL is
+# optional.
 JIRA_CREDS_OK=0
-if [[ -n "${JIRA_TOKEN:-}" ]]; then
+# Test the credentials with xtrace off so the secret is not traced.
+_jira_xtrace_was_on=0; [[ $- == *x* ]] && _jira_xtrace_was_on=1; set +x
+_jira_creds_set=0
+[[ -n "${JIRA_TOKEN:-}${FULLSEND_JIRA_CLIENT_ID:-}${FULLSEND_JIRA_CLIENT_SECRET:-}" ]] && _jira_creds_set=1
+(( _jira_xtrace_was_on )) && set -x
+unset _jira_xtrace_was_on
+if (( _jira_creds_set )); then
   # shellcheck source=lib/jira-triage-ops.lib.sh
   source "${SCRIPT_DIR}/lib/jira-triage-ops.lib.sh"
   JIRA_CREDS_OK=1

@@ -1,125 +1,49 @@
 name: Vouch Check
 
-on:
-  pull_request_target:
-    types: [opened, reopened]
+# Closes PRs from unvouched first-time contributors (#1975). Runs on a
+# schedule instead of pull_request_target, which GitHub blocks by default
+# from 2026-12-02. pull_request cannot replace it: fork runs get a read-only
+# token, and this repo requires approval for first-time contributors'
+# pull_request runs, the population the gate targets. The job never checks
+# out PR code; .github/scripts/vouch-sweep.sh reads PR metadata through the
+# API and reads VOUCHED.td from fullsend-ai/fullsend's vouched branch.
 
-permissions:
-  contents: read
-  issues: write
-  pull-requests: write
+on:
+  schedule:
+    - cron: '*/10 * * * *'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Print what would be closed without changing anything
+        type: boolean
+        default: false
+
+permissions: {}
+
+concurrency:
+  group: vouch-check
+  cancel-in-progress: false
 
 jobs:
   vouch-gate:
     if: github.repository_owner == 'fullsend-ai'
     runs-on: ubuntu-24.04
     timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: write
     steps:
-      - name: Check if contributor is vouched
-        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          script: |
-            const author = context.payload.pull_request.user.login;
-            const authorType = context.payload.pull_request.user.type;
+          persist-credentials: false
+          sparse-checkout: .github/scripts
 
-            // Neutralize the characters core does not already escape (% \r \n)
-            // before API error text reaches the actions command channel via
-            // core.setFailed / core.warning: ANSI escapes, remaining control
-            // characters, and the '::' command delimiter.
-            function sanitizeWorkflowValue(message) {
-              return String(message)
-                .replace(/\u001b\[[0-9;?]*[a-zA-Z]/g, '')
-                .replace(/[\u0000-\u001f\u007f]/g, '')
-                .replace(/::/g, ': :');
-            }
-
-            // Skip bots (dependabot, renovate, fullsend agents, etc.).
-            if (authorType === 'Bot') {
-              console.log(`${author} is a bot. Skipping vouch check.`);
-              return;
-            }
-
-            // Check if author is a collaborator with write+ access on this repo.
-            let trusted = false;
-            try {
-              const { data } = await github.rest.repos.getCollaboratorPermissionLevel({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                username: author,
-              });
-              trusted = ['admin', 'maintain', 'write'].includes(data.role_name);
-            } catch (e) {
-              if (e.status !== 404) {
-                core.setFailed(`Could not check collaborator permission (status=${e.status}): ${sanitizeWorkflowValue(e.message)}`);
-                return;
-              }
-            }
-
-            if (trusted) {
-              console.log(`${author} has write access. Skipping vouch check.`);
-              return;
-            }
-
-            // Read the VOUCHED.td file from the canonical vouch DB in
-            // fullsend-ai/fullsend (the "vouched" branch). One vouch covers
-            // all repos in the org.
-            let vouched = false;
-            try {
-              const { data } = await github.rest.repos.getContent({
-                owner: 'fullsend-ai',
-                repo: 'fullsend',
-                path: '.github/VOUCHED.td',
-                ref: 'vouched',
-              });
-              const content = Buffer.from(data.content, 'base64').toString('utf-8');
-              const usernames = content
-                .split('\n')
-                .map(line => line.trim())
-                .filter(line => line && !line.startsWith('#') && !line.startsWith('-'));
-              vouched = usernames.some(
-                name => name.toLowerCase() === author.toLowerCase()
-              );
-            } catch (e) {
-              core.setFailed(`Could not read VOUCHED.td: ${sanitizeWorkflowValue(e.message)}`);
-              return;
-            }
-
-            if (vouched) {
-              console.log(`${author} is in VOUCHED.td. Approved.`);
-              return;
-            }
-
-            // Not vouched — close the PR first, then comment.
-            // Close before commenting so enforcement succeeds even if the comment API fails.
-            console.log(`${author} is not vouched. Closing PR.`);
-
-            await github.rest.pulls.update({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              pull_number: context.payload.pull_request.number,
-              state: 'closed',
-            });
-
-            try {
-              await github.rest.issues.createComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                issue_number: context.payload.pull_request.number,
-                body: [
-                  `Thank you for your interest in contributing, @${author}.`,
-                  '',
-                  'This project uses a **vouch system** for first-time contributors. Before submitting a pull request, you need to be vouched by a maintainer.',
-                  '',
-                  '**To get vouched:**',
-                  '1. Open a [Vouch Request](https://github.com/fullsend-ai/fullsend/discussions/new?category=vouch-request) discussion on the main fullsend repo.',
-                  '2. Describe what you want to change and why.',
-                  '3. Write in your own words — do not have an AI generate the request.',
-                  '4. A maintainer will comment `/vouch` if approved.',
-                  '5. Once vouched, open a new PR (preferred) or reopen this one.',
-                  '',
-                  'See [CONTRIBUTING.md](https://github.com/fullsend-ai/fullsend/blob/main/CONTRIBUTING.md#first-time-contributors) for details.',
-                ].join('\n'),
-              });
-            } catch (e) {
-              core.warning(`Could not post explanation comment: ${sanitizeWorkflowValue(e.message)}`);
-            }
+      - name: Close PRs from unvouched contributors
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          DRY_RUN: ${{ inputs.dry_run && '--dry-run' || '' }}
+        run: |
+          # shellcheck disable=SC2086 # DRY_RUN is empty or one flag
+          bash .github/scripts/vouch-sweep.sh ${DRY_RUN} "${REPO}"
