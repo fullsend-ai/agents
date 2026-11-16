@@ -277,11 +277,11 @@ comment is read as a human comment. The agent identifies that account per
 tracker:
 
 - **GitHub:** a `Bot` author whose App is `$FULLSEND_SLUG`, `<owner>-triage`,
-  `fullsend-ai-triage`, or `${FULLSEND_APP_SET}-triage` and the bare
-  `$FULLSEND_APP_SET`. `env/github/triage.env` passes `FULLSEND_APP_SET`
-  into the sandbox, but fullsend's triage job does not export it yet
-  (fullsend-ai/fullsend#9568), so until then an install with a custom App
-  set is recognised only through the other names.
+  `fullsend-ai-triage` or `${FULLSEND_APP_SET}-triage`.
+  `env/github/triage.env` passes `FULLSEND_APP_SET` into the sandbox, but
+  fullsend's triage job does not export it yet (fullsend-ai/fullsend#9568).
+  Until it does, an install whose triage App uses a custom App set matches
+  none of these names, so it gets no trusted baseline and the agent rebuilds its lists from the earlier analyses.
 - **GitLab:** the account `GET /api/v4/user` returns for `GITLAB_TOKEN`.
 - **Jira:** the account `GET /rest/api/3/myself` returns, which needs the
   `read:jira-user` scope (or the granular `read:user:jira`) on
