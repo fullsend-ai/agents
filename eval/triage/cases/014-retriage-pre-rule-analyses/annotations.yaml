@@ -17,8 +17,10 @@ cause_lists:
   open:
     - ["none", "missing email", "email field", "no email", "typeerror"]
   ruled_out:
-    - ["'+'", "`+`", "\"+\"", " + ", "plus", "regex", "docstring"]
+    - ["+", "plus"]
   # A plus together with a rejection claim is the ruled-out cause back.
+  # Narrow on purpose: wider pairs ("invalid", "fail") also match a correct
+  # ValueError cause that names a plus address. The rubric covers rewordings.
   forbidden_open: [["+", "reject"], ["plus", "reject"]]
 
 max_turns: 35

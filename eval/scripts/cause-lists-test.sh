@@ -75,6 +75,19 @@ def case_spec(name):
     return json.loads(out)
 SPEC013 = case_spec("013-retriage-keeps-ruled-out")
 SPEC007 = case_spec("007-self-evident-bug-redundancy")
+SPEC016 = case_spec("016-retriage-keeps-unmentioned-cause")
+def case_seeds(name):
+    out = subprocess.run(["yq", "-o=json", ".fixture.comments", f"{sys.argv[2]}/{name}/input.yaml"],
+                         capture_output=True, text=True, check=True).stdout
+    return [c(b) for b in json.loads(out)]
+SEEDS016 = case_seeds("016-retriage-keeps-unmentioned-cause")
+ISSUE016 = subprocess.run(["yq", "-r", ".fixture.body", f"{sys.argv[2]}/016-retriage-keeps-unmentioned-cause/input.yaml"],
+                          capture_output=True, text=True, check=True).stdout
+# The case depends on authgw appearing only in run 1's analysis.
+assert (len(SEEDS016) == SPEC016["seeded_comments"] and "authgw" in SEEDS016[0]["body"]
+        and all("authgw" not in s["body"].lower() for s in SEEDS016[1:])
+        and "authgw" not in ISSUE016.lower()
+        and subprocess.run(["grep", "-rqi", "authgw", f"{sys.argv[2]}/016-retriage-keeps-unmentioned-cause/repo/"]).returncode == 1), "case 016 fixture drifted"
 
 GOOD = analysis(["None reaches validate_email — unchecked"], ["regex rejects '+' — class includes '+'"])
 RESTORED = analysis(["None reaches validate_email", "regex rejects '+'"])
@@ -126,6 +139,31 @@ cases = [
     ("an open cause that only names a plus address is allowed",
      SEEDS + [c(analysis(["None reaches validate_email", "ValueError for a+b@example.com reaches the framework unhandled"], ["regex rejects '+' — class includes it"]))],
      SPEC013, True, "match"),
+    ("case 016 passes when run 1's unmentioned cause is kept",
+     SEEDS016 + [c(analysis(["None reaches validate_email", "Malformed address raises an unhandled ValueError",
+                             "authgw strips the email parameter"], ["regex rejects '+' — class includes it"]))],
+     SPEC016, True, "match"),
+    ("case 016 fails when only the TypeError cause is dropped",
+     SEEDS016 + [c(analysis(["Malformed address raises an unhandled ValueError", "authgw strips the email parameter"],
+                            ["regex rejects '+' — class includes it"]))], SPEC016, False, "Open causes lacks"),
+    ("case 016 fails a from-scratch triage that guesses a gateway",
+     SEEDS016 + [c(analysis(["Missing email field reaches validate_email as None", "Malformed address raises an unhandled ValueError",
+                             "an upstream gateway strips the email parameter"], ["regex rejects '+' — class includes it"]))],
+     SPEC016, False, "Open causes lacks"),
+    ("case 016 fails when the TypeError cause is dropped and authgw mentions no email",
+     SEEDS016 + [c(analysis(["Malformed address raises an unhandled ValueError", "authgw forwards no email field"],
+                            ["regex rejects '+' — class includes it"]))], SPEC016, False, "Open causes lacks"),
+    ("a ValueError cause naming a plus address is not read as the ruled-out cause",
+     SEEDS + [c(analysis(["None reaches validate_email", "Invalid email format for a+b@example.com raises an unhandled ValueError"],
+                         ["regex rejects '+' — class includes it"]))], SPEC013, True, "match"),
+    ("an unrelated regex ruling does not count as the plus ruling",
+     SEEDS + [c(analysis(["None reaches validate_email"], ["regex is too slow — it is anchored"]))], SPEC013, False, "Ruled out lacks"),
+    ("case 016 fails a from-scratch triage built only from the code",
+     SEEDS016 + [c(analysis(["Missing email field reaches validate_email as None", "Malformed address raises an unhandled ValueError"],
+                            ["the docstring's claim that the regex rejects '+' is stale"]))], SPEC016, False, "Open causes lacks"),
+    ("case 016 fails when run 1's unmentioned cause is dropped",
+     SEEDS016 + [c(analysis(["None reaches validate_email"], ["regex rejects '+' — class includes it"]))],
+     SPEC016, False, "Open causes lacks"),
     ("case 007 accepts the reporter's words for the open cause",
      [c(analysis(["Blank email input reaches the validator, as reported"]))], SPEC007, True, "match"),
     ("a ruled-out cause reworded with plus is still caught",

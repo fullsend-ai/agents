@@ -324,6 +324,9 @@ to must exist in its fixture repo (`repo/`, plus the PR's files) or in
 the fixture's `labels`. The expected outcome in `annotations.yaml` must
 be what a careful engineer would conclude from that repo alone: an agent
 that checks the code and finds a gap will rightly answer `needs-info`.
+A re-triage case may name things the repo cannot contain inside its seeded
+`comments` (for example a cause supported only by an earlier analysis), when
+carrying that state forward is what the case grades.
 When a case needs code that the shared fixture repo lacks, give the case
 its own repo under `eval/<agent>/repos/` rather than changing the shared
 one (e.g. triage cases 001 and 003).

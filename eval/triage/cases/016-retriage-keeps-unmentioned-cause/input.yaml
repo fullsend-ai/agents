@@ -1,0 +1,63 @@
+forge: github
+fixture:
+  type: issue
+  title: "Login returns 500 for some users"
+  body: |
+    Since last week a few users get an HTTP 500 when they submit the
+    login form. Most users can log in fine. The server log shows
+    `TypeError: expected string or bytes-like object` from `re.match` in
+    `validate_email` (`src/auth/validators.py`), called from
+    `login_handler`.
+
+    Steps to reproduce: POST the login form with a password and no
+    email field. Expected a validation message, got a 500.
+
+    Environment: current main, Python 3.12.
+  # Run 1 is a full analysis with three open causes and one ruled-out
+  # cause. Its third open cause, the authgw gateway stripping the email
+  # parameter, rests only on the log lines run 1 quotes: neither the
+  # issue body, the fixture code nor the later comments mention authgw,
+  # so only a run that carries run 1's state forward can list it. After
+  # the question and answer, a newer full analysis keeps the other two
+  # open causes and the ruling but leaves authgw out without refuting it,
+  # so copying the newest analysis alone drops a live cause. Run 2 is a question to the reporter that mentions none of
+  # the causes, and the reporter's answer adds no evidence about them.
+  # The next full analysis must still carry all three entries from run 1.
+  comments:
+    - |
+      <!-- fullsend:triage-agent -->
+      The TypeError is confirmed in the code, and the same handler has a
+      second path to a 500.
+
+      **Open causes:**
+      - Missing email field reaches validate_email as None — login_handler passes request.params.get("email") straight through, and re.match raises TypeError.
+      - Malformed address raises an unhandled ValueError — validate_email raises ValueError("invalid email format") and login_handler does not catch it, so it also becomes a 500.
+      - The authgw gateway strips the email parameter before the request reaches login_handler — the reporter's log shows every failing request as `authgw: POST /login fwd params=[password]`, never with email; authgw is not in this repository.
+
+      **Ruled out:**
+      - validate_email rejects '+' in the local part — the pattern's local-part class includes '+'; the docstring is stale.
+
+      ---
+      **Next steps:**
+      - `/fs-code` — agent creates a PR to implement this issue
+      - `/fs-code <your instruction>` — agent implements with your specific guidance
+    - |
+      Thanks for the details. Did the 500s start with a particular
+      deploy, or were they there before last week?
+    - |
+      Not sure yet, I'll check the deploy history. Can this be picked up meanwhile?
+    - |
+      <!-- fullsend:triage-agent -->
+      Re-checked the handler after the reporter's reply.
+
+      **Open causes:**
+      - Missing email field reaches validate_email as None — login_handler passes the value through unchecked.
+      - Malformed address raises an unhandled ValueError — login_handler does not catch it.
+
+      **Ruled out:**
+      - validate_email rejects '+' in the local part — the pattern's local-part class includes '+'.
+
+      ---
+      **Next steps:**
+      - `/fs-code` — agent creates a PR to implement this issue
+      - `/fs-code <your instruction>` — agent implements with your specific guidance

@@ -1,0 +1,93 @@
+# A live cause from run 1 survives runs that do not mention it
+# (fullsend-ai/agents#2042, done-when item). Run 1 lists three open
+# causes, one of them (the authgw gateway stripping the email parameter)
+# resting only on log lines run 1 quotes, and rules out the '+' cause.
+# A question and its answer name no cause, and a newer full analysis
+# leaves authgw out without refuting it. The next full analysis must
+# keep all three open causes and the ruling, not rebuild its causes from
+# the issue body or the newest analysis alone.
+state: open
+
+labels:
+  required:
+    - ready-to-code
+    - bug
+
+# Checked by the cause_lists judge on the run's own comment.
+cause_lists:
+  seeded_comments: 4
+  open:
+    # Phrases no other expected cause's name can contain.
+    - ["none", "missing email", "typeerror"]
+    - ["valueerror", "malformed", "invalid email", "invalid format", "without a domain"]
+    # Only run 1's log sample supports this one: a run that ignores the
+    # seeded state cannot find it in the code, and a guessed "gateway"
+    # cause does not count. authgw is deliberately
+    # outside the fixture repo (no file, endpoint or symbol names it), and
+    # step 2e keeps an unverifiable cause open as a hypothesis.
+    - ["authgw"]
+  ruled_out:
+    - ["+", "plus"]
+  # A plus together with a rejection claim is the ruled-out cause back.
+  # Narrow on purpose: wider pairs ("invalid", "fail") also match a correct
+  # ValueError cause that names a plus address. The rubric covers rewordings.
+  forbidden_open: [["+", "reject"], ["plus", "reject"]]
+
+max_turns: 35
+max_cost_usd: 0.50
+
+triage_expectations: |
+  The issue body reports only the TypeError for a missing email field.
+  Run 1's analysis lists three open causes: the missing-email
+  TypeError; an unhandled ValueError for a malformed address
+  (validate_email raises it and login_handler does not catch it, so it
+  is also a 500), which the issue body does not mention; and the authgw
+  gateway stripping the email parameter, supported only by the log lines
+  run 1 quotes. The code cannot confirm or refute the authgw cause, so
+  it stays open as a hypothesis. Run 1 also rules out the '+'
+  cause, because the pattern's local-part class includes '+'. Run 2 is a
+  question about when the 500s started; the reporter's answer adds no
+  evidence about any cause. Run 3 is a newer full analysis that keeps
+  the other two open causes and the ruling but leaves the authgw cause
+  out without refuting it. All three comments come from
+  the eval account, not a triage bot, so there is no trusted baseline
+  and step 2e rebuilds the lists from every analysis, oldest first: a
+  cause stays open unless a refutation with evidence stands, and leaving
+  it out is not a refutation, so nothing later overturns run 1's
+  entries. (With a trusted baseline the agent would start from run 3's
+  lists instead; this case does not test that path, see #2043.)
+
+  The code confirms run 1: login_handler passes request.params.get("email")
+  to validate_email unchecked and does not catch ValueError, and the
+  pattern accepts '+'.
+
+  Where to find the agent's analysis: it is the newest comment on the
+  issue that is not one of the four seeded comments. If no such
+  comment exists, a fullsend that edits marked comments in place
+  (before fullsend-ai/fullsend#9399) wrote it into the seeded marked
+  comment, above a "Previous run" block holding that comment's old text;
+  the agent's analysis is then the text above that block. Grade only
+  text the agent wrote, never the seeded text. If the agent posted
+  nothing, score 1.
+
+  A good triage should:
+
+  1. Keep all three of run 1's open causes, including the authgw
+     hypothesis that only run 1's log lines support, although the
+     newest analysis and the issue body do not mention it.
+  2. Keep the '+' cause under Ruled out with its evidence.
+  3. Not treat the question in run 2 or the reporter's answer as
+     evidence about any cause.
+  4. Keep the comment under 4000 characters and not restate run 1 at
+     length.
+
+  Scoring guide:
+  A score of 1 means a run-1 open cause (the authgw one in particular)
+  was dropped, or the '+' cause came back as open.
+  A score of 2 means the causes are right in the prose but the comment
+  has no Open causes or Ruled out list.
+  A score of 3 means both lists are right but the comment repeats run 1
+  at length.
+  A score of 4 means both lists are right and concise.
+  A score of 5 means all of the above plus net-new value, such as a
+  proposed test case covering both 500 paths.
