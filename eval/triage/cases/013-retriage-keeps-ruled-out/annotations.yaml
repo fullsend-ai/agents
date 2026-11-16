@@ -1,7 +1,8 @@
 # Re-triage carries the prior analysis forward (fullsend-ai/agents#2042).
 # Two earlier triage comments are on the issue: run 1 listed two causes,
-# run 2 ruled out the second with evidence. The newest marked comment
-# (run 2) is the baseline. The new human comment adds no evidence about
+# run 2 ruled out the second with evidence. The eval account posted both,
+# so neither is a trusted baseline and the agent rebuilds the lists from
+# them, oldest first. The new human comment adds no evidence about
 # either cause, so run 3 must keep the open cause and must not restore
 # the ruled-out one from run 1's older comment.
 state: open
@@ -24,8 +25,10 @@ max_turns: 35
 max_cost_usd: 0.50
 
 triage_expectations: |
-  The issue already has two triage analyses. The newer one is the
-  baseline: its Open causes list has one cause (a missing email field
+  The issue already has two triage analyses. They were posted by the
+  eval account, not a triage bot, so the agent rebuilds both lists from
+  them, oldest first, with later evidence winning. The newer one's Open
+  causes list has one cause (a missing email field
   reaches validate_email as None, and re.match raises TypeError) and its
   Ruled out list has one entry (the regex rejecting '+', refuted because
   the pattern's local-part character class includes '+'). The latest
@@ -48,8 +51,8 @@ triage_expectations: |
 
   A good triage should:
 
-  1. Treat the newer analysis as its starting point, not rebuild its
-     causes from both old comments.
+  1. Apply run 2's refutation to run 1's causes: later evidence wins
+     over the older comment that still describes the '+' cause.
   2. Keep the None cause under Open causes.
   3. Keep the '+' cause under Ruled out, with its evidence, and not list
      it as an open cause or a hypothesis anywhere in the comment.
