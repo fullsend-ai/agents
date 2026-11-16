@@ -3888,7 +3888,8 @@ run_jira_int() {
     for kv in "$@"; do
       export "${kv?}"
     done
-    # JIRA_INT_XTRACE=1 traces the script and its re-exec via SHELLOPTS.
+    # JIRA_INT_XTRACE=1 starts the script traced via SHELLOPTS; the script's
+    # credential re-exec then re-applies -x to its own child.
     if [ -n "${JIRA_INT_XTRACE:-}" ]; then
       env SHELLOPTS=xtrace bash "${POST_SCRIPT}"
     else
@@ -4128,6 +4129,31 @@ elif grep -qF "${JIRA_XTRACE_SECRET_VALUE}" "${JIRA_INT_OUT}" "${JIRA_INT_FULLSE
   jira_int_fail "jira-client-credentials-xtrace-no-secret" "client secret on a traced line"
 else
   echo "PASS: jira-client-credentials-xtrace-no-secret"
+fi
+
+# Token mode is the other tracing path, and the one the client-credentials case
+# cannot cover: jira_auth_fullsend has no xtrace guard of its own there, and the
+# credential re-exec re-applies -x to the child, so the token and email are in
+# scope for every traced line the stage-comment call produces.
+JIRA_XTRACE_TOKEN_VALUE="xtrace-token-V7Qp2Lmz"    # gitleaks:allow -- synthetic test credential
+JIRA_XTRACE_EMAIL_VALUE="xtrace-email@example.com" # gitleaks:allow -- synthetic test value
+JIRA_INT_XTRACE=1 run_jira_int "jira-token-xtrace" github \
+  "JIRA_TOKEN=${JIRA_XTRACE_TOKEN_VALUE}" "FULLSEND_JIRA_TOKEN=${JIRA_XTRACE_TOKEN_VALUE}" \
+  "JIRA_USER_EMAIL=${JIRA_XTRACE_EMAIL_VALUE}" "FULLSEND_JIRA_EMAIL=${JIRA_XTRACE_EMAIL_VALUE}"
+if [ "${JIRA_INT_RC}" -ne 0 ]; then
+  jira_int_fail "jira-token-xtrace-no-secret" "post-code failed"
+elif ! grep -q '^+ SCRIPT_DIR_POST=' "${JIRA_INT_OUT}"; then
+  jira_int_fail "jira-token-xtrace-no-secret" "no xtrace output"
+elif grep -qF "${JIRA_XTRACE_TOKEN_VALUE}" "${JIRA_INT_OUT}" "${JIRA_INT_FORGE_LOG}"; then
+  # The fake CLI's own log legitimately records the env it received, so the
+  # check is the traced script output and the forge log, not that record.
+  grep -nF "${JIRA_XTRACE_TOKEN_VALUE}" "${JIRA_INT_OUT}" | head -5 || true
+  jira_int_fail "jira-token-xtrace-no-secret" "jira token on a traced line"
+elif grep -qF "${JIRA_XTRACE_EMAIL_VALUE}" "${JIRA_INT_OUT}"; then
+  grep -nF "${JIRA_XTRACE_EMAIL_VALUE}" "${JIRA_INT_OUT}" | head -5 || true
+  jira_int_fail "jira-token-xtrace-no-secret" "jira email on a traced line"
+else
+  echo "PASS: jira-token-xtrace-no-secret"
 fi
 
 # A token and client credentials together, or one client variable alone,

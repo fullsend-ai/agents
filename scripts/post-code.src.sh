@@ -112,6 +112,11 @@ elif [[ -n "${JIRA_TOKEN:-}${JIRA_USER_EMAIL:-}${FULLSEND_JIRA_TOKEN:-}${FULLSEN
   # redirection works on both Linux and macOS without /proc/self/fd.
   exec {_jira_stash_fd}<"${_jira_stash_file}"
   rm -f "${_jira_stash_file}"
+  # The child runs traced when the caller is traced: SHELLOPTS is not
+  # exported by bash, so -x must be re-applied explicitly across the re-exec.
+  # That makes every credential expansion after this point a trace hazard,
+  # so each one is guarded — the ::add-mask:: pair below, and
+  # post_jira_stage_update, which suspends xtrace for the whole CLI call.
   _jira_bash_flags=()
   (( _jira_xtrace_was_on )) && _jira_bash_flags+=(-x)
   exec env -u JIRA_TOKEN -u JIRA_USER_EMAIL -u FULLSEND_JIRA_TOKEN -u FULLSEND_JIRA_EMAIL \
@@ -120,6 +125,19 @@ elif [[ -n "${JIRA_TOKEN:-}${JIRA_USER_EMAIL:-}${FULLSEND_JIRA_TOKEN:-}${FULLSEN
 fi
 (( _jira_xtrace_was_on )) && set -x
 unset _jira_xtrace_was_on
+
+# Register the push tokens with the runner's log masker before anything can
+# expand them. A traced run echoes expanded arguments, so the mask has to
+# exist first, and the echo of the value itself must not be traced either.
+_tok_mask_xtrace=0; [[ $- == *x* ]] && _tok_mask_xtrace=1; set +x
+if [ -n "${PUSH_TOKEN:-}" ]; then
+  echo "::add-mask::${PUSH_TOKEN}"
+fi
+if [ -n "${GITLAB_TOKEN:-}" ]; then
+  echo "::add-mask::${GITLAB_TOKEN}"
+fi
+(( _tok_mask_xtrace )) && set -x
+unset _tok_mask_xtrace
 
 SCRIPT_DIR_POST="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/git-graph-policy.lib.sh
@@ -433,11 +451,6 @@ else
   echo "No agent branch preference — using repo default: ${TARGET_BRANCH}"
 fi
 
-echo "::add-mask::${PUSH_TOKEN}"
-if [ -n "${GITLAB_TOKEN:-}" ]; then
-  echo "::add-mask::${GITLAB_TOKEN}"
-fi
-
 # Scan optional public text with built-in rules, not repository policy.
 # A file source skips .gitleaks.toml discovery; the private working directory
 # and explicit ignore path prevent .gitleaksignore discovery. The subshell
@@ -531,7 +544,24 @@ Retry with \`/fs-code\` if appropriate."
 #
 # Usage: post_jira_stage_update <verb phrase> <pr_url>
 # ---------------------------------------------------------------------------
+# The saved Jira token and email are expanded into arguments inside the inner
+# function, to build the trusted CLI's list. A traced run would echo them, and
+# tracing reaches here two ways: an explicit `bash -x`, and the -x this script
+# re-applies to its own child after the credential re-exec. Suspend xtrace for
+# the whole call — the arguments are a verb phrase and a URL, never a secret —
+# and restore it on every exit path, including failures, so the caller's
+# tracing state is unchanged.
 post_jira_stage_update() {
+  local _stage_xtrace=0
+  [[ $- == *x* ]] && _stage_xtrace=1
+  set +x
+  local _stage_rc=0
+  _post_jira_stage_update_inner "$@" || _stage_rc=$?
+  (( _stage_xtrace )) && set -x
+  return "${_stage_rc}"
+}
+
+_post_jira_stage_update_inner() {
   local verb="$1"
   local pr_url="$2"
 

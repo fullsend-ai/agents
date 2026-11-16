@@ -59,6 +59,10 @@ elif [[ -n "${JIRA_TOKEN:-}${JIRA_USER_EMAIL:-}${FULLSEND_JIRA_TOKEN:-}${FULLSEN
   # redirection works on both Linux and macOS without /proc/self/fd.
   exec {_jira_stash_fd}<"${_jira_stash_file}"
   rm -f "${_jira_stash_file}"
+  # The child runs traced when the caller is traced: SHELLOPTS is not
+  # exported by bash, so -x must be re-applied explicitly across the re-exec.
+  # That makes every credential expansion after this point a trace hazard,
+  # so each one is guarded by suspending xtrace for the whole CLI call.
   _jira_bash_flags=()
   (( _jira_xtrace_was_on )) && _jira_bash_flags+=(-x)
   exec env -u JIRA_TOKEN -u JIRA_USER_EMAIL -u FULLSEND_JIRA_TOKEN -u FULLSEND_JIRA_EMAIL \
