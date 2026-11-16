@@ -1789,6 +1789,9 @@ _jira_creds_set=0
 (( _jira_xtrace_was_on )) && set -x
 unset _jira_xtrace_was_on
 if (( _jira_creds_set )); then
+  # The library expands token credentials during initialization. Suspend
+  # tracing in the caller, before those arguments can be printed.
+  _jira_load_xtrace=0; [[ $- == *x* ]] && _jira_load_xtrace=1; set +x
   # shellcheck source=lib/jira-triage-ops.lib.sh
 # BEGIN bundled: lib/jira-triage-ops.lib.sh
 # shellcheck shell=bash
@@ -2592,6 +2595,8 @@ tracker_dispatch_triage() {
   return "${rc}"
 }
 # END bundled: lib/jira-triage-ops.lib.sh
+  (( _jira_load_xtrace )) && set -x
+  unset _jira_load_xtrace
   JIRA_CREDS_OK=1
   # Globals tracker_post_sticky_comment reads.
   # shellcheck disable=SC2034
@@ -2619,9 +2624,14 @@ _jira_post_skip_comment() {
     echo "No Jira credentials set — not commenting on ${ISSUE_KEY}"
     return 0
   fi
+  local skip_xtrace=0
+  [[ $- == *x* ]] && skip_xtrace=1
+  set +x
   if ! tracker_post_sticky_comment "$1" "${SKIP_COMMENT_MARKER}" > /dev/null; then
     echo "::warning::Failed to post the skip comment on Jira issue ${ISSUE_KEY} — skipping the run anyway"
   fi
+  (( skip_xtrace )) && set -x
+  return 0
 }
 
 # _jira_list_human_prs KEY BOT_LOGIN CODER_BOT_LOGIN — print one
@@ -2684,7 +2694,7 @@ _jira_list_human_prs() {
 # non-zero when the count cannot be read.
 _jira_child_count() {
   local resp
-  resp="$(_jira_api POST "/search/jql" \
+  resp="$(set +x; _jira_api POST "/search/jql" \
     --data "$(jq -cn --arg jql "parent = ${ISSUE_KEY} AND issuetype not in subTaskIssueTypes()" '{jql: $jql, maxResults: 1, fields: ["key"]}')" 2>/dev/null)" \
     || return 1
   printf '%s' "${resp}" | jq -er '.issues | length' 2>/dev/null

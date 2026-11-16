@@ -787,6 +787,31 @@ else
   echo 'PASS: started-oauth-tools-withheld'
 fi
 
+# Token credentials must also stay off trace lines during library loading.
+RUN_XTRACE=1 run_started_test started-token-xtrace 0 1 'CODE_JIRA_STARTED_TRANSITION=Start'
+if ! grep -q '^+ SCRIPT_DIR=' "${TMPDIR}/stdout.log" \
+   || grep -qF 'fake-jira-token' "${TMPDIR}/stdout.log" \
+   || grep -qF 'bot@acme.com' "${TMPDIR}/stdout.log"; then
+  echo 'FAIL: started-token-xtrace-no-secret'
+  FAILURES=$((FAILURES + 1))
+else
+  echo 'PASS: started-token-xtrace-no-secret'
+fi
+
+for trace_skip_exit in 0 1; do
+  RUN_XTRACE=1 run_skip_test "token-xtrace-skip-${trace_skip_exit}" true \
+    'reason=PROJ-42 has child issue(s)' "MOCK_JIRA_CHILDREN=${HAS_CHILDREN}
+MOCK_FULLSEND_EXIT=${trace_skip_exit}"
+  if ! grep -q '^+ SCRIPT_DIR=' "${TMPDIR}/stdout.log" \
+     || grep -qF 'fake-jira-token' "${TMPDIR}/stdout.log" \
+     || grep -qF 'bot@acme.com' "${TMPDIR}/stdout.log"; then
+    echo 'FAIL: token-xtrace-skip-no-secret'
+    FAILURES=$((FAILURES + 1))
+  else
+    echo 'PASS: token-xtrace-skip-no-secret'
+  fi
+done
+
 # --- Summary ---
 
 echo ""
