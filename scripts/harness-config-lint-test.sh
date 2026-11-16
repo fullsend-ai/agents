@@ -611,11 +611,13 @@ test_negative_fixtures() {
     "script-with-null-schema.yaml:test_validation_loop_schema:script-with-null-schema\.yaml.*top-level validation_loop\.schema is null"
     "missing-schema-file.yaml:test_schema_files_exist_and_valid:missing-schema-file\.yaml.*schema file not found"
     "bad-json-schema.yaml:test_schema_files_exist_and_valid:bad-json-schema\.yaml.*schema file is not valid JSON"
+    "invalid-yaml.invalid.yaml:test_validation_loop_schema:invalid-yaml\.invalid\.yaml.*yq failed to count documents"
     "empty-json-schema.yaml:test_schema_files_exist_and_valid:empty-json-schema\.yaml.*schema file is not valid JSON"
     "multiple-json-values.yaml:test_schema_files_exist_and_valid:multiple-json-values\.yaml.*schema file is not valid JSON"
     "forge-missing-schema-file.yaml:test_schema_files_exist_and_valid:forge-missing-schema-file\.yaml.*schema file not found"
     "overlay-bad-json-schema.yaml:test_schema_files_exist_and_valid:overlay-bad-json-schema\.yaml.*schema file is not valid JSON"
     "absolute-schema-path.yaml:test_schema_files_exist_and_valid:absolute-schema-path\.yaml.*schema file not found"
+    "forge-literal-null-schema.yaml:test_schema_files_exist_and_valid:forge-literal-null-schema\.yaml.*schema file not found"
   )
 
   for fixture_spec in "${expected_failures[@]}"; do
@@ -640,7 +642,13 @@ test_negative_fixtures() {
       found_error=1
       continue
     }
-    cp "${fixture_file}" "${test_dir}/" || {
+    # Create subdirectories if fixture is in a subdirectory (e.g., malformed/)
+    local fixture_dir_in_test
+    fixture_dir_in_test="$(dirname "${fixture_name}")"
+    if [[ "${fixture_dir_in_test}" != "." ]]; then
+      mkdir -p "${test_dir}/${fixture_dir_in_test}"
+    fi
+    cp "${fixture_file}" "${test_dir}/${fixture_name}" || {
       echo "Failed to copy fixture ${fixture_name} to temporary directory"
       rm -rf "${test_dir}"
       found_error=1

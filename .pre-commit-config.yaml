@@ -6,7 +6,7 @@ repos:
     hooks:
       - id: check-yaml
         args: ["--unsafe"]
-        exclude: ^scripts/test-fixtures/harness-config-bad/invalid-yaml\.yaml$
+        exclude: ^scripts/test-fixtures/harness-config-bad/.*\.invalid\.(yaml|yml)$
       - id: end-of-file-fixer
       - id: trailing-whitespace
       - id: detect-private-key
@@ -14,7 +14,7 @@ repos:
         args: ["--maxkb=1000"]
       - id: check-merge-conflict
       - id: check-json
-        exclude: ^scripts/test-fixtures/harness-config-bad/(empty-json-schema|multiple-json-values)\.json$
+        exclude: ^scripts/test-fixtures/harness-config-bad/.*\.invalid\.json$
       - id: check-toml
       - id: mixed-line-ending
 
