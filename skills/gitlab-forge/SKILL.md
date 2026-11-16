@@ -96,6 +96,11 @@ curl -K /tmp/gitlab-api.curlrc \
 curl -K /tmp/gitlab-api.curlrc \
   "https://<GITLAB_HOST>/api/v4/projects/<REPO_ENCODED>/issues/<ISSUE_NUMBER>/notes?per_page=100&sort=asc"
 
+# The account this token belongs to: the one fullsend posts results as.
+# Compare its id with a note's author.id to tell fullsend's own notes
+# from anyone else's.
+curl -K /tmp/gitlab-api.curlrc "https://<GITLAB_HOST>/api/v4/user"
+
 # List open issues
 curl -K /tmp/gitlab-api.curlrc \
   "https://<GITLAB_HOST>/api/v4/projects/<REPO_ENCODED>/issues?state=opened&per_page=100"
