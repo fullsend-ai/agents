@@ -173,7 +173,9 @@ cases = [
      SEEDS + [c(GOOD), c("🤖 Finished Triage")], SPEC, True, "match"),
     ("a fresh triage with no seeds passes on its lists",
      [c(analysis(["missing email reaches validate_email as None"]))],
-     {"open": [["none", "missing"]]}, True, "match"),
+     {"seeded_comments": 0, "open": [["none", "missing"]]}, True, "match"),
+    ("cause_lists without seeded_comments fails loudly",
+     SEEDS + [c(GOOD)], {"open": [["none"]]}, False, "needs seeded_comments"),
     ("no cause_lists expectations: skipped", SEEDS, None, True, "No cause_lists"),
 ]
 

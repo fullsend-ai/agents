@@ -186,7 +186,11 @@ judges:
       if not raw:
           return False, "fixture-state.json not found"
       comments = [(c.get("body") or "") for c in json.loads(raw).get("comments") or []]
-      seeded = int(spec.get("seeded_comments", 0))
+      # Required, so a case that seeds marked analyses can never have one of
+      # them graded as the run's output by leaving the count out.
+      if "seeded_comments" not in spec:
+          return False, "cause_lists needs seeded_comments (0 when the fixture seeds no comments)"
+      seeded = int(spec["seeded_comments"])
       marker = "<!-- fullsend:triage-agent -->"
       # The run's analysis is the newest marked comment after the seeded
       # ones. A fullsend that edits in place (before fullsend#9399) writes

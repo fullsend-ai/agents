@@ -312,7 +312,11 @@ Each case directory under `eval/<agent>/cases/` contains:
 - `annotations.yaml` — expected outcomes (labels, final `state`, review
   expectations, and for review cases an optional `review_action` list of
   actions allowed in the review-findings marker, which can keep an agent's
-  approve after a post-review downgrade) and the report-only budgets:
+  approve after a post-review downgrade), for triage cases an optional
+  `cause_lists` block checked against the run's own comment (`seeded_comments`,
+  required: how many `fixture.comments` precede the run, 0 for none; `open`
+  and `ruled_out`, lists of phrase groups; `forbidden_open`), and the
+  report-only budgets:
   `max_cost_usd`, plus `max_turns` where the eval has a `max_turns` judge.
   Set `release: true` to include the case in `EVAL_TIER=release` runs (see
   [Tiers](#tiers) above).

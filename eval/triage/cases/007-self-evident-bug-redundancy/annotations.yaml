@@ -12,6 +12,7 @@ labels:
 
 # Every sufficient comment ends with an Open causes list (cause_lists judge).
 cause_lists:
+  seeded_comments: 0
   open:
     - ["none", "missing email", "email field", "no email", "absent", "blank", "empty", "typeerror"]
 
