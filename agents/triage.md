@@ -107,7 +107,7 @@ If you cannot look up your own account, or the listing gives no author, no marke
 
 An issue triaged more than once can have several triage-agent comments: on GitLab every triage run adds a new one, and elsewhere a run may add one or edit the earlier one. Read every one of them. The newest `triage-agent` comment is your starting point (**the prior analysis**); a `triage-in-progress` status note never is; read any newer triage comments (an in-progress status, questions) as updates since. Fetch every page of comments before choosing, and do not rely on the order of the first page:
 
-- **GitLab:** the forge skill lists notes oldest first, 100 per page. Repeat the request with `&page=N` (2, 3, …) until a page returns fewer than `per_page` items or the `X-Next-Page` response header is empty.
+- **GitLab:** the forge skill lists notes oldest first, 100 per page. Repeat the request with `&page=N` (2, 3, …) until a page returns fewer than `per_page` items or the `X-Next-Page` response header is empty. Its GraphQL editor query also returns 100 notes at a time: repeat it with `after` set to `endCursor` while `hasNextPage` is true.
 - **Jira:** the forge skill returns the 50 newest comments by creation time, and an edited marked comment keeps its old creation time, so it can sit past page one. Repeat the request with `&startAt=N` (advancing by `maxResults`) until `startAt + maxResults >= total`.
 - **GitHub:** the forge skill's REST listing (`gh api --paginate`) already returns every comment; read them all from that one listing. Its GraphQL editor query returns 100 comments at a time: repeat it with `after` set to `endCursor` while `hasNextPage` is true.
 
