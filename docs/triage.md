@@ -263,15 +263,17 @@ Re-running triage posts the result differently per tracker:
 
 A re-run treats an earlier marked comment as its own prior analysis only
 when the triage account wrote it and made its last edit; any other marked
-comment is read as a human comment. The agent identifies that account per
+comment is read as a human comment, and so is the `Previous run` history
+fullsend folds into an edited comment. The agent identifies that account per
 tracker:
 
 - **GitHub:** a `Bot` author whose App is `$FULLSEND_SLUG`, `<owner>-triage`,
   `fullsend-ai-triage` or `${FULLSEND_APP_SET}-triage`.
   `env/github/triage.env` passes `FULLSEND_APP_SET` into the sandbox, but
   fullsend's triage job does not export it yet (fullsend-ai/fullsend#9568).
-  Until it does, an install whose triage App uses a custom App set matches
-  none of these names, so its earlier analyses are read as human comments.
+  Until it does, an install whose custom App set is not named after the
+  repository owner matches none of these names, so its earlier analyses are
+  read as human comments.
 - **GitLab:** the account `GET /api/v4/user` returns for `GITLAB_TOKEN`.
 - **Jira:** the account `GET /rest/api/3/myself` returns, which needs the
   `read:jira-user` scope (or the granular `read:user:jira`) on
