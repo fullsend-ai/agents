@@ -269,7 +269,7 @@ tracker:
 - **GitHub:** a `Bot` author whose App is `$FULLSEND_SLUG`, `<owner>-triage`,
   `fullsend-ai-triage` or `${FULLSEND_APP_SET}-triage`. An install with a
   custom App set is recognised only when `FULLSEND_APP_SET` reaches the
-  triage job's environment.
+  triage job's environment, which fullsend-ai/fullsend#9568 tracks.
 - **GitLab:** the account `GET /api/v4/user` returns for `GITLAB_TOKEN`.
 - **Jira:** the account `GET /rest/api/3/myself` returns, which needs the
   `read:jira-user` scope (or the granular `read:user:jira`) on
