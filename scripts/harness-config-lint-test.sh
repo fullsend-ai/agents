@@ -104,11 +104,6 @@ check_validation_loop_at_path() {
 
     # If per-location has explicit schema, validate it even without a local script
     if [[ "${has_per_location_schema}" == "true" ]]; then
-      local per_location_schema
-      per_location_schema="$(yq "${path}.validation_loop.schema" "${harness}")" || {
-        echo "${harness_name}: yq failed to extract schema at ${location}"
-        return 1
-      }
       local per_location_type_selector
       per_location_type_selector="${path}.validation_loop.schema | type"
       local per_location_type
@@ -130,11 +125,6 @@ check_validation_loop_at_path() {
     local per_location_script
     per_location_script="$(yq "${path}.validation_loop.script" "${harness}")" || {
       echo "${harness_name}: yq failed to extract script at ${location}"
-      return 1
-    }
-    local per_location_schema
-    per_location_schema="$(yq "${path}.validation_loop.schema" "${harness}")" || {
-      echo "${harness_name}: yq failed to extract schema at ${location}"
       return 1
     }
     # Check YAML type of per-location schema to distinguish null from string "null"
