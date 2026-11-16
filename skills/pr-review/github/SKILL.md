@@ -16,17 +16,18 @@ fetching to these commands when `FULLSEND_FORGE=github`.
 
 ```bash
 # PR metadata: title, body, author, labels, draft status, head SHA
-PR_DATA=$(gh api "repos/${REPO_FULL_NAME}/pulls/${PR_NUMBER}")
-HEAD_SHA=$(echo "$PR_DATA" | jq -r '.head.sha')
-IS_DRAFT=$(echo "$PR_DATA" | jq -r '.draft')
+PR_DATA=$(gh api "repos/$REPO_FULL_NAME/pulls/$PR_NUMBER")
+HEAD_SHA=$(printf '%s' "$PR_DATA" | jq -r '.head.sha')
+IS_DRAFT=$(printf '%s' "$PR_DATA" | jq -r '.draft')
 # Total commit count, used by "Commit messages" below to detect the
 # commits endpoint's 250-commit fetch cap.
-PR_COMMIT_COUNT=$(echo "$PR_DATA" | jq -r '.commits')
+PR_COMMIT_COUNT=$(printf '%s' "$PR_DATA" | jq -r '.commits')
 PR_COMMIT_COUNT_FILE=/sandbox/workspace/pr-commit-count
-case "$PR_COMMIT_COUNT" in
-  ''|*[!0-9]*) printf '%s\n' unknown > "$PR_COMMIT_COUNT_FILE" ;;
-  *) printf '%s\n' "$PR_COMMIT_COUNT" > "$PR_COMMIT_COUNT_FILE" ;;
-esac
+if printf '%s' "$PR_COMMIT_COUNT" | grep -Eqxz '[0-9]+'; then
+  printf '%s\n' "$PR_COMMIT_COUNT" > "$PR_COMMIT_COUNT_FILE"
+else
+  printf '%s\n' unknown > "$PR_COMMIT_COUNT_FILE"
+fi
 
 # PR files list — every page, flattened, saved for later Bash calls
 # (shell variables do not survive between calls; files do)
@@ -126,11 +127,11 @@ printf '%s\n' false > "$COMMIT_MESSAGES_INCOMPLETE_FILE"
 printf '%s\n' false > "$COMMIT_MESSAGES_AVAILABLE_FILE"
 PR_COMMIT_COUNT=unknown
 if test -r "$PR_COMMIT_COUNT_FILE"; then
-  PR_COMMIT_COUNT=$(cat "$PR_COMMIT_COUNT_FILE")
+  PR_COMMIT_COUNT=$(cat /sandbox/workspace/pr-commit-count)
 fi
-case "$PR_COMMIT_COUNT" in
-  ''|*[!0-9]*) PR_COMMIT_COUNT=unknown ;;
-esac
+if ! printf '%s' "$PR_COMMIT_COUNT" | grep -Eqxz '[0-9]+'; then
+  PR_COMMIT_COUNT=unknown
+fi
 if gh api --paginate --slurp "repos/${REPO_FULL_NAME}/pulls/${PR_NUMBER}/commits?per_page=100" > "$COMMITS_FILE"; then
   if jq -r 'add // [] | [.[] | .commit.message] | join("\n---\n")' "$COMMITS_FILE" > "$COMMIT_MESSAGES_FILE"; then
     printf '%s\n' true > "$COMMIT_MESSAGES_AVAILABLE_FILE"
@@ -173,9 +174,9 @@ COMPARE_INCOMPLETE_FILE=/sandbox/workspace/pr-compare-incomplete
 COMPARE_COMPLETE_FILTER='def safe_path: type == "string" and length > 0 and test("^[ -~]+$") and (test("(^/|/$|//|(^|/)\\.\\.?(/|$)|[\\\\\\r\\n<>])") | not); def binary_path: type == "string" and test("\\.(?i:png|jpe?g|gif|webp|bmp|ico|svgz|pdf|zip|gz|tgz|bz2|xz|7z|tar|mp3|mp4|mov|avi|webm|woff2?|ttf|otf|eot|wasm|exe|dll|so|dylib|jar|class|psd|ai|sketch)$"); def usable_patch: (.patch | type == "string" and length > 0); def content_free_rename: (.status == "renamed" and .additions == 0 and .deletions == 0 and (.previous_filename | safe_path)); type == "object" and (.status == "ahead" or .status == "identical") and (.behind_by == 0) and (.total_commits | type == "number") and (.files | type == "array") and ((.files | length) < 300) and all(.files[]?; (.filename | safe_path) and (.previous_filename == null or (.previous_filename | safe_path)) and (usable_patch or (.filename | binary_path) or content_free_rename))'
 INCOMPLETE_COMPARE=true
 CHANGED_FILES=all
-if ! { printf '%s\n' true > "$COMPARE_INCOMPLETE_FILE" \
-  && printf '%s\n' all > "$CHANGED_FILES_FILE" \
-  && cp /sandbox/workspace/pr-diff.txt "$INCREMENTAL_DIFF"; }; then
+if ! printf '%s\n' true > "$COMPARE_INCOMPLETE_FILE" \
+  || ! printf '%s\n' all > "$CHANGED_FILES_FILE" \
+  || ! cp /sandbox/workspace/pr-diff.txt "$INCREMENTAL_DIFF"; then
   echo "cannot initialize fail-closed compare state" >&2
   exit 1
 fi
@@ -196,7 +197,7 @@ elif jq -e "$COMPARE_COMPLETE_FILTER" "$COMPARE_FILE" >/dev/null \
   fi
 fi
 
-CHANGED_FILES=$(cat "$CHANGED_FILES_FILE")
+CHANGED_FILES=$(cat /sandbox/workspace/pr-changed-files.txt)
 ```
 
 ## Interactive mode (non-pipeline)

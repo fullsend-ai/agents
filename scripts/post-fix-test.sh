@@ -2014,7 +2014,7 @@ if [[ "\$1" == "push" ]]; then
   printf 'git %s\n' "\$*" >> "${push_log}"
   _force=false
   for _a in "\$@"; do
-    if [[ "\$_a" == "--force-with-lease" ]]; then
+    if [[ "\$_a" == --force-with-lease* ]]; then
       _force=true
     fi
   done

@@ -536,6 +536,33 @@ else
   pass "orphan-history-refused"
 fi
 
+# --- a single-branch clone: origin/BRANCH is outside the fetch refspec ----
+seeded="$(setup_repo single-branch)"
+bare="${seeded%/repo}/remote.git"
+repo="${seeded%/repo}/single/repo"
+git clone -q --single-branch --branch main "${bare}" "${repo}" 2>/dev/null
+git -C "${repo}" config user.email "test@example.com"
+git -C "${repo}" config user.name "Test"
+git -C "${repo}" checkout -q -b "${BRANCH}"
+commit_file "${repo}" "a.txt" "a" "feat: a"
+push_in "${repo}" "${BRANCH}"
+tip="$(git --git-dir="${bare}" rev-parse --verify --quiet "refs/heads/${BRANCH}" || true)"
+if [ "${PUSH_RC}" -ne 0 ] || [ -z "${tip}" ] \
+   || [ "$(git -C "${repo}" rev-parse HEAD)" != "${tip}" ] \
+   || [ "$(git -C "${repo}" config "branch.${BRANCH}.remote")" != "origin" ] \
+   || [ "$(git -C "${repo}" config "branch.${BRANCH}.merge")" != "refs/heads/${BRANCH}" ]; then
+  fail "single-branch-clone-push" "exit ${PUSH_RC}" "${PUSH_OUT}"
+else
+  pass "single-branch-clone-push"
+fi
+push_in "${repo}" "${BRANCH}"
+if [ "${PUSH_RC}" -ne 0 ] || ! printf '%s' "${PUSH_OUT}" | grep -q "Everything up-to-date" \
+   || [ "$(git --git-dir="${bare}" rev-parse "refs/heads/${BRANCH}")" != "${tip}" ]; then
+  fail "single-branch-clone-up-to-date" "exit ${PUSH_RC}" "${PUSH_OUT}"
+else
+  pass "single-branch-clone-up-to-date"
+fi
+
 # --- GITHUB_SIGNED_COMMITS off: forge_push_branch is a plain git push -----
 # No gh call is legitimate on this path, so any one fails the push.
 OFF_BIN="${TEST_TMPDIR}/offbin"
@@ -618,6 +645,17 @@ if [ "${PUSH_RC}" -ne 0 ] || [ "$(remote_rev "${repo}" "refs/heads/${BRANCH}")" 
   fail "off-force-with-lease-replaces-remote-branch" "exit ${PUSH_RC}" "${PUSH_OUT}"
 else
   pass "off-force-with-lease-replaces-remote-branch"
+fi
+
+# Without a remote-tracking ref there is nothing to lease on: refused.
+git -C "${repo}" update-ref -d "refs/remotes/origin/${BRANCH}"
+commit_file "${repo}" c.txt "c" "feat: c"
+push_off false "${repo}" "${BRANCH}" --force-with-lease
+if [ "${PUSH_RC}" -eq 0 ] || [ "$(remote_rev "${repo}" "refs/heads/${BRANCH}")" != "${local_tip}" ] \
+   || ! printf '%s' "${PUSH_OUT}" | grep -qF "no remote-tracking ref origin/${BRANCH} to lease on"; then
+  fail "off-force-with-lease-no-tracking-ref-refused" "exit ${PUSH_RC}" "${PUSH_OUT}"
+else
+  pass "off-force-with-lease-no-tracking-ref-refused"
 fi
 
 echo

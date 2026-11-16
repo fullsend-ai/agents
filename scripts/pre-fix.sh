@@ -10,7 +10,7 @@
 # Required environment variables (set by the workflow):
 #   PR_NUMBER          — must be a positive integer
 #   REPO_FULL_NAME     — must be owner/repo format
-#   TRIGGER_SOURCE     — forge username that triggered the fix (GitHub: [bot] suffix; GitLab: _bot suffix)
+#   TRIGGER_SOURCE     — forge username that triggered the fix (GitHub: [bot] suffix; GitLab: _bot suffix or service_account_ prefix)
 #   FULLSEND_FORGE     — "github" or "gitlab"
 #
 # Optional environment variables:
@@ -314,8 +314,18 @@ _signed_push_update_ref() {
 forge_push_branch() {
   local rc=0 _SIGNED_PUSH_DIR _SIGNED_PUSH_MAP _SIGNED_PUSH_BLOBS
   if [ "${GITHUB_SIGNED_COMMITS:-false}" != "true" ]; then
-    local branch="$1"
+    local branch="$1" lease
     shift
+    if [ "${1:-}" = "--force-with-lease" ]; then
+      # Lease on the tracking ref explicitly: a single-branch clone has no
+      # fetch refspec for BRANCH, so a bare --force-with-lease reports stale info.
+      lease="$(git rev-parse -q --verify "refs/remotes/origin/${branch}")" || {
+        echo "error: no remote-tracking ref origin/${branch} to lease on; refusing the non-fast-forward update" >&2
+        return 1
+      }
+      git push --force-with-lease="refs/heads/${branch}:${lease}" -u origin -- "${branch}"
+      return
+    fi
     git push "$@" -u origin -- "${branch}"
     return
   fi
@@ -378,10 +388,51 @@ _forge_push_branch() {
     return 0
   fi
   git reset -q --soft "${tip}" || return 1
-  git branch -q --set-upstream-to="origin/${branch}" || return 1
+  # Set the upstream as `git push -u` does: --set-upstream-to refuses a
+  # remote-tracking ref outside the fetch refspec, as in a single-branch
+  # clone.
+  git config "branch.${branch}.remote" origin || return 1
+  git config "branch.${branch}.merge" "refs/heads/${branch}" || return 1
   echo "Branch ${branch} is at ${tip} on origin"
 }
 # END bundled: lib/github-signed-push.lib.sh
+# shellcheck source=github-host.lib.sh
+# BEGIN bundled: lib/github-host.lib.sh
+# shellcheck shell=bash
+# github-host.lib.sh — Shared GitHub host handling for GitHub ops.
+#
+# Derives the GitHub origin the run executes against from GITHUB_SERVER_URL,
+# a GitHub Actions default variable (https://github.com on github.com, the
+# instance URL on GitHub Enterprise Server). Defaults to https://github.com
+# when unset. Issue/PR URL validation, URL parsing and generated links use
+# this origin instead of a hard-coded github.com.
+#
+# Sourced by the github-*-ops.lib.sh files and inlined by the bundler.
+
+[[ -n "${GITHUB_HOST_SH_LOADED:-}" ]] && return 0
+GITHUB_HOST_SH_LOADED=1
+
+# Prints the GitHub origin (https://host[:port]) without a trailing slash.
+# Fails closed when GITHUB_SERVER_URL is not an HTTPS origin.
+_github_server_url() {
+  local origin="${GITHUB_SERVER_URL:-https://github.com}"
+  origin="${origin%/}"
+  if [[ ! "${origin}" =~ ^https://[a-zA-Z0-9.-]+(:[0-9]+)?$ ]]; then
+    echo "ERROR: GITHUB_SERVER_URL is not an HTTPS origin (https://host[:port]): $(printf '%s' "${origin}" | tr -d '\n\r')" >&2
+    return 1
+  fi
+  printf '%s\n' "${origin}"
+}
+
+# Prints the remainder of a URL after "<origin>/" when the URL is on the
+# GitHub origin; fails (printing nothing) when it is on another host.
+_github_url_path() {
+  local url="$1" base
+  base="$(_github_server_url)/" || return 1
+  [[ "${url}" == "${base}"* ]] || return 1
+  printf '%s\n' "${url#"${base}"}"
+}
+# END bundled: lib/github-host.lib.sh
 
 if ! declare -F gha_echo >/dev/null 2>&1; then
   gha_echo() {
@@ -396,8 +447,9 @@ fi
 # --- PR/MR operations ---
 
 forge_validate_pr_url() {
-  local url="${1:-${PR_URL:-}}"
-  if [[ ! "${url}" =~ ^https://github\.com/[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+/pull/[1-9][0-9]*$ ]]; then
+  local url="${1:-${PR_URL:-}}" path
+  if ! path=$(_github_url_path "${url}") \
+    || [[ ! "${path}" =~ ^[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+/pull/[1-9][0-9]*$ ]]; then
     echo "ERROR: PR_URL does not match expected GitHub pattern: ${url}" >&2
     return 1
   fi
@@ -405,7 +457,7 @@ forge_validate_pr_url() {
 
 forge_parse_pr_url() {
   local url="${1:-${PR_URL:-}}"
-  REPO_FULL_NAME=$(echo "${url}" | sed 's|https://github.com/||; s|/pull/.*||')
+  REPO_FULL_NAME=$(_github_url_path "${url}" | sed 's|/pull/.*||')
   # shellcheck disable=SC2034
   PR_NUMBER=$(basename "${url}")
 }
@@ -464,9 +516,10 @@ forge_get_pr_labels() {
 # --- Push operations ---
 
 forge_set_push_remote() {
-  local token="$1"
+  local token="$1" server
+  server=$(_github_server_url) || return 1
   git remote set-url origin \
-    "https://x-access-token:${token}@github.com/${REPO_FULL_NAME}.git"
+    "https://x-access-token:${token}@${server#https://}/${REPO_FULL_NAME}.git"
 }
 
 forge_setup_push_token() {
@@ -852,9 +905,13 @@ forge_append_path() {
     ;;
 esac
 
+# is_bot_user USERNAME — true if USERNAME is an automated forge identity.
+# GitLab: access-token bot users (project_<id>_bot) and service accounts
+# (service_account_..., e.g. the installer-created fullsend-analyst /
+# fullsend-coder accounts named service_account_project_<id>_<hash>).
 is_bot_user() {
   if [ "${FULLSEND_FORGE:-}" = "gitlab" ]; then
-    [[ "${1:-}" =~ _bot$ ]]
+    [[ "${1:-}" =~ _bot$ || "${1:-}" =~ ^service_account_ ]]
   else
     [[ "${1:-}" =~ \[bot\]$ ]]
   fi
@@ -1045,10 +1102,12 @@ if [[ "${errors}" -gt 0 ]]; then
 fi
 
 # ---------------------------------------------------------------------------
-# Human instruction length cap (defense against DoS via oversized input)
+# Human instruction length cap (defense against DoS via oversized input).
+# Applies whenever HUMAN_INSTRUCTION is set, regardless of trigger
+# classification: the harness forwards it into the sandbox either way.
 # ---------------------------------------------------------------------------
 MAX_INSTRUCTION_BYTES=10000
-if ! is_bot_user "${TRIGGER_SOURCE}" && [[ -n "${HUMAN_INSTRUCTION:-}" ]]; then
+if [[ -n "${HUMAN_INSTRUCTION:-}" ]]; then
   INSTRUCTION_LEN="${#HUMAN_INSTRUCTION}"
   if [[ "${INSTRUCTION_LEN}" -gt "${MAX_INSTRUCTION_BYTES}" ]]; then
     gha_echo error "HUMAN_INSTRUCTION is ${INSTRUCTION_LEN} bytes (max: ${MAX_INSTRUCTION_BYTES}). Truncate the instruction."

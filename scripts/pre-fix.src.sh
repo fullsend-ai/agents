@@ -9,7 +9,7 @@
 # Required environment variables (set by the workflow):
 #   PR_NUMBER          — must be a positive integer
 #   REPO_FULL_NAME     — must be owner/repo format
-#   TRIGGER_SOURCE     — forge username that triggered the fix (GitHub: [bot] suffix; GitLab: _bot suffix)
+#   TRIGGER_SOURCE     — forge username that triggered the fix (GitHub: [bot] suffix; GitLab: _bot suffix or service_account_ prefix)
 #   FULLSEND_FORGE     — "github" or "gitlab"
 #
 # Optional environment variables:
@@ -88,10 +88,12 @@ if [[ "${errors}" -gt 0 ]]; then
 fi
 
 # ---------------------------------------------------------------------------
-# Human instruction length cap (defense against DoS via oversized input)
+# Human instruction length cap (defense against DoS via oversized input).
+# Applies whenever HUMAN_INSTRUCTION is set, regardless of trigger
+# classification: the harness forwards it into the sandbox either way.
 # ---------------------------------------------------------------------------
 MAX_INSTRUCTION_BYTES=10000
-if ! is_bot_user "${TRIGGER_SOURCE}" && [[ -n "${HUMAN_INSTRUCTION:-}" ]]; then
+if [[ -n "${HUMAN_INSTRUCTION:-}" ]]; then
   INSTRUCTION_LEN="${#HUMAN_INSTRUCTION}"
   if [[ "${INSTRUCTION_LEN}" -gt "${MAX_INSTRUCTION_BYTES}" ]]; then
     gha_echo error "HUMAN_INSTRUCTION is ${INSTRUCTION_LEN} bytes (max: ${MAX_INSTRUCTION_BYTES}). Truncate the instruction."

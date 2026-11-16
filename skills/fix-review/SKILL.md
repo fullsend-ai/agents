@@ -58,7 +58,7 @@ echo "FIX_CONFLICT_UPDATE_STRATEGY=${FIX_CONFLICT_UPDATE_STRATEGY:-merge}"
   `agent-result.json`.** Derive the normalized trigger type now — you
   will need it in step 9:
   - On GitHub (`FULLSEND_FORGE=github`): if `TRIGGER_SOURCE` ends in `[bot]` → trigger type is `"bot"`
-  - On GitLab (`FULLSEND_FORGE=gitlab`): if `TRIGGER_SOURCE` ends in `_bot` → trigger type is `"bot"`
+  - On GitLab (`FULLSEND_FORGE=gitlab`): if `TRIGGER_SOURCE` ends in `_bot` or starts with `service_account_` → trigger type is `"bot"`
   - Otherwise → trigger type is `"human"`
 - `HUMAN_INSTRUCTION` — the human's instruction text (only when
   trigger type is `"human"`)
