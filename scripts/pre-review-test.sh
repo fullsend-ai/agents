@@ -1189,6 +1189,126 @@ else
   echo "PASS: gitlab-user-resolver-closes-by-id"
 fi
 
+# --- Clone deepening uses the configured GitHub host ---
+
+# run_deepen_test runs pre-review.sh against a shallow-looking target dir with
+# a mock git that logs its arguments.
+# Arguments:
+#   $1 — test name
+#   $2 — GITHUB_SERVER_URL value ("unset" leaves it unset)
+#   $3 — expected exit code
+#   $4 — expected fetch URL ("" expects no fetch at all)
+#   $5 — text the output must contain (optional)
+run_deepen_test() {
+  local test_name="$1" server="$2" expect_exit="$3" expected_url="$4"
+  local mock_bin git_log="${TMPDIR}/git-calls.log" target="${TMPDIR}/deepen-target"
+  local pr_origin="${server}"
+  [[ "${server}" == "unset" ]] && pr_origin="https://github.com"
+  mock_bin="$(build_mock "OPEN" "some-human")"
+  mkdir -p "${target}"
+  : > "${git_log}"
+  cat > "${mock_bin}/git" <<MOCKEOF
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "${git_log}"
+[[ " \$* " == *" rev-parse --is-shallow-repository "* ]] && echo true
+exit 0
+MOCKEOF
+  chmod +x "${mock_bin}/git"
+
+  local env_cmd=(env -u GITHUB_SERVER_URL)
+  [[ "${server}" == "unset" ]] || env_cmd+=(GITHUB_SERVER_URL="${server}")
+  env_cmd+=(
+    PATH="${mock_bin}:${PATH}"
+    REPO_FULL_NAME="test-org/test-repo"
+    PR_URL="${pr_origin}/test-org/test-repo/pull/42"
+    FULLSEND_FORGE="github"
+    REVIEW_TOKEN="fake-token"
+    GH_TOKEN="fake-token"
+    REVIEW_GIT_FETCH_DEPTH="0"
+    REPO_DIR="${target}"
+  )
+
+  local exit_code=0
+  "${env_cmd[@]}" bash "${SCRIPT_DIR}/pre-review.sh" \
+    > "${TMPDIR}/stdout-deepen.log" 2>&1 || exit_code=$?
+
+  local ok=1
+  [[ ${exit_code} -eq ${expect_exit} ]] || ok=0
+  if [[ -n "${5:-}" ]]; then
+    grep -qF -- "$5" "${TMPDIR}/stdout-deepen.log" || ok=0
+  fi
+  if [[ -z "${expected_url}" ]]; then
+    grep -q "fetch" "${git_log}" && ok=0
+  else
+    local expected_header
+    expected_header="http.${expected_url%/test-org/test-repo.git}/.extraheader=Authorization: basic $(printf 'x-access-token:%s' "fake-token" | base64 -w0)"
+    grep -qF -- "fetch --unshallow ${expected_url}" "${git_log}" || ok=0
+    grep -qF -- "${expected_header}" "${git_log}" || ok=0
+    if [[ "${expected_url}" != https://github.com/* ]]; then
+      grep -qF "github.com" "${git_log}" && ok=0
+    fi
+  fi
+
+  if [[ ${ok} -eq 1 ]]; then
+    echo "PASS: ${test_name}"
+  else
+    echo "FAIL: ${test_name} — exit ${exit_code} (expected ${expect_exit})"
+    cat "${git_log}"
+    cat "${TMPDIR}/stdout-deepen.log"
+    FAILURES=$((FAILURES + 1))
+  fi
+}
+
+run_deepen_test "deepen-default-host" "unset" 0 \
+  "https://github.com/test-org/test-repo.git"
+run_deepen_test "deepen-github-com-host" "https://github.com" 0 \
+  "https://github.com/test-org/test-repo.git"
+run_deepen_test "deepen-ghe-host" "https://ghe.example.internal" 0 \
+  "https://ghe.example.internal/test-org/test-repo.git"
+run_deepen_test "deepen-ghe-host-port" "https://ghe.example.internal:8443" 0 \
+  "https://ghe.example.internal:8443/test-org/test-repo.git"
+
+# An invalid GITHUB_SERVER_URL never reaches the deepen step: the pre-script
+# aborts at PR URL validation, before git fetches anything.
+_bad_server_err="GITHUB_SERVER_URL is not an HTTPS origin"
+run_deepen_test "invalid-server-url-non-https-aborts-at-pr-url-validation" \
+  "http://ghe.example.internal" 1 "" "${_bad_server_err}"
+run_deepen_test "invalid-server-url-userinfo-aborts-at-pr-url-validation" \
+  "https://user@ghe.example.internal" 1 "" "${_bad_server_err}"
+run_deepen_test "invalid-server-url-path-aborts-at-pr-url-validation" \
+  "https://ghe.example.internal/path" 1 "" "${_bad_server_err}"
+
+# The origin-scoped header key is applied by real git to that origin only.
+_nogit=""
+if ! command -v git >/dev/null 2>&1; then
+  echo "SKIP: scoped-extraheader-real-git — git not installed"
+elif ! _nogit="$(mktemp -d)" || [[ ! -d "${_nogit}" ]]; then
+  echo "FAIL: scoped-extraheader-real-git — mktemp failed"
+  FAILURES=$((FAILURES + 1))
+else
+  _ghe="https://ghe.example.internal:8443"
+  # Only the -c key may be in play: no global or system config, and no
+  # repository config either (a CI checkout sets its own extraheader in
+  # .git/config), so run from an empty directory outside any repository.
+  # Config passed through the environment is dropped too (git -c re-sets
+  # GIT_CONFIG_PARAMETERS for itself).
+  _git=(env -u GIT_DIR -u GIT_WORK_TREE -u GIT_CONFIG_PARAMETERS -u GIT_CONFIG_COUNT
+    GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
+    GIT_CEILING_DIRECTORIES="$(dirname "${_nogit}")"
+    git -C "${_nogit}" -c "http.${_ghe}/.extraheader=X"
+    config --get-urlmatch http.extraheader)
+  _on_ghe="$("${_git[@]}" "${_ghe}/o/r.git" || true)"
+  _on_dotcom="$("${_git[@]}" "https://github.com/o/r.git" || true)"
+  rm -rf "${_nogit}"
+  if [[ "${_on_ghe}" == "X" && -z "${_on_dotcom}" ]]; then
+    echo "PASS: scoped-extraheader-real-git"
+  else
+    # Report only whether each lookup matched; never print a header value.
+    echo "FAIL: scoped-extraheader-real-git — ghe matched X: $([[ "${_on_ghe}" == "X" ]] && echo yes || echo no), github.com matched: $([[ -n "${_on_dotcom}" ]] && echo yes || echo no)"
+    FAILURES=$((FAILURES + 1))
+  fi
+fi
+
 # --- Summary ---
 
 echo ""

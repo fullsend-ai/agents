@@ -37,6 +37,7 @@ ns = {}
 exec("def check(outputs):\n" + textwrap.indent(open(sys.argv[1]).read(), "    "), ns)
 
 MARKER = "<!-- fullsend:review-agent -->"
+NOTICE = "<!-- fullsend:review-notice -->"
 PROJECTION = "<!-- fullsend:review-findings-v2:eyJ2ZXJzaW9uIjoyfQ== -->"
 
 
@@ -134,6 +135,20 @@ cases = [
      {"forbidden": ["logic-error"]}, False, "found 2"),
     ("failed capture is not a clean review",
      None, None, {"forbidden": ["logic-error"]}, False, "found 0"),
+    # fullsend-ai/fullsend#9399: a run that only posted a stale-head or failure
+    # notice (its own marker, no review-agent sticky) has no findings to judge.
+    ("notice-only run is not scored",
+     [comment(NOTICE + "\n## Review\n\n**Reason:** stale-head")], [],
+     {"required": ["logic-error"]}, None, "only a review notice"),
+    ("failure-notice-only run is not scored",
+     [comment(NOTICE + "\n## Review\n\n**Reason:** agent-failure")], [],
+     {"forbidden": ["logic-error"]}, None, "only a review notice"),
+    ("a notice beside the run's review: the review is judged",
+     [comment(NOTICE + "\n## Review\n\n**Reason:** stale-head"), sticky(LOGIC)], [],
+     {"required": ["logic-error"]}, True, "Finding expectations met"),
+    ("notice marker not on the first line is not a notice",
+     [comment("Quoting:\n" + NOTICE)], [],
+     {"required": ["logic-error"]}, False, "found 0"),
 ]
 
 failures = 0
