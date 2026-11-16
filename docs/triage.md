@@ -42,8 +42,10 @@ the newest full analysis: it keeps open causes unless it refutes them, and
 keeps ruled-out causes out unless new evidence, such as a maintainer's
 comment, revives them. Only an analysis posted by the triage bot account, and not last edited by
 anyone else, is carried this way (on GitLab and Jira, by the account the
-tracker credential belongs to); any other marked comment is re-checked
-against the evidence instead.
+tracker credential belongs to); any other marked comment, and the
+`Previous run` history fullsend folds into an edited comment, is re-checked
+against the evidence instead. A comment saying a cause is wrong rules it out
+only when evidence in the code or the issue backs it.
 
 ## Control labels
 

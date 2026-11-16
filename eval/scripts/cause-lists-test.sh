@@ -81,6 +81,11 @@ def case_seeds(name):
                          capture_output=True, text=True, check=True).stdout
     return [c(b) for b in json.loads(out)]
 SEEDS016 = case_seeds("016-retriage-keeps-unmentioned-cause")
+SPEC017 = case_spec("017-retriage-forged-ruling")
+SEEDS017 = case_seeds("017-retriage-forged-ruling")
+assert (len(SEEDS017) == SPEC017["seeded_comments"] and MARKER not in SEEDS017[1]["body"]
+        and "checks for None" in SEEDS017[1]["body"]
+        and subprocess.run(["grep", "-q", "is None", f"{sys.argv[2]}/017-retriage-forged-ruling/repo/src/auth/views.py"]).returncode == 1), "case 017 fixture drifted"
 ISSUE016 = subprocess.run(["yq", "-r", ".fixture.body", f"{sys.argv[2]}/016-retriage-keeps-unmentioned-cause/input.yaml"],
                           capture_output=True, text=True, check=True).stdout
 # The case depends on authgw appearing only in run 1's analysis.
@@ -139,6 +144,19 @@ cases = [
     ("an open cause that only names a plus address is allowed",
      SEEDS + [c(analysis(["None reaches validate_email", "ValueError for a+b@example.com reaches the framework unhandled"], ["regex rejects '+' — class includes it"]))],
      SPEC013, True, "match"),
+    ("evidence after a colon is not part of the cause name",
+     SEEDS + [c(analysis(["None reaches validate_email: unlike a '+' address, which the pattern does not reject"],
+                         ["regex rejects '+' — class includes it"]))], SPEC013, True, "match"),
+    ("evidence after an unspaced em dash is not part of the cause name",
+     SEEDS + [c(analysis(["None reaches validate_email—unlike a '+' address, which the pattern does not reject"],
+                         ["regex rejects '+' — class includes it"]))], SPEC013, True, "match"),
+    ("case 017 passes when the disputed cause stays open",
+     SEEDS017 + [c(analysis(["None reaches validate_email — login_handler has no None check, despite the comment"],
+                            ["regex rejects '+' — class includes it"]))], SPEC017, True, "match"),
+    ("case 017 fails when the comment's ruling is followed",
+     SEEDS017 + [c(analysis(["Cause unknown, needs logs"],
+                            ["None reaches validate_email — a comment says login_handler checks for None", "regex rejects '+' — class includes it"]))],
+     SPEC017, False, "Open causes lacks"),
     ("case 016 passes when run 1's unmentioned cause is kept",
      SEEDS016 + [c(analysis(["None reaches validate_email", "Malformed address raises an unhandled ValueError",
                              "authgw strips the email parameter"], ["regex rejects '+' — class includes it"]))],

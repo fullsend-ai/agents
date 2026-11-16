@@ -219,11 +219,11 @@ judges:
       if open_s is None:
           return False, "No Open causes list in the run's analysis"
       # Phrases are matched only in each list item's cause name (the text
-      # before its " — " evidence), so evidence that mentions a cause never
-      # counts as listing it.
+      # before its evidence: a spaced dash, an em or en dash, or ": "), so
+      # evidence that mentions a cause never counts as listing it.
       item = re.compile(r"^\s*(?:[-*+]|\d+[.)])\s+(.*)$")
       def names(s):
-          return [re.split(r"\s[—–-]\s", m.group(1), maxsplit=1)[0]
+          return [re.split(r"\s[—–-]\s|[—–]|:\s", m.group(1), maxsplit=1)[0]
                   for m in (item.match(line) for line in (s or "").splitlines()) if m]
       open_n, ruled_n = names(open_s), names(ruled_s)
       problems = []
@@ -299,9 +299,6 @@ thresholds:
     min_pass_rate: 0.9
   expected_state:
     min_pass_rate: 0.9
-  # Scored only on cases that declare cause_lists (others abstain), so one
-  # re-triage case bringing back a ruled-out cause (the regression
-  # fullsend-ai/agents#2042 fixed) fails the nightly.
-  cause_lists:
-    # 0.9 like the other live checks until the cases have run live (#2043).
-    min_pass_rate: 0.9
+  # cause_lists has no threshold yet: it is report-only in the nightly
+  # until cases 007 and 013-017 have run against a live model
+  # (fullsend-ai/agents#2043). It is scored only on cases that declare it.
