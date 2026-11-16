@@ -93,6 +93,7 @@ script-test:
 	$(call run-timed,bash scripts/pr-review-challenger-contract-test.sh)
 	$(call run-timed,bash scripts/codex-v2-dispatch-contract-test.sh)
 	$(call run-timed,bash scripts/pr-review-provisional-result-test.sh)
+	$(call run-timed,bash scripts/pr-review-prior-risk-test.sh)
 	$(call run-timed,bash scripts/pr-review-remediation-test.sh)
 	$(call run-timed,bash scripts/pr-review-dependency-scope-test.sh)
 	$(call run-timed,bash scripts/post-review-test.sh)

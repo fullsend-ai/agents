@@ -527,9 +527,9 @@ be absent from the result JSON.
    ```bash
    # GitHub — authenticate against the expected bot identity to prevent
    # a contributor forging a low-score comment with the risk marker:
-   PRIOR_RISK_COMMENT=$(gh api --paginate \
+   PRIOR_RISK_COMMENT=$(SLUG="${FULLSEND_SLUG:-fullsend-ai-review}" gh api --paginate \
      "repos/$REPO_FULL_NAME/issues/$PR_NUMBER/comments" \
-     --jq '[.[] | select(.body | contains("<!-- fullsend:risk-assessment -->")) | select(.performed_via_github_app.slug == "fullsend-ai-review" or .user.login == "fullsend-ai-review[bot]")] | last // empty')
+     --jq '[.[] | select(.body | contains("<!-- fullsend:risk-assessment -->")) | select(.performed_via_github_app.slug == env.SLUG or .user.login == env.SLUG + "[bot]")] | last // empty')
    ```
 
    If found, extract the prior score, level, and rationale from the
