@@ -16,6 +16,12 @@ provides `GH_TOKEN` for authentication.
 # View an issue with full details
 gh issue view NUMBER --repo OWNER/REPO --json number,title,body,labels,assignees,createdAt,updatedAt,author,comments,state,milestone
 
+# Issue comments with their author type, App and edit time. gh issue view
+# drops the "[bot]" suffix from App logins and gives no edit time, so use
+# this listing whenever a comment's author or edit time matters.
+gh api --paginate repos/OWNER/REPO/issues/NUMBER/comments \
+  --jq '.[] | {id, user: .user.login, type: .user.type, app: .performed_via_github_app.slug, updated_at}'
+
 # List open issues
 gh issue list --repo OWNER/REPO --state open --json number,title,body --limit 100
 
