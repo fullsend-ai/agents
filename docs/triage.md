@@ -261,6 +261,21 @@ Re-running triage posts the result differently per tracker:
   earlier marked comment until fullsend-ai/fullsend#9399 lands, which is
   expected to make them post a new comment each run as well.
 
+A re-run treats an earlier marked comment as its own prior analysis only
+when the triage account wrote it and made its last edit; any other marked
+comment is read as a human comment. The agent identifies that account per
+tracker:
+
+- **GitHub:** a `Bot` author whose App is `$FULLSEND_SLUG`, `<owner>-triage`,
+  `fullsend-ai-triage` or `${FULLSEND_APP_SET}-triage`. An install with a
+  custom App set is recognised only when `FULLSEND_APP_SET` reaches the
+  triage job's environment.
+- **GitLab:** the account `GET /api/v4/user` returns for `GITLAB_TOKEN`.
+- **Jira:** the account `GET /rest/api/3/myself` returns, which needs the
+  `read:jira-user` scope (or the granular `read:user:jira`) on
+  `FULLSEND_JIRA_TOKEN`. Without it, no earlier analysis is carried forward,
+  and the agent says so in its reasoning.
+
 ### Jira setup
 
 Jira triage requires the following env vars, mirroring the shape of the
