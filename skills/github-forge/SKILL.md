@@ -24,6 +24,22 @@ gh issue view NUMBER --repo OWNER/REPO --json number,title,body,labels,assignees
 gh api --paginate repos/OWNER/REPO/issues/NUMBER/comments \
   --jq '.[] | {id, user: {login: .user.login, type: .user.type}, performed_via_github_app: {slug: .performed_via_github_app.slug}, created_at, updated_at, body}'
 
+# Who last edited each comment, and when (the listing above does not say).
+# databaseId is the id in that listing; logins here have no "[bot]"
+# suffix, so check that editor.__typename is Bot. Add -f after=<endCursor>
+# while hasNextPage is true.
+gh api graphql -F owner=OWNER -F name=REPO -F number=NUMBER -f query='
+  query($owner: String!, $name: String!, $number: Int!, $after: String) {
+    repository(owner: $owner, name: $name) {
+      issue(number: $number) {
+        comments(first: 100, after: $after) {
+          pageInfo { hasNextPage endCursor }
+          nodes { databaseId createdAt lastEditedAt editor { __typename login } }
+        }
+      }
+    }
+  }' --jq '.data.repository.issue.comments'
+
 # List open issues
 gh issue list --repo OWNER/REPO --state open --json number,title,body --limit 100
 
