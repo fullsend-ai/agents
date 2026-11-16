@@ -111,7 +111,7 @@ An issue triaged more than once can have several triage-agent comments: on GitLa
 - **Jira:** the forge skill returns the 50 newest comments by creation time, and an edited marked comment keeps its old creation time, so it can sit past page one. Repeat the request with `&startAt=N` (advancing by `maxResults`) until `startAt + maxResults >= total`.
 - **GitHub:** the forge skill's REST listing (`gh api --paginate`) already returns every comment; read them all from that one listing.
 
-Pick the newest by creation time (GitHub and GitLab `created_at`, Jira `created`), not edit time: anyone with edit rights can edit an older comment, and that must not make it the newest. The one exception is a comment fullsend updated in place, which shows it by holding a `Previous run` fold: its current text dates from its last edit (`updated_at`, Jira `updated`), so use that time for it.
+Pick the newest by creation time (GitHub and GitLab `created_at`, Jira `created`), never edit time: anyone with edit rights can edit an older comment, including adding a `Previous run` fold to it, and that must not make it the newest. Creation order also holds for fullsend's own edits: it edits only its first marked comment in place, and a later one appears only once results are appended, which are never edited.
 
 If a prior triage comment exists, **accumulate — do not replace:**
 
