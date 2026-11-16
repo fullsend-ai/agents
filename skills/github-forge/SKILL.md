@@ -19,10 +19,10 @@ gh issue view NUMBER --repo OWNER/REPO --json number,title,body,labels,assignees
 # Issue comments with body, author type, App and edit time. gh issue view
 # drops the "[bot]" suffix from App logins, gives no edit time, and uses
 # different comment ids, so read the comments from this listing whenever a
-# comment's author or edit time matters. app is null for a comment no App
-# posted.
+# comment's author or edit time matters. performed_via_github_app.slug is
+# null for a comment no App posted.
 gh api --paginate repos/OWNER/REPO/issues/NUMBER/comments \
-  --jq '.[] | {id, user: .user.login, type: .user.type, app: .performed_via_github_app.slug, updated_at, body}'
+  --jq '.[] | {id, user: {login: .user.login, type: .user.type}, performed_via_github_app: {slug: .performed_via_github_app.slug}, updated_at, body}'
 
 # List open issues
 gh issue list --repo OWNER/REPO --state open --json number,title,body --limit 100
