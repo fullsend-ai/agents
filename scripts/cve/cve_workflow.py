@@ -1160,7 +1160,11 @@ def prepare_mapped_source(context, target):
                 "--no-tags",
                 "--depth=1",
                 "origin",
-                "refs/heads/" + entry["branch"] + ":" + ref,
+                # Force the update. A runner that keeps its checkout between
+                # jobs still holds the ref from an earlier shallow fetch, and
+                # a shallow fetch can't show that the new head descends from
+                # it, so git would reject the move as a non-fast-forward.
+                "+refs/heads/" + entry["branch"] + ":" + ref,
             ],
             check=True,
             capture_output=True,

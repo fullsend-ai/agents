@@ -169,7 +169,9 @@ Jira triage agent built on it. Changes to `scripts/cve/cve_workflow.py`:
 - A checkout origin may be GitHub or the forge named by `forge_url`. A CI job
   token in the origin URL is skipped, never kept.
 - The mapped branch is fetched from the checkout's own origin, after the origin
-  is checked against the mapping, instead of from github.com with `gh`. When the
+  is checked against the mapping, instead of from github.com with `gh`. The
+  fetch forces the update, so a runner that keeps its checkout between jobs
+  follows a branch that has moved. When the
   run's `.fullsend` directory sits inside the checkout, a branch whose
   `.fullsend` tree differs is refused before the checkout.
 - The code publisher is the stock `post-code.sh` from the same pinned scripts

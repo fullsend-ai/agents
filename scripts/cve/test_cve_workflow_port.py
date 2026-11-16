@@ -120,6 +120,20 @@ class SettingsTreeTest(unittest.TestCase):
         self.assertEqual(git("rev-parse", "HEAD", cwd=self.target), before)
         self.assertEqual((self.target / ".fullsend/config.yaml").read_text(), "tracker: trusted\n")
 
+    def test_branch_that_moved_since_an_earlier_job_is_fetched_again(self):
+        # A persistent runner keeps the checkout, so the ref from an earlier
+        # shallow fetch is still there when the branch has new commits.
+        workflow.prepare_mapped_source(self.context("release-same"), self.target)
+        git("checkout", "-q", "--detach", "origin/main", cwd=self.target)
+        seed = Path(self.folder.name) / "seed"
+        git("checkout", "-q", "release-same", cwd=seed)
+        (seed / "requirements.txt").write_text("Jinja2==3.1.4\n")
+        git("commit", "-q", "-am", "later commit", cwd=seed)
+        git("push", "-q", str(self.origin), "release-same", cwd=seed)
+        workflow.prepare_mapped_source(self.context("release-same"), self.target)
+        self.assertEqual(git("rev-parse", "HEAD", cwd=self.target), git("rev-parse", "release-same", cwd=seed))
+        self.assertEqual((self.target / "requirements.txt").read_text(), "Jinja2==3.1.4\n")
+
     def test_settings_outside_the_checkout_are_not_compared(self):
         with mock.patch.dict(os.environ, {"FULLSEND_DIR": self.folder.name + "/elsewhere/.fullsend"}):
             workflow.prepare_mapped_source(self.context("release-other"), self.target)
