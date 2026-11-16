@@ -111,7 +111,9 @@ check_validation_loop_at_path() {
         echo "${harness_name}: yq failed to check schema type at ${location}"
         return 1
       }
-      # Empty schema in per-location block inherits from top-level if available - matches engine behavior
+      # Empty schema in per-location block inherits from top-level if available
+      # This is a repo policy constraint (stricter than engine): we require schema when script is present
+      # Note: forge-to-overlay inheritance is NOT modeled in this script - full engine parity requires fullsend lint
       # Both empty string and null are treated as absence and inherit
     fi
   fi
@@ -143,6 +145,7 @@ check_validation_loop_at_path() {
     }
 
     # Allow inheritance only when schema is YAML null or empty string AND there is a usable top-level schema
+    # This repo policy requires schema+script together; it doesn't model forge-to-overlay inheritance that engine does
     if [[ "${per_location_type}" == '!!null' || -z "${per_location_value}" ]]; then
       # Check if top-level schema exists AND is usable (non-empty, non-null)
       local top_level_has_schema
@@ -161,7 +164,7 @@ check_validation_loop_at_path() {
         }
         # Top-level schema must be non-null and non-empty (can be string "null" but not empty string)
         if [[ "${top_level_type}" == *"null"* && "${top_level_type}" != *"str"* ]]; then
-          # YAML null - invalid
+          # YAML null - invalid (repo policy, not engine requirement)
           echo "${harness_name}: ${location} validation_loop has script but schema is null (and top-level schema is also null)"
           return 1
         fi
@@ -172,7 +175,7 @@ check_validation_loop_at_path() {
           return 1
         }
         if [[ -z "${top_level_schema}" ]]; then
-          # Empty string - invalid
+          # Empty string - invalid (repo policy, not engine requirement)
           echo "${harness_name}: ${location} validation_loop has script but schema is null (and top-level schema is also empty)"
           return 1
         fi
@@ -612,6 +615,7 @@ test_negative_fixtures() {
     "multiple-json-values.yaml:test_schema_files_exist_and_valid:multiple-json-values\.yaml.*schema file is not valid JSON"
     "forge-missing-schema-file.yaml:test_schema_files_exist_and_valid:forge-missing-schema-file\.yaml.*schema file not found"
     "overlay-bad-json-schema.yaml:test_schema_files_exist_and_valid:overlay-bad-json-schema\.yaml.*schema file is not valid JSON"
+    "absolute-schema-path.yaml:test_schema_files_exist_and_valid:absolute-schema-path\.yaml.*schema file not found"
   )
 
   for fixture_spec in "${expected_failures[@]}"; do
@@ -781,11 +785,12 @@ test_positive_fixtures() {
   }
   mkdir -p "${abs_test_dir}/schemas"
   local abs_schema_path="${SCRIPT_DIR}/test-fixtures/schemas/review-result.schema.json"
-  if ! cat > "${abs_test_dir}/absolute-schema-path-valid.yaml" << 'EOF'
+  # Use unquoted heredoc to expand ${abs_schema_path} variable
+  if ! cat > "${abs_test_dir}/absolute-schema-path-valid.yaml" << EOF
 ---
 validation_loop:
   script: scripts/validate-output-schema.sh
-  schema: ${FULLSEND_DIR}/schemas/review-result.schema.json
+  schema: ${abs_schema_path}
 EOF
   then
     echo "Failed to write absolute path fixture"
