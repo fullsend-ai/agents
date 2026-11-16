@@ -267,17 +267,17 @@ comment is read as a human comment. The agent identifies that account per
 tracker:
 
 - **GitHub:** a `Bot` author whose App is `$FULLSEND_SLUG`, `<owner>-triage`,
-  `fullsend-ai-triage` or `${FULLSEND_APP_SET}-triage`. An install with a
-  custom App set is recognised only once `FULLSEND_APP_SET` reaches the
-  triage sandbox: fullsend's triage job does not export it yet
-  (fullsend-ai/fullsend#9568), and a harness reference to an unset variable
-  fails validation, so `harness/triage.yaml` can pass it on only after
-  that.
+  `fullsend-ai-triage`, or `${FULLSEND_APP_SET}-triage` and the bare
+  `$FULLSEND_APP_SET`. `env/github/triage.env` passes `FULLSEND_APP_SET`
+  into the sandbox, but fullsend's triage job does not export it yet
+  (fullsend-ai/fullsend#9568), so until then an install with a custom App
+  set is recognised only through the other names.
 - **GitLab:** the account `GET /api/v4/user` returns for `GITLAB_TOKEN`.
 - **Jira:** the account `GET /rest/api/3/myself` returns, which needs the
   `read:jira-user` scope (or the granular `read:user:jira`) on
-  `FULLSEND_JIRA_TOKEN`. Without it, no earlier analysis is carried forward,
-  and the agent says so in its reasoning.
+  `FULLSEND_JIRA_TOKEN`. Without it, no marked comment counts as the agent's
+  own: their causes are read as hypotheses, and the agent says so in its
+  reasoning.
 
 ### Jira setup
 
