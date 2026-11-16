@@ -1104,6 +1104,37 @@ def live_context(jira, key, policy, target, prepare=False):
     return verify_checkout(context, target)
 
 
+def same_settings_tree(target, ref):
+    """Refuse a branch switch that would replace the run's own settings.
+
+    On GitLab the checkout is the project directory, which also holds the
+    run's .fullsend directory, read from the default branch. Checking out a
+    mapped branch there would hand the rest of the run that branch's copy, so
+    the branch must carry exactly the same .fullsend tree as the commit the
+    job is on. Where the settings live outside the checkout, as on GitHub,
+    there is nothing to compare.
+    """
+    raw = os.environ.get("FULLSEND_DIR")
+    if not raw:
+        return
+    try:
+        inside = Path(raw).resolve().relative_to(Path(target).resolve()).as_posix()
+    except ValueError:
+        return
+
+    def tree(revision):
+        try:
+            return git_value(target, "rev-parse", "--verify", "--quiet", revision + ":" + inside)
+        except TargetUnresolved:
+            return ""
+
+    if tree("HEAD") != tree(ref):
+        raise TargetUnresolved(
+            "the mapped branch carries different .fullsend settings than the "
+            "default branch; give it the same .fullsend directory before assessing it"
+        )
+
+
 def prepare_mapped_source(context, target):
     """Fetch only the exact operator-configured source branch after admission."""
     entry = context["target"]
@@ -1134,6 +1165,12 @@ def prepare_mapped_source(context, target):
             check=True,
             capture_output=True,
         )
+    except (OSError, subprocess.CalledProcessError):
+        raise TargetUnresolved(
+            "configured target branch could not be prepared"
+        ) from None
+    same_settings_tree(target, ref)
+    try:
         subprocess.run(
             ["git", "-C", str(target), "checkout", "--detach", ref],
             check=True,

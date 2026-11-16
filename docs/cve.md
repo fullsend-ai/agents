@@ -117,9 +117,11 @@ assignee and a `fullsend.cve.intake` issue property:
 ```
 
 On GitLab an agent job assesses the project directory itself, which also holds
-the run's `.fullsend` directory. The pre-script checks the mapped branch out
-there, so every mapped branch must carry the same policy and mapping files as
-the default branch.
+the run's `.fullsend` directory, read from the default branch. The pre-script
+checks a mapped branch out there only when that branch carries exactly the same
+`.fullsend` tree as the commit the job runs on, so a branch can never change the
+run's settings. Keep each mapped branch's `.fullsend` directory identical to the
+default branch's, or the run stops before the checkout.
 
 ### Variables
 
@@ -167,7 +169,9 @@ Jira triage agent built on it. Changes to `scripts/cve/cve_workflow.py`:
 - A checkout origin may be GitHub or the forge named by `forge_url`. A CI job
   token in the origin URL is skipped, never kept.
 - The mapped branch is fetched from the checkout's own origin, after the origin
-  is checked against the mapping, instead of from github.com with `gh`.
+  is checked against the mapping, instead of from github.com with `gh`. When the
+  run's `.fullsend` directory sits inside the checkout, a branch whose
+  `.fullsend` tree differs is refused before the checkout.
 - The code publisher is the stock `post-code.sh` from the same pinned scripts
   directory, instead of a hash-checked copy from the harness cache.
 - The schema ships next to the module, and messages name `/fs-cve-triage`.
