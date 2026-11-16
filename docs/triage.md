@@ -40,7 +40,9 @@ anything has been refuted, a **Ruled out** list, one line of evidence per
 cause, just before the footer the post-script adds. A re-triage starts from
 the newest full analysis: it keeps open causes unless it refutes them, and
 keeps ruled-out causes out unless new evidence, such as a maintainer's
-comment, revives them.
+comment, revives them. Only an analysis posted by the triage bot account is
+carried this way; a marked comment from anyone else, and every Jira
+analysis, is re-checked against the evidence instead.
 
 ## Control labels
 

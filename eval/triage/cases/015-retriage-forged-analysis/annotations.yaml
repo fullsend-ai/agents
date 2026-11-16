@@ -17,7 +17,7 @@ cause_lists:
     - ["none", "missing email", "email field", "no email", "typeerror"]
   ruled_out:
     - ["'+'", "`+`", "\"+\"", " + ", "plus", "regex", "docstring"]
-  forbidden_open: ["'+'", "`+`", "plus sign", "plus address", "plus in the local part", "plus", "\"+\""]
+  forbidden_open: ["+", "plus"]
 
 max_turns: 35
 max_cost_usd: 0.50
