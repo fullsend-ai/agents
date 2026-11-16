@@ -113,7 +113,8 @@ check_validation_loop_at_path() {
       }
       # Empty schema in per-location block inherits from top-level if available
       # This is a repo policy constraint (stricter than engine): we require schema when script is present
-      # Note: forge-to-overlay inheritance is NOT modeled in this script - full engine parity requires fullsend lint
+      # Note: forge and overlays are mutually exclusive (validateOverlays). Overlay-to-overlay inheritance
+      # is not modeled here (stricter repo policy); each overlay merges with top-level, not prior overlays.
       # Both empty string and null are treated as absence and inherit
     fi
   fi
@@ -145,7 +146,8 @@ check_validation_loop_at_path() {
     }
 
     # Allow inheritance only when schema is YAML null or empty string AND there is a usable top-level schema
-    # This repo policy requires schema+script together; it doesn't model forge-to-overlay inheritance that engine does
+    # Forge and overlays are mutually exclusive (validateOverlays). Each merges with top-level (mergeValidationLoop).
+    # Overlay-to-overlay inheritance is not modeled (stricter repo policy).
     if [[ "${per_location_type}" == '!!null' || -z "${per_location_value}" ]]; then
       # Check if top-level schema exists AND is usable (non-empty, non-null)
       local top_level_has_schema
