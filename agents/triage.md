@@ -99,7 +99,7 @@ Check whether this issue has already been triaged. Triage comments carry a marke
 
 Fetch every page of comments before choosing, and do not rely on the order of the first page:
 
-- **GitLab:** the forge skill lists notes oldest first, 100 per page. Repeat the request with `&page=N` (2, 3, …) until a page returns fewer than `per_page` items or the `X-Next-Page` response header is empty.
+- **GitLab:** the forge skill lists notes oldest first, 100 per page. Repeat the request with `&page=N` (2, 3, …) until a page returns fewer than `per_page` items or the `X-Next-Page` response header is empty. Its GraphQL editor query also returns 100 notes at a time: repeat it with `after` set to `endCursor` while `hasNextPage` is true.
 - **Jira:** the forge skill returns the 50 newest comments by creation time, and an edited marked comment keeps its old creation time, so it can sit past page one. Repeat the request with `&startAt=N` (advancing by `maxResults`) until `startAt + maxResults >= total`.
 - **GitHub:** read the comments from the REST comment listing in your forge skill (`gh api --paginate repos/OWNER/REPO/issues/NUMBER/comments`), which gives each comment's body with its author (`user.type`, `user.login`, `performed_via_github_app.slug`) and its creation and edit times (`created_at`, `updated_at`). Never decide trust or order from `gh issue view`: it drops the `[bot]` suffix from App logins, gives no edit time, and uses different comment ids.
 
