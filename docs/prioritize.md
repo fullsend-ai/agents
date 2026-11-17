@@ -80,7 +80,7 @@ The following apply **only** when `FULLSEND_FORGE=jira`. GitHub and GitLab `/fs-
 
 | Variable | Description |
 |----------|-------------|
-| `FULLSEND_JIRA_TOKEN` | Repository secret. The harness maps it to runner `JIRA_TOKEN` for post-script field writes and sticky comments. The sandbox never gets the real token; it receives the `jira-ro` provider's opaque placeholder. Required unless client credentials are used. |
+| `FULLSEND_JIRA_TOKEN` | Repository secret. The harness maps it to runner `JIRA_TOKEN` for post-script field writes and sticky comments. The sandbox never gets the real token; it receives the builtin `jira` provider's opaque placeholder. Required unless client credentials are used. |
 | `FULLSEND_JIRA_CLIENT_ID`, `FULLSEND_JIRA_CLIENT_SECRET` | Optional repository secrets, the OAuth 2.0 client-credentials alternative to `FULLSEND_JIRA_TOKEN`. Runner only. `post-prioritize.sh` selects the mode with `jira_auth_select`, mints a Bearer access token on the runner, and uses it for the field write; the `fullsend issues post-comment` CLI mints for itself. Set both or neither; setting a token together with client credentials, or only one of the two, fails closed before any Jira call. |
 | `FULLSEND_JIRA_EMAIL` | Optional. Bot-user email. When set, requests use Basic auth (email + token); when unset or empty (service account), Bearer auth with the token. The harness maps it to runner `JIRA_USER_EMAIL`; the sandbox gets `JIRA_USER_EMAIL` through `env/jira/prioritize.env`. |
 | `JIRA_API_URL` | Optional, sandbox only. `fullsend run` sets it to the Atlassian API gateway URL for the site (`https://api.atlassian.com/ex/jira/<cloudId>`), and the sandbox receives it via `env/jira/prioritize.env` for the read-only skills. Host-side `post-prioritize.sh` does **not** read it. |
@@ -91,7 +91,7 @@ Host-side Jira REST routing mirrors fullsend's Jira `Scoped` client. `tracker.ji
 
 ## How the agent works
 
-The prioritize agent fetches the issue and all its context, then evaluates it across the four RICE dimensions. It can invoke customer-research skills to gather additional signal about reach and impact. The output is a structured JSON result with per-dimension scores and written reasoning, which the post-script uses to update scores on the forge (GitHub Projects V2 fields, GitLab issue comment, or Jira RICE number fields when that forge is selected).
+The prioritize agent fetches the issue and all its context, then evaluates it across the four RICE dimensions. It can invoke customer-research skills to gather additional signal about reach and impact. The output is a structured JSON result with per-dimension scores and written reasoning, which the post-script uses to update scores on the forge (GitHub Projects V2 fields, GitLab issue comment, or the Jira `RICE Score` number field when that forge is selected).
 
 ### Migration notes for custom harness overrides
 
