@@ -1253,7 +1253,11 @@ def live_context(jira, key, policy, target, prepare=False):
     intake = jira.property(key, INTAKE_PROPERTY)
     context = admit(issue, intake, policy)
     if prepare:
-        if policy.get("assessment_profile") == "source_snapshot":
+        if remote_source():
+            # A remote source is fetched into the job's checkout whatever the
+            # profile; replacing the directory would drop the run's settings.
+            prepare_mapped_source(context, target)
+        elif policy.get("assessment_profile") == "source_snapshot":
             prepare_isolated_source(context, target)
         elif policy.get("prepare_checkout"):
             prepare_mapped_source(context, target)
