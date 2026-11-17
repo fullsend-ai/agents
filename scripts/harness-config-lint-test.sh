@@ -445,33 +445,29 @@ check_schema_files_at_path() {
     return 0
   fi
 
+  # Resolve relative to the provided root (matching engine's ResolveRelativeTo)
+  # If no root provided, fall back to dirname(dirname(harness)) for backwards compatibility
+  local resolve_dir="${resolve_root}"
+  if [[ -z "${resolve_dir}" ]]; then
+    resolve_dir="$(dirname "$(dirname "${harness}")")"
+  fi
+
   # Reject relative paths that escape the bundle root directory via .. components
   # (engine's ResolveRelativeTo enforces containment for relative paths)
   # Normalize the path and check if the target lies outside resolve_root
   if [[ "${schema_path}" != /* ]] && [[ "${schema_path}" =~ (^|/)\.\.(/|$) ]]; then
-    # Normalize the relative path by computing the actual target
-    local resolve_dir="${resolve_root}"
-    if [[ -z "${resolve_dir}" ]]; then
-      resolve_dir="$(dirname "$(dirname "${harness}")")"
-    fi
     # Resolve the path and check containment using real path operations
     local normalized_path
     normalized_path="$(cd "${resolve_dir}" 2>/dev/null && realpath -s "${schema_path}" 2>/dev/null || echo "")"
     local resolve_root_real
     resolve_root_real="$(cd "${resolve_dir}" 2>/dev/null && realpath -s . 2>/dev/null || echo "")"
 
-    # Only reject if the normalized path escapes the resolve root
-    if [[ -z "${normalized_path}" ]] || [[ -z "${resolve_root_real}" ]] || ! [[ "${normalized_path}" == "${resolve_root_real}"* ]]; then
+    # Enforce directory boundary: normalized path must start with resolve_root_real/ (with trailing slash)
+    # This prevents sibling directories with shared prefix (e.g., /bundle/example vs /bundle/example-other) from passing
+    if [[ -z "${normalized_path}" ]] || [[ -z "${resolve_root_real}" ]] || ! [[ "${normalized_path}" == "${resolve_root_real}"/* ]]; then
       echo "${harness_name}: ${location} schema path escapes bundle root via ..: ${schema_path}"
       return 1
     fi
-  fi
-
-  # Resolve relative to the provided root (matching engine's ResolveRelativeTo)
-  # If no root provided, fall back to dirname(dirname(harness)) for backwards compatibility
-  local resolve_dir="${resolve_root}"
-  if [[ -z "${resolve_dir}" ]]; then
-    resolve_dir="$(dirname "$(dirname "${harness}")")"
   fi
   local full_schema_path
   # Only prepend resolve_dir for relative paths; preserve absolute paths
@@ -667,6 +663,7 @@ test_negative_fixtures() {
     "script-no-schema.yaml:test_validation_loop_schema:script-no-schema\.yaml.*top-level validation_loop has script but no schema"
     "schema-path-explicit-empty.yaml:test_validation_loop_schema:schema-path-explicit-empty\.yaml.*top-level validation_loop\.schema is empty"
     "schema-escaped-path.yaml:test_schema_files_exist_and_valid:schema-escaped-path\.yaml.*schema path escapes bundle root via"
+    "schema-traversal-to-sibling.yaml:test_schema_files_exist_and_valid:schema-traversal-to-sibling\.yaml.*schema path escapes bundle root via"
     "forge-script-no-inherited-schema.yaml:test_validation_loop_schema:forge-script-no-inherited-schema\.yaml.*validation_loop has script but no schema.*no top-level schema"
     "overlay-script-no-inherited-schema.yaml:test_validation_loop_schema:overlay-script-no-inherited-schema\.yaml.*validation_loop has script but no schema.*no top-level schema"
     "forge-null-inherited-schema.yaml:test_validation_loop_schema:forge-null-inherited-schema\.yaml.*validation_loop has script but schema is null"
