@@ -194,8 +194,8 @@ _prior_triage_github() {
 
 _prior_triage_gitlab() {
   local work="$1" page=1 next count me="" trust_error="" after=null origin _
-  # Notes oldest first, 100 a page. A short page is the last; a full one
-  # without X-Next-Page is not.
+  # Notes oldest first, 100 a page. X-Next-Page wins when present; without
+  # it, a short page is the last and a full one is not.
   : > "${work}/notes.jsonl"
   while [[ -n "${page}" ]]; do
     if ! _gitlab_api GET "/projects/${REPO_ENCODED}/issues/${ISSUE_NUMBER}/notes?per_page=100&sort=asc&page=${page}" \
@@ -207,7 +207,7 @@ _prior_triage_gitlab() {
     jq -c '.[]' "${work}/page.json" >> "${work}/notes.jsonl"
     next=$(tr -d '\r' < "${work}/headers" | sed -nE 's/^[Xx]-[Nn]ext-[Pp]age:[[:space:]]*([0-9]*).*/\1/p' | tail -n 1)
     count=$(jq length "${work}/page.json")
-    if [[ "${count}" -lt 100 ]]; then page=""; else page="${next:-$((page + 1))}"; fi
+    if [[ -n "${next}" ]]; then page="${next}"; elif [[ "${count}" -lt 100 ]]; then page=""; else page=$((page + 1)); fi
     [[ "${page:-0}" -le 1000 ]] || { echo "too many note pages" >&2; return 1; }
   done
   # The account this token belongs to, and who last edited each note.
