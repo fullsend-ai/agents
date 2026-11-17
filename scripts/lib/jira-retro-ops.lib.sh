@@ -418,6 +418,7 @@ _retro_jira_post_comment() {
     echo "ERROR: JIRA_TOKEN must be set to post comments to Jira" >&2
     return 1
   fi
+  # Jira issue keys are <PROJECT>-<NUMBER>; fullsend's --number expects the numeric suffix.
   local num="${number##*-}"
   printf '%s' "${body}" | jira_auth_fullsend fullsend "${JIRA_TOKEN}" "${JIRA_USER_EMAIL:-}" \
     issues post-comment --tracker jira --fullsend-dir "${FULLSEND_DIR}" \
