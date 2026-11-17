@@ -270,6 +270,14 @@ same lists as data for the next run (fullsend-ai/agents#2042):
   the comment is posted on the comment the posting account (`GET /myself`)
   wrote with the `fullsend.sticky-marker` property and updated last.
 
+On Jira the post-script sets the `fullsend.triage-state` property after the
+comment is posted. A run cancelled between the two leaves a triage comment
+with no state. That can happen because fullsend's workflows still cancel a
+running job when a newer event arrives; ADR 0106's coalescing isn't in place
+yet. The next run then starts from the newest comment that does carry a
+state, and that comment's lists stay the baseline. On GitHub and GitLab the
+state is part of the comment body, so it is posted in the same call.
+
 The 4000-character comment limit covers the readable text only: the
 post-script condenses the lists to fit what the agent's comment leaves
 (evidence first, then the oldest ruled-out lines, counted in one line),
