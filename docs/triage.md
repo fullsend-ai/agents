@@ -281,15 +281,15 @@ tracker:
 
 - **GitHub:** a `Bot` author whose App is `$FULLSEND_SLUG`, `<owner>-triage`,
   `fullsend-ai-triage` or, when `FULLSEND_APP_SET` is not empty, `${FULLSEND_APP_SET}-triage`.
-  `env/github/triage.env` passes `FULLSEND_APP_SET` into the sandbox, but
+  `env/github/triage.env` passes `FULLSEND_APP_SET` into the sandbox.
   fullsend's route-based `triage` job, which runs the built-in triage
-  agent, does not export it yet (fullsend-ai/fullsend#9568); the
-  `harness-run` job already does (both in fullsend's
-  `.github/workflows/reusable-dispatch.yml`). Until the `triage` job does, an
-  install whose custom App set is not named after the repository owner, and
-  whose harness `slug` is not its triage App's slug, matches none of these
-  names, so it gets no trusted baseline and the agent rebuilds its lists from
-  the earlier analyses.
+  agent, exports it since fullsend-ai/fullsend#9575, and the `harness-run`
+  job already did (both in fullsend's `.github/workflows/reusable-dispatch.yml`).
+  An install on a fullsend release before that change (v0.56.1 or earlier)
+  whose custom App set is not named after the repository owner, and whose
+  harness `slug` is not its triage App's slug, matches none of these names,
+  so it gets no trusted baseline and the agent rebuilds its lists from the
+  earlier analyses.
 - **GitLab:** the account `GET /api/v4/user` returns for `GITLAB_TOKEN`.
 - **Jira:** the account `GET /rest/api/3/myself` returns, which needs the
   `read:jira-user` scope (or the granular `read:user:jira`) on
