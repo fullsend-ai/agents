@@ -121,9 +121,9 @@ EOF
 run_pre() {
   CASE_RC=0
   rm -rf "${CASE_DIR}/rt"
-  env PATH="${CASE_DIR}/bin:${PATH}" FIXTURES="${FIX}" RUNNER_TEMP="${CASE_DIR}/rt" "$@" \
+  env -u CI_JOB_ID PATH="${CASE_DIR}/bin:${PATH}" FIXTURES="${FIX}" RUNNER_TEMP="${CASE_DIR}/rt" "$@" \
     bash "${PRE_SCRIPT}" > "${CASE_DIR}/err" 2>&1 || CASE_RC=$?
-  cp "${CASE_DIR}/rt/triage-workspace/prior-triage.json" "${CASE_DIR}/out.json" 2>/dev/null \
+  cat "${CASE_DIR}"/rt/triage-workspace-*/prior-triage.json > "${CASE_DIR}/out.json" 2>/dev/null \
     || echo '{}' > "${CASE_DIR}/out.json"
 }
 
@@ -269,6 +269,7 @@ case "$url" in
   */comment\?*) start="${url##*startAt=}"; key="comments_${start%%&*}" ;;
   *) echo "unexpected url $url" >&2; exit 3 ;;
 esac
+case "$key" in comments_*) test -f "${FIXTURES}/${key}.json" || key=comments_all ;; esac
 test -f "${FIXTURES}/${key}.json" || { echo "curl: (22) HTTP 403" >&2; exit 22; }
 cat "${FIXTURES}/${key}.json"
 EOF
@@ -422,6 +423,32 @@ if grep -qx -- '--oauth2-bearer' "${FIX}/auth.seen" && ! grep -q 'atlassian.net/
   pass "jira own: Bearer auth, trailing slashes stripped from the base URL"
 else fail "jira own: auth $(cat "${FIX}/auth.seen" 2>/dev/null), urls $(cat "${FIX}/urls.seen")"; fi
 
+# Without a total, a full page is not the last; a short one is.
+new_case jira-no-total; install_curl_stub
+echo '{"accountId": "bot-1"}' > "${FIX}/myself.json"
+{
+  printf '{"startAt": 0, "maxResults": 100, "comments": ['
+  for i in $(seq 1 100); do
+    test "$i" -eq 1 || printf ','
+    jc "$i" human-1 "$J1" "$J1" human-1 "" "$(printf '%s\n' hi | adf)"
+  done
+  printf ']}\n'
+} > "${FIX}/comments_0.json"
+jq -nc --argjson c "[$(jc 200 bot-1 "$J2" "$J2" bot-1 "$MARK" "$(printf '%s\n' 'Late analysis' | adf)")]" \
+  '{startAt: 100, maxResults: 100, comments: $c}' > "${FIX}/comments_100.json"
+run_jira
+check "jira no total: keeps paging while pages are full" '.baseline.id == "200" and .seen.comments == 101'
+# Pages that never end: stop at 100 and report it.
+new_case jira-endless; install_curl_stub
+echo '{"accountId": "bot-1"}' > "${FIX}/myself.json"
+{
+  printf '{"maxResults": 100, "comments": ['
+  for i in $(seq 1 100); do test "$i" -eq 1 || printf ','; printf '{"id": "%s", "author": {"accountId": "h"}, "created": "%s", "updated": "%s", "body": {"content": []}}' "$i" "$J1" "$J1"; done
+  printf ']}\n'
+} > "${FIX}/comments_all.json"
+run_jira
+check "jira endless: error after 100 pages" '.error | test("did not finish paging")'
+
 # /myself fails (token without read:jira-user).
 new_case jira-no-myself; install_curl_stub
 jira_page 0 1 "$(jc 100 bot-1 "$J1" "$J1" bot-1 "$MARK" "$(printf '%s\n' 'x' | adf)")"
@@ -455,6 +482,46 @@ run_github
 check "github no lists: has_lists false" '.baseline.id == "2" and (.baseline.has_lists | not) and .dropped_cause_candidates == []'
 check "github no lists: analyses carry their text" '.analyses[0].text | contains("The cache is stale")'
 
+# Unmarked triage results before the baseline, and all of them when there
+# is no baseline, are earlier_results.
+new_case gh-earlier; install_gh_stub
+gh_rest "[$(ghc 1 "${BOT}[bot]" Bot "$BOT" "$T1" 'Duplicate of #12: the cache key collides.'),$(ghc 2 "${BOT}[bot]" Bot "$BOT" "$T2" "$(analysis 'Cause')"),$(ghc 3 "${BOT}[bot]" Bot "$BOT" "$T3" 'Which version?')]"
+gh_gql first "" "$(ged 1)" "$(ged 2)" "$(ged 3)"
+run_github
+check "github earlier results: older unmarked result kept, newer one is an update" \
+  '(.earlier_results | map(.id)) == ["1"] and (.updates | map(.id)) == ["3"]'
+new_case gh-earlier-no-base; install_gh_stub
+gh_rest "[$(ghc 1 "${BOT}[bot]" Bot "$BOT" "$T1" 'Which version?')]"
+gh_gql first "" "$(ged 1)"
+run_github
+check "github earlier results: all of them when there is no baseline" \
+  '.baseline == null and (.earlier_results | map(.id)) == ["1"] and .updates == []'
+
+# A date that does not parse is not trusted, so it cannot become the baseline.
+new_case gh-bad-date; install_gh_stub
+gh_rest "[$(ghc 1 "${BOT}[bot]" Bot "$BOT" "$T1" "$(analysis 'Good')"),$(ghc 2 "${BOT}[bot]" Bot "$BOT" yesterday "$(analysis 'Bad date')")]"
+gh_gql first "" "$(ged 1)" "$(ged 2)"
+run_github
+check "github bad date: untrusted with its reason" \
+  '.baseline.id == "1" and (.untrusted_marked | map([.id, .reason])) == [["2", "date unreadable"]]'
+
+# The editor query says there is another page but gives no cursor.
+new_case gh-no-cursor; install_gh_stub
+gh_rest "[$(ghc 1 "${BOT}[bot]" Bot "$BOT" "$T1" "$(analysis 'Cause')")]"
+jq -nc --argjson n "$(ged 1)" '{data: {repository: {issue: {comments: {pageInfo: {hasNextPage: true, endCursor: null}, nodes: [$n]}}}}}' > "${FIX}/gql_first.json"
+run_github
+check "github cursor missing: trust error, nothing trusted" \
+  '(.trust_error | test("without a cursor")) and .baseline == null'
+
+# Nested folds (several closing tags at the end) leave no stray </details>.
+new_case gh-nested-fold; install_gh_stub
+NESTED="$(analysis 'Now')"$'\n\n<details>\n<summary>Previous run</summary>\n\n**Open causes:**\n- Old cause — x\n\n</details>\n\n</details>'
+gh_rest "[$(ghc 1 "${BOT}[bot]" Bot "$BOT" "$T1" "${NESTED}")]"
+gh_gql first "" "$(ged 1)"
+run_github
+check "github nested fold: no stray closing tag" \
+  '(.analyses[0].folds[0].text | contains("</details>") | not) and (.dropped_cause_candidates | map(.cause)) == ["Old cause"]'
+
 # ---------------------------------------------------------------------------
 # Wiring: pre-triage.sh writes the file only with RUNNER_TEMP, the harness
 # copies it to the path step 2e reads, and the agent needs no new tool.
@@ -469,15 +536,51 @@ if test "$CASE_RC" -eq 0 && ! grep -q 'Prior triage analysis' "${CASE_DIR}/err";
   pass "no RUNNER_TEMP: pre-triage.sh skips the prior triage analysis"
 else fail "no RUNNER_TEMP: exit ${CASE_RC}, $(cat "${CASE_DIR}/err")"; fi
 
-HOST_FILE='${RUNNER_TEMP}/triage-workspace/prior-triage.json'
 SANDBOX_FILE=/sandbox/workspace/prior-triage.json
-wired=$(yq -r '.host_files[] | select(.dest == "'"${SANDBOX_FILE}"'") | [.src, .optional] | join(" ")' \
-  "${REPO_ROOT}/harness/triage.yaml")
-if test "$wired" = "${HOST_FILE} true"; then pass "harness copies the host file to ${SANDBOX_FILE}, optional"
-else fail "harness host_files for ${SANDBOX_FILE}: '${wired}'"; fi
-if grep -qF "prior_triage_write \"${HOST_FILE}\"" "${SCRIPT_DIR}/pre-triage.src.sh"; then
-  pass "pre-triage.sh writes the host file the harness copies"
-else fail "pre-triage.src.sh does not write ${HOST_FILE}"; fi
+src=$(yq -r '.host_files[] | select(.dest == "'"${SANDBOX_FILE}"'") | .src' "${REPO_ROOT}/harness/triage.yaml")
+optional=$(yq -r '.host_files[] | select(.dest == "'"${SANDBOX_FILE}"'") | .optional' "${REPO_ROOT}/harness/triage.yaml")
+if test "$optional" = true; then pass "harness copies an optional host file to ${SANDBOX_FILE}"
+else fail "harness host file for ${SANDBOX_FILE}: src '${src}', optional '${optional}'"; fi
+# The harness src, expanded as fullsend does (an unset variable is empty),
+# is where pre-triage.sh wrote the file: on GitHub (no CI_JOB_ID) and for a
+# GitLab job.
+for job in "" 4242; do
+  rt="${CASE_DIR}/rt-${job:-gh}"
+  rm -rf "$rt"
+  env -u CI_JOB_ID PATH="${CASE_DIR}/bin:${PATH}" FIXTURES="${FIX}" RUNNER_TEMP="$rt" ${job:+CI_JOB_ID=$job} \
+    FULLSEND_TRACKER=github ISSUE_URL="https://github.com/acme/widgets/issues/7" \
+    bash "${PRE_SCRIPT}" > "${CASE_DIR}/err" 2>&1 || true
+  expanded="${src//\$\{RUNNER_TEMP\}/$rt}"
+  expanded="${expanded//\$\{CI_JOB_ID\}/$job}"
+  if jq -e '.baseline.id == "1"' "$expanded" > /dev/null 2>&1; then
+    pass "harness src is the file pre-triage.sh wrote (CI_JOB_ID '${job}')"
+  else fail "no prior triage file at ${expanded}: $(find "$rt" 2>&1 | head -5)"; fi
+done
+if test -z "$(find "${CASE_DIR}/rt-4242" -name prior-triage.json -perm -004)"; then
+  pass "prior triage file is not world-readable"
+else fail "prior triage file is world-readable"; fi
+
+# A stale file from an earlier job is replaced, and the log says what happened.
+new_case stale; install_gh_stub
+touch "${FIX}/comments.fail"
+mkdir -p "${CASE_DIR}/rt/triage-workspace-"
+echo '{"baseline": {"id": "old"}}' > "${CASE_DIR}/rt/triage-workspace-/prior-triage.json"
+CASE_RC=0
+env -u CI_JOB_ID PATH="${CASE_DIR}/bin:${PATH}" FIXTURES="${FIX}" RUNNER_TEMP="${CASE_DIR}/rt" FULLSEND_TRACKER=github \
+  ISSUE_URL="https://github.com/acme/widgets/issues/7" bash "${PRE_SCRIPT}" > "${CASE_DIR}/err" 2>&1 || CASE_RC=$?
+cp "${CASE_DIR}/rt/triage-workspace-/prior-triage.json" "${CASE_DIR}/out.json"
+check "stale file: replaced by this run's error" '.baseline == null and (.error | test("cannot list"))'
+if grep -q 'written with an error' "${CASE_DIR}/err" && ! grep -q 'Prior triage analysis written to' "${CASE_DIR}/err"; then
+  pass "stale file: log reports the error, not success"
+else fail "stale file: log was $(grep -i prior "${CASE_DIR}/err")"; fi
+# RUNNER_TEMP that cannot hold the directory: no file, a warning, run continues.
+echo file > "${CASE_DIR}/blocked"
+CASE_RC=0
+env -u CI_JOB_ID PATH="${CASE_DIR}/bin:${PATH}" FIXTURES="${FIX}" RUNNER_TEMP="${CASE_DIR}/blocked" FULLSEND_TRACKER=github \
+  ISSUE_URL="https://github.com/acme/widgets/issues/7" bash "${PRE_SCRIPT}" > "${CASE_DIR}/err" 2>&1 || CASE_RC=$?
+if test "$CASE_RC" -eq 0 && grep -q 'Prior triage analysis not written' "${CASE_DIR}/err"; then
+  pass "unwritable RUNNER_TEMP: warning, pre-script still succeeds"
+else fail "unwritable RUNNER_TEMP: exit ${CASE_RC}, $(grep -i prior "${CASE_DIR}/err")"; fi
 if awk '/^### 2e\./ { found = 1 } /^## Step 3/ { exit } found' "${REPO_ROOT}/agents/triage.md" | grep -qF "${SANDBOX_FILE}"; then
   pass "step 2e reads ${SANDBOX_FILE}"
 else fail "step 2e does not name ${SANDBOX_FILE}"; fi

@@ -59,9 +59,11 @@ host_files:
     dest: /sandbox/workspace/.gcp-oidc-token
     optional: true
   # Step 2e's prior triage analysis, which scripts/pre-triage.sh writes on
-  # the host (scripts/lib/prior-triage.lib.sh). Optional: without
-  # RUNNER_TEMP there is no file and step 2e reads the comments by hand.
-  - src: ${RUNNER_TEMP}/triage-workspace/prior-triage.json
+  # the host (scripts/lib/prior-triage.lib.sh); keep the two paths the
+  # same. CI_JOB_ID keeps GitLab jobs sharing /tmp apart and is empty on
+  # GitHub. Optional: without RUNNER_TEMP there is no file and step 2e reads
+  # the comments by hand.
+  - src: ${RUNNER_TEMP}/triage-workspace-${CI_JOB_ID}/prior-triage.json
     dest: /sandbox/workspace/prior-triage.json
     optional: true
 

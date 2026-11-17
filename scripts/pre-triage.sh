@@ -1175,26 +1175,37 @@ esac
 PRIOR_TRIAGE_SH_LOADED=1
 
 # prior_triage_write <file> — write the step 2e JSON to <file>.
+# Removes any earlier file first, so a failed write never leaves a stale
+# one for the harness to copy, and keeps the directory private to this
+# user.
 prior_triage_write() {
   local out="$1" work
-  mkdir -p "$(dirname "${out}")" || return 0
-  rm -f "${out}"
-  work=$(mktemp -d) || return 0
+  rm -f "${out}" 2> /dev/null || true
+  if ! (umask 077 && mkdir -p "$(dirname "${out}")") || ! work=$(mktemp -d); then
+    echo "::warning::Prior triage analysis not written: cannot create $(_gha_sanitize "$(dirname "${out}")")"
+    return 0
+  fi
   if (_prior_triage_run "${work}") > "${work}/out.json" 2> "${work}/log" \
     && jq -e 'type == "object"' "${work}/out.json" > /dev/null 2>&1; then
-    cp "${work}/out.json" "${out}"
+    (umask 077 && cp "${work}/out.json" "${out}")
   else
-    _prior_triage_error "$(tail -n 3 "${work}/log" | tr '\n' ' ' | cut -c1-300)" > "${out}"
-    echo "::warning::Prior triage analysis not read: $(_gha_sanitize "$(jq -r .error "${out}")")"
+    (umask 077 && _prior_triage_error "$(tail -n 3 "${work}/log" | tr '\n' ' ' | cut -c1-300)" > "${out}")
   fi
   rm -rf "${work}"
+  if [[ ! -s "${out}" ]]; then
+    echo "::warning::Prior triage analysis not written to $(_gha_sanitize "${out}")"
+  elif [[ "$(jq -r '.error // empty' "${out}")" != "" ]]; then
+    echo "::warning::Prior triage analysis written with an error: $(_gha_sanitize "$(jq -r .error "${out}")")"
+  else
+    echo "Prior triage analysis written to $(_gha_sanitize "${out}")."
+  fi
   return 0
 }
 
 _prior_triage_error() {
   jq -n --arg f "${FULLSEND_TRACKER:-}" --arg e "${1:-unknown error}" \
     '{forge: $f, error: $e, trust_error: null, trusted_names: null, seen: null, analyses: [],
-      baseline: null, updates: [], untrusted_marked: [], dropped_cause_candidates: []}'
+      baseline: null, updates: [], earlier_results: [], untrusted_marked: [], dropped_cause_candidates: []}'
 }
 
 # Runs in a subshell inside a condition, where errexit does not apply, so
@@ -1237,12 +1248,18 @@ _prior_triage_github() {
       break
     fi
     jq -c '.data.repository.issue.comments.nodes[]' "${work}/page.json" >> "${work}/editors.jsonl"
-    after=$(jq -r '.data.repository.issue.comments.pageInfo | if .hasNextPage then .endCursor // "" else "" end' "${work}/page.json")
+    after=$(jq -r '.data.repository.issue.comments.pageInfo | if .hasNextPage then .endCursor // "?" else "" end' "${work}/page.json")
+    if [[ "${after}" == "?" ]]; then
+      trust_error="editor query reported another page without a cursor"
+      break
+    fi
     [[ -n "${after}" ]] || break
   done
   [[ -z "${after}" || -n "${trust_error}" ]] || trust_error="editor query did not finish paging"
   # Triage App names, lower case: the names scripts/lib/review-ops.lib.sh
-  # trusts for the review App, with -triage in place of -review.
+  # trusts for the review App, with -triage in place of -review. The
+  # harness slug (FULLSEND_SLUG) is exported only into the sandbox, so it
+  # is not one of them.
   names=$(jq -nc --arg owner "${owner}" --arg set "${FULLSEND_APP_SET:-}" \
     '[($owner + "-triage"), "fullsend-ai-triage", (if $set == "" then empty else $set + "-triage" end)]
      | map(ascii_downcase) | unique')
@@ -1336,11 +1353,14 @@ _prior_triage_gitlab() {
 # --- Jira ---
 
 _prior_triage_jira() {
-  local work="$1" start=0 next me="" trust_error=""
+  local work="$1" start=0 next="" me="" trust_error="" _
   # Every comment: an edited marked comment keeps its creation time, so it
   # can sit on any page. Advance by the comments actually returned.
+  # A page ends the listing when it is empty, when the total is reached,
+  # or, without a total, when it is short. At most 100 pages, as fullsend's
+  # own Jira client (internal/forge/jira/client.go ListComments).
   : > "${work}/comments.jsonl"
-  while :; do
+  for _ in $(seq 1 100); do
     if ! _jira_api GET "/issue/${ISSUE_NUMBER}/comment?orderBy=created&startAt=${start}&maxResults=100&expand=properties" \
         > "${work}/page.json" \
       || ! jq -e '.comments | type == "array"' "${work}/page.json" > /dev/null 2>&1; then
@@ -1348,11 +1368,18 @@ _prior_triage_jira() {
       return 1
     fi
     jq -c '.comments[]' "${work}/page.json" >> "${work}/comments.jsonl"
-    next=$(jq -r --argjson s "${start}" '($s + (.comments | length)) as $n
-      | if (.comments | length) == 0 or $n >= (.total // 0) then "" else $n end' "${work}/page.json")
+    next=$(jq -r --argjson s "${start}" '(.comments | length) as $c | ($s + $c) as $n
+      | if $c == 0 then ""
+        elif (.total | type) == "number" then (if $n >= .total then "" else $n end)
+        elif $c < 100 then ""
+        else $n end' "${work}/page.json")
     [[ -n "${next}" ]] || break
     start="${next}"
   done
+  if [[ -n "${next}" ]]; then
+    echo "comment listing did not finish paging" >&2
+    return 1
+  fi
   if ! _jira_api GET /myself > "${work}/myself.json" 2> "${work}/myself.err" \
     || ! me=$(jq -er '.accountId | strings' "${work}/myself.json" 2> /dev/null); then
     me=""
@@ -1430,7 +1457,7 @@ def split_folds:
         | {title: $titles[$i],
            text: ($parts[$i + 1]
              | gsub("<!-- sticky:history-(start|end) -->"; "")
-             | sub("\\s*</details>\\s*$"; ""))}]
+             | sub("(\\s*</details>)+\\s*$"; ""))}]
   end;
 
 # The Open causes and Ruled out lists of an analysis text, as cause names
@@ -1462,9 +1489,12 @@ def cause_lists:
    | map(split_folds
      | .marker = (first((.marker // .text) | capture("<!-- fullsend:(?<m>triage-[a-z0-9-]+)").m) // null)
      | .status_note = ((.status_note // false) or (.text | test("<!-- fullsend:agent-status")))
-     | .trusted = ($in.trust_error == null and .author_ok and (.edit == "none" or .edit == "own"))
      | .dated = (if .edit == "own" then .edited_at else .created end)
-     | .sort_key = [(.dated | epoch), (.created | epoch), (.id | tonumber? // 0)])
+     | .sort_key = [(.dated | epoch), (.created | epoch), (.id | tonumber? // 0)]
+     # A date that does not parse cannot be ordered, so it is not trusted.
+     | .date_bad = (.sort_key[0] == null or .sort_key[1] == null)
+     | .trusted = ($in.trust_error == null and .author_ok and (.edit == "none" or .edit == "own")
+                   and (.date_bad | not)))
    | sort_by(.sort_key)) as $all
 | ($all | map(select(.trusted and .marker == "triage-agent"))) as $analyses
 | ($analyses | last) as $base
@@ -1474,17 +1504,16 @@ def cause_lists:
         + [$analyses[:-1] | reverse[]
            | .id as $id
            | {source: $id, text}, (.folds[] | {source: ($id + " " + .title), text})])
+     # Keyed by cause; jq keeps insertion order, so the list stays newest first.
      | reduce (.[] | .source as $s | .text | cause_lists
                | (.open[] | {list: "open", cause: .}), (.ruled_out[] | {list: "ruled_out", cause: .})
-               | .source = $s) as $e ([];
+               | .source = $s) as $e ({};
          ($e.cause | cause_key) as $k
          | if ($kept | any(. == $k)) then .
-           else (map(.key) | index($k)) as $i
-             | if $i == null then . + [{key: $k, cause: $e.cause, open_in: [], ruled_out_in: []}] else . end
-             | (map(.key) | index($k)) as $j
-             | .[$j][$e.list + "_in"] += [$e.source]
+           else .[$k] = ((.[$k] // {cause: $e.cause, open_in: [], ruled_out_in: []})
+                         | .[$e.list + "_in"] += [$e.source])
            end)
-     | map(del(.key))
+     | [.[]]
    end) as $dropped
 | {
     forge: $in.forge,
@@ -1498,12 +1527,16 @@ def cause_lists:
       [$all[] | select(.trusted and .marker != "triage-agent" and (.status_note | not)
                        and (.sort_key > $base.sort_key))
               | {id, dated, marker, text}] end),
+    earlier_results: [$all[] | select(.trusted and .marker != "triage-agent" and (.status_note | not)
+                       and ($base == null or .sort_key <= $base.sort_key))
+              | {id, dated, marker, text}],
     untrusted_marked: [$all[] | select(.marker != null and (.trusted | not))
       | {id, created, marker,
          reason: (if $in.trust_error != null then "trust unknown: " + $in.trust_error
                   elif (.author_ok | not) and .author_bot then "App not in the trusted names"
                   elif (.author_ok | not) then "not posted by the triage account"
                   elif .edit == "foreign" then "last edited by someone else"
+                  elif .date_bad then "date unreadable"
                   else "edited, editor unreadable" end),
          text, folds}],
     dropped_cause_candidates: $dropped
@@ -1526,10 +1559,11 @@ tracker_verify_labels_stripped "${TRIAGE_LABELS[@]}"
 echo "Label reset complete."
 
 # Step 2e's prior analysis, read here on the host and copied into the
-# sandbox by the optional ${RUNNER_TEMP}/triage-workspace/prior-triage.json
-# host file in harness/triage.yaml (GitHub Actions sets RUNNER_TEMP, and
-# fullsend's GitLab job script defaults it to /tmp). Never fails the run.
+# sandbox by the optional host file in harness/triage.yaml, whose src must
+# stay this path. GitHub Actions gives each job its own RUNNER_TEMP;
+# fullsend's GitLab job script defaults it to /tmp, shared by the jobs of a
+# persistent runner, so the path carries CI_JOB_ID (unset on GitHub, where
+# the host file expands it to empty too). Never fails the run.
 if [[ -n "${RUNNER_TEMP:-}" ]]; then
-  prior_triage_write "${RUNNER_TEMP}/triage-workspace/prior-triage.json"
-  echo "Prior triage analysis written."
+  prior_triage_write "${RUNNER_TEMP}/triage-workspace-${CI_JOB_ID:-}/prior-triage.json"
 fi

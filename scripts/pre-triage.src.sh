@@ -41,10 +41,11 @@ tracker_verify_labels_stripped "${TRIAGE_LABELS[@]}"
 echo "Label reset complete."
 
 # Step 2e's prior analysis, read here on the host and copied into the
-# sandbox by the optional ${RUNNER_TEMP}/triage-workspace/prior-triage.json
-# host file in harness/triage.yaml (GitHub Actions sets RUNNER_TEMP, and
-# fullsend's GitLab job script defaults it to /tmp). Never fails the run.
+# sandbox by the optional host file in harness/triage.yaml, whose src must
+# stay this path. GitHub Actions gives each job its own RUNNER_TEMP;
+# fullsend's GitLab job script defaults it to /tmp, shared by the jobs of a
+# persistent runner, so the path carries CI_JOB_ID (unset on GitHub, where
+# the host file expands it to empty too). Never fails the run.
 if [[ -n "${RUNNER_TEMP:-}" ]]; then
-  prior_triage_write "${RUNNER_TEMP}/triage-workspace/prior-triage.json"
-  echo "Prior triage analysis written."
+  prior_triage_write "${RUNNER_TEMP}/triage-workspace-${CI_JOB_ID:-}/prior-triage.json"
 fi
