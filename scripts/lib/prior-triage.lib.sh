@@ -420,10 +420,12 @@ def cause_lists:
      | .date_bad = (.sort_key[0] == null or .sort_key[1] == null)
      # The listing and the editor query are two requests: an edit after
      # the listing has an editor time later than the listed update time,
-     # and the listed body is then the old one. A few seconds of slack
-     # allow for the two APIs stamping the same edit apart.
+     # and the listed body is then an older one, possibly someone else's.
+     # Any later editor time counts, with no slack: a false positive only
+     # leaves the comment untrusted, which sends step 2e down the rebuild
+     # path.
      | .raced = (.edit == "own" and .listed_at != null
-                 and ((.edited_at | epoch) // 0) > ((.listed_at | epoch) // 0) + 5)
+                 and ((.edited_at | epoch) // 0) > ((.listed_at | epoch) // 0))
      | .trusted = ($in.trust_error == null and .author_ok and (.edit == "none" or .edit == "own")
                    and (.date_bad | not) and (.raced | not)))
    | sort_by(.sort_key)) as $all

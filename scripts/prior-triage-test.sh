@@ -587,6 +587,18 @@ gh_gql first "" "$(ged 1)" "$(ged 2 "$T4" Bot "$BOT")"
 run_github
 check "github edited during the read: untrusted, not the baseline" \
   '.baseline.id == "1" and (.untrusted_marked | map([.id, .reason])) == [["2", "edited during the read"]]'
+# No slack: an own edit 3 s after the listing, and a body a user edited
+# before the listing that the bot edited again 2 s later, are both
+# untrusted; an unedited comment and an own edit the listing already
+# shows stay trusted.
+new_case gh-race-close; install_gh_stub
+gh_rest "[$(ghc 1 "${BOT}[bot]" Bot "$BOT" "$T1" "$(analysis 'Unedited')"),$(ghc 2 "${BOT}[bot]" Bot "$BOT" "$T1" "$(analysis 'Own edit listed')" 2026-01-02T00:00:00Z),$(ghc 3 "${BOT}[bot]" Bot "$BOT" "$T1" "$(analysis 'Own edit after')" 2026-01-03T00:00:00Z),$(ghc 4 "${BOT}[bot]" Bot "$BOT" "$T1" "$(analysis 'User edited')" 2026-01-03T00:00:10Z)]"
+gh_gql first "" "$(ged 1)" "$(ged 2 2026-01-02T00:00:00Z Bot "$BOT")" "$(ged 3 2026-01-03T00:00:03Z Bot "$BOT")" \
+  "$(ged 4 2026-01-03T00:00:12Z Bot "$BOT")"
+run_github
+check "github read race without slack: close edits untrusted, listed ones trusted" \
+  '(.analyses | map(.id)) == ["1", "2"]
+   and (.untrusted_marked | map([.id, .reason])) == [["3", "edited during the read"], ["4", "edited during the read"]]'
 
 # The size fold's compacted Ruled out line names each cause. A newer fold
 # lists Alpha open while an older analysis's compacted line rules it out;
