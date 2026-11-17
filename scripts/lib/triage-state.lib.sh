@@ -29,13 +29,18 @@ TRIAGE_STATE_SH_LOADED=1
 # posted except the hidden state marker: the agent's comment, the lists and
 # the footers (see triage_state_compose).
 TRIAGE_STATE_READABLE_CAP=4000
-# Jira caps an entity property value at 32768 bytes; keep the state under it
-# with room to spare (only multibyte text can come near it).
+# Jira caps an entity property value at 32768 (Atlassian documents it as
+# characters; capping UTF-8 bytes is safe either way). Keep the state under
+# it with room to spare; only multibyte text can come near it.
 TRIAGE_STATE_MAX_BYTES=30000
 
 # triage_state_json RESULT_FILE — print the state as compact JSON, bounded
-# to the schema's limits (newlines folded, strings and lists cut, ruled_out
-# keeping its newest entries), or nothing when the result has no open cause.
+# to the schema's limits (whitespace runs folded to one space, strings and
+# lists cut, ruled_out keeping its newest entries), or nothing when the
+# result has no open cause. Over TRIAGE_STATE_MAX_BYTES it never drops a
+# cause: it empties ruled-out evidence, then open evidence, then cuts cause
+# text to fewer bytes (whole characters only), and fails, so nothing is
+# posted, if the names alone still do not fit.
 triage_state_json() {
   jq -c '
     def text($n):
@@ -50,10 +55,24 @@ triage_state_json() {
     (.triage_summary // {}) as $s
     | {open_causes: ($s.open_causes | causes | .[0:10]),
        ruled_out: ($s.ruled_out | causes | if length > 25 then .[(length - 25):] else . end)}
-    # Only multibyte text can push the state past the byte cap: drop the
-    # oldest ruled-out entries until it fits.
-    | until((tojson | utf8bytelength) <= $max_bytes or (.ruled_out | length) == 0; .ruled_out |= .[1:])
     | if (.open_causes | length) == 0 then empty else . end
+    # Only multibyte text can push the state past the byte cap. jq slices
+    # whole characters, so a cut never splits a UTF-8 sequence.
+    | def fits: (tojson | utf8bytelength) <= $max_bytes;
+      def bytecut($n): until(utf8bytelength <= $n; .[0:(length - 1)]);
+      if fits then . else
+        .ruled_out |= map(.evidence = "")
+        | if fits then . else
+            .open_causes |= map(.evidence = "")
+            | if fits then . else
+                . as $bare
+                | ([600, 400, 300, 200, 120, 80, 40]
+                   | map(. as $n | $bare | (.open_causes, .ruled_out) |= map(.cause |= bytecut($n)) | select(fits))
+                   | first)
+                  // error("the triage state does not fit \($max_bytes) bytes even with its cause names cut")
+              end
+          end
+      end
   ' --argjson max_bytes "${TRIAGE_STATE_MAX_BYTES}" "$1"
 }
 
@@ -97,7 +116,9 @@ triage_state_compose() {
     | if ($all | length) <= $cap then $all
       else
         ($cap - ($lists | length) - ($footer | length) - 2 - (note | length)) as $keep
-        | if $keep >= 0 then $agent[0:$keep] + note + "\n\n" + $lists + $footer
+        # Cut at a line end when one is in the second half, not mid-line.
+        | ($agent[0:$keep] | if (rindex("\n") // 0) > $keep / 2 then .[0:rindex("\n")] else . end) as $cut
+        | if $keep >= 0 then $cut + note + "\n\n" + $lists + $footer
           else $all[0:($cap - (note | length))] + note
           end
       end

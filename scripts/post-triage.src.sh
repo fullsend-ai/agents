@@ -135,6 +135,11 @@ is_control_label() {
 TRIAGE_STATE=""
 AGENT_COMMENT=""
 TRIAGE_MARKER="<!-- fullsend:triage-agent -->"
+# Built before anything is written, so a state that cannot be stored fails
+# the run with no label or comment changed.
+if [[ "${ACTION}" == "sufficient" ]]; then
+  TRIAGE_STATE=$(triage_state_json "${RESULT_FILE}")
+fi
 
 # Deferred label: when set, applied after label_actions so it fires last.
 # This prevents the ready-to-code webhook event from being superseded by
@@ -480,7 +485,6 @@ ${FAILED_CREATES}"
     # (lib/triage-state.lib.sh). A result without open causes, which the
     # schema rejects, is posted without a state, and the next run rebuilds
     # it from the comments.
-    TRIAGE_STATE=$(triage_state_json "${RESULT_FILE}")
     AGENT_COMMENT="${COMMENT}"
     if [[ -z "${TRIAGE_STATE}" ]]; then
       echo "::warning::sufficient result has no triage_summary.open_causes — posting without a triage state"
@@ -939,6 +943,12 @@ fi
 
 echo "Posting comment..."
 if [[ "${ACTION}" == "sufficient" ]]; then
+  # On Jira the state lives beside the text: clear the old one before the
+  # comment is posted (an edit in place would otherwise keep the previous
+  # run's state on the new text), and set the new one after.
+  if [[ "${FULLSEND_TRACKER}" == "jira" ]]; then
+    tracker_clear_triage_state "${TRIAGE_MARKER}"
+  fi
   tracker_post_sticky_comment "${COMMENT}" "${TRIAGE_MARKER}"
   if [[ -n "${TRIAGE_STATE}" && "${FULLSEND_TRACKER}" == "jira" ]]; then
     tracker_store_triage_state "${TRIAGE_STATE}" "${TRIAGE_MARKER}"

@@ -1320,27 +1320,20 @@ _jira_post_comment() {
     --marker "${marker}" --result -
 }
 
-# tracker_store_triage_state STATE_JSON MARKER — store the triage state on
-# the comment just posted with MARKER, as its entity property
-# fullsend.triage-state (ADF has no hidden text). `fullsend issues
-# post-comment` prints no comment id, but it stores MARKER on the comment as
-# the property fullsend.sticky-marker = {"marker": MARKER}: in fullsend
-# v0.56.1-rc.1 (pinned in go.mod) and v0.56.1, the edit-in-place path keeps
-# it, and on fullsend-ai/fullsend#9399 (head 5150c261) every run creates a
-# new comment with it (internal/tracker/jira_client.go,
+# _jira_own_marked_comments MARKER — print, as a JSON array, every comment
+# on the issue (all pages) that the posting account (GET /myself) wrote
+# with the comment property fullsend.sticky-marker = {"marker": MARKER}.
+# `fullsend issues post-comment` sets that property on the comment it
+# posts: in fullsend v0.56.1-rc.1 (pinned in go.mod) and v0.56.1 it edits
+# that comment in place, and on fullsend-ai/fullsend#9399 (head 5150c261)
+# every run creates a new comment with it (internal/tracker/jira_client.go,
 # CreateCommentWithMarker; internal/cli/issues.go, postJiraStickyComment).
-# So the comment is the one the posting account (GET /myself) wrote with
-# that property and updated last; a tie goes to the highest comment id.
-# Every page is read. A timestamp that does not parse, or no matching
-# comment, fails the run, like every other Jira write.
-tracker_store_triage_state() {
-  local state="$1"
-  local marker="$2"
-  _jira_require_vars || return 1
+_jira_own_marked_comments() {
+  local marker="$1"
   local self
   self=$(_jira_api_with_status GET "/myself" | jq -r '.accountId // empty') || return 1
   if [[ -z "${self}" ]]; then
-    echo "ERROR: cannot store the triage state: GET /myself returned no accountId" >&2
+    echo "ERROR: GET /myself returned no accountId" >&2
     return 1
   fi
   local comments="[]" page count total start_at=0
@@ -1354,13 +1347,56 @@ tracker_store_triage_state() {
       break
     fi
   done
+  jq -c --arg self "${self}" --arg marker "${marker}" '
+    [ .[] | select(.author.accountId == $self)
+      | select(any(.properties[]?; .key == "fullsend.sticky-marker" and (.value.marker? == $marker))) ]
+  ' <<<"${comments}"
+}
+
+# tracker_clear_triage_state MARKER — delete the fullsend.triage-state
+# property from every own comment with MARKER, before a run posts. Before
+# fullsend-ai/fullsend#9399 the post edits that comment in place, so a run
+# cancelled before tracker_store_triage_state, or one without a state,
+# would otherwise leave the previous run's state on the new text. After
+# #9399 only the newest such comment carries a state, and a cancelled run
+# leaves none: the next run rebuilds from the comment text.
+tracker_clear_triage_state() {
+  local marker="$1"
+  _jira_require_vars || return 1
+  local comments id
+  comments=$(_jira_own_marked_comments "${marker}") || {
+    echo "ERROR: cannot clear the previous triage state" >&2
+    return 1
+  }
+  for id in $(jq -r '.[] | select(any(.properties[]?; .key == "fullsend.triage-state")) | .id' <<<"${comments}"); do
+    _jira_api_with_status DELETE "/comment/${id}/properties/fullsend.triage-state" > /dev/null || return 1
+    echo "Cleared the previous triage state from comment ${id}"
+  done
+}
+
+# tracker_store_triage_state STATE_JSON MARKER — store the triage state on
+# the comment just posted with MARKER, as its entity property
+# fullsend.triage-state (ADF has no hidden text). `fullsend issues
+# post-comment` prints no comment id, so the comment is the own one with
+# MARKER (see _jira_own_marked_comments) updated last; a tie goes to the
+# highest comment id. A timestamp that does not parse, or no matching
+# comment, fails the run, like every other Jira write.
+tracker_store_triage_state() {
+  local state="$1"
+  local marker="$2"
+  _jira_require_vars || return 1
+  local comments
+  comments=$(_jira_own_marked_comments "${marker}") || {
+    echo "ERROR: cannot store the triage state" >&2
+    return 1
+  }
   # Jira writes times as "2026-11-17T10:00:00.000+0100"; RFC 3339 forms
   # ("Z", "+01:00", with or without fractional seconds) are accepted too
   # (fullsend's jiraTimestampFormats). Each is compared in UTC, as
   # [seconds, nanoseconds, comment id], so offsets, sub-second order and
   # ties are all exact.
   local comment_id
-  comment_id=$(jq -r --arg self "${self}" --arg marker "${marker}" '
+  comment_id=$(jq -r '
     def utc_key:
       . as $t
       | (capture("^(?<d>[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2})(\\.(?<f>[0-9]{1,9}))?(?<z>Z|(?<s>[+-])(?<h>[0-9]{2}):?(?<m>[0-9]{2}))$")
@@ -1370,8 +1406,6 @@ tracker_store_triage_state() {
              else (if .s == "+" then 1 else -1 end) * ((.h | tonumber) * 3600 + (.m | tonumber) * 60) end),
           (((.f // "") + "000000000")[0:9] | tonumber) ];
     [ .[]
-      | select(.author.accountId == $self)
-      | select(any(.properties[]?; .key == "fullsend.sticky-marker" and (.value.marker? == $marker)))
       | {id, key: (((.updated // .created // "") | utc_key) + [(.id | tostring | tonumber? // 0)])} ]
     | max_by(.key) | .id // empty
   ' <<<"${comments}") || {
@@ -1618,13 +1652,18 @@ TRIAGE_STATE_SH_LOADED=1
 # posted except the hidden state marker: the agent's comment, the lists and
 # the footers (see triage_state_compose).
 TRIAGE_STATE_READABLE_CAP=4000
-# Jira caps an entity property value at 32768 bytes; keep the state under it
-# with room to spare (only multibyte text can come near it).
+# Jira caps an entity property value at 32768 (Atlassian documents it as
+# characters; capping UTF-8 bytes is safe either way). Keep the state under
+# it with room to spare; only multibyte text can come near it.
 TRIAGE_STATE_MAX_BYTES=30000
 
 # triage_state_json RESULT_FILE — print the state as compact JSON, bounded
-# to the schema's limits (newlines folded, strings and lists cut, ruled_out
-# keeping its newest entries), or nothing when the result has no open cause.
+# to the schema's limits (whitespace runs folded to one space, strings and
+# lists cut, ruled_out keeping its newest entries), or nothing when the
+# result has no open cause. Over TRIAGE_STATE_MAX_BYTES it never drops a
+# cause: it empties ruled-out evidence, then open evidence, then cuts cause
+# text to fewer bytes (whole characters only), and fails, so nothing is
+# posted, if the names alone still do not fit.
 triage_state_json() {
   jq -c '
     def text($n):
@@ -1639,10 +1678,24 @@ triage_state_json() {
     (.triage_summary // {}) as $s
     | {open_causes: ($s.open_causes | causes | .[0:10]),
        ruled_out: ($s.ruled_out | causes | if length > 25 then .[(length - 25):] else . end)}
-    # Only multibyte text can push the state past the byte cap: drop the
-    # oldest ruled-out entries until it fits.
-    | until((tojson | utf8bytelength) <= $max_bytes or (.ruled_out | length) == 0; .ruled_out |= .[1:])
     | if (.open_causes | length) == 0 then empty else . end
+    # Only multibyte text can push the state past the byte cap. jq slices
+    # whole characters, so a cut never splits a UTF-8 sequence.
+    | def fits: (tojson | utf8bytelength) <= $max_bytes;
+      def bytecut($n): until(utf8bytelength <= $n; .[0:(length - 1)]);
+      if fits then . else
+        .ruled_out |= map(.evidence = "")
+        | if fits then . else
+            .open_causes |= map(.evidence = "")
+            | if fits then . else
+                . as $bare
+                | ([600, 400, 300, 200, 120, 80, 40]
+                   | map(. as $n | $bare | (.open_causes, .ruled_out) |= map(.cause |= bytecut($n)) | select(fits))
+                   | first)
+                  // error("the triage state does not fit \($max_bytes) bytes even with its cause names cut")
+              end
+          end
+      end
   ' --argjson max_bytes "${TRIAGE_STATE_MAX_BYTES}" "$1"
 }
 
@@ -1686,7 +1739,9 @@ triage_state_compose() {
     | if ($all | length) <= $cap then $all
       else
         ($cap - ($lists | length) - ($footer | length) - 2 - (note | length)) as $keep
-        | if $keep >= 0 then $agent[0:$keep] + note + "\n\n" + $lists + $footer
+        # Cut at a line end when one is in the second half, not mid-line.
+        | ($agent[0:$keep] | if (rindex("\n") // 0) > $keep / 2 then .[0:rindex("\n")] else . end) as $cut
+        | if $keep >= 0 then $cut + note + "\n\n" + $lists + $footer
           else $all[0:($cap - (note | length))] + note
           end
       end
@@ -1786,6 +1841,11 @@ is_control_label() {
 TRIAGE_STATE=""
 AGENT_COMMENT=""
 TRIAGE_MARKER="<!-- fullsend:triage-agent -->"
+# Built before anything is written, so a state that cannot be stored fails
+# the run with no label or comment changed.
+if [[ "${ACTION}" == "sufficient" ]]; then
+  TRIAGE_STATE=$(triage_state_json "${RESULT_FILE}")
+fi
 
 # Deferred label: when set, applied after label_actions so it fires last.
 # This prevents the ready-to-code webhook event from being superseded by
@@ -2131,7 +2191,6 @@ ${FAILED_CREATES}"
     # (lib/triage-state.lib.sh). A result without open causes, which the
     # schema rejects, is posted without a state, and the next run rebuilds
     # it from the comments.
-    TRIAGE_STATE=$(triage_state_json "${RESULT_FILE}")
     AGENT_COMMENT="${COMMENT}"
     if [[ -z "${TRIAGE_STATE}" ]]; then
       echo "::warning::sufficient result has no triage_summary.open_causes — posting without a triage state"
@@ -2590,6 +2649,12 @@ fi
 
 echo "Posting comment..."
 if [[ "${ACTION}" == "sufficient" ]]; then
+  # On Jira the state lives beside the text: clear the old one before the
+  # comment is posted (an edit in place would otherwise keep the previous
+  # run's state on the new text), and set the new one after.
+  if [[ "${FULLSEND_TRACKER}" == "jira" ]]; then
+    tracker_clear_triage_state "${TRIAGE_MARKER}"
+  fi
   tracker_post_sticky_comment "${COMMENT}" "${TRIAGE_MARKER}"
   if [[ -n "${TRIAGE_STATE}" && "${FULLSEND_TRACKER}" == "jira" ]]; then
     tracker_store_triage_state "${TRIAGE_STATE}" "${TRIAGE_MARKER}"

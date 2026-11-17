@@ -101,7 +101,10 @@ nothing.
 the previous response's `nextPageToken` field. Stop when the field is absent
 or null. Comment listing is a separate endpoint and still uses
 `startAt`/`maxResults`; a single page returns at most `maxResults` comments,
-so use `orderBy=-created` when you only need the latest replies.
+so use `orderBy=-created` when you only need the latest replies. To read
+every comment, repeat the request with `&startAt=N`, adding each page's
+comment count to `N`, until `startAt + maxResults >= total` or a page comes
+back empty.
 
 **Error handling:** Always use `--fail-with-body` so HTTP errors (e.g. 410
 Gone) cause curl to exit non-zero instead of silently returning an error body

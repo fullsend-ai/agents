@@ -221,10 +221,12 @@ judges:
           if not match(g, ruled_c):
               problems.append(f"ruled_out lacks any of {g}")
       for g in spec.get("verified_open") or []:
-          if match(g, open_c) and not any(match(g, open_c)):
+          m = match(g, open_c)
+          if m and not any(m):
               problems.append(f"the open cause matching {g} should be verified")
       for g in spec.get("unverified_open") or []:
-          if any(match(g, open_c)):
+          m = match(g, open_c)
+          if m and all(m):
               problems.append(f"the open cause matching {g} should stay unverified")
       # A forbidden entry is a phrase, or phrases that must all be in one name.
       for p in spec.get("forbidden_open") or []:

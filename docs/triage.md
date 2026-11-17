@@ -276,21 +276,36 @@ same lists as data for the next run (fullsend-ai/agents#2042):
   RFC 3339 `Z` / `+00:00`), with ties going to the highest comment id. An
   unparsable timestamp, or no such comment, fails the run.
 
-On Jira the post-script sets the `fullsend.triage-state` property after the
-comment is posted. A run cancelled between the two leaves a triage comment
-with no state. That can happen because fullsend's workflows still cancel a
-running job when a newer event arrives; ADR 0106's coalescing isn't in place
-yet. The next run then starts from the newest comment that does carry a
-state, and that comment's lists stay the baseline. On GitHub and GitLab the
-state is part of the comment body, so it is posted in the same call.
+On Jira the state is written in three steps: the post-script deletes the
+`fullsend.triage-state` property from the account's own triage comments,
+posts the comment, then sets the property on it. Before
+fullsend-ai/fullsend#9399 the post edits the earlier comment in place, so
+without the delete a run cancelled before the last step, or a run with no
+state, would leave the previous run's state on the new text. A run cancelled
+after the delete leaves no state at all; fullsend's workflows still cancel a
+running job when a newer event arrives (ADR 0106's coalescing isn't in place
+yet). The next run then rebuilds the lists from the comment text, every
+cause as an unverified claim. On GitHub and GitLab the state is part of the
+comment body, so it is posted in the same call.
+
+On Jira a user with the "Edit all comments" permission can set a comment's
+`fullsend.triage-state` property without changing its `updated` time or
+`updateAuthor`, so the "nobody else last edited it" check does not cover the
+property. Only users with that permission can do it. On GitHub and GitLab
+the marker is inside the comment body, so their edit checks cover it. In
+every case the agent treats a state as claims and re-checks every cause
+(step 2e), so a planted state cannot settle a cause by itself.
 
 The 4000-character comment limit covers everything posted except the
 hidden marker: the agent's comment, the lists and the footers. The
 post-script condenses the lists first (evidence, then the oldest ruled-out
 lines, counted in one line, then the open cause names cut to 80
-characters), then cuts the agent's comment with a note saying so. The stored
-state keeps every entry (at most 10 open, 25 ruled out, under 30000 bytes so
-it fits a Jira property).
+characters), then, as a last resort, cuts the agent's comment with a note
+saying so. The prompt keeps the agent's comment under 2500 characters, which
+leaves room for the lists and footers. The stored state keeps every cause
+(at most 10 open, 25 ruled out); over 30000 bytes, under Jira's 32768
+property limit, it drops evidence and then cuts cause text, and fails the
+run if the names alone do not fit.
 
 A re-run starts from the newest state in a comment the triage account wrote
 and nobody else last edited (`agents/triage.md` step 2e). Without one, for

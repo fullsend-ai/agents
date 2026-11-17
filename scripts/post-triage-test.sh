@@ -64,6 +64,11 @@ chmod +x "${MOCK_BIN}/gh"
 
 cat > "${MOCK_BIN}/fullsend" <<MOCKEOF
 #!/usr/bin/env bash
+# MOCK_FULLSEND_FAIL makes the post fail, like a run cancelled mid-post.
+if [[ -n "\${MOCK_FULLSEND_FAIL:-}" ]]; then
+  echo "fullsend \$* <<FAILED>>" >> "${GH_LOG}"
+  exit 1
+fi
 # Record the Jira credentials the CLI reads from its environment.
 echo "token=\${FULLSEND_JIRA_TOKEN-unset} email=\${FULLSEND_JIRA_EMAIL-unset} client-id=\${FULLSEND_JIRA_CLIENT_ID-unset} client-secret=\${FULLSEND_JIRA_CLIENT_SECRET:+set}" >> "${FULLSEND_ENV_LOG}"
 BODY=""
@@ -1935,6 +1940,41 @@ else
   echo "PASS: state-github-worst-case-cap"
 fi
 
+# Multibyte worst case: 35 entries at the schema limits in CJK and emoji
+# are over the 30000-byte state cap. Evidence is emptied, every cause is
+# kept, and the readable text still fits.
+mb_open="$(jq -cn '[range(0; 10) | {cause: ("😀" * 195 + "o\(.)"), evidence: ("漢" * 300), verified: true}]')"
+mb_ruled="$(jq -cn '[range(0; 25) | {cause: ("漢" * 195 + "r\(.)"), evidence: ("😀" * 300), verified: true}]')"
+run_state_case "state-github-multibyte-byte-cap" "$(sufficient_with ",\"open_causes\":${mb_open},\"ruled_out\":${mb_ruled}" "Short analysis.")"
+body="$(posted_body "${GH_LOG}")"
+mb_state="$(state_from_body "${body}")"
+if [[ ${STATE_RC} -ne 0 ]]; then
+  state_fail "state-github-multibyte-byte-cap" "exit code ${STATE_RC}"
+elif [[ $(printf '%s' "${mb_state}" | wc -c) -gt 30000 || $(readable_len "${body}") -gt 4000 ]]; then
+  state_fail "state-github-multibyte-byte-cap" "state is $(printf '%s' "${mb_state}" | wc -c) bytes, readable text $(readable_len "${body}") characters"
+elif [[ "$(jq -c '[(.open_causes | map(.cause | capture("(?<n>o[0-9]+)$").n)), (.ruled_out | map(.cause | capture("(?<n>r[0-9]+)$").n))] | [(.[0] | length), (.[1] | length), (.[1] | unique | length)]' <<<"${mb_state}")" != "[10,25,25]" ]] \
+  || [[ "$(jq -c '[.ruled_out[].evidence] | unique' <<<"${mb_state}")" != '[""]' ]]; then
+  state_fail "state-github-multibyte-byte-cap" "expected every cause kept and ruled-out evidence emptied: ${mb_state:0:300}"
+else
+  echo "PASS: state-github-multibyte-byte-cap"
+fi
+
+# Over a smaller byte cap the cause text is cut by whole characters, every
+# cause is kept, and with too little room the state fails instead of
+# dropping causes. (Within the schema limits names alone always fit.)
+cut_file="${TMPDIR}/state-cut.json"
+printf '%s\n' "$(sufficient_with ",\"open_causes\":${mb_open},\"ruled_out\":${mb_ruled}" "x")" > "${cut_file}"
+cut_out="$(SCRIPT_DIR="${SCRIPT_DIR}" bash -c 'source "${SCRIPT_DIR}/lib/triage-state.lib.sh"; TRIAGE_STATE_MAX_BYTES=12000 triage_state_json "$1"' _ "${cut_file}" 2>&1)" || true
+small_rc=0
+SCRIPT_DIR="${SCRIPT_DIR}" bash -c 'source "${SCRIPT_DIR}/lib/triage-state.lib.sh"; TRIAGE_STATE_MAX_BYTES=500 triage_state_json "$1"' _ "${cut_file}" > "${TMPDIR}/state-small.log" 2>&1 || small_rc=$?
+if [[ $(printf '%s' "${cut_out}" | wc -c) -gt 12000 ]] \
+  || [[ "$(jq -c '[(.open_causes | length), (.ruled_out | length), ([.open_causes[].cause | test("^😀+$")] | all)]' <<<"${cut_out}" 2>/dev/null)" != "[10,25,true]" ]] \
+  || [[ ${small_rc} -eq 0 ]] || ! grep -qF 'does not fit 500 bytes' "${TMPDIR}/state-small.log"; then
+  state_fail "state-byte-cut-keeps-every-cause" "cut state: ${cut_out:0:200}; small cap rc ${small_rc}"
+else
+  echo "PASS: state-byte-cut-keeps-every-cause"
+fi
+
 # Strings over the schema's limits are cut in the stored state.
 run_state_case "state-github-cuts-long-strings" "$(sufficient_with ",\"open_causes\":[{\"cause\":\"$(printf 'c%.0s' $(seq 1 250))\",\"evidence\":\"e\",\"verified\":true}],\"ruled_out\":[]" "Short.")"
 if [[ ${STATE_RC} -ne 0 ]] \
@@ -2454,7 +2494,7 @@ if [[ "${URL}" =~ /comment\?expand=properties ]] && [[ "${METHOD}" == "GET" ]]; 
   printf '\n200'
   exit 0
 fi
-if [[ "${URL}" =~ /properties/fullsend\.triage-state$ ]] && [[ "${METHOD}" == "PUT" ]]; then
+if [[ "${URL}" =~ /properties/fullsend\.triage-state$ ]] && [[ "${METHOD}" == "PUT" || "${METHOD}" == "DELETE" ]]; then
   printf '\n200'
   exit 0
 fi
@@ -2793,6 +2833,35 @@ elif [[ "$(jq '.ruled_out | length' <<<"${stored}" 2>/dev/null)" != "25" ]]; the
 else
   echo "PASS: state-jira-too-large-for-cap"
 fi
+# Before posting, the previous state is deleted from the account's own
+# triage comments (an edit in place would keep it on the new text); other
+# authors' comments are left alone. A run with no state leaves none.
+with_state() { jq -c '.properties += [{key: "fullsend.triage-state", value: {open_causes: [], ruled_out: []}}]' <<<"$1"; }
+jq -cn --argjson c "[$(with_state "$(jira_comment 100 bot-1 "${TA}" 2026-11-17T09:30:00.000+0000)"),$(with_state "$(jira_comment 102 someone "${TA}" 2026-11-17T12:00:00.000+0000)")]" '{comments: $c, total: 2}' > "${MOCK_JIRA_STATE_DIR}/page-0.json"
+jira_state_case "state-jira-no-state-clears-old" "$(sufficient_with "" "Short analysis.")"
+if [[ ${STATE_RC} -ne 0 ]] \
+  || ! grep -F '/rest/api/3/comment/100/properties/fullsend.triage-state' "${JIRA_CURL_LOG}" | grep -qF -- '--request DELETE' \
+  || grep -qF '/comment/102/properties/fullsend.triage-state' "${JIRA_CURL_LOG}" \
+  || grep -F '/properties/fullsend.triage-state' "${JIRA_CURL_LOG}" | grep -qF -- '--request PUT'; then
+  state_fail "state-jira-no-state-clears-old" "expected the old state deleted from comment 100 only and nothing set (rc ${STATE_RC})"
+  cat "${JIRA_CURL_LOG}"
+else
+  echo "PASS: state-jira-no-state-clears-old"
+fi
+
+# A run that stops after the delete (here the post fails) leaves no state,
+# never the previous run's state on new text.
+export MOCK_FULLSEND_FAIL=1
+jira_state_case "state-jira-cancelled-after-clear-leaves-none" "$(sufficient_with ",${OPEN_TWO},${RULED_ONE}" "Short analysis.")"
+unset MOCK_FULLSEND_FAIL
+if [[ ${STATE_RC} -eq 0 ]] \
+  || ! grep -F '/rest/api/3/comment/100/properties/fullsend.triage-state' "${JIRA_CURL_LOG}" | grep -qF -- '--request DELETE' \
+  || grep -F '/properties/fullsend.triage-state' "${JIRA_CURL_LOG}" | grep -qF -- '--request PUT'; then
+  state_fail "state-jira-cancelled-after-clear-leaves-none" "expected a failed run with the old state deleted and none set (rc ${STATE_RC})"
+  cat "${JIRA_CURL_LOG}"
+else
+  echo "PASS: state-jira-cancelled-after-clear-leaves-none"
+fi
 unset MOCK_JIRA_STATE_DIR
 
 # --- JIRA_API_URL routing (#1876) ---
@@ -3052,6 +3121,9 @@ if [[ "${URL}" =~ /issue/[A-Z]+-[0-9]+\?fields=components ]] && [[ "${METHOD}" =
   echo '{"fields":{"components":[{"name":"existing-component"}]}}'
   exit 0
 fi
+# Triage state: no own comments yet, so there is nothing to clear.
+if [[ "${URL}" =~ /myself$ ]]; then printf '{"accountId":"bot-1"}\n200'; exit 0; fi
+if [[ "${URL}" =~ /comment\?expand=properties ]]; then printf '{"comments":[],"total":0}\n200'; exit 0; fi
 exit 0
 CURLMOCK
 chmod +x "${MOCK_BIN}/curl"
@@ -3263,6 +3335,9 @@ if [[ "\${URL}" == *"fields=components"* ]]; then
   fi
   echo '{"fields":{"components":[{"name":"existing-component"}]}}'
 fi
+# Triage state: no own comments yet, so there is nothing to clear.
+if [[ "\${URL}" =~ /myself\$ ]]; then printf '{"accountId":"bot-1"}\n200'; exit 0; fi
+if [[ "\${URL}" == *"/comment?expand=properties"* ]]; then printf '{"comments":[],"total":0}\n200'; exit 0; fi
 exit 0
 CURLMOCK
 chmod +x "${MOCK_BIN}/curl"
