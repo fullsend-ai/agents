@@ -1566,7 +1566,11 @@ def cause_lists:
      # and the listed body is then an older one, possibly someone else's.
      # Any later editor time counts, with no slack: a false positive only
      # leaves the comment untrusted, which sends step 2e down the rebuild
-     # path.
+     # path. GitHub stamps both the same for one edit (checked on
+     # fullsend-ai/agents#2042). On GitLab, lastEditedAt falls back to the
+     # note's updated_at for notes edited before last_edited_at existed,
+     # and resolving a thread moves updated_at, so resolving such a note
+     # during the read reads as a race: a known, safe false positive.
      | .raced = (.edit == "own" and .listed_at != null
                  and ((.edited_at | epoch) // 0) > ((.listed_at | epoch) // 0))
      | .trusted = ($in.trust_error == null and .author_ok and (.edit == "none" or .edit == "own")
