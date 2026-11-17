@@ -15,12 +15,16 @@ fixture:
     Environment: current main, Python 3.12.
   # One marked analysis that fullsend edited in place: the current text,
   # then a "Previous run" fold holding the run before it, in the shape
-  # internal/sticky's BuildUpdatedBody writes (the old text's own marker
-  # cut, sentinel comments around it). The fold's analysis calls the
-  # authgw gateway stripping the email parameter "confirmed"; the current
+  # BuildUpdatedBody in fullsend's internal/sticky/sticky.go writes at the
+  # version go.mod pins (c74c65fd47ff): the old text's own marker cut and
+  # any other fullsend marker escaped, wrapped in sticky:history-start and
+  # -end sentinels. A later in-place edit adds sibling folds, "Previous
+  # run" then "Previous run (2)", never nested ones. The fold's analysis
+  # calls the authgw gateway stripping the email parameter "confirmed"; the current
   # text leaves authgw out without a ruling, and nothing else on the issue
   # or in the fixture repo names it. A fold is a claim (step 2e), so the
-  # next analysis may carry authgw only as an unverified hypothesis.
+  # next analysis may leave authgw out or carry it as a hypothesis, but
+  # must not assert it.
   # Whether it must be recovered is #2053's script, not this case.
   comments:
     - |

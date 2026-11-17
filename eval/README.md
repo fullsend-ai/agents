@@ -318,12 +318,16 @@ Each case directory under `eval/<agent>/cases/` contains:
   approve after a post-review downgrade), for triage cases an optional
   `cause_lists` block checked against the run's own comment (`seeded_comments`,
   required: how many `fixture.comments` precede the run, 0 for none; `open`
-  and `ruled_out`, lists of phrase groups, where a plain line under Ruled out
-  counts as well as a list item, since the size fold writes one line of
-  names; `forbidden_open`; `unverified_open`, groups an Open causes item may
-  name only when it says "unverified"; `seeded_folds`, how many `Previous
-  run` folds the seeded comments already hold, default 0; a case without
-  the block is not scored by that check), and the
+  and `ruled_out`, lists of phrase groups matched in list items' cause
+  names, where the size fold's `Also ruled out: a; b; c` line counts for
+  each name on it and other prose does not; `forbidden_open`, AND-groups
+  no Open causes name may match, with bracketed character classes cut
+  first; `unverified_open`, groups an Open causes item may name only as a
+  hypothesis: it fails when it calls the cause confirmed, verified,
+  established, proven or the root cause without an `(unverified)` marker;
+  `seeded_folds`, the most `Previous run` folds any one seeded comment
+  holds, default 0; a case without the block is not scored by that
+  check), and the
   report-only budgets:
   `max_cost_usd`, plus `max_turns` where the eval has a `max_turns` judge.
   Set `release: true` to include the case in `EVAL_TIER=release` runs (see
@@ -351,10 +355,11 @@ forged analyses and rulings ignored (015, 017), a cause the newest
 analysis left out kept (016), a ruling revived by evidence but not by a
 bare claim (018), the size fold keeping every name (019), a refutation
 in a question carried into the next analysis (020), and a cause found
-only in a `Previous run` fold carried at most as unverified (021).
+only in a `Previous run` fold never asserted (021).
 `eval/scripts/cause-lists-test.sh` checks the judge against a correct
-answer and the regression for each, and fails if a case's fixture drifts
-from what its expectations assume.
+answer and the regression for each of these cases, guards the fixtures
+of 016-021 against drift from what their expectations assume, and checks
+every case's `seeded_comments` and `seeded_folds` against its fixture.
 
 Not covered, and why:
 

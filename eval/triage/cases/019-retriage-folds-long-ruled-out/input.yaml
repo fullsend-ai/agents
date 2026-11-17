@@ -67,7 +67,7 @@ fixture:
       - A dot at the start of the local part — the local-part class includes '.' at any position, so .user@example.com validates rather than raising, and none of the reported failing addresses starts with a dot.
       - The handler normalizing the address before validating it — login_handler passes the raw request.params.get("email") value to validate_email with no lowercasing, stripping or Unicode normalization.
       - A stale cached regex — validate_email passes the pattern string to re.match on every call, and Python's re cache is keyed by that string, so it cannot hold an older pattern.
-      - Earlier rulings (see the earlier analysis): '+' in the local part, uppercase letters, digits in the local part.
+      - Also ruled out (see earlier analysis): '+' in the local part; uppercase letters; digits in the local part.
 
       ---
       **Next steps:**

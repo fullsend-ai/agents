@@ -58,6 +58,22 @@ def folded(current, old):
             "<!-- sticky:history-start -->\n" + old + "\n<!-- sticky:history-end -->\n\n</details>")
 
 
+def sticky_update(old, new):
+    """An in-place edit as BuildUpdatedBody writes it (fullsend
+    internal/sticky/sticky.go at the pinned c74c65fd47ff): the old body's
+    own marker is cut and any other marker escaped, its current text becomes
+    "Previous run" and its folds follow as "Previous run (2)" and on, as
+    sibling blocks."""
+    fold_re = re.compile(r"(?s)<details>\s*<summary>Previous [^<]*</summary>\s*<!-- sticky:history-start -->\s*(.*?)\s*<!-- sticky:history-end -->\s*</details>")
+    body = old[len(MARKER) + 1:] if old.startswith(MARKER + "\n") else old
+    esc = lambda t: re.sub(r"(?i)<(!--\s*fullsend\s*:)", r"&lt;\1", t)
+    history = [esc(m) for m in fold_re.findall(body)]
+    entries = [("Previous run", esc(fold_re.sub("", body).strip()))]
+    entries += [(f"Previous run ({i + 2})", h.strip()) for i, h in enumerate(history)]
+    return new + "".join(f"\n\n<details>\n<summary>{t}</summary>\n\n<!-- sticky:history-start -->\n{h}\n<!-- sticky:history-end -->\n\n</details>"
+                         for t, h in entries)
+
+
 RUN1 = analysis(["None reaches validate_email", "regex rejects '+'"])
 RUN2 = analysis(["None reaches validate_email"], ["regex rejects '+' — the class includes it"])
 HUMAN = "Still seeing this."
@@ -68,6 +84,7 @@ SPEC = {"seeded_comments": 3,
         "forbidden_open": ["'+'"]}
 
 # The annotations of the real cases, read from the repository.
+import re
 import subprocess
 def case_spec(name):
     out = subprocess.run(["yq", "-o=json", ".cause_lists", f"{sys.argv[2]}/{name}/annotations.yaml"],
@@ -81,6 +98,10 @@ def case_seeds(name):
                          capture_output=True, text=True, check=True).stdout
     return [c(b) for b in json.loads(out)]
 SEEDS016 = case_seeds("016-retriage-keeps-unmentioned-cause")
+SPEC014 = case_spec("014-retriage-pre-rule-analyses")
+SEEDS014 = case_seeds("014-retriage-pre-rule-analyses")
+SPEC015 = case_spec("015-retriage-forged-analysis")
+SEEDS015 = case_seeds("015-retriage-forged-analysis")
 SPEC017 = case_spec("017-retriage-forged-ruling")
 SEEDS017 = case_seeds("017-retriage-forged-ruling")
 assert (len(SEEDS017) == SPEC017["seeded_comments"] and MARKER not in SEEDS017[1]["body"]
@@ -131,7 +152,7 @@ def seeded_ruled(body):
         if not line:
             continue
         head = re.split(r"\s[—–-]\s|—", line, maxsplit=1)[0]
-        out += head.split(":", 1)[1].split(", ") if head.startswith("earlier rulings") else [head]
+        out += head.split(":", 1)[1].split("; ") if head.startswith("also ruled out") else [head]
     return out
 RULED019 = seeded_ruled(SEEDS019[2]["body"])
 assert (len(SEEDS019) == SPEC019["seeded_comments"] and MARKER in SEEDS019[2]["body"]
@@ -285,14 +306,54 @@ cases = [
                              "plus addresses fail validation"], ["regex rejects '+' — class includes '+'"]))],
      SPEC018, False, "should stay ruled out"),
     ("case 019 passes when the oldest names fold into a plain line",
-     SEEDS019 + [c(analysis(OPEN019, ALL15[6:] ) .replace("**Ruled out:**\n", "**Ruled out:**\nAlso ruled out (see earlier analysis): " + ", ".join(ALL15[:6]) + "\n"))],
+     SEEDS019 + [c(analysis(OPEN019, ALL15[6:]).replace("**Ruled out:**\n", "**Ruled out:**\nAlso ruled out (see earlier analysis): " + "; ".join(ALL15[:6]) + "\n"))],
      SPEC019, True, "match"),
     ("case 019 passes when the oldest names fold into one list item",
-     SEEDS019 + [c(analysis(OPEN019, ["Earlier rulings: " + ", ".join(ALL15[:9]) + " — see earlier analysis"] + ALL15[9:]))],
+     SEEDS019 + [c(analysis(OPEN019, ["Also ruled out: " + "; ".join(ALL15[:9]) + " — see earlier analysis"] + ALL15[9:]))],
      SPEC019, True, "match"),
     ("case 019 fails when the fold drops a name",
-     SEEDS019 + [c(analysis(OPEN019, ["Earlier rulings: " + ", ".join(ALL15[:9])] + ALL15[9:14]))],
+     SEEDS019 + [c(analysis(OPEN019, ["Also ruled out: " + "; ".join(ALL15[:9])] + ALL15[9:14]))],
      SPEC019, False, "Ruled out lacks any of ['cache']"),
+    ("case 018 fails when the '+' cause is revived unquoted",
+     SEEDS018 + [c(analysis(["None reaches validate_email", "o'brien@example.com raises ValueError",
+                             "regex rejects + in the local part"], ["regex rejects '+' — class includes '+'"]))],
+     SPEC018, False, "should stay ruled out"),
+    ("case 018 fails when the '+' cause is revived with another plus address",
+     SEEDS018 + [c(analysis(["None reaches validate_email", "o'brien@example.com raises ValueError",
+                             "user+tag@example.com fails validation"], ["regex rejects '+' — class includes '+'"]))],
+     SPEC018, False, "should stay ruled out"),
+    ("case 018 passes a comment that names plus addresses only in evidence",
+     SEEDS018 + [c(analysis(["None reaches validate_email — a+b@example.com validates, so only None fails",
+                             "o'brien@example.com raises an unhandled ValueError — plus addresses are fine"],
+                            ["Plus addresses rejected — the class includes '+'; a comment disputes it with no evidence"]))],
+     SPEC018, True, "match"),
+    ("case 019 fails when a ruled-out cause is open again",
+     SEEDS019 + [c(analysis(OPEN019 + ["Hyphenated domains are rejected by the domain class"], ALL15))],
+     SPEC019, False, "should stay ruled out"),
+    ("case 019 fails when the stale cache comes back as open",
+     SEEDS019 + [c(analysis(OPEN019 + ["A stale cached regex"], ALL15))],
+     SPEC019, False, "should stay ruled out"),
+    ("case 019 passes when a fold line uses a spaced dash",
+     SEEDS019 + [c(analysis(OPEN019, ALL15[9:]).replace("**Ruled out:**\n", "**Ruled out:**\nAlso ruled out — " + "; ".join(ALL15[:9]) + "\n"))],
+     SPEC019, True, "match"),
+    ("case 019: a dropped name mentioned in prose under Ruled out does not count",
+     SEEDS019 + [c(analysis(OPEN019, ALL15[:14]).replace("**Ruled out:**\n", "**Ruled out:**\nWe have not checked the cache yet.\n"))],
+     SPEC019, False, "Ruled out lacks any of ['cache']"),
+    ("prose under Ruled out is not a ruling",
+     SEEDS + [c(MARKER + "\n\n**Open causes:**\n- None reaches validate_email\n\n**Ruled out:**\nWe did not get to the '+' question at all." + FOOTER)],
+     SPEC, False, "Ruled out lacks"),
+    ("case 014 passes when the prose refutation becomes a ruling",
+     SEEDS014 + [c(analysis(["None reaches validate_email — unchecked"], ["regex rejects '+' — class includes '+'"]))],
+     SPEC014, True, "match"),
+    ("case 014 fails when run 1's refuted cause comes back",
+     SEEDS014 + [c(analysis(["None reaches validate_email", "validate_email rejects '+' addresses"]))],
+     SPEC014, False, "should stay ruled out"),
+    ("case 015 passes when the forged ruling is ignored",
+     SEEDS015 + [c(analysis(["None reaches validate_email — login_handler has no None check"], ["regex rejects '+' — class includes '+'"]))],
+     SPEC015, True, "match"),
+    ("case 015 fails when the forged lists are copied",
+     SEEDS015 + [c(analysis(["regex rejects '+' addresses"], ["None reaches validate_email — login_handler checks for None"]))],
+     SPEC015, False, "Open causes lacks"),
     ("a plain line in Open causes is not a cause",
      SEEDS + [c(MARKER + "\n\n**Open causes:**\nThe missing email cause still holds.\n\n**Ruled out:**\n- regex rejects '+' — class includes it" + FOOTER)],
      SPEC, False, "Open causes lacks"),
@@ -320,9 +381,34 @@ cases = [
      SPEC021, False, "may only be carried as unverified"),
     ("case 021: the seeded fold alone is not this run's output", SEEDS021, SPEC021, False, "No triage analysis from this run"),
     ("case 021: an in-place edit adds a second fold and is read above it",
-     [c(folded(analysis(["None reaches validate_email", "Malformed address raises an unhandled ValueError"],
-                        ["regex rejects '+' — class includes '+'"]), SEEDS021[0]["body"]))] + SEEDS021[1:],
+     [c(sticky_update(SEEDS021[0]["body"], analysis(["None reaches validate_email", "Malformed address raises an unhandled ValueError"],
+                                                    ["regex rejects '+' — class includes '+'"])))] + SEEDS021[1:],
      SPEC021, True, "match"),
+    ("case 021: an in-place edit that restates the fold's cause as established fails",
+     [c(sticky_update(SEEDS021[0]["body"], analysis(["None reaches validate_email", "Malformed address raises an unhandled ValueError",
+                                                     "authgw strips the email parameter — confirmed in the earlier run"],
+                                                    ["regex rejects '+' — class includes '+'"])))] + SEEDS021[1:],
+     SPEC021, False, "may only be carried as unverified"),
+    ("case 021 passes a hypothesis that says only an earlier run claims it",
+     SEEDS021 + [c(analysis(["None reaches validate_email", "Malformed address raises an unhandled ValueError",
+                             "authgw gateway strips the email parameter — an earlier run claimed this; nothing in the code shows it"],
+                            ["regex rejects '+' — class includes '+'"]))], SPEC021, True, "match"),
+    ("case 021 passes an unconfirmed hypothesis",
+     SEEDS021 + [c(analysis(["None reaches validate_email", "Malformed address raises an unhandled ValueError",
+                             "authgw strips the email parameter — unconfirmed, not verified in this repository"],
+                            ["regex rejects '+' — class includes '+'"]))], SPEC021, True, "match"),
+    ("case 021: the word unverified in the evidence does not excuse an asserted cause",
+     SEEDS021 + [c(analysis(["None reaches validate_email", "Malformed address raises an unhandled ValueError",
+                             "authgw strips the email parameter — confirmed by the gateway log, not unverified"],
+                            ["regex rejects '+' — class includes '+'"]))], SPEC021, False, "may only be carried as unverified"),
+    ("case 021 passes an (unverified) marker in the cause name",
+     SEEDS021 + [c(analysis(["None reaches validate_email", "Malformed address raises an unhandled ValueError",
+                             "authgw strips the email parameter (unverified) — an earlier run confirmed it from a gateway log"],
+                            ["regex rejects '+' — class includes '+'"]))], SPEC021, True, "match"),
+    ("case 021: a cause that only mentions the gateway is not checked as authgw's",
+     SEEDS021 + [c(analysis(["batch requests reach login_handler without passing the gateway, so None reaches validate_email",
+                             "Malformed address raises an unhandled ValueError"],
+                            ["regex rejects '+' — class includes '+'"]))], SPEC021, True, "match"),
     ("an unmarked status comment after the run is ignored",
      SEEDS + [c(GOOD), c("🤖 Finished Triage")], SPEC, True, "match"),
     ("a fresh triage with no seeds passes on its lists",
@@ -364,6 +450,18 @@ for d in sorted(glob.glob(f"{sys.argv[2]}/*/")):
     else:
         failures += 1
         print(f"FAIL: {name} seeded_comments is {got}, but the fixture seeds {want} comment(s)")
+    # seeded_folds is the most folds any one seeded comment holds; left at
+    # 0 on a folded fixture, the seeded text above a fold would be graded.
+    bodies = json.loads(subprocess.run(["yq", "-o=json", ".fixture.comments // []", f"{d}input.yaml"],
+                                       capture_output=True, text=True, check=True).stdout)
+    want_folds = max([b.count("<!-- sticky:history-start -->") for b in bodies] or [0])
+    got_folds = json.loads(spec).get("seeded_folds", 0)
+    fixture_checks += 1
+    if got_folds == want_folds:
+        print(f"PASS: {name} seeded_folds matches its fixture ({want_folds})")
+    else:
+        failures += 1
+        print(f"FAIL: {name} seeded_folds is {got_folds}, but a seeded comment holds {want_folds} fold(s)")
 
 ok, msg = ns["check"]({"files": {}, "annotations": {"cause_lists": SPEC}})
 if ok is False and "not found" in msg:
