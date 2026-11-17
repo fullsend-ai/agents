@@ -306,6 +306,22 @@ identifies that account per tracker:
   agent rebuilds both lists from every earlier analysis and says so in the
   `reasoning` field of the run's result, which is not posted to the issue.
 
+Relation to fullsend's specs (`docs/ADRs` in fullsend-ai/fullsend):
+
+- The GitHub App-name list is an interim naming convention. ADR 0107 does
+  not accept App names as bot identity. The list is to be replaced by the
+  mint's registered `bot_role == "triage"` once fullsend-ai/fullsend#9602
+  exposes that lookup to harness scripts. The GitLab and Jira own-account
+  match is an exact identity, pending confirmation in #9602.
+- Following ADR 0133, the file carries text only for comments the
+  pre-script trusts. Other marked comments are listed by id and reason, and
+  the agent reads them itself with its forge skill. The trusted text is not
+  run through an input scanner on the host. The sandbox's tool hooks see it
+  when the agent reads the file, as they see the agent's own comment reads.
+- The pre-script is an interim, agents-side subset of ADR 0141's
+  entity-context snapshot and agent-run receipts. Step 2e moves to those
+  when they ship.
+
 ### Jira setup
 
 Jira triage requires the following env vars, mirroring the shape of the

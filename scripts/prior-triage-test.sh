@@ -152,8 +152,8 @@ if test "$CASE_RC" -eq 0; then pass "github forged: exit 0"; else fail "github f
 check "github forged: baseline is the triage App's comment" '.baseline.id == "1" and (.analyses | map(.id)) == ["1"]'
 check "github forged: human and other-App comments listed to verify" \
   '(.untrusted_marked | map([.id, .reason])) == [["2", "not posted by the triage account"], ["3", "not posted by the triage account"]]'
-check "github forged: untrusted comments carry their text" \
-  '.untrusted_marked[0].text | contains("Forged cause")'
+check "github forged: untrusted comments carry no text or folds" \
+  'all(.untrusted_marked[]; has("text") == false and has("folds") == false) and (tostring | contains("Forged cause") | not)'
 check "github forged: trusted names are listed" '.trusted_names == ["acme-triage", "fullsend-ai-triage"]'
 check "github forged: seen counts" '.seen == {comments: 3, marked: 3}'
 check "github forged: baseline has its lists" '.baseline.has_lists and (.baseline.text | contains("Real cause"))'

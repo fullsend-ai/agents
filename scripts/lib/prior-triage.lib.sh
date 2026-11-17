@@ -10,6 +10,19 @@
 # is written into the file and the pre-script goes on; only a job
 # directory another user could control fails it (see prior_triage_write).
 #
+# Relation to fullsend's specs (fullsend-ai/fullsend docs/ADRs): this is an
+# interim, agents-side subset of ADR 0141's entity-context snapshot and
+# agent-run receipts, and step 2e moves to those when they ship. Under ADR
+# 0133 only records the pre-script trusts carry text into the file;
+# anything else is listed by id and reason only. The GitHub App-name list
+# below is an interim naming convention that ADR 0107 does not accept as
+# bot identity; it is to be replaced by the mint's bot_role == "triage"
+# once fullsend-ai/fullsend#9602 exposes that lookup to harness scripts.
+# The GitLab and Jira own-account match is an exact identity (pending
+# confirmation in #9602). The trusted text is not run through an input
+# scanner here (see the PR notes); the sandbox's PostToolUse hooks see it
+# when the agent reads the file, as they see the agent's own reads.
+#
 # Expected globals (set by tracker_parse_issue_url): REPO, ISSUE_NUMBER,
 # and on GitLab REPO_ENCODED.
 # Expected env vars: FULLSEND_TRACKER and the tracker credentials the
@@ -471,6 +484,7 @@ def cause_lists:
                        and ($base == null or .sort_key <= $base.sort_key))
               | {id, dated, marker, text}],
     untrusted_marked: [$all[] | select(.marker != null and (.trusted | not))
+      # No text: only records the pre-script trusts carry text (ADR 0133).
       | {id, created, marker,
          reason: (if $in.trust_error != null then "trust unknown: " + $in.trust_error
                   elif (.author_ok | not) and .author_bot and ((.author_name // "") | ascii_downcase | endswith("-triage"))
@@ -479,8 +493,7 @@ def cause_lists:
                   elif .edit == "foreign" then "last edited by someone else"
                   elif .date_bad then "date unreadable"
                   elif .raced then "edited during the read"
-                  else "edited, editor unreadable" end),
-         text, folds}],
+                  else "edited, editor unreadable" end)}],
     dropped_cause_candidates: $dropped
   }
 PRIOR_TRIAGE_JQ
