@@ -36,20 +36,23 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/scribe-ops.lib.sh
 source "${SCRIPT_DIR}/lib/scribe-ops.lib.sh"
 
-if [[ -n "${GH_TOKEN:-}" ]]; then
-  echo "::add-mask::${GH_TOKEN}"
-fi
-if [[ -n "${GITLAB_TOKEN:-}" ]]; then
-  echo "::add-mask::${GITLAB_TOKEN}"
-fi
-# With FULLSEND_JIRA_CLIENT_ID and FULLSEND_JIRA_CLIENT_SECRET there is no
-# token to mask here: jira-auth.lib.sh masks the access token it mints, the
-# client secret is never printed, and a missing JIRA_API_URL has already
-# failed the load of jira-scribe-ops.lib.sh.
-if [[ -n "${JIRA_TOKEN:-}" ]]; then
-  # Sanitize workflow-command delimiters before interpolating into ::add-mask::
-  # so a crafted token cannot inject additional workflow commands.
-  printf '::add-mask::%s\n' "$(printf '%s' "${JIRA_TOKEN}" | tr -d '\n\r')"
+# ::add-mask:: is GHA-only; on other runners the echo would print the token.
+if [[ "${GITHUB_ACTIONS:-}" == "true" ]]; then
+  if [[ -n "${GH_TOKEN:-}" ]]; then
+    echo "::add-mask::${GH_TOKEN}"
+  fi
+  if [[ -n "${GITLAB_TOKEN:-}" ]]; then
+    echo "::add-mask::${GITLAB_TOKEN}"
+  fi
+  # With FULLSEND_JIRA_CLIENT_ID and FULLSEND_JIRA_CLIENT_SECRET there is no
+  # token to mask here: jira-auth.lib.sh masks the access token it mints, the
+  # client secret is never printed, and a missing JIRA_API_URL has already
+  # failed the load of jira-scribe-ops.lib.sh.
+  if [[ -n "${JIRA_TOKEN:-}" ]]; then
+    # Sanitize workflow-command delimiters before interpolating into ::add-mask::
+    # so a crafted token cannot inject additional workflow commands.
+    printf '::add-mask::%s\n' "$(printf '%s' "${JIRA_TOKEN}" | tr -d '\n\r')"
+  fi
 fi
 
 # ============================================================
@@ -746,7 +749,9 @@ fi
 # ============================================================
 SLACK_WEBHOOK="${SCRIBE_SLACK_WEBHOOK_URL:-${SLACK_WEBHOOK_URL:-}}"
 if [[ -n "${SLACK_WEBHOOK}" ]]; then
-  echo "::add-mask::${SLACK_WEBHOOK}"
+  if [[ "${GITHUB_ACTIONS:-}" == "true" ]]; then
+    echo "::add-mask::${SLACK_WEBHOOK}"
+  fi
   RUN_URL=$(forge_run_url "${SCRIBE_REPO}")
 
   SLACK_TEXT=":memo: *Scribe agent* (${RUN_MODE_LABEL})"
