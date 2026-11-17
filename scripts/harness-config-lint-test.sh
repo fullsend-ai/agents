@@ -26,7 +26,7 @@ setup_fixture_cleanup() {
       echo "ERROR: Failed to create root temp directory for fixtures" >&2
       exit 1
     }
-    trap 'rm -rf "${FIXTURE_ROOT_TEMP}"' EXIT
+    trap cleanup_fixture_temp EXIT
   fi
 }
 
