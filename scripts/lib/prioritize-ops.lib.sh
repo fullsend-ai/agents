@@ -17,8 +17,11 @@ case "${FULLSEND_FORGE:-}" in
   gitlab)
     source "${SCRIPT_DIR}/lib/gitlab-prioritize-ops.lib.sh"
     ;;
+  jira)
+    source "${SCRIPT_DIR}/lib/jira-prioritize-ops.lib.sh"
+    ;;
   *)
-    echo "ERROR: invalid FULLSEND_FORGE: '${FULLSEND_FORGE:-}' — pass --forge <github|gitlab> or set FULLSEND_FORGE" >&2
+    echo "ERROR: invalid FULLSEND_FORGE: '${FULLSEND_FORGE:-}' — pass --forge <github|gitlab|jira> or set FULLSEND_FORGE" >&2
     exit 1
     ;;
 esac

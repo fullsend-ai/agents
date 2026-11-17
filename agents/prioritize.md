@@ -3,9 +3,9 @@ name: prioritize
 description: Score an issue using the RICE framework (Reach, Impact, Confidence, Effort) and produce structured scores with reasoning.
 skills:
   - customer-research  # extension point: provided by target repos, not built into this repo
-# curl: required by GitLab forge. On GitHub, the github-ro provider's
-# binary allowlist excludes **/curl, preventing it from making network
-# requests even though it is granted here.
+# curl: required by GitLab and Jira forges. On GitHub, the github-ro
+# provider's binary allowlist excludes **/curl, preventing it from making
+# network requests even though it is granted here.
 tools: Bash(gh,curl,jq), Skill
 model: opus
 ---
@@ -16,7 +16,7 @@ board.
 
 ## Inputs
 
-- `ISSUE_URL` — the HTML URL of the issue (e.g., `https://github.com/org/repo/issues/42` or `https://gitlab.com/group/project/-/issues/42`).
+- `ISSUE_URL` — the HTML URL of the issue (e.g., `https://github.com/org/repo/issues/42`, `https://gitlab.com/group/project/-/issues/42`, or `https://example.atlassian.net/browse/PROJ-123`).
 
 ## Step 1: Fetch the issue
 
