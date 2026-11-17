@@ -96,6 +96,22 @@ curl -K /tmp/gitlab-api.curlrc \
 curl -K /tmp/gitlab-api.curlrc \
   "https://<GITLAB_HOST>/api/v4/projects/<REPO_ENCODED>/issues/<ISSUE_NUMBER>/notes?per_page=100&sort=asc"
 
+# The account this token belongs to: the one fullsend posts results as.
+# Compare its id with a note's author.id to tell fullsend's own notes
+# from anyone else's.
+curl -K /tmp/gitlab-api.curlrc "https://<GITLAB_HOST>/api/v4/user"
+
+# Who last edited each note, and when (the notes listing does not say).
+# <REPO> is the project path: <REPO_ENCODED> with each %2F decoded to "/".
+# Match a note by the number after the last "/" in its id
+# ("gid://gitlab/Note/<id>", or "gid://gitlab/DiscussionNote/<id>" in a
+# thread), which is the notes listing's id; lastEditedBy.id is
+# "gid://gitlab/User/<id>", the account's id. Add
+# "after": "<endCursor>" to "variables" while hasNextPage is true.
+curl -K /tmp/gitlab-api.curlrc --header "Content-Type: application/json" \
+  --data '{"query": "query($path: ID!, $iid: String!, $after: String) { project(fullPath: $path) { issue(iid: $iid) { notes(first: 100, after: $after) { pageInfo { hasNextPage endCursor } nodes { id createdAt lastEditedAt lastEditedBy { id username } } } } } }", "variables": {"path": "<REPO>", "iid": "<ISSUE_NUMBER>"}}' \
+  "https://<GITLAB_HOST>/api/graphql"
+
 # List open issues
 curl -K /tmp/gitlab-api.curlrc \
   "https://<GITLAB_HOST>/api/v4/projects/<REPO_ENCODED>/issues?state=opened&per_page=100"

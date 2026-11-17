@@ -53,6 +53,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/lib/triage-ops.lib.sh"
 # shellcheck source=lib/labels.lib.sh
 source "${SCRIPT_DIR}/lib/labels.lib.sh"
+# shellcheck source=lib/triage-state.lib.sh
+source "${SCRIPT_DIR}/lib/triage-state.lib.sh"
 
 # Find the triage result JSON — prefer the validated iteration when set.
 # Trust boundary: FULLSEND_VALIDATED_ITERATION_DIR is set by the fullsend CLI
@@ -126,6 +128,10 @@ is_control_label() {
 }
 
 # --- Action-specific validation and control labels ---
+
+# The triage state (open and ruled-out causes) of a sufficient result, which
+# the next triage run starts from. Empty for every other action.
+TRIAGE_STATE=""
 
 # Deferred label: when set, applied after label_actions so it fires last.
 # This prevents the ready-to-code webhook event from being superseded by
@@ -464,6 +470,19 @@ ${FAILED_CREATES}"
           fi
         fi
       fi
+    fi
+
+    # List the cause lists for people; the same state is attached as data
+    # when the comment is posted (lib/triage-state.lib.sh). A result without
+    # open causes, which the schema rejects, is posted without a state, and
+    # the next run rebuilds it from the comments.
+    TRIAGE_STATE=$(triage_state_json "${RESULT_FILE}")
+    if [[ -n "${TRIAGE_STATE}" ]]; then
+      COMMENT="${COMMENT}
+
+$(triage_state_render "${TRIAGE_STATE}" "$(triage_state_budget "${COMMENT}")")"
+    else
+      echo "::warning::sufficient result has no triage_summary.open_causes — posting without a triage state"
     fi
 
     tracker_remove_label "blocked"
@@ -901,9 +920,20 @@ fi
 
 # --- Post comment ---
 
+# Only the post-script's own state marker may be live in a triage comment.
+COMMENT=$(triage_state_neutralize "${COMMENT}")
+if [[ -n "${TRIAGE_STATE}" && "${FULLSEND_TRACKER}" != "jira" ]]; then
+  COMMENT="${COMMENT}
+
+$(triage_state_marker "${TRIAGE_STATE}")"
+fi
+
 echo "Posting comment..."
 if [[ "${ACTION}" == "sufficient" ]]; then
   tracker_post_sticky_comment "${COMMENT}" "<!-- fullsend:triage-agent -->"
+  if [[ -n "${TRIAGE_STATE}" && "${FULLSEND_TRACKER}" == "jira" ]]; then
+    tracker_store_triage_state "${TRIAGE_STATE}" "<!-- fullsend:triage-agent -->"
+  fi
 elif [[ "${ACTION}" == "in-progress" ]]; then
   tracker_post_sticky_comment "${COMMENT}" "<!-- fullsend:triage-in-progress -->"
 else

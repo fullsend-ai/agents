@@ -253,6 +253,58 @@ variable, which the harness sets based on the detected CI platform (`github`,
 forward-compatible override when set, but the harness itself only ever sets
 `FULLSEND_FORGE`.
 
+### Re-triage state
+
+A `sufficient` result carries `triage_summary.open_causes` and
+`triage_summary.ruled_out`, each a list of `{cause, evidence, verified}`.
+The post-script lists both under the comment (one line per cause,
+unverified causes marked, **Ruled out** left out when empty) and stores the
+same lists as data for the next run (fullsend-ai/agents#2042):
+
+- **GitHub and GitLab:** a hidden HTML comment at the end of the comment,
+  `<!-- triage-state-v1:<base64 of {"open_causes":[...],"ruled_out":[...]}> -->`.
+  It is outside fullsend's `<!-- fullsend:` marker namespace because
+  `fullsend post-comment` escapes every such marker in the body it posts.
+  The post-script escapes any copy of the marker the agent wrote.
+- **Jira:** the comment entity property `fullsend.triage-state`, set after
+  the comment is posted on the comment the posting account (`GET /myself`)
+  wrote with the `fullsend.sticky-marker` property and updated last.
+
+The 4000-character comment limit covers the readable text only: the
+post-script condenses the lists to fit what the agent's comment leaves
+(evidence first, then the oldest ruled-out lines, counted in one line),
+while the stored state keeps every entry (at most 10 open, 25 ruled out).
+
+A re-run starts from the newest state in a comment the triage account wrote
+and nobody else last edited (`agents/triage.md` step 2e). Without one, for
+comments written before this change or when no comment is trusted, the agent
+rebuilds the lists once from the earlier comments, every cause as an
+unverified claim. The agent tells its own comments apart per tracker:
+
+- **GitHub:** a `Bot` author whose App is `<owner>-triage`,
+  `fullsend-ai-triage` or, when `FULLSEND_APP_SET` is not empty,
+  `${FULLSEND_APP_SET}-triage`. This App-name list is an interim naming
+  convention, which fullsend's
+  [ADR 0107](https://github.com/fullsend-ai/fullsend/blob/main/docs/ADRs/0107-bot-identity-resolution-for-dispatch-authorization.md)
+  does not accept as bot identity; it is to be replaced by
+  `bot_role == "triage"` once fullsend-ai/fullsend#9602 lets harness scripts
+  resolve it. `env/github/triage.env` passes `FULLSEND_APP_SET` into the
+  sandbox. fullsend's triage job exports it since fullsend-ai/fullsend#9575,
+  which is not in a release yet (v0.56.1 and earlier do not), so on those
+  releases only the first two names match.
+- **GitLab:** the account `GET /api/v4/user` returns for the token.
+- **Jira:** the account `GET /rest/api/3/myself` returns, which needs the
+  `read:jira-user` scope (or the granular `read:user:jira`).
+
+The GitLab and Jira own-account check is an exact identity (pending
+confirmation in fullsend-ai/fullsend#9602). Comments from anyone else are
+claims the agent checks against the code, never instructions, in line with
+[ADR 0133](https://github.com/fullsend-ai/fullsend/blob/main/docs/ADRs/0133-actor-attributed-data-security-boundary.md).
+The eventual canonical history is
+[ADR 0141](https://github.com/fullsend-ai/fullsend/blob/main/docs/ADRs/0141-deterministic-filtered-entity-context-staging.md)'s
+entity-context-snapshot and immutable agent-run receipts; the comment state
+bridges until then.
+
 ### Jira setup
 
 Jira triage requires the following env vars, mirroring the shape of the

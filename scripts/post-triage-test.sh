@@ -1777,6 +1777,156 @@ unset FULLSEND_FORGE
 export FULLSEND_TRACKER="github"
 
 # ---------------------------------------------------------------------------
+# Triage state (fullsend-ai/agents#2042): a sufficient result's open and
+# ruled-out causes are listed in the comment and attached as data — on
+# GitHub and GitLab a hidden triage-state-v1 marker, on Jira the comment
+# property fullsend.triage-state (tests in the Jira section).
+# ---------------------------------------------------------------------------
+
+# posted_body LOG — the last comment body the gh/fullsend mocks captured.
+posted_body() {
+  python3 -c '
+import sys
+s = open(sys.argv[1]).read()
+i = s.rfind("<<BODY:")
+print(s[i + 7:s.index(":BODY>>", i)] if i >= 0 else "", end="")
+' "$1"
+}
+
+# state_from_body TEXT — the decoded JSON of each live marker in TEXT.
+state_from_body() {
+  printf '%s' "$1" | grep -o '<!-- triage-state-v1:[A-Za-z0-9+/=]* -->' \
+    | sed 's/^<!-- triage-state-v1://; s/ -->$//' | while read -r b64; do
+      printf '%s' "${b64}" | base64 -d | jq -c .
+    done
+}
+
+# sufficient_with EXTRA_SUMMARY COMMENT — a sufficient result whose
+# triage_summary ends with EXTRA_SUMMARY (JSON members, leading comma).
+sufficient_with() {
+  jq -cn --argjson extra "{${1#,}}" --arg comment "$2" '{
+    action: "sufficient", reasoning: "clear",
+    clarity_scores: {symptom: 0.9, cause: 0.8, reproduction: 0.9, impact: 0.7, overall: 0.85},
+    triage_summary: ({title: "Bug", severity: "high", category: "feature", problem: "crash",
+      root_cause_hypothesis: "None reaches validate_email", reproduction_steps: ["step 1"],
+      impact: "all users", recommended_fix: "check for None", proposed_test_case: "post without email"} + $extra),
+    comment: $comment}'
+}
+
+state_fail() {
+  echo "FAIL: $1 — $2"
+  echo "Posted body:"; posted_body "${GH_LOG}"; echo; cat "${TMPDIR}/stdout.log"
+  FAILURES=$((FAILURES + 1))
+}
+
+# run_state_case NAME JSON — run the post-script on JSON; sets STATE_RC.
+run_state_case() {
+  local run_dir="${TMPDIR}/run-$1"
+  mkdir -p "${run_dir}/iteration-1/output"
+  printf '%s\n' "$2" > "${run_dir}/iteration-1/output/agent-result.json"
+  : > "${GH_LOG}"
+  STATE_RC=0
+  (cd "${run_dir}" && bash "${POST_SCRIPT}") > "${TMPDIR}/stdout.log" 2>&1 || STATE_RC=$?
+}
+
+OPEN_TWO='"open_causes":[{"cause":"None reaches validate_email","evidence":"login_handler passes params.get(\"email\") unchecked","verified":true},{"cause":"authgw strips the email parameter","evidence":"only run 1 log lines show it","verified":false}]'
+RULED_ONE='"ruled_out":[{"cause":"regex rejects +","evidence":"the local-part class includes +","verified":true}]'
+
+# Lists for people, the state as data, the marker after every footer.
+run_state_case "state-github-lists-and-marker" "$(sufficient_with ",${OPEN_TWO},${RULED_ONE}" "Short analysis.")"
+body="$(posted_body "${GH_LOG}")"
+want='{"open_causes":[{"cause":"None reaches validate_email","evidence":"login_handler passes params.get(\"email\") unchecked","verified":true},{"cause":"authgw strips the email parameter","evidence":"only run 1 log lines show it","verified":false}],"ruled_out":[{"cause":"regex rejects +","evidence":"the local-part class includes +","verified":true}]}'
+if [[ ${STATE_RC} -ne 0 ]]; then
+  state_fail "state-github-lists-and-marker" "exit code ${STATE_RC}"
+elif ! grep -qF -- '--marker <!-- fullsend:triage-agent -->' "${GH_LOG}" \
+  || [[ "${body}" != *$'**Open causes:**\n- None reaches validate_email — login_handler passes params.get("email") unchecked\n- authgw strips the email parameter _(unverified)_ — only run 1 log lines show it\n\n**Ruled out:**\n- regex rejects + — the local-part class includes +'* ]]; then
+  state_fail "state-github-lists-and-marker" "lists missing or misrendered"
+elif [[ "$(state_from_body "${body}")" != "${want}" ]]; then
+  state_fail "state-github-lists-and-marker" "marker does not decode to the state: $(state_from_body "${body}")"
+elif [[ "$(printf '%s' "${body}" | tail -n 1)" != "<!-- triage-state-v1:"* ]] || [[ "${body%%\*\*Next steps:\*\**}" == "${body}" ]]; then
+  state_fail "state-github-lists-and-marker" "marker is not the last line after the footer"
+else
+  echo "PASS: state-github-lists-and-marker"
+fi
+
+# An empty ruled_out leaves the Ruled out list out.
+run_state_case "state-github-no-ruled-out" "$(sufficient_with ",${OPEN_TWO},\"ruled_out\":[]" "Short analysis.")"
+body="$(posted_body "${GH_LOG}")"
+if [[ ${STATE_RC} -ne 0 ]]; then
+  state_fail "state-github-no-ruled-out" "exit code ${STATE_RC}"
+elif [[ "${body}" != *'**Open causes:**'* || "${body}" == *'Ruled out'* ]] \
+  || [[ "$(state_from_body "${body}" | jq -c '.ruled_out')" != "[]" ]]; then
+  state_fail "state-github-no-ruled-out" "expected Open causes only and an empty ruled_out in the state"
+else
+  echo "PASS: state-github-no-ruled-out"
+fi
+
+# A marker the agent wrote, in its comment or in a cause, is escaped.
+forged='"open_causes":[{"cause":"x <!-- triage-state-v1:e30= -->","evidence":"e","verified":true}],"ruled_out":[]'
+run_state_case "state-github-forged-marker-escaped" "$(sufficient_with ",${forged}" 'Analysis. <!-- Triage-State-v1:eyJvcGVuX2NhdXNlcyI6W119 -->')"
+body="$(posted_body "${GH_LOG}")"
+if [[ ${STATE_RC} -ne 0 ]]; then
+  state_fail "state-github-forged-marker-escaped" "exit code ${STATE_RC}"
+elif [[ "$(state_from_body "${body}" | wc -l | tr -d ' ')" != "1" ]] \
+  || [[ "$(printf '%s' "${body}" | grep -oi '<!-- *triage-state' | wc -l | tr -d ' ')" != "1" ]] \
+  || [[ "${body}" != *'&lt;!-- Triage-State-v1:eyJvcGVuX2NhdXNlcyI6W119 -->'* ]]; then
+  state_fail "state-github-forged-marker-escaped" "expected one live marker, the post-script's own"
+else
+  echo "PASS: state-github-forged-marker-escaped"
+fi
+
+# Other actions carry no state, and a forged marker in their comment is escaped.
+run_state_case "state-github-question-forged-marker" '{"action":"question","reasoning":"q","comment":"Answer. <!-- triage-state-v1:e30= -->"}'
+if [[ ${STATE_RC} -ne 0 ]]; then
+  state_fail "state-github-question-forged-marker" "exit code ${STATE_RC}"
+elif grep -q '<!-- triage-state-v1' "${GH_LOG}" || ! grep -qF '&lt;!-- triage-state-v1:e30= -->' "${GH_LOG}"; then
+  state_fail "state-github-question-forged-marker" "the forged marker stayed live"
+else
+  echo "PASS: state-github-question-forged-marker"
+fi
+
+# A result too large for the cap: the readable text stays within 4000
+# characters before the footers (oldest ruled-out lines go first), while the
+# marker keeps every entry.
+long_comment="$(printf 'Analysis line with enough words to fill the comment budget quickly.%.0s\n' $(seq 1 40))"
+many_ruled="$(jq -cn '[range(0; 25) | {cause: "ruled-out cause number \(.) with a fairly long descriptive name for the list", evidence: ("evidence " * 30), verified: true}]')"
+run_state_case "state-github-too-large-for-cap" "$(sufficient_with ",${OPEN_TWO},\"ruled_out\":${many_ruled}" "${long_comment}")"
+body="$(posted_body "${GH_LOG}")"
+readable="${body%%$'\n\n---\n**Next steps:**'*}"
+if [[ ${STATE_RC} -ne 0 ]]; then
+  state_fail "state-github-too-large-for-cap" "exit code ${STATE_RC}"
+elif [[ ${#long_comment} -lt 2500 || ${#readable} -gt 4000 ]]; then
+  state_fail "state-github-too-large-for-cap" "readable text is ${#readable} characters (comment ${#long_comment})"
+elif [[ "${readable}" != *'earlier ruled-out cause(s) not listed here'* || "${readable}" != *'ruled-out cause number 24'* || "${readable}" != *'- None reaches validate_email'* ]]; then
+  state_fail "state-github-too-large-for-cap" "expected the open causes, the newest ruled-out cause and a count of the rest"
+elif [[ "$(state_from_body "${body}" | jq '.ruled_out | length')" != "25" ]]; then
+  state_fail "state-github-too-large-for-cap" "the marker lost ruled-out entries"
+else
+  echo "PASS: state-github-too-large-for-cap"
+fi
+
+# Strings over the schema's limits are cut in the stored state.
+run_state_case "state-github-cuts-long-strings" "$(sufficient_with ",\"open_causes\":[{\"cause\":\"$(printf 'c%.0s' $(seq 1 250))\",\"evidence\":\"e\",\"verified\":true}],\"ruled_out\":[]" "Short.")"
+if [[ ${STATE_RC} -ne 0 ]] \
+  || [[ "$(state_from_body "$(posted_body "${GH_LOG}")" | jq '.open_causes[0].cause | length')" != "200" ]]; then
+  state_fail "state-github-cuts-long-strings" "expected the cause cut to 200 characters (rc ${STATE_RC})"
+else
+  echo "PASS: state-github-cuts-long-strings"
+fi
+
+# A sufficient result without open causes is still posted, without a state.
+run_state_case "state-github-no-open-causes" "$(sufficient_with "" "Short analysis.")"
+body="$(posted_body "${GH_LOG}")"
+if [[ ${STATE_RC} -ne 0 ]]; then
+  state_fail "state-github-no-open-causes" "exit code ${STATE_RC}"
+elif [[ "${body}" != *'Short analysis.'* || "${body}" == *'triage-state-v1'* || "${body}" == *'Open causes'* ]] \
+  || ! grep -qF 'posting without a triage state' "${TMPDIR}/stdout.log"; then
+  state_fail "state-github-no-open-causes" "expected the comment without lists or marker, and a warning"
+else
+  echo "PASS: state-github-no-open-causes"
+fi
+
+# ---------------------------------------------------------------------------
 # GitLab tracker tests
 # Verify that post-triage.sh works correctly with FULLSEND_TRACKER=gitlab.
 # ---------------------------------------------------------------------------
@@ -2039,6 +2189,21 @@ run_gitlab_test "gitlab-sufficient-applies-labels" \
   '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_crash"},"comment":"## Triage Summary\n\nReady."}' \
   "api/v4/projects/test-group%2Ftest-project/issues/42"
 
+# Triage state on GitLab: the sticky note ends with the lists and the marker.
+: > "${CURL_LOG}"
+run_state_case "state-gitlab-lists-and-marker" "$(sufficient_with ",${OPEN_TWO},${RULED_ONE}" "Short analysis.")"
+gl_state="$(grep -o '<!-- triage-state-v1:[A-Za-z0-9+/=]* -->' "${CURL_LOG}" | sed 's/^<!-- triage-state-v1://; s/ -->$//' | base64 -d 2>/dev/null | jq -c . 2>/dev/null || true)"
+if [[ ${STATE_RC} -ne 0 ]]; then
+  state_fail "state-gitlab-lists-and-marker" "exit code ${STATE_RC}"
+elif ! grep -qF -- '- authgw strips the email parameter _(unverified)_' "${CURL_LOG}" \
+  || ! grep -qF -- '**Ruled out:**' "${CURL_LOG}" \
+  || [[ "$(jq -c '.ruled_out[0].cause' <<<"${gl_state:-null}")" != '"regex rejects +"' ]]; then
+  state_fail "state-gitlab-lists-and-marker" "expected the lists and a marker decoding to the state in the note"
+  cat "${CURL_LOG}"
+else
+  echo "PASS: state-gitlab-lists-and-marker"
+fi
+
 # GitLab duplicate action closes the issue.
 run_gitlab_test "gitlab-duplicate-closes-issue" \
   '{"action":"duplicate","reasoning":"same as #10","duplicate_of":10,"comment":"This appears to be a duplicate of #10."}' \
@@ -2245,6 +2410,24 @@ for arg in "$@"; do
       ;;
   esac
 done
+
+# Triage state (lib/triage-state.lib.sh): the posting account, the comment
+# listing (page-<startAt>.json in MOCK_JIRA_STATE_DIR) and the property write.
+if [[ "${URL}" =~ /myself$ ]] && [[ "${METHOD}" == "GET" ]]; then
+  printf '{"accountId":"bot-1"}\n200'
+  exit 0
+fi
+if [[ "${URL}" =~ /comment\?expand=properties ]] && [[ "${METHOD}" == "GET" ]]; then
+  start_at="${URL##*startAt=}"
+  page="${MOCK_JIRA_STATE_DIR:-/nonexistent}/page-${start_at%%&*}.json"
+  if [[ -f "${page}" ]]; then cat "${page}"; else printf '{"comments":[],"total":0}'; fi
+  printf '\n200'
+  exit 0
+fi
+if [[ "${URL}" =~ /properties/fullsend\.triage-state$ ]] && [[ "${METHOD}" == "PUT" ]]; then
+  printf '\n200'
+  exit 0
+fi
 
 # List transitions available on the issue.
 if [[ "${URL}" =~ /transitions$ ]] && [[ "${METHOD}" == "GET" ]]; then
@@ -2466,6 +2649,85 @@ unset MOCK_JIRA_CREATE_NO_KEY
 run_jira_test_stdout "jira-prerequisites-skips-disallowed-target" \
   '{"action":"prerequisites","reasoning":"needs upstream fix","prerequisites":{"existing":[],"create":[{"repo":"DISALLOWEDPROJ","title":"Need Y","body":"We need Y."}]},"comment":"Blocked on upstream work."}' \
   "not in tracker.jira.allowed_targets"
+
+# --- Triage state on Jira (fullsend-ai/agents#2042) ---
+# ADF has no hidden text: the lists go in the comment, the state in the
+# comment property fullsend.triage-state of the comment the posting account
+# wrote with the triage-agent marker property and updated last.
+export MOCK_JIRA_STATE_DIR="${TMPDIR}/jira-state"
+mkdir -p "${MOCK_JIRA_STATE_DIR}"
+jira_comment() { # id author marker updated
+  jq -cn --arg id "$1" --arg a "$2" --arg m "$3" --arg u "$4" \
+    '{id: $id, author: {accountId: $a}, created: "2026-11-01T08:00:00.000+0000", updated: $u,
+      properties: [{key: "fullsend.sticky-marker", value: {marker: $m}}]}'
+}
+TA='<!-- fullsend:triage-agent -->'
+# 101 reads later than 100 but is earlier in UTC; 102 is someone else's;
+# 103 carries another marker.
+jq -cn --argjson c "[$(jira_comment 102 someone "${TA}" 2026-11-17T12:00:00.000+0000),$(jira_comment 101 bot-1 "${TA}" 2026-11-17T10:15:00.000+0100),$(jira_comment 100 bot-1 "${TA}" 2026-11-17T09:30:00.000+0000),$(jira_comment 103 bot-1 '<!-- fullsend:triage-in-progress -->' 2026-11-17T13:00:00.000+0000)]" \
+  '{comments: $c, total: 4}' > "${MOCK_JIRA_STATE_DIR}/page-0.json"
+
+jira_state_case() {
+  : > "${JIRA_CURL_LOG}"
+  run_state_case "$1" "$2"
+}
+
+jira_state_case "state-jira-property-on-newest-own-comment" "$(sufficient_with ",${OPEN_TWO},${RULED_ONE}" "Short analysis.")"
+body="$(posted_body "${GH_LOG}")"
+put_line="$(grep -F '/properties/fullsend.triage-state' "${JIRA_CURL_LOG}" || true)"
+if [[ ${STATE_RC} -ne 0 ]]; then
+  state_fail "state-jira-property-on-newest-own-comment" "exit code ${STATE_RC}"
+elif [[ "${put_line}" != *"/rest/api/3/comment/100/properties/fullsend.triage-state"* ]] \
+  || [[ "${put_line}" != *"--request PUT"* ]] \
+  || [[ "${put_line}" != *"--data ${want}"* ]]; then
+  state_fail "state-jira-property-on-newest-own-comment" "expected a PUT of the state to comment 100, got: ${put_line}"
+elif [[ "${body}" == *'triage-state-v1'* || "${body}" != *'- authgw strips the email parameter _(unverified)_'* ]]; then
+  state_fail "state-jira-property-on-newest-own-comment" "expected the lists and no marker in the Jira body"
+elif ! grep -qF -- 'comment?expand=properties&orderBy=-created&maxResults=100&startAt=0' "${JIRA_CURL_LOG}"; then
+  state_fail "state-jira-property-on-newest-own-comment" "expected the comment listing with properties"
+else
+  echo "PASS: state-jira-property-on-newest-own-comment"
+fi
+
+# Every page is read: the own comment is on page 2.
+jq -cn --argjson c "[$(jira_comment 102 someone "${TA}" 2026-11-17T12:00:00.000+0000)]" '{comments: $c, total: 2}' > "${MOCK_JIRA_STATE_DIR}/page-0.json"
+jq -cn --argjson c "[$(jira_comment 104 bot-1 "${TA}" 2026-11-17T09:30:00.000+0000)]" '{comments: $c, total: 2}' > "${MOCK_JIRA_STATE_DIR}/page-1.json"
+jira_state_case "state-jira-reads-every-page" "$(sufficient_with ",${OPEN_TWO},${RULED_ONE}" "Short analysis.")"
+if [[ ${STATE_RC} -ne 0 ]] || ! grep -qF '/rest/api/3/comment/104/properties/fullsend.triage-state' "${JIRA_CURL_LOG}"; then
+  state_fail "state-jira-reads-every-page" "expected the state on comment 104 from page 2 (rc ${STATE_RC})"
+else
+  echo "PASS: state-jira-reads-every-page"
+fi
+
+# No comment of this account carries the marker: the run fails rather than
+# storing the state on a guessed comment.
+jq -cn --argjson c "[$(jira_comment 102 someone "${TA}" 2026-11-17T12:00:00.000+0000)]" '{comments: $c, total: 1}' > "${MOCK_JIRA_STATE_DIR}/page-0.json"
+rm -f "${MOCK_JIRA_STATE_DIR}/page-1.json"
+jira_state_case "state-jira-no-own-comment-fails" "$(sufficient_with ",${OPEN_TWO},${RULED_ONE}" "Short analysis.")"
+if [[ ${STATE_RC} -eq 0 ]] || grep -qF '/properties/fullsend.triage-state' "${JIRA_CURL_LOG}" \
+  || ! grep -qF 'no comment by this account carries' "${TMPDIR}/stdout.log"; then
+  state_fail "state-jira-no-own-comment-fails" "expected a failure and no property write (rc ${STATE_RC})"
+else
+  echo "PASS: state-jira-no-own-comment-fails"
+fi
+
+# Too large for the cap on Jira too: the readable lists are condensed, the
+# property keeps every entry.
+jq -cn --argjson c "[$(jira_comment 100 bot-1 "${TA}" 2026-11-17T09:30:00.000+0000)]" '{comments: $c, total: 1}' > "${MOCK_JIRA_STATE_DIR}/page-0.json"
+jira_state_case "state-jira-too-large-for-cap" "$(sufficient_with ",${OPEN_TWO},\"ruled_out\":${many_ruled}" "${long_comment}")"
+body="$(posted_body "${GH_LOG}")"
+readable="${body%%$'\n\n---\n**Next steps:**'*}"
+stored="$(grep -F '/properties/fullsend.triage-state' "${JIRA_CURL_LOG}" | sed 's/.*--data //; s/ https:.*//')"
+if [[ ${STATE_RC} -ne 0 ]]; then
+  state_fail "state-jira-too-large-for-cap" "exit code ${STATE_RC}"
+elif [[ ${#readable} -gt 4000 || "${readable}" != *'earlier ruled-out cause(s) not listed here'* ]]; then
+  state_fail "state-jira-too-large-for-cap" "readable text is ${#readable} characters"
+elif [[ "$(jq '.ruled_out | length' <<<"${stored}" 2>/dev/null)" != "25" ]]; then
+  state_fail "state-jira-too-large-for-cap" "the property lost ruled-out entries: ${stored:0:200}"
+else
+  echo "PASS: state-jira-too-large-for-cap"
+fi
+unset MOCK_JIRA_STATE_DIR
 
 # --- JIRA_API_URL routing (#1876) ---
 # With JIRA_API_URL set (as `fullsend run` exports it), the curl helpers send

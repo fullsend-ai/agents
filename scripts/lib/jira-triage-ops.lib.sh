@@ -371,6 +371,59 @@ _jira_post_comment() {
     --marker "${marker}" --result -
 }
 
+# tracker_store_triage_state STATE_JSON MARKER — store the triage state on
+# the comment just posted with MARKER, as its entity property
+# fullsend.triage-state (ADF has no hidden text). `fullsend issues
+# post-comment` prints no comment id, but it stores MARKER in the comment's
+# fullsend.sticky-marker property, so the comment is the one the posting
+# account (GET /myself) wrote with that property and updated last: an edit
+# in place (before fullsend-ai/fullsend#9399) and a new comment (after it)
+# both make it the newest. Every page is read. A failure fails the run, like
+# every other Jira write.
+tracker_store_triage_state() {
+  local state="$1"
+  local marker="$2"
+  _jira_require_vars || return 1
+  local self
+  self=$(_jira_api_with_status GET "/myself" | jq -r '.accountId // empty') || return 1
+  if [[ -z "${self}" ]]; then
+    echo "ERROR: cannot store the triage state: GET /myself returned no accountId" >&2
+    return 1
+  fi
+  local comments="[]" page count total start_at=0
+  while :; do
+    page=$(_jira_api_with_status GET "/issue/${ISSUE_NUMBER}/comment?expand=properties&orderBy=-created&maxResults=100&startAt=${start_at}") || return 1
+    comments=$(jq -c --argjson acc "${comments}" '$acc + (.comments // [])' <<<"${page}") || return 1
+    count=$(jq -r '.comments // [] | length' <<<"${page}")
+    total=$(jq -r '.total // 0' <<<"${page}")
+    start_at=$((start_at + count))
+    if [[ ${count} -eq 0 || ${start_at} -ge ${total} ]]; then
+      break
+    fi
+  done
+  # Jira times carry an offset ("2026-11-17T10:00:00.000+0100"); compare
+  # them in UTC seconds, since the offset changes with daylight saving.
+  local comment_id
+  comment_id=$(jq -r --arg self "${self}" --arg marker "${marker}" '
+    def epoch:
+      capture("^(?<t>[0-9-]+T[0-9:]+)(\\.[0-9]+)?(?<s>[+-])(?<h>[0-9]{2}):?(?<m>[0-9]{2})$")
+      | ((.t + "Z") | fromdateiso8601)
+        - ((if .s == "+" then 1 else -1 end) * ((.h | tonumber) * 3600 + (.m | tonumber) * 60));
+    [ .[]
+      | select(.author.accountId == $self)
+      | select(any(.properties[]?; .key == "fullsend.sticky-marker" and (.value.marker? == $marker)))
+      | {id, t: ((.updated // .created // "") | try epoch catch 0)} ]
+    | max_by(.t) | .id // empty
+  ' <<<"${comments}") || return 1
+  if [[ -z "${comment_id}" ]]; then
+    echo "ERROR: cannot store the triage state: no comment by this account carries ${marker}" >&2
+    return 1
+  fi
+  _jira_api_with_status PUT "/comment/${comment_id}/properties/fullsend.triage-state" \
+    --data "${state}" > /dev/null || return 1
+  echo "Stored the triage state on comment ${comment_id}"
+}
+
 # --- Issues ---
 
 tracker_close_issue() {
