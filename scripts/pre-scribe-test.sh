@@ -1722,7 +1722,7 @@ MOCKEOF
   if ! assert_eq "${test_name}: no network calls without JIRA_API_URL" "" "$(cat "${call_log}")"; then return; fi
 
   if ! out=$(
-    PATH="${jira_bin}:${PATH}" \
+    PATH="${jira_bin}:${PATH}" GITHUB_ACTIONS="true" \
     JIRA_BASE_URL="https://mock.atlassian.net" JIRA_API_URL="${gateway}" JIRA_TOKEN="" \
     FULLSEND_JIRA_CLIENT_ID="client-id-1" FULLSEND_JIRA_CLIENT_SECRET="${secret}" \
     SCRIBE_JIRA_PROJECT="PROJ" bash -c '
@@ -1795,7 +1795,7 @@ MOCKEOF
   chmod +x "${jira_bin}/curl"
 
   local rc=0
-  env -u JIRA_TOKEN PATH="${jira_bin}:${PATH}" \
+  env -u JIRA_TOKEN PATH="${jira_bin}:${PATH}" GITHUB_ACTIONS="true" \
     JIRA_BASE_URL="https://mock.atlassian.net" JIRA_API_URL="https://api.atlassian.com/ex/jira/cloud-1" \
     FULLSEND_JIRA_CLIENT_ID="client-id-1" FULLSEND_JIRA_CLIENT_SECRET="mint-fail-secret" \
     SCRIBE_JIRA_PROJECT="PROJ" bash -c '

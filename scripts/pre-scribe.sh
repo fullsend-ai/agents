@@ -977,8 +977,11 @@ _jira_auth_mint_now() {
   # main shell's current stdout through /proc when that is a pipe or a
   # terminal (the runner log), else to stderr. A file or /dev/null there
   # means the caller redirected stdout around the call.
+  # ::add-mask:: is GHA-only; on other runners the line would print the token.
   local main_out="/proc/$$/fd/1"
-  if (( BASH_SUBSHELL == 0 )); then
+  if [[ "${GITHUB_ACTIONS:-}" != "true" ]]; then
+    :
+  elif (( BASH_SUBSHELL == 0 )); then
     printf '::add-mask::%s\n' "${token}"
   elif [[ -w "${main_out}" ]] && [[ -p "${main_out}" || -c "${main_out}" ]] \
     && ! [[ "${main_out}" -ef /dev/null ]]; then

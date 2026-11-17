@@ -107,6 +107,7 @@ run_case() {
   CASE_RC=0
   env -u FULLSEND_JIRA_TOKEN -u FULLSEND_JIRA_EMAIL -u FULLSEND_JIRA_CLIENT_ID \
     -u FULLSEND_JIRA_CLIENT_SECRET -u JIRA_TOKEN -u JIRA_USER_EMAIL -u JIRA_API_URL \
+    GITHUB_ACTIONS="${CASE_GHA-true}" \
     PATH="${MOCK_BIN}:${PATH}" LOG_DIR="${CASE_DIR}" EXPECTED_SECRET="${SECRET}" \
     TEST_SECRET="${SECRET}" TEST_CLIENT_ID="${CLIENT_ID}" TEST_API_URL="${API_URL}" \
     FAKE_MINT="${FAKE_MINT:-ok}" FAKE_EXPIRES_IN="${FAKE_EXPIRES_IN:-3600}" \
@@ -463,6 +464,28 @@ for conflict in "both|tok-4|${CLIENT_ID}|${SECRET}" "token-and-id|tok-4|${CLIENT
     fail "conflict-${cname}-fails" "rc=${CASE_RC}; $(cat "${CASE_ERR}")"
   fi
   assert_secret_hidden "conflict-${cname}"
+done
+
+# --- ::add-mask:: only on GitHub Actions (#2058) ---
+# Other CI systems print the workflow command verbatim, so the minted access
+# token would appear in the job log. Outside GHA the token is still minted
+# and used, but no mask line (and no token) reaches stdout or stderr.
+for gha in "" false; do
+  CASE_GHA="${gha}" run_case "client-mask-skipped-gha-${gha:-unset}" '
+    export JIRA_API_URL="${TEST_API_URL}"
+    jira_auth_select "" TEST_CLIENT_ID TEST_SECRET
+    jira_auth_mint
+    captured="$(jira_auth_curl "" "" "${JIRA_API_URL}/rest/api/3/myself")"
+    echo "captured=${captured}"
+  '
+  if [[ "${CASE_RC}" -eq 0 ]] && grep -qx 'captured={"ok":true}' "${CASE_OUT}" \
+    && [[ "$(cat "${CASE_DIR}/mint-count")" == "1" ]] \
+    && grep -qF -- "--oauth2-bearer minted-token-1 " "${CASE_DIR}/curl-argv.log" \
+    && ! grep -qF -e "add-mask" -e "minted-token" "${CASE_OUT}" "${CASE_ERR}"; then
+    pass "client-mask-skipped-gha-${gha:-unset}"
+  else
+    fail "client-mask-skipped-gha-${gha:-unset}" "rc=${CASE_RC}; $(cat "${CASE_OUT}" "${CASE_ERR}")"
+  fi
 done
 
 echo ""

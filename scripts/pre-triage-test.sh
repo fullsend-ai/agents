@@ -286,6 +286,8 @@ export JIRA_TOKEN=""
 export FULLSEND_JIRA_CLIENT_ID="client-id-1"
 export FULLSEND_JIRA_CLIENT_SECRET="${JIRA_CLIENT_SECRET_VALUE}"
 export JIRA_API_URL="https://api.atlassian.com/ex/jira/11111111-2222-3333-4444-555555555555"
+# The mask line is printed only on GitHub Actions (#2058).
+export GITHUB_ACTIONS=true
 run_test "jira-client-credentials-uses-minted-token" \
   "https://test.atlassian.net/browse/TESTPROJ-42" \
   "--oauth2-bearer minted-access-token --fail --silent --show-error --connect-timeout 10 --max-time 30 --header Content-Type: application/json --request GET ${JIRA_API_URL}/rest/api/3/issue/TESTPROJ-42"
@@ -298,6 +300,7 @@ if grep -qF -- "--user" "${CURL_LOG}" \
 else
   echo "PASS: jira-client-credentials-masked-and-secret-hidden"
 fi
+unset GITHUB_ACTIONS
 
 # The documented setup maps only the client variables, so JIRA_TOKEN is
 # unset, not empty; the script runs under set -u.
