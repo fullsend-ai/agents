@@ -10,8 +10,8 @@ machine. For general background on running agents locally, see
 - **gh** CLI authenticated (`gh auth status`)
 - **openshell** and **openshell-gateway** installed, matching the version
   fullsend pins in
-  [`openshell-version.sh`](https://github.com/fullsend-ai/fullsend/blob/main/.github/scripts/openshell-version.sh)
-  (currently 0.0.83) — an older version (e.g. the Homebrew tap's 0.0.73)
+  [`openshell-version.sh`](https://github.com/fullsend-ai/fullsend/blob/main/.github/scripts/openshell-version.sh).
+  An older version (e.g. the Homebrew tap's 0.0.73)
   can fail the sandbox pre-flight with an opaque `GitHub API unreachable
   from sandbox` error
 - **podman** installed
