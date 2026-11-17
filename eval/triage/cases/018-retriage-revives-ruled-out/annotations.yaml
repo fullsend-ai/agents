@@ -22,10 +22,17 @@ cause_lists:
     - ["apostrophe", "o'brien", "d'souza"]
   ruled_out:
     - ["+", "plus"]
-  # The '+' cause back on the comment's word. Not the bare "+" with
-  # "reject" of cases 013-017: the revived cause's name may quote the
-  # class `[a-zA-Z0-9._%+-]` that rejects the apostrophe.
-  forbidden_open: [["'+'"], ['"+"'], ["plus"], ["a+b"]]
+  # The '+' cause back on the comment's word, quoted or not, or named by a
+  # plus address ("+" with "@"). The judge cuts bracketed character
+  # classes before matching, so the revived cause may quote
+  # `[a-zA-Z0-9._%+-]` (the class without "'") without matching "+".
+  forbidden_open:
+    - ["+", "reject"]
+    - ["+", "fail"]
+    - ["+", "invalid"]
+    - ["+", "in the local part"]
+    - ["+", "@"]
+    - ["plus"]
 
 max_turns: 35
 max_cost_usd: 0.50

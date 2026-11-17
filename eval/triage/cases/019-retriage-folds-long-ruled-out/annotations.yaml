@@ -12,8 +12,8 @@ labels:
     - ready-to-code
     - bug
 
-# Checked by the cause_lists judge on the run's own comment. A folded
-# line of names counts, as a list item or a plain line.
+# Checked by the cause_lists judge on the run's own comment. An "Also
+# ruled out: a; b; c" fold line counts, as a list item or a plain line.
 cause_lists:
   seeded_comments: 4
   open:
@@ -37,7 +37,32 @@ cause_lists:
     - ["leading dot", "dot at the start", "starts with a dot", "initial dot"]
     - ["normaliz", "lowercas"]
     - ["cache"]
-  forbidden_open: [["+", "reject"], ["plus", "reject"], ["backtrack"], ["circular"], ["cache"]]
+  # Every ruled-out cause back in Open causes fails. A regex cause is
+  # caught with a rejection claim, since a correct open cause may name an
+  # address with these characters; the rest by a phrase only that cause
+  # uses.
+  forbidden_open:
+    - ["+", "reject"]
+    - ["plus", "reject"]
+    - ["uppercase", "reject"]
+    - ["capital", "reject"]
+    - ["digit", "reject"]
+    - ["subdomain", "reject"]
+    - ["hyphen", "reject"]
+    - ["tld", "reject"]
+    - ["top-level", "reject"]
+    - ["underscore", "reject"]
+    - ["percent", "reject"]
+    - ["dot", "reject"]
+    - ["backtrack"]
+    - ["redos"]
+    - ["catastrophic"]
+    - ["missing password"]
+    - ["password field"]
+    - ["backend"]
+    - ["circular"]
+    - ["normaliz"]
+    - ["cache"]
 
 max_turns: 35
 max_cost_usd: 0.50
@@ -68,7 +93,8 @@ triage_expectations: |
   2. Keep all fifteen ruled-out names under Ruled out. To stay under
      4000 characters it shortens the oldest entries to their names with
      "(see earlier analysis)" and, if that is not enough, folds them
-     into one line that lists their names. It never drops a name.
+     into one line, "Also ruled out (see earlier analysis): <name>;
+     <name>; ...". It never drops a name.
   3. Keep the comment under 4000 characters (the footer after the lists
      does not count), mostly by not restating run 2's prose.
   4. Not move any ruled-out cause back to Open causes.

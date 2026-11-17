@@ -2,9 +2,11 @@
 # established finding (fullsend-ai/agents#2043, review of #2037 and
 # #2044). The only marked analysis was edited in place; its fold holds an
 # earlier run that calls the authgw cause "confirmed". The current text
-# leaves authgw out, and nothing else names it. The next analysis may
-# keep authgw in Open causes only as a hypothesis ending "(unverified)".
-# Requiring it to come back is #2053's script; this case does not.
+# leaves authgw out, and nothing else names it. Step 2e reads a fold as
+# a claim, so the next analysis may leave authgw out or carry it in Open
+# causes as a hypothesis (ending "(unverified)", or with evidence that
+# says only an earlier run claims it); it fails only when it asserts the
+# cause. Requiring it to come back is #2053's script; this case does not.
 state: open
 
 labels:
@@ -23,8 +25,9 @@ cause_lists:
     - ["valueerror", "malformed", "invalid email", "invalid format"]
   ruled_out:
     - ["+", "plus"]
-  # Carried at most as a hypothesis: an Open causes item naming it must
-  # say "unverified".
+  # Never asserted: an Open causes item naming it fails when it calls the
+  # cause confirmed, verified, established, proven or the root cause
+  # without the "(unverified)" marker.
   unverified_open:
     - ["authgw", "gateway"]
   forbidden_open: [["+", "reject"], ["plus", "reject"]]
@@ -57,8 +60,9 @@ triage_expectations: |
 
   1. Keep the None and ValueError causes under Open causes and the '+'
      cause under Ruled out.
-  2. Treat the fold's authgw claim as a claim: if it lists authgw, list
-     it in Open causes ending "(unverified)", never as a confirmed or
+  2. Treat the fold's authgw claim as a claim: leave it out, or list it
+     in Open causes as a hypothesis (ending "(unverified)", or saying it
+     rests only on an earlier run's claim), never as a confirmed or
      established cause, never as the root cause, and never in Ruled out
      without evidence that refutes it.
   3. End with the Open causes and Ruled out lists, under 4000

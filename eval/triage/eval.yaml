@@ -198,9 +198,10 @@ judges:
       # ones. A fullsend that edits in place (before fullsend#9399) writes
       # it into the first seeded marked comment instead, above the folded
       # "Previous run" history; only the text above that fold is this run's.
-      # A seeded comment may already hold Previous run folds
-      # (seeded_folds, default 0); it counts as edited only when it holds
-      # more, so the seeded text above its fold is never graded.
+      # A seeded comment may already hold Previous run folds: seeded_folds
+      # (default 0) is the most any one seeded comment holds, and a seeded
+      # comment counts as edited only when it holds more, so seeded text
+      # above a seeded fold is never graded.
       appended = [b for b in comments[seeded:] if marker in b]
       if appended:
           text = appended[-1]
@@ -234,12 +235,20 @@ judges:
       def names(s):
           return [name(m.group(1)) for m in (item.match(line) for line in (s or "").splitlines()) if m]
       open_n = names(open_s)
-      # In Ruled out, a line that is not a list item also counts: the size
-      # fold writes the oldest entries as one line of names, which keeps
-      # each name's ruling. Open causes stays items only, so prose there
-      # can never trip forbidden_open.
-      ruled_n = [name(line) for line in (ruled_s or "").splitlines()
-                 if line.strip() and not item.match(line)] + names(ruled_s)
+      # The size fold writes the oldest Ruled out entries as one line,
+      # "Also ruled out (see earlier analysis): a; b; c" (agents/triage.md,
+      # comment rules), as a list item or a plain line, after a colon or a
+      # spaced dash; each name on it counts. Any other plain line under Ruled
+      # out is prose and counts for nothing, and Open causes reads list
+      # items only, so prose there can never trip forbidden_open.
+      fold = re.compile(r"^\s*(?:(?:[-*+]|\d+[.)])\s+)?also ruled out\b[^:\n]*?(?::|\s[—–-]\s|—)\s*(.+)$")
+      ruled_n = []
+      for line in (ruled_s or "").splitlines():
+          f, m = fold.match(line), item.match(line)
+          if f:
+              ruled_n += [n for n in re.split(r"[;,]", f.group(1)) if n.strip()]
+          elif m:
+              ruled_n.append(name(m.group(1)))
       problems = []
       for group in spec.get("open") or []:
           if not any(p.lower() in n for p in group for n in open_n):
@@ -248,19 +257,28 @@ judges:
           if not any(p.lower() in n for p in group for n in ruled_n):
               problems.append(f"Ruled out lacks any of {group}")
       # A forbidden entry is a phrase or a list of phrases that must all
-      # appear in the same cause name.
+      # appear in the same cause name. A bracketed character class such as
+      # [a-z0-9._%+-] is cut first, so a cause that quotes the pattern does
+      # not match a "+" phrase.
+      bare_open = [re.sub(r"\[[^\]\n]*\]", "", n) for n in open_n]
       for p in spec.get("forbidden_open") or []:
           parts = [p] if isinstance(p, str) else list(p)
-          if any(all(q.lower() in n for q in parts) for n in open_n):
+          if any(all(q.lower() in n for q in parts) for n in bare_open):
               problems.append(f"Open causes lists {p!r}, which should stay ruled out")
       # An unverified_open group names a cause the run may carry only as a
-      # hypothesis (a cause found only in a Previous run fold): an Open
-      # causes item whose name matches it must say "unverified".
+      # hypothesis (a cause found only in a Previous run fold). Leaving it
+      # out, or listing it without asserting it, passes; an Open causes item
+      # naming it fails when it asserts the cause (confirmed, verified,
+      # established, proven, root cause) without the "(unverified)" marker
+      # the prompt writes in the cause name or at the item's end.
       items = [m.group(1) for m in (item.match(line) for line in (open_s or "").splitlines()) if m]
+      asserts = re.compile(r"(?<!un)(?<!not )(?:confirmed|verified|established|proven)|root cause")
       for group in spec.get("unverified_open") or []:
           for it in items:
-              if any(p.lower() in name(it) for p in group) and "unverified" not in it:
-                  problems.append(f"Open causes lists {name(it).strip()!r} as established; it may only be carried as unverified")
+              nm = name(it)
+              if (any(p.lower() in nm for p in group) and "(unverified)" not in nm
+                      and not it.rstrip(" .").endswith("(unverified)") and asserts.search(it)):
+                  problems.append(f"Open causes lists {nm.strip()!r} as established; it may only be carried as unverified")
       if problems:
           return False, "; ".join(problems)
       return True, "Open causes and Ruled out lists match"
