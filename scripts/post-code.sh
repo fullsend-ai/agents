@@ -42,6 +42,8 @@
 # host from CI_SERVER_HOST.
 #
 # Optional environment variables:
+#   CODE_JIRA_PR_READY_TRANSITION — named Jira transition after an open, non-draft
+#                       PR/MR is confirmed; "off" (default) disables it
 #   PUSH_TOKEN_SOURCE — "github-app" (for logging; default: unknown)
 #   CODE_ALLOWED_TARGET_BRANCHES
 #                     — comma-separated list of branches the agent may target,
@@ -81,9 +83,8 @@ set -euo pipefail
 # to an unlinked private file, then re-exec this script with them removed
 # from the environment. The re-exec'd process reads them into shell variables
 # and closes the file at once, before any repo-controlled code can run. They
-# then live only in this process's memory, and reach the one trusted
-# consumer, post_jira_code_comment, after any hooks have finished; the
-# script exits after every Jira write. The
+# then live only in this process's memory, and reach the trusted CLI for
+# Jira comments and optional transitions after all hooks finish. The
 # FULLSEND_JIRA_* names are what the harness maps from and what the CLI
 # reads, so inherited copies are withheld as well.
 #
@@ -102,21 +103,43 @@ if [[ -n "${_POST_CODE_JIRA_FD:-}" ]]; then
   unset _POST_CODE_JIRA_FD
   { IFS= read -r -d '' _jira_token_saved || true; IFS= read -r -d '' _jira_email_saved || true
     IFS= read -r -d '' _jira_client_id_saved || true; IFS= read -r -d '' _jira_client_secret_saved || true; } \
-    < "/proc/self/fd/${_jira_stash_fd}"
+    <&"${_jira_stash_fd}"
   exec {_jira_stash_fd}<&-
   unset _jira_stash_fd
 elif [[ -n "${JIRA_TOKEN:-}${JIRA_USER_EMAIL:-}${FULLSEND_JIRA_TOKEN:-}${FULLSEND_JIRA_EMAIL:-}${FULLSEND_JIRA_CLIENT_ID:-}${FULLSEND_JIRA_CLIENT_SECRET:-}" ]]; then
   _jira_stash_file="$(mktemp)"
-  exec {_jira_stash_fd}<>"${_jira_stash_file}"
-  rm -f "${_jira_stash_file}"
   printf '%s\0%s\0%s\0%s\0' "${JIRA_TOKEN-}" "${JIRA_USER_EMAIL-}" \
-    "${FULLSEND_JIRA_CLIENT_ID-}" "${FULLSEND_JIRA_CLIENT_SECRET-}" >&"${_jira_stash_fd}"
+    "${FULLSEND_JIRA_CLIENT_ID-}" "${FULLSEND_JIRA_CLIENT_SECRET-}" >"${_jira_stash_file}"
+  # Open a fresh reader at offset zero before unlinking. Direct descriptor
+  # redirection works on both Linux and macOS without /proc/self/fd.
+  exec {_jira_stash_fd}<"${_jira_stash_file}"
+  rm -f "${_jira_stash_file}"
+  # The child runs traced when the caller is traced: SHELLOPTS is not
+  # exported by bash, so -x must be re-applied explicitly across the re-exec.
+  # That makes every credential expansion after this point a trace hazard,
+  # so each one is guarded — the ::add-mask:: pair below, and
+  # post_jira_stage_update, which suspends xtrace for the whole CLI call.
+  _jira_bash_flags=()
+  (( _jira_xtrace_was_on )) && _jira_bash_flags+=(-x)
   exec env -u JIRA_TOKEN -u JIRA_USER_EMAIL -u FULLSEND_JIRA_TOKEN -u FULLSEND_JIRA_EMAIL \
     -u FULLSEND_JIRA_CLIENT_ID -u FULLSEND_JIRA_CLIENT_SECRET \
-    _POST_CODE_JIRA_FD="${_jira_stash_fd}" "${BASH}" "${BASH_SOURCE[0]}" "$@"
+    _POST_CODE_JIRA_FD="${_jira_stash_fd}" "${BASH}" "${_jira_bash_flags[@]}" "${BASH_SOURCE[0]}" "$@"
 fi
 (( _jira_xtrace_was_on )) && set -x
 unset _jira_xtrace_was_on
+
+# Register the push tokens with the runner's log masker before anything can
+# expand them. A traced run echoes expanded arguments, so the mask has to
+# exist first, and the echo of the value itself must not be traced either.
+_tok_mask_xtrace=0; [[ $- == *x* ]] && _tok_mask_xtrace=1; set +x
+if [ -n "${PUSH_TOKEN:-}" ]; then
+  echo "::add-mask::${PUSH_TOKEN}"
+fi
+if [ -n "${GITLAB_TOKEN:-}" ]; then
+  echo "::add-mask::${GITLAB_TOKEN}"
+fi
+(( _tok_mask_xtrace )) && set -x
+unset _tok_mask_xtrace
 
 SCRIPT_DIR_POST="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/git-graph-policy.lib.sh
@@ -3886,11 +3909,6 @@ else
   echo "No agent branch preference — using repo default: ${TARGET_BRANCH}"
 fi
 
-echo "::add-mask::${PUSH_TOKEN}"
-if [ -n "${GITLAB_TOKEN:-}" ]; then
-  echo "::add-mask::${GITLAB_TOKEN}"
-fi
-
 # Scan optional public text with built-in rules, not repository policy.
 # A file source skips .gitleaks.toml discovery; the private working directory
 # and explicit ignore path prevent .gitleaksignore discovery. The subshell
@@ -3991,7 +4009,24 @@ Retry with \`/fs-code\` if appropriate."
 #
 # Usage: post_jira_stage_update <verb phrase> <pr_url>
 # ---------------------------------------------------------------------------
+# The saved Jira token and email are expanded into arguments inside the inner
+# function, to build the trusted CLI's list. A traced run would echo them, and
+# tracing reaches here two ways: an explicit `bash -x`, and the -x this script
+# re-applies to its own child after the credential re-exec. Suspend xtrace for
+# the whole call — the arguments are a verb phrase and a URL, never a secret —
+# and restore it on every exit path, including failures, so the caller's
+# tracing state is unchanged.
 post_jira_stage_update() {
+  local _stage_xtrace=0
+  [[ $- == *x* ]] && _stage_xtrace=1
+  set +x
+  local _stage_rc=0
+  _post_jira_stage_update_inner "$@" || _stage_rc=$?
+  (( _stage_xtrace )) && set -x
+  return "${_stage_rc}"
+}
+
+_post_jira_stage_update_inner() {
   local verb="$1"
   local pr_url="$2"
 
@@ -4011,7 +4046,64 @@ post_jira_stage_update() {
 
   post_jira_code_comment "${JIRA_CODE_MARKER}" "**Code stage:** ${verb} ${noun} ${pr_url} for ${WORK_ITEM_KEY}.
 
-Review and merge happen on the ${noun}."
+Review and merge happen on the ${noun}." || return $?
+
+  # The shared writer validated WORK_ITEM_KEY against the Jira URL above.
+  maybe_transition_jira_pr_ready "${WORK_ITEM_KEY%-*}" "${WORK_ITEM_KEY##*-}" "${pr_url##*/}"
+}
+
+# Called only after post_jira_stage_update validates the Jira identity and
+# successfully writes its comment. This optional update must not fail an
+# otherwise successful code run. Jira owns the allowed source states.
+maybe_transition_jira_pr_ready() {
+  local project="$1" number="$2" pr_number="$3"
+  local transition="${CODE_JIRA_PR_READY_TRANSITION:-off}"
+  if [ "${transition}" = "off" ]; then
+    return 0
+  fi
+
+  local pr_json ready_filter
+  if ! pr_json="$(forge_get_pr_details "${pr_number}" "state,isDraft")"; then
+    gha_echo warning "Could not verify PR/MR readiness; skipping the optional Jira transition"
+    return 0
+  fi
+  if [ "${FULLSEND_FORGE}" = "gitlab" ]; then
+    ready_filter='.state == "opened" and .draft == false'
+  else
+    ready_filter='.state == "OPEN" and .isDraft == false'
+  fi
+  # Require explicit false, not a missing/null draft flag. Closed, merged,
+  # draft and malformed responses never cause a transition.
+  if ! jq -e "${ready_filter}" <<< "${pr_json}" >/dev/null 2>&1; then
+    echo "PR/MR is not confirmed open and non-draft; skipping the optional Jira PR-ready transition"
+    return 0
+  fi
+
+  local output email transition_xtrace=0
+  [[ $- == *x* ]] && transition_xtrace=1
+  set +x
+  # Do not retry: a Jira transition can have side effects even if it leaves
+  # the issue in the same status. Credentials reach only the trusted CLI.
+  if ! output="$(jira_auth_fullsend "${_jira_fullsend_bin}" \
+    "${_jira_token_saved}" "${_jira_email_saved:-}" \
+    issues transition --tracker jira --fullsend-dir "${FULLSEND_DIR}" \
+    --project "${project}" --number "${number}" \
+    --transition "${transition}" 2>&1)"; then
+    # Repository hooks can shadow PATH utilities. Redact in-process before
+    # passing diagnostics to any external sanitizer; never export the token.
+    output="${output//"${_jira_token_saved}"/[REDACTED]}"
+    email="$(jira_auth_email "${_jira_email_saved:-}")"
+    if [ -n "${email}" ]; then
+      output="${output//"${email}"/[REDACTED]}"
+    fi
+    if [ -n "${_JIRA_AUTH_CLIENT_SECRET:-}" ]; then
+      output="${output//"${_JIRA_AUTH_CLIENT_SECRET}"/[REDACTED]}"
+    fi
+    print_sanitized_gha_log "${output}"
+    gha_echo warning "Optional Jira PR-ready transition failed; inspect the issue before retrying"
+  fi
+  (( transition_xtrace )) && set -x
+  return 0
 }
 
 # ---------------------------------------------------------------------------

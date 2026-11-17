@@ -87,6 +87,8 @@ validation_loop:
 # Environment variables for runner pre/post scripts and sandbox sessions.
 env:
   runner:
+    CODE_JIRA_STARTED_TRANSITION: "off"
+    CODE_JIRA_PR_READY_TRANSITION: "off"
     TARGET_REPO_DIR: "${TARGET_REPO_DIR}"
     PUSH_TOKEN: "${PUSH_TOKEN}"
     PUSH_TOKEN_SOURCE: "${PUSH_TOKEN_SOURCE}"
@@ -195,10 +197,11 @@ overlays:
     env:
       runner:
         JIRA_BASE_URL: "${JIRA_BASE_URL}"
-        # Runner-only Jira credentials: post-code writes the code-stage
-        # update, PR/MR URL, no-op reason and failure details to the Jira issue.
-        # The sandbox never gets the real credential (the jira provider
-        # supplies a placeholder). They
+        # Runner-only Jira credentials: pre-code can apply the configured
+        # started transition; post-code writes the stage update, PR/MR URL,
+        # no-op reason and failure details, and optional PR-ready transition.
+        # The sandbox never gets the real credential
+        # (the jira provider supplies a placeholder). They
         # come from the FULLSEND_JIRA_TOKEN and optional FULLSEND_JIRA_EMAIL
         # repository secrets (fullsend#9079). An absent email expands empty
         # here, and post-code then uses service-account Bearer auth.
