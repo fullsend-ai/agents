@@ -188,6 +188,11 @@ judges:
       if not raw:
           return False, "fixture-state.json not found"
       comments = [(c.get("body") or "") for c in json.loads(raw).get("comments") or []]
+      # A misspelled key would silently drop its check, so unknown keys fail.
+      unknown = sorted(set(spec) - {"seeded_comments", "seeded_folds", "open", "ruled_out",
+                                    "forbidden_open", "forbidden_ruled_out", "unverified_open"})
+      if unknown:
+          return False, f"cause_lists has unknown key(s): {unknown}"
       # Required, so a case that seeds marked analyses can never have one of
       # them graded as the run's output by leaving the count out.
       if "seeded_comments" not in spec:
@@ -240,12 +245,13 @@ judges:
       open_n = names(open_s)
       # The size fold writes the oldest Ruled out entries as one line,
       # "Also ruled out (see earlier analysis): a; b; c" (agents/triage.md,
-      # comment rules), as a list item or a plain line, after a colon or a
+      # comment rules), as a list item or a plain line, label bold or not,
+      # after a colon or a
       # spaced dash. Each ";"-separated name on it counts, cut at its
       # evidence like a list item's, so a note after a dash is not a name. Any other plain line under Ruled
       # out is prose and counts for nothing, and Open causes reads list
       # items only, so prose there can never trip forbidden_open.
-      fold = re.compile(r"^\s*(?:(?:[-*+]|\d+[.)])\s+)?also ruled out\b[^:\n]*?(?::|\s[—–-]\s|—)\s*(.+)$")
+      fold = re.compile(r"^\s*(?:(?:[-*+]|\d+[.)])\s+)?\*{0,2}also ruled out\b[^:\n]*?(?::\*{0,2}|\s[—–-]\s|—)\s*(.+)$")
       ruled_n = []
       for line in (ruled_s or "").splitlines():
           f, m = fold.match(line), item.match(line)
@@ -254,18 +260,19 @@ judges:
           elif m:
               ruled_n.append(name(m.group(1)))
       problems = []
-      for group in spec.get("open") or []:
+      groups = lambda key: [[g] if isinstance(g, str) else list(g) for g in spec.get(key) or []]
+      for group in groups("open"):
           if not any(p.lower() in n for p in group for n in open_n):
               problems.append(f"Open causes lacks any of {group}")
-      for group in spec.get("ruled_out") or []:
+      for group in groups("ruled_out"):
           if not any(p.lower() in n for p in group for n in ruled_n):
               problems.append(f"Ruled out lacks any of {group}")
       # A forbidden entry is a phrase or a list of phrases that must all
       # appear in the same cause name. A regex character class with no
       # spaces and a range or an escape, such as [a-zA-Z0-9._%+-], is cut
       # first, so a cause that quotes the pattern does not match a "+"
-      # phrase; "[+]" or a markdown link's text is kept.
-      bare_open = [re.sub(r"\[[^\]\s]*(?:\w-\w|\\)[^\]\s]*\]", "", n) for n in open_n]
+      # phrase; "[+]" or a markdown link's text ("[a-b](url)") is kept.
+      bare_open = [re.sub(r"\[[^\]\s]*(?:\w-\w|\\)[^\]\s]*\](?!\()", "", n) for n in open_n]
       for p in spec.get("forbidden_open") or []:
           parts = [p] if isinstance(p, str) else list(p)
           if any(all(q.lower() in n for q in parts) for n in bare_open):
@@ -283,11 +290,13 @@ judges:
       # with the "(unverified)" marker step 2e writes, in the name or at
       # the item's end.
       items = [m.group(1) for m in (item.match(line) for line in (open_s or "").splitlines()) if m]
-      for group in spec.get("unverified_open") or []:
+      for group in groups("unverified_open"):
           for it in items:
               nm = name(it)
-              if (any(p.lower() in nm for p in group) and "(unverified)" not in nm
-                      and not it.rstrip(" .").endswith("(unverified)")):
+              # Emphasis around the marker ("_(unverified)_") is ignored.
+              plain = re.sub(r"[*_]", "", it)
+              if (any(p.lower() in nm for p in group) and "(unverified)" not in name(plain)
+                      and not plain.rstrip(" .").endswith("(unverified)")):
                   problems.append(f"Open causes lists {nm.strip()!r} without the (unverified) marker; it may only be carried as a hypothesis")
       if problems:
           return False, "; ".join(problems)

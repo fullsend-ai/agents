@@ -59,17 +59,20 @@ def folded(current, old):
             "<!-- sticky:history-start -->\n" + old + "\n<!-- sticky:history-end -->\n\n</details>")
 
 
+# A Previous run fold as fullsend's internal/sticky writes it (detailsRe).
+STICKY_FOLD = re.compile(r"(?s)<details>\s*<summary>Previous [^<]*</summary>\s*<!-- sticky:history-start -->\s*(.*?)\s*<!-- sticky:history-end -->\s*</details>")
+
+
 def sticky_update(old, new):
     """An in-place edit as BuildUpdatedBody writes it (fullsend
     internal/sticky/sticky.go at the pinned c74c65fd47ff): the old body's
     own marker is cut and any other marker escaped, its current text becomes
     "Previous run" and its folds follow as "Previous run (2)" and on, as
     sibling blocks."""
-    fold_re = re.compile(r"(?s)<details>\s*<summary>Previous [^<]*</summary>\s*<!-- sticky:history-start -->\s*(.*?)\s*<!-- sticky:history-end -->\s*</details>")
     body = old[len(MARKER) + 1:] if old.startswith(MARKER + "\n") else old
     esc = lambda t: re.sub(r"(?i)<(!--\s*fullsend\s*:)", r"&lt;\1", t)
-    history = [esc(m) for m in fold_re.findall(body)]
-    entries = [("Previous run", esc(fold_re.sub("", body).strip()))]
+    history = [esc(m) for m in STICKY_FOLD.findall(body)]
+    entries = [("Previous run", esc(STICKY_FOLD.sub("", body).strip()))]
     entries += [(f"Previous run ({i + 2})", h.strip()) for i, h in enumerate(history)]
     return new + "".join(f"\n\n<details>\n<summary>{t}</summary>\n\n<!-- sticky:history-start -->\n{h}\n<!-- sticky:history-end -->\n\n</details>"
                          for t, h in entries)
@@ -116,33 +119,40 @@ assert (len(SEEDS016) == SPEC016["seeded_comments"] and "authgw" in SEEDS016[0][
         and subprocess.run(["grep", "-rqi", "authgw", f"{sys.argv[2]}/016-retriage-keeps-unmentioned-cause/repo/"]).returncode == 1), "case 016 fixture drifted"
 
 CASES = sys.argv[2]
-REPO = f"{CASES}/013-retriage-keeps-ruled-out/repo/src/auth"
-# The fixture's pattern, read from the code the new cases' evidence cites.
-PATTERN = re.search(r'pattern = r"([^"]+)"', open(f"{REPO}/validators.py").read()).group(1)
-VIEWS = open(f"{REPO}/views.py").read()
-def issue_body(name):
-    return subprocess.run(["yq", "-r", ".fixture.body", f"{CASES}/{name}/input.yaml"],
+
+
+# Each guard reads one case directory (its input.yaml, annotations.yaml and
+# its own repo/ copy) and returns the problem, or "" when the fixture still
+# says what the case's expectations assume. Taking the directory lets the
+# tests below run each guard on a drifted copy.
+def at(d):
+    spec = json.loads(subprocess.run(["yq", "-o=json", ".cause_lists", f"{d}/annotations.yaml"],
+                                     capture_output=True, text=True, check=True).stdout)
+    seeds = [c(b) for b in json.loads(subprocess.run(["yq", "-o=json", ".fixture.comments", f"{d}/input.yaml"],
+                                                     capture_output=True, text=True, check=True).stdout)]
+    body = subprocess.run(["yq", "-r", ".fixture.body", f"{d}/input.yaml"],
                           capture_output=True, text=True, check=True).stdout
-def in_repo(name, word):
-    return subprocess.run(["grep", "-rqi", word, f"{CASES}/{name}/repo/"]).returncode == 0
+    validators = open(f"{d}/repo/src/auth/validators.py").read()
+    views = open(f"{d}/repo/src/auth/views.py").read()
+    pattern = re.search(r'pattern = r"([^"]+)"', validators).group(1)
+    in_repo = lambda word: subprocess.run(["grep", "-rqi", word, f"{d}/repo/"]).returncode == 0
+    return spec, seeds, body, validators, views, pattern, in_repo
 
-# 018: the apostrophe evidence holds in the code (the class has no "'",
-# validate_email raises, login_handler catches nothing), and the '+'
-# ruling the bare claim disputes also holds.
-SPEC018 = case_spec("018-retriage-revives-ruled-out")
-SEEDS018 = case_seeds("018-retriage-revives-ruled-out")
-assert (len(SEEDS018) == SPEC018["seeded_comments"]
-        and MARKER in SEEDS018[0]["body"] and "apostrophe" in SEEDS018[0]["body"].split("**Ruled out:**")[1]
-        and MARKER not in SEEDS018[1]["body"] and "o'brien" in SEEDS018[1]["body"]
-        and "[a-zA-Z0-9._%+-]" in SEEDS018[1]["body"] and "[a-zA-Z0-9._%+-]" in PATTERN
-        and re.match(PATTERN, "o'brien@example.com") is None and re.match(PATTERN, "a+b@example.com")
-        and "except" not in VIEWS), "case 018 fixture drifted"
 
-# 019: run 2 is close to the 4000-character limit, and each ruled_out
-# group matches exactly one name the seeded analyses rule out (the folded
-# line split into its names), so a dropped name cannot pass on another's.
-SPEC019 = case_spec("019-retriage-folds-long-ruled-out")
-SEEDS019 = case_seeds("019-retriage-folds-long-ruled-out")
+def guard018(d):
+    # The apostrophe evidence holds in this case's code (the class has no
+    # "'", validate_email raises, login_handler catches nothing), and the
+    # '+' ruling the bare claim disputes also holds.
+    spec, seeds, _, _, views, pattern, _ = at(d)
+    ok = (len(seeds) == spec["seeded_comments"]
+          and MARKER in seeds[0]["body"] and "apostrophe" in seeds[0]["body"].split("**Ruled out:**")[1]
+          and MARKER not in seeds[1]["body"] and "o'brien" in seeds[1]["body"]
+          and "[a-zA-Z0-9._%+-]" in seeds[1]["body"] and "[a-zA-Z0-9._%+-]" in pattern
+          and re.match(pattern, "o'brien@example.com") is None and re.match(pattern, "a+b@example.com")
+          and "except" not in views)
+    return "" if ok else "case 018 fixture drifted"
+
+
 def seeded_ruled(body):
     sec = body.split("**Ruled out:**")[1].split("\n---")[0].lower()
     out = []
@@ -153,39 +163,103 @@ def seeded_ruled(body):
         head = re.split(r"\s[—–-]\s|—", line, maxsplit=1)[0]
         out += head.split(":", 1)[1].split("; ") if head.startswith("also ruled out") else [head]
     return out
-RULED019 = seeded_ruled(SEEDS019[2]["body"])
-assert (len(SEEDS019) == SPEC019["seeded_comments"] and MARKER in SEEDS019[2]["body"]
-        and 3700 < len(SEEDS019[2]["body"].split("\n---")[0]) < 4000
-        and len(RULED019) == len(SPEC019["ruled_out"]) == 15
-        and all(sum(any(p.lower() in n for p in g) for n in RULED019) == 1 for g in SPEC019["ruled_out"])
-        and all(any(p.lower() in n for g in [SPEC019["ruled_out"][i]] for p in g)
-                for i, n in enumerate(seeded_ruled(SEEDS019[0]["body"])))
-        and PATTERN in SEEDS019[2]["body"]), "case 019 fixture drifted"
 
-# 020: authgw appears only in the comments, the question that rules it
-# out carries no marker, and the log lines it cites are on the issue.
-SPEC020 = case_spec("020-retriage-refutation-in-question")
-SEEDS020 = case_seeds("020-retriage-refutation-in-question")
-assert (len(SEEDS020) == SPEC020["seeded_comments"]
-        and [i for i, s in enumerate(SEEDS020) if MARKER in s["body"]] == [1]
-        and "authgw" in SEEDS020[1]["body"].split("**Open causes:**")[1].split("**Ruled out:**")[0]
-        and "via=direct" in SEEDS020[2]["body"] and "rule out the authgw" in SEEDS020[3]["body"]
-        and "authgw" not in issue_body("020-retriage-refutation-in-question").lower()
-        and not in_repo("020-retriage-refutation-in-question", "authgw")), "case 020 fixture drifted"
 
-# 021: the only marked comment holds exactly seeded_folds folds in the
-# shape internal/sticky writes, and authgw is named only inside the fold.
-SPEC021 = case_spec("021-retriage-fold-only-cause")
-SEEDS021 = case_seeds("021-retriage-fold-only-cause")
-STICKY_FOLD = re.compile(r"(?s)<details>\s*<summary>Previous [^<]*</summary>\s*<!-- sticky:history-start -->\s*(.*?)\s*<!-- sticky:history-end -->\s*</details>")
-FOLD021 = STICKY_FOLD.findall(SEEDS021[0]["body"])
-assert (len(SEEDS021) == SPEC021["seeded_comments"]
-        and SEEDS021[0]["body"].count("<!-- sticky:history-start -->") == SPEC021["seeded_folds"][0] == len(FOLD021)
-        and MARKER not in FOLD021[0] and "authgw" in FOLD021[0]
-        and "authgw" not in STICKY_FOLD.sub("", SEEDS021[0]["body"]).lower()
-        and "authgw" not in SEEDS021[1]["body"].lower()
-        and "authgw" not in issue_body("021-retriage-fold-only-cause").lower()
-        and not in_repo("021-retriage-fold-only-cause", "authgw")), "case 021 fixture drifted"
+def guard019(d):
+    # Run 2 is close to the 4000-character limit; each ruled_out group
+    # matches exactly one seeded name, so a dropped name cannot pass on
+    # another's; and every one of the fifteen rulings still holds in this
+    # case's code, so a correct rebuild keeps them all.
+    spec, seeds, _, validators, views, pattern, _ = at(d)
+    ruled = seeded_ruled(seeds[2]["body"])
+    m = lambda a: re.match(pattern, a) is not None
+    rulings = {
+        "'+'": m("a+b@example.com"),
+        "uppercase": m("First@Example.COM"),
+        "digits": m("a1@example.com"),
+        "subdomains": m("a@mail.example.co.uk"),
+        "hyphens": m("a@my-company.com"),
+        "long TLDs": m("a@example.technology"),
+        "underscores": m("first_last@example.com"),
+        "percent": m("user%host@example.com"),
+        "leading dot": m(".user@example.com"),
+        "backtracking (no groups to nest)": "(" not in pattern,
+        "unused password": 'request.params.get("password")  # noqa: F841' in views and views.count("password") == 2,
+        "no backend call": re.search(r"validate_email\(email\)\s*\n(?:\s*#[^\n]*\n|\s*\n)*\s*return ", views) is not None,
+        "no circular import": [l for l in validators.splitlines() if l.startswith(("import ", "from "))] == ["import re"],
+        "no normalizing": 'email = request.params.get("email")' in views and "validate_email(email)" in views
+                          and not re.search(r"\.(?:lower|strip|casefold)\(|normaliz", views),
+        "no cached regex": "re.match(pattern, email)" in validators and "compile" not in validators,
+    }
+    broken = [k for k, v in rulings.items() if not v]
+    ok = (len(seeds) == spec["seeded_comments"] and MARKER in seeds[2]["body"]
+          and 3700 < len(seeds[2]["body"].split("\n---")[0]) < 4000
+          and len(ruled) == len(spec["ruled_out"]) == len(rulings) == 15
+          and all(sum(any(p.lower() in n for p in g) for n in ruled) == 1 for g in spec["ruled_out"])
+          and all(any(p.lower() in n for p in spec["ruled_out"][i])
+                  for i, n in enumerate(seeded_ruled(seeds[0]["body"])))
+          and pattern in seeds[2]["body"] and not broken)
+    return "" if ok else f"case 019 fixture drifted (rulings that no longer hold: {broken})"
+
+
+def guard020(d):
+    # authgw appears only in the comments, the question that rules it out
+    # carries no marker, and the log lines it cites are on the issue.
+    spec, seeds, body, _, _, _, in_repo = at(d)
+    ok = (len(seeds) == spec["seeded_comments"]
+          and [i for i, s in enumerate(seeds) if MARKER in s["body"]] == [1]
+          and "authgw" in seeds[1]["body"].split("**Open causes:**")[1].split("**Ruled out:**")[0]
+          and "via=direct" in seeds[2]["body"] and "rule out the authgw" in seeds[3]["body"]
+          and "authgw" not in body.lower() and not in_repo("authgw"))
+    return "" if ok else "case 020 fixture drifted"
+
+
+def guard021(d):
+    # The only marked comment holds seeded_folds[0] folds in the shape
+    # internal/sticky writes, and authgw is named only inside the fold.
+    spec, seeds, body, _, _, _, in_repo = at(d)
+    fold = STICKY_FOLD.findall(seeds[0]["body"])
+    ok = (len(seeds) == spec["seeded_comments"]
+          and seeds[0]["body"].count("<!-- sticky:history-start -->") == spec["seeded_folds"][0] == len(fold) == 1
+          and MARKER not in fold[0] and "authgw" in fold[0]
+          and "authgw" not in STICKY_FOLD.sub("", seeds[0]["body"]).lower()
+          and "authgw" not in seeds[1]["body"].lower()
+          and "authgw" not in body.lower() and not in_repo("authgw"))
+    return "" if ok else "case 021 fixture drifted"
+
+
+GUARDS = {"018-retriage-revives-ruled-out": guard018, "019-retriage-folds-long-ruled-out": guard019,
+          "020-retriage-refutation-in-question": guard020, "021-retriage-fold-only-cause": guard021}
+for case_name, guard in GUARDS.items():
+    problem = guard(f"{CASES}/{case_name}")
+    assert not problem, problem
+
+# Each guard reads its own case's copy: a drifted copy fails its guard
+# while case 013's repo is untouched.
+import shutil
+import tempfile
+DRIFTS = [
+    ("018-retriage-revives-ruled-out", "repo/src/auth/views.py",
+     ("    validate_email(email)\n", "    try:\n        validate_email(email)\n    except ValueError:\n        return {'status': 'bad'}\n")),
+    ("019-retriage-folds-long-ruled-out", "repo/src/auth/validators.py", ("re.match(pattern, email)", "re.compile(pattern).match(email)")),
+    ("019-retriage-folds-long-ruled-out", "repo/src/auth/views.py", ("    # ... authenticate user ...\n", "    backend.authenticate(email, password)\n")),
+    ("020-retriage-refutation-in-question", "repo/README.md", ("for testing.", "for testing behind authgw.")),
+    ("021-retriage-fold-only-cause", "input.yaml", ("Environment: current main", "Environment: authgw, current main")),
+]
+DRIFT_RESULTS = []
+for case_name, rel, (old, new) in DRIFTS:
+    with tempfile.TemporaryDirectory() as tmp:
+        copy = f"{tmp}/{case_name}"
+        shutil.copytree(f"{CASES}/{case_name}", copy, symlinks=False)
+        text = open(f"{copy}/{rel}").read()
+        assert old in text, (case_name, rel, old)
+        open(f"{copy}/{rel}", "w").write(text.replace(old, new, 1))
+        DRIFT_RESULTS.append((f"{case_name} guard fails when its own {rel} drifts", GUARDS[case_name](copy)))
+
+SPEC018, SEEDS018 = case_spec("018-retriage-revives-ruled-out"), case_seeds("018-retriage-revives-ruled-out")
+SPEC019, SEEDS019 = case_spec("019-retriage-folds-long-ruled-out"), case_seeds("019-retriage-folds-long-ruled-out")
+SPEC020, SEEDS020 = case_spec("020-retriage-refutation-in-question"), case_seeds("020-retriage-refutation-in-question")
+SPEC021, SEEDS021 = case_spec("021-retriage-fold-only-cause"), case_seeds("021-retriage-fold-only-cause")
 
 ALL15 = ["'+' in the local part", "uppercase letters", "digits in the local part", "subdomains", "hyphenated domains",
          "long top-level domains", "underscores", "a percent sign", "catastrophic backtracking", "missing password field",
@@ -353,6 +427,25 @@ cases = [
     ("case 019: a dropped name mentioned in prose under Ruled out does not count",
      SEEDS019 + [c(analysis(OPEN019, ALL15[:14]).replace("**Ruled out:**\n", "**Ruled out:**\nWe have not checked the cache yet.\n"))],
      SPEC019, False, "Ruled out lacks any of ['cache']"),
+    ("case 019 passes a fold line with a bold label",
+     SEEDS019 + [c(analysis(OPEN019, ALL15[9:]).replace("**Ruled out:**\n", "**Ruled out:**\n**Also ruled out (see earlier analysis):** " + "; ".join(ALL15[:9]) + "\n"))],
+     SPEC019, True, "match"),
+    ("case 019 passes a fold line with only the phrase bold",
+     SEEDS019 + [c(analysis(OPEN019, ALL15[9:]).replace("**Ruled out:**\n", "**Ruled out:**\n**Also ruled out** (see earlier analysis): " + "; ".join(ALL15[:9]) + "\n"))],
+     SPEC019, True, "match"),
+    ("case 021 passes an emphasized (unverified) marker",
+     SEEDS021 + [c(analysis(["None reaches validate_email", "Malformed address raises an unhandled ValueError",
+                             "authgw strips the email parameter — only an earlier run claims it _(unverified)_"],
+                            ["regex rejects '+' — class includes '+'"]))], SPEC021, True, "match"),
+    ("a typo'd cause_lists key fails instead of dropping its check",
+     SEEDS + [c(GOOD)], dict(SPEC, forbidden_opne=[["+", "reject"]]), False, "unknown key(s): ['forbidden_opne']"),
+    ("a bare-string unverified_open group is one phrase, not its letters",
+     SEEDS021 + [c(analysis(["None reaches validate_email", "Malformed address raises an unhandled ValueError"],
+                            ["regex rejects '+' — class includes '+'"]))], dict(SPEC021, unverified_open=["authgw"]), True, "match"),
+    ("a hyphenated markdown link's text is not cut as a character class",
+     SEEDS018 + [c(analysis(["None reaches validate_email", "o'brien@example.com raises ValueError",
+                             "[plus-addresses](https://example.com) are rejected"], ["regex rejects '+' — class includes '+'"]))],
+     SPEC018, False, "should stay ruled out"),
     ("prose under Ruled out is not a ruling",
      SEEDS + [c(MARKER + "\n\n**Open causes:**\n- None reaches validate_email\n\n**Ruled out:**\nWe did not get to the '+' question at all." + FOOTER)],
      SPEC, False, "Ruled out lacks"),
@@ -474,8 +567,9 @@ for d in sorted(glob.glob(f"{sys.argv[2]}/*/")):
     else:
         failures += 1
         print(f"FAIL: {name} seeded_comments is {got}, but the fixture seeds {want} comment(s)")
-    # seeded_folds is the most folds any one seeded comment holds; left at
-    # 0 on a folded fixture, the seeded text above a fold would be graded.
+    # seeded_folds lists the folds each seeded comment holds, in order (an
+    # entry left out is 0); a wrong entry would let an untouched folded
+    # comment be graded as this run's output.
     bodies = json.loads(subprocess.run(["yq", "-o=json", ".fixture.comments // []", f"{d}input.yaml"],
                                        capture_output=True, text=True, check=True).stdout)
     want_folds = [b.count("<!-- sticky:history-start -->") for b in bodies]
@@ -487,6 +581,14 @@ for d in sorted(glob.glob(f"{sys.argv[2]}/*/")):
     else:
         failures += 1
         print(f"FAIL: {name} seeded_folds is {got_folds}, but the seeded comments hold {want_folds} fold(s)")
+
+for label, problem in DRIFT_RESULTS:
+    fixture_checks += 1
+    if problem:
+        print(f"PASS: {label}")
+    else:
+        failures += 1
+        print(f"FAIL: {label}: the guard still passed")
 
 ok, msg = ns["check"]({"files": {}, "annotations": {"cause_lists": SPEC}})
 if ok is False and "not found" in msg:

@@ -326,7 +326,8 @@ Each case directory under `eval/<agent>/cases/` contains:
   names; `unverified_open`, groups an Open causes item may name only with
   the `(unverified)` marker, in its name or at its end; `seeded_folds`, a
   list of how many `Previous run` folds each seeded comment holds, in
-  order, missing entries 0; a case without the block is not scored by
+  order, missing entries 0; any other key fails the check, so a typo
+  cannot silently drop one; a case without the block is not scored by
   that check), and the
   report-only budgets:
   `max_cost_usd`, plus `max_turns` where the eval has a `max_turns` judge.
