@@ -374,12 +374,16 @@ _jira_post_comment() {
 # tracker_store_triage_state STATE_JSON MARKER — store the triage state on
 # the comment just posted with MARKER, as its entity property
 # fullsend.triage-state (ADF has no hidden text). `fullsend issues
-# post-comment` prints no comment id, but it stores MARKER in the comment's
-# fullsend.sticky-marker property, so the comment is the one the posting
-# account (GET /myself) wrote with that property and updated last: an edit
-# in place (before fullsend-ai/fullsend#9399) and a new comment (after it)
-# both make it the newest. Every page is read. A failure fails the run, like
-# every other Jira write.
+# post-comment` prints no comment id, but it stores MARKER on the comment as
+# the property fullsend.sticky-marker = {"marker": MARKER}: in fullsend
+# v0.56.1-rc.1 (pinned in go.mod) and v0.56.1, the edit-in-place path keeps
+# it, and on fullsend-ai/fullsend#9399 (head 5150c261) every run creates a
+# new comment with it (internal/tracker/jira_client.go,
+# CreateCommentWithMarker; internal/cli/issues.go, postJiraStickyComment).
+# So the comment is the one the posting account (GET /myself) wrote with
+# that property and updated last; a tie goes to the highest comment id.
+# Every page is read. A timestamp that does not parse, or no matching
+# comment, fails the run, like every other Jira write.
 tracker_store_triage_state() {
   local state="$1"
   local marker="$2"
@@ -401,20 +405,30 @@ tracker_store_triage_state() {
       break
     fi
   done
-  # Jira times carry an offset ("2026-11-17T10:00:00.000+0100"); compare
-  # them in UTC seconds, since the offset changes with daylight saving.
+  # Jira writes times as "2026-11-17T10:00:00.000+0100"; RFC 3339 forms
+  # ("Z", "+01:00", with or without fractional seconds) are accepted too
+  # (fullsend's jiraTimestampFormats). Each is compared in UTC, as
+  # [seconds, nanoseconds, comment id], so offsets, sub-second order and
+  # ties are all exact.
   local comment_id
   comment_id=$(jq -r --arg self "${self}" --arg marker "${marker}" '
-    def epoch:
-      capture("^(?<t>[0-9-]+T[0-9:]+)(\\.[0-9]+)?(?<s>[+-])(?<h>[0-9]{2}):?(?<m>[0-9]{2})$")
-      | ((.t + "Z") | fromdateiso8601)
-        - ((if .s == "+" then 1 else -1 end) * ((.h | tonumber) * 3600 + (.m | tonumber) * 60));
+    def utc_key:
+      . as $t
+      | (capture("^(?<d>[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2})(\\.(?<f>[0-9]{1,9}))?(?<z>Z|(?<s>[+-])(?<h>[0-9]{2}):?(?<m>[0-9]{2}))$")
+         // error("unparsable Jira timestamp: \($t)"))
+      | [ ((.d + "Z") | fromdateiso8601)
+          - (if .z == "Z" then 0
+             else (if .s == "+" then 1 else -1 end) * ((.h | tonumber) * 3600 + (.m | tonumber) * 60) end),
+          (((.f // "") + "000000000")[0:9] | tonumber) ];
     [ .[]
       | select(.author.accountId == $self)
       | select(any(.properties[]?; .key == "fullsend.sticky-marker" and (.value.marker? == $marker)))
-      | {id, t: ((.updated // .created // "") | try epoch catch 0)} ]
-    | max_by(.t) | .id // empty
-  ' <<<"${comments}") || return 1
+      | {id, key: (((.updated // .created // "") | utc_key) + [(.id | tostring | tonumber? // 0)])} ]
+    | max_by(.key) | .id // empty
+  ' <<<"${comments}") || {
+    echo "ERROR: cannot store the triage state: a matching comment has a timestamp it cannot parse, or the listing is not JSON" >&2
+    return 1
+  }
   if [[ -z "${comment_id}" ]]; then
     echo "ERROR: cannot store the triage state: no comment by this account carries ${marker}" >&2
     return 1

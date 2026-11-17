@@ -130,8 +130,11 @@ is_control_label() {
 # --- Action-specific validation and control labels ---
 
 # The triage state (open and ruled-out causes) of a sufficient result, which
-# the next triage run starts from. Empty for every other action.
+# the next triage run starts from, and the agent's own comment, which the
+# cause lists follow. Empty for every other action.
 TRIAGE_STATE=""
+AGENT_COMMENT=""
+TRIAGE_MARKER="<!-- fullsend:triage-agent -->"
 
 # Deferred label: when set, applied after label_actions so it fires last.
 # This prevents the ready-to-code webhook event from being superseded by
@@ -472,16 +475,14 @@ ${FAILED_CREATES}"
       fi
     fi
 
-    # List the cause lists for people; the same state is attached as data
-    # when the comment is posted (lib/triage-state.lib.sh). A result without
-    # open causes, which the schema rejects, is posted without a state, and
-    # the next run rebuilds it from the comments.
+    # The cause lists are rendered under the agent's comment when the
+    # comment is posted, and the same state is attached as data
+    # (lib/triage-state.lib.sh). A result without open causes, which the
+    # schema rejects, is posted without a state, and the next run rebuilds
+    # it from the comments.
     TRIAGE_STATE=$(triage_state_json "${RESULT_FILE}")
-    if [[ -n "${TRIAGE_STATE}" ]]; then
-      COMMENT="${COMMENT}
-
-$(triage_state_render "${TRIAGE_STATE}" "$(triage_state_budget "${COMMENT}")")"
-    else
+    AGENT_COMMENT="${COMMENT}"
+    if [[ -z "${TRIAGE_STATE}" ]]; then
       echo "::warning::sufficient result has no triage_summary.open_causes — posting without a triage state"
     fi
 
@@ -921,18 +922,26 @@ fi
 # --- Post comment ---
 
 # Only the post-script's own state marker may be live in a triage comment.
-COMMENT=$(triage_state_neutralize "${COMMENT}")
-if [[ -n "${TRIAGE_STATE}" && "${FULLSEND_TRACKER}" != "jira" ]]; then
-  COMMENT="${COMMENT}
+# With a state, everything after the agent's comment is the footers: the
+# lists go between the two, and the readable text is held to the cap.
+if [[ -n "${TRIAGE_STATE}" ]]; then
+  FOOTER="${COMMENT#"${AGENT_COMMENT}"}"
+  COMMENT=$(triage_state_compose "${TRIAGE_STATE}" \
+    "$(triage_state_neutralize "${AGENT_COMMENT}")" "$(triage_state_neutralize "${FOOTER}")")
+  if [[ "${FULLSEND_TRACKER}" != "jira" ]]; then
+    COMMENT="${COMMENT}
 
 $(triage_state_marker "${TRIAGE_STATE}")"
+  fi
+else
+  COMMENT=$(triage_state_neutralize "${COMMENT}")
 fi
 
 echo "Posting comment..."
 if [[ "${ACTION}" == "sufficient" ]]; then
-  tracker_post_sticky_comment "${COMMENT}" "<!-- fullsend:triage-agent -->"
+  tracker_post_sticky_comment "${COMMENT}" "${TRIAGE_MARKER}"
   if [[ -n "${TRIAGE_STATE}" && "${FULLSEND_TRACKER}" == "jira" ]]; then
-    tracker_store_triage_state "${TRIAGE_STATE}" "<!-- fullsend:triage-agent -->"
+    tracker_store_triage_state "${TRIAGE_STATE}" "${TRIAGE_MARKER}"
   fi
 elif [[ "${ACTION}" == "in-progress" ]]; then
   tracker_post_sticky_comment "${COMMENT}" "<!-- fullsend:triage-in-progress -->"

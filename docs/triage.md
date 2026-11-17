@@ -267,8 +267,14 @@ same lists as data for the next run (fullsend-ai/agents#2042):
   `fullsend post-comment` escapes every such marker in the body it posts.
   The post-script escapes any copy of the marker the agent wrote.
 - **Jira:** the comment entity property `fullsend.triage-state`, set after
-  the comment is posted on the comment the posting account (`GET /myself`)
-  wrote with the `fullsend.sticky-marker` property and updated last.
+  the comment is posted. `fullsend issues post-comment` prints no comment
+  id, so the post-script picks the comment the posting account
+  (`GET /myself`) wrote with the property `fullsend.sticky-marker` =
+  `{"marker": "<!-- fullsend:triage-agent -->"}`, which fullsend sets in
+  v0.56.1 and on fullsend-ai/fullsend#9399. Of those it takes the one
+  updated last, compared in UTC at full precision (Jira's `+0000` form and
+  RFC 3339 `Z` / `+00:00`), with ties going to the highest comment id. An
+  unparsable timestamp, or no such comment, fails the run.
 
 On Jira the post-script sets the `fullsend.triage-state` property after the
 comment is posted. A run cancelled between the two leaves a triage comment
@@ -278,10 +284,13 @@ yet. The next run then starts from the newest comment that does carry a
 state, and that comment's lists stay the baseline. On GitHub and GitLab the
 state is part of the comment body, so it is posted in the same call.
 
-The 4000-character comment limit covers the readable text only: the
-post-script condenses the lists to fit what the agent's comment leaves
-(evidence first, then the oldest ruled-out lines, counted in one line),
-while the stored state keeps every entry (at most 10 open, 25 ruled out).
+The 4000-character comment limit covers everything posted except the
+hidden marker: the agent's comment, the lists and the footers. The
+post-script condenses the lists first (evidence, then the oldest ruled-out
+lines, counted in one line, then the open cause names cut to 80
+characters), then cuts the agent's comment with a note saying so. The stored
+state keeps every entry (at most 10 open, 25 ruled out, under 30000 bytes so
+it fits a Jira property).
 
 A re-run starts from the newest state in a comment the triage account wrote
 and nobody else last edited (`agents/triage.md` step 2e). Without one, for
@@ -289,7 +298,7 @@ comments written before this change or when no comment is trusted, the agent
 rebuilds the lists once from the earlier comments, every cause as an
 unverified claim. The agent tells its own comments apart per tracker:
 
-- **GitHub:** a `Bot` author whose App is `<owner>-triage`,
+- **GitHub:** a `Bot` author (never a `User`, whatever its login) whose App is `<owner>-triage`,
   `fullsend-ai-triage` or, when `FULLSEND_APP_SET` is not empty,
   `${FULLSEND_APP_SET}-triage`. This App-name list is an interim naming
   convention, which fullsend's

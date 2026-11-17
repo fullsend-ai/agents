@@ -25,12 +25,13 @@
 [[ -n "${TRIAGE_STATE_SH_LOADED:-}" ]] && return 0
 TRIAGE_STATE_SH_LOADED=1
 
-# The readable comment cap from agents/triage.md. The lists are condensed to
-# fit what the agent's comment leaves of it; the state marker is not counted.
+# The readable comment cap from agents/triage.md. It applies to everything
+# posted except the hidden state marker: the agent's comment, the lists and
+# the footers (see triage_state_compose).
 TRIAGE_STATE_READABLE_CAP=4000
-# The lists always get at least this much, so the open causes stay visible
-# beside a long comment.
-TRIAGE_STATE_MIN_BUDGET=1000
+# Jira caps an entity property value at 32768 bytes; keep the state under it
+# with room to spare (only multibyte text can come near it).
+TRIAGE_STATE_MAX_BYTES=30000
 
 # triage_state_json RESULT_FILE — print the state as compact JSON, bounded
 # to the schema's limits (newlines folded, strings and lists cut, ruled_out
@@ -49,45 +50,58 @@ triage_state_json() {
     (.triage_summary // {}) as $s
     | {open_causes: ($s.open_causes | causes | .[0:10]),
        ruled_out: ($s.ruled_out | causes | if length > 25 then .[(length - 25):] else . end)}
+    # Only multibyte text can push the state past the byte cap: drop the
+    # oldest ruled-out entries until it fits.
+    | until((tojson | utf8bytelength) <= $max_bytes or (.ruled_out | length) == 0; .ruled_out |= .[1:])
     | if (.open_causes | length) == 0 then empty else . end
-  ' "$1"
+  ' --argjson max_bytes "${TRIAGE_STATE_MAX_BYTES}" "$1"
 }
 
-# triage_state_render STATE_JSON BUDGET — print the readable lists, one line
-# per cause. Unverified causes are marked; "Ruled out" is left out when
-# empty. When the lists exceed BUDGET characters they are condensed in this
-# order: ruled-out evidence, then all evidence, then the oldest ruled-out
-# lines (counted in one line instead). The open causes are always listed.
-triage_state_render() {
-  jq -r --argjson budget "$2" '
+# triage_state_compose STATE_JSON AGENT_COMMENT FOOTER — print the readable
+# comment that is posted: AGENT_COMMENT, the lists, then FOOTER (the labels,
+# components and next-steps sections the post-script appended), within
+# TRIAGE_STATE_READABLE_CAP characters. The lists are one line per cause,
+# unverified causes marked, "Ruled out" left out when empty. When the whole
+# does not fit, the lists are condensed in this order: ruled-out evidence,
+# all evidence, the oldest ruled-out lines (counted in one line), then the
+# open cause names are cut to 80 characters. If it still does not fit, the
+# agent's comment is cut, and as a last resort the whole text, each with a
+# note saying so. The stored state always keeps every entry.
+triage_state_compose() {
+  jq -rn --argjson state "$1" --arg agent "$2" --arg footer "$3" \
+    --argjson cap "${TRIAGE_STATE_READABLE_CAP}" '
     def safe: gsub("<!--"; "&lt;!--");
     def clip($n): if length > $n then .[0:($n - 1)] + "…" else . end;
-    def line($full):
-      "- " + (.cause | safe)
+    def line($full; $name_max):
+      "- " + (.cause | clip($name_max) | safe)
       + (if .verified then "" else " _(unverified)_" end)
       + (if $full and .evidence != "" then " — " + (.evidence | clip(160) | safe) else "" end);
-    def render($o; $r; $full_open; $full_ruled; $hidden):
-      "**Open causes:**\n" + ($o | map(line($full_open)) | join("\n"))
+    def render($o; $r; $full_open; $full_ruled; $hidden; $name_max):
+      "**Open causes:**\n" + ($o | map(line($full_open; $name_max)) | join("\n"))
       + (if ($r | length) + $hidden > 0 then
            "\n\n**Ruled out:**\n"
            + ((if $hidden > 0 then ["- \($hidden) earlier ruled-out cause(s) not listed here; the triage state keeps them"] else [] end)
-              + ($r | map(line($full_ruled))) | join("\n"))
+              + ($r | map(line($full_ruled; $name_max))) | join("\n"))
          else "" end);
-    def fits: length <= $budget;
-    .open_causes as $o | .ruled_out as $r
-    | render($o; $r; true; true; 0) as $a
-    | if ($a | fits) then $a else
-        render($o; $r; true; false; 0) as $b
-        | if ($b | fits) then $b else
-            render($o; $r; false; false; 0) as $c
-            | if ($c | fits) then $c else
-                ([range(1; ($r | length) + 1)
-                  | . as $k | render($o; $r[$k:]; false; false; $k) | select(fits)] | first)
-                // render($o; []; false; false; ($r | length))
-              end
+    def note: "\n\n_(Cut to fit the comment limit; the triage state keeps every cause.)_";
+    ($agent + "\n\n") as $head
+    | ($cap - ($head | length) - ($footer | length)) as $budget
+    | $state.open_causes as $o | $state.ruled_out as $r
+    | ([ render($o; $r; true; true; 0; 200),
+         render($o; $r; true; false; 0; 200),
+         render($o; $r; false; false; 0; 200),
+         (range(1; ($r | length) + 1) as $k | render($o; $r[$k:]; false; false; $k; 200)),
+         render($o; []; false; false; ($r | length); 80) ]
+       | (map(select(length <= $budget)) | first) // last) as $lists
+    | ($head + $lists + $footer) as $all
+    | if ($all | length) <= $cap then $all
+      else
+        ($cap - ($lists | length) - ($footer | length) - 2 - (note | length)) as $keep
+        | if $keep >= 0 then $agent[0:$keep] + note + "\n\n" + $lists + $footer
+          else $all[0:($cap - (note | length))] + note
           end
       end
-  ' <<<"$1"
+  '
 }
 
 # triage_state_marker STATE_JSON — print the hidden marker for GitHub/GitLab.
@@ -101,14 +115,4 @@ triage_state_marker() {
 # the only live marker in a posted comment is the one the post-script adds.
 triage_state_neutralize() {
   jq -rn --arg t "$1" '$t | gsub("(?i)<(?=!--\\s*triage-state)"; "&lt;")'
-}
-
-# triage_state_budget COMMENT — the characters the lists may use after
-# COMMENT and the blank line that separates them.
-triage_state_budget() {
-  local left=$((TRIAGE_STATE_READABLE_CAP - ${#1} - 2))
-  if [[ ${left} -lt ${TRIAGE_STATE_MIN_BUDGET} ]]; then
-    left=${TRIAGE_STATE_MIN_BUDGET}
-  fi
-  echo "${left}"
 }

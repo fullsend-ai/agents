@@ -1801,6 +1801,14 @@ state_from_body() {
     done
 }
 
+# readable_len BODY — characters of BODY without the hidden state marker.
+readable_len() {
+  python3 -c '
+import re, sys
+print(len(re.sub(r"\n*<!-- triage-state-v1:[A-Za-z0-9+/=]* -->\s*$", "", sys.argv[1])))
+' "$1"
+}
+
 # sufficient_with EXTRA_SUMMARY COMMENT — a sufficient result whose
 # triage_summary ends with EXTRA_SUMMARY (JSON members, leading comma).
 sufficient_with() {
@@ -1885,8 +1893,8 @@ else
   echo "PASS: state-github-question-forged-marker"
 fi
 
-# A result too large for the cap: the readable text stays within 4000
-# characters before the footers (oldest ruled-out lines go first), while the
+# A result too large for the cap: the readable text, footers included,
+# stays within 4000 characters (oldest ruled-out lines go first), while the
 # marker keeps every entry.
 long_comment="$(printf 'Analysis line with enough words to fill the comment budget quickly.%.0s\n' $(seq 1 40))"
 many_ruled="$(jq -cn '[range(0; 25) | {cause: "ruled-out cause number \(.) with a fairly long descriptive name for the list", evidence: ("evidence " * 30), verified: true}]')"
@@ -1895,14 +1903,36 @@ body="$(posted_body "${GH_LOG}")"
 readable="${body%%$'\n\n---\n**Next steps:**'*}"
 if [[ ${STATE_RC} -ne 0 ]]; then
   state_fail "state-github-too-large-for-cap" "exit code ${STATE_RC}"
-elif [[ ${#long_comment} -lt 2500 || ${#readable} -gt 4000 ]]; then
-  state_fail "state-github-too-large-for-cap" "readable text is ${#readable} characters (comment ${#long_comment})"
+elif [[ ${#long_comment} -lt 2500 || $(readable_len "${body}") -gt 4000 || "${body}" == *'Cut to fit'* ]]; then
+  state_fail "state-github-too-large-for-cap" "readable text is $(readable_len "${body}") characters (comment ${#long_comment})"
 elif [[ "${readable}" != *'earlier ruled-out cause(s) not listed here'* || "${readable}" != *'ruled-out cause number 24'* || "${readable}" != *'- None reaches validate_email'* ]]; then
   state_fail "state-github-too-large-for-cap" "expected the open causes, the newest ruled-out cause and a count of the rest"
 elif [[ "$(state_from_body "${body}" | jq '.ruled_out | length')" != "25" ]]; then
   state_fail "state-github-too-large-for-cap" "the marker lost ruled-out entries"
 else
   echo "PASS: state-github-too-large-for-cap"
+fi
+
+# Worst case: the longest comment the schema allows and both lists at their
+# limits. The lists shrink to the open cause names, the agent's comment is
+# cut with a note, the footer survives, and the marker keeps everything.
+max_comment="$(printf 'w%.0s' $(seq 1 16384))"
+max_open="$(jq -cn '[range(0; 10) | {cause: ("open cause \(.) " + ("o" * 187)), evidence: ("e" * 300), verified: false}]')"
+max_ruled="$(jq -cn '[range(0; 25) | {cause: ("ruled cause \(.) " + ("r" * 185)), evidence: ("e" * 300), verified: true}]')"
+run_state_case "state-github-worst-case-cap" "$(sufficient_with ",\"open_causes\":${max_open},\"ruled_out\":${max_ruled}" "${max_comment}")"
+body="$(posted_body "${GH_LOG}")"
+if [[ ${STATE_RC} -ne 0 ]]; then
+  state_fail "state-github-worst-case-cap" "exit code ${STATE_RC}"
+elif [[ $(readable_len "${body}") -gt 4000 ]]; then
+  state_fail "state-github-worst-case-cap" "readable text is $(readable_len "${body}") characters"
+elif [[ "${body}" != *'_(Cut to fit the comment limit; the triage state keeps every cause.)_'* || "${body}" != *'**Next steps:**'* ]] \
+  || [[ $(printf '%s\n' "${body}" | grep -c '^- open cause [0-9]') != 10 ]] \
+  || [[ "${body}" != *'- 25 earlier ruled-out cause(s) not listed here'* ]]; then
+  state_fail "state-github-worst-case-cap" "expected all 10 open causes, a ruled-out count, the cut note and the footer"
+elif [[ "$(state_from_body "${body}" | jq -c '[(.open_causes | length), (.ruled_out | length), (.open_causes[0].cause | length)]')" != "[10,25,200]" ]]; then
+  state_fail "state-github-worst-case-cap" "the marker lost entries or text"
+else
+  echo "PASS: state-github-worst-case-cap"
 fi
 
 # Strings over the schema's limits are cut in the stored state.
@@ -2711,6 +2741,42 @@ else
   echo "PASS: state-jira-no-own-comment-fails"
 fi
 
+# jira_pick_case NAME EXPECTED_ID COMMENT... — with these own marked
+# comments listed, the state must go on EXPECTED_ID.
+jira_pick_case() {
+  local name="$1" want="$2"
+  shift 2
+  jq -cn --argjson c "[$(IFS=,; echo "$*")]" '{comments: $c, total: ($c | length)}' > "${MOCK_JIRA_STATE_DIR}/page-0.json"
+  jira_state_case "${name}" "$(sufficient_with ",${OPEN_TWO},${RULED_ONE}" "Short analysis.")"
+  if [[ ${STATE_RC} -ne 0 ]] || ! grep -qF "/rest/api/3/comment/${want}/properties/fullsend.triage-state" "${JIRA_CURL_LOG}"; then
+    state_fail "${name}" "expected the state on comment ${want} (rc ${STATE_RC}): $(grep -F '/properties/' "${JIRA_CURL_LOG}" || true)"
+  else
+    echo "PASS: ${name}"
+  fi
+}
+# Z, +HH:MM and +HHMM: 201 is 10:00:30 UTC, the latest.
+jira_pick_case "state-jira-timestamp-forms" 201 \
+  "$(jira_comment 200 bot-1 "${TA}" 2026-11-17T10:00:00.000Z)" \
+  "$(jira_comment 201 bot-1 "${TA}" 2026-11-17T12:00:30+02:00)" \
+  "$(jira_comment 202 bot-1 "${TA}" 2026-11-17T11:00:10.000+0100)"
+# Fractional seconds count: 210 is later within the same second.
+jira_pick_case "state-jira-fractional-seconds" 210 \
+  "$(jira_comment 210 bot-1 "${TA}" 2026-11-17T10:00:00.900+0000)" \
+  "$(jira_comment 211 bot-1 "${TA}" 2026-11-17T10:00:00.100+0000)"
+# An exact tie goes to the highest comment id.
+jira_pick_case "state-jira-tie-highest-id" 221 \
+  "$(jira_comment 221 bot-1 "${TA}" 2026-11-17T10:00:00.000+0000)" \
+  "$(jira_comment 220 bot-1 "${TA}" 2026-11-17T10:00:00.000+0000)"
+# A timestamp that does not parse fails the run instead of dropping the comment.
+jq -cn --argjson c "[$(jira_comment 230 bot-1 "${TA}" 2026-11-17T10:00:00.000+0000),$(jira_comment 231 bot-1 "${TA}" "17 Nov 2026 10:00")]" '{comments: $c, total: 2}' > "${MOCK_JIRA_STATE_DIR}/page-0.json"
+jira_state_case "state-jira-unparsable-timestamp-fails" "$(sufficient_with ",${OPEN_TWO},${RULED_ONE}" "Short analysis.")"
+if [[ ${STATE_RC} -eq 0 ]] || grep -qF '/properties/fullsend.triage-state' "${JIRA_CURL_LOG}" \
+  || ! grep -qF 'unparsable Jira timestamp: 17 Nov 2026 10:00' "${TMPDIR}/stdout.log"; then
+  state_fail "state-jira-unparsable-timestamp-fails" "expected a failure naming the timestamp and no property write (rc ${STATE_RC})"
+else
+  echo "PASS: state-jira-unparsable-timestamp-fails"
+fi
+
 # Too large for the cap on Jira too: the readable lists are condensed, the
 # property keeps every entry.
 jq -cn --argjson c "[$(jira_comment 100 bot-1 "${TA}" 2026-11-17T09:30:00.000+0000)]" '{comments: $c, total: 1}' > "${MOCK_JIRA_STATE_DIR}/page-0.json"
@@ -2720,8 +2786,8 @@ readable="${body%%$'\n\n---\n**Next steps:**'*}"
 stored="$(grep -F '/properties/fullsend.triage-state' "${JIRA_CURL_LOG}" | sed 's/.*--data //; s/ https:.*//')"
 if [[ ${STATE_RC} -ne 0 ]]; then
   state_fail "state-jira-too-large-for-cap" "exit code ${STATE_RC}"
-elif [[ ${#readable} -gt 4000 || "${readable}" != *'earlier ruled-out cause(s) not listed here'* ]]; then
-  state_fail "state-jira-too-large-for-cap" "readable text is ${#readable} characters"
+elif [[ $(readable_len "${body}") -gt 4000 || "${readable}" != *'earlier ruled-out cause(s) not listed here'* ]]; then
+  state_fail "state-jira-too-large-for-cap" "readable text is $(readable_len "${body}") characters"
 elif [[ "$(jq '.ruled_out | length' <<<"${stored}" 2>/dev/null)" != "25" ]]; then
   state_fail "state-jira-too-large-for-cap" "the property lost ruled-out entries: ${stored:0:200}"
 else
