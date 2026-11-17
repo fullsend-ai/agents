@@ -287,16 +287,17 @@ jira_forge_has() {
   grep -qF "$3" <<< "${out}"
 }
 
-if jira_forge_has "${PRIORITIZE_HARNESS}" ".providers[]" "providers/jira-ro.yaml"; then
-  assert_pass "prioritize-jira-provider-present"
+prio_providers="$(jira_forge_field "${PRIORITIZE_HARNESS}" "(.providers // []) | .[]")"
+prio_profiles="$(jira_forge_field "${PRIORITIZE_HARNESS}" "(.openshell.profiles // []) | .[]")"
+if grep -qxF "jira" <<< "${prio_providers}"; then
+  assert_pass "prioritize-jira-builtin-provider"
 else
-  assert_fail "prioritize-jira-provider-present" "providers/jira-ro.yaml not in forge.jira"
+  assert_fail "prioritize-jira-builtin-provider" "builtin provider 'jira' not in forge.jira (got: ${prio_providers//$'\n'/ })"
 fi
-
-if jira_forge_has "${PRIORITIZE_HARNESS}" ".openshell.profiles[]" "profiles/fullsend-jira-ro.yaml"; then
-  assert_pass "prioritize-jira-profile-present"
+if grep -qF "jira-ro" <<< "${prio_providers}${prio_profiles}"; then
+  assert_fail "prioritize-jira-no-jira-ro" "jira-ro provider or fullsend-jira-ro profile still in forge.jira"
 else
-  assert_fail "prioritize-jira-profile-present" "profiles/fullsend-jira-ro.yaml not in forge.jira"
+  assert_pass "prioritize-jira-no-jira-ro"
 fi
 
 if jira_forge_has "${PRIORITIZE_HARNESS}" "(.env.sandbox // {}) | keys | .[]" "JIRA_TOKEN"; then
@@ -323,6 +324,14 @@ if [[ "${got}" == '${FULLSEND_JIRA_EMAIL}' ]]; then
 else
   assert_fail "prioritize-runner-JIRA_USER_EMAIL-mapping" "env.runner.JIRA_USER_EMAIL is '${got}', want '\${FULLSEND_JIRA_EMAIL}'"
 fi
+for key in FULLSEND_JIRA_CLIENT_ID FULLSEND_JIRA_CLIENT_SECRET; do
+  got="$(jira_forge_field "${PRIORITIZE_HARNESS}" ".env.runner.${key} // \"\"")"
+  if [[ "${got}" == "\${${key}}" ]]; then
+    assert_pass "prioritize-runner-${key}-mapping"
+  else
+    assert_fail "prioritize-runner-${key}-mapping" "env.runner.${key} is '${got}', want '\${${key}}'"
+  fi
+done
 got="$(jira_forge_field "${PRIORITIZE_HARNESS}" '.env.runner.FULLSEND_DIR // ""')"
 if [[ "${got}" == '${FULLSEND_DIR}' ]]; then
   assert_pass "prioritize-runner-FULLSEND_DIR-mapping"

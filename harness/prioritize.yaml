@@ -102,11 +102,11 @@ forge:
   # This block is used only when runtime.forge is jira (FULLSEND_FORGE=jira).
   # Nothing in this repo dispatches prioritize onto Jira yet.
   jira:
+    # The builtin `jira` provider (profile `fullsend-jira`, shipped with
+    # fullsend) gives the sandbox a placeholder, never the real credential,
+    # like the triage and code Jira overlays.
     providers:
-      - providers/jira-ro.yaml
-    openshell:
-      profiles:
-        - profiles/fullsend-jira-ro.yaml
+      - jira
     skills:
       - skills/jira-forge
     # JIRA_API_URL and JIRA_USER_EMAIL reach the sandbox through this host
@@ -122,6 +122,12 @@ forge:
         # optional FULLSEND_JIRA_EMAIL repository secrets (fullsend#9079).
         JIRA_TOKEN: ${FULLSEND_JIRA_TOKEN}
         JIRA_USER_EMAIL: ${FULLSEND_JIRA_EMAIL}
+        # OAuth 2.0 client credentials, the alternative to the token
+        # (#1926). Optional keys: an unset value is dropped. Runner only —
+        # never env.sandbox, a host file or a provider.
+        # scripts/lib/jira-auth.lib.sh refuses them next to a token.
+        FULLSEND_JIRA_CLIENT_ID: ${FULLSEND_JIRA_CLIENT_ID}
+        FULLSEND_JIRA_CLIENT_SECRET: ${FULLSEND_JIRA_CLIENT_SECRET}
         FULLSEND_DIR: ${FULLSEND_DIR}
         JIRA_BASE_URL: ${JIRA_BASE_URL}
         FULLSEND_FORGE: jira
