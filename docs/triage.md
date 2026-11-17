@@ -276,7 +276,10 @@ Re-running triage posts the result differently per tracker:
 A re-run treats an earlier marked comment as its own prior analysis only
 when the triage account wrote it and made its last edit; any other marked
 comment is read as a human comment, and so is the `Previous run` history
-fullsend folds into an edited comment. The agent identifies that account per
+fullsend folds into an edited comment. The agent runs its forge skill's
+`scripts/prior-triage.sh`, which reads every page of comments, applies these
+rules, and lists the causes an older analysis or fold names that the newest
+one dropped, for the agent to re-check. It identifies that account per
 tracker:
 
 - **GitHub:** a `Bot` author whose App is `$FULLSEND_SLUG`, `<owner>-triage`,
