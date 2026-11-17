@@ -209,8 +209,8 @@ tracker_post_comment() {
 
 # Posts a new note whose first line is <marker>. Each run appends a new
 # note at the end of the thread; earlier marked notes are never edited
-# (fullsend-ai/fullsend#9334). The GitHub door appends the same way once
-# fullsend-ai/fullsend#9399 lands. The Jira door (jira-triage-ops.lib.sh,
+# (fullsend-ai/fullsend#9334). The open PR fullsend-ai/fullsend#9399 makes
+# the GitHub door append the same way. The Jira door (jira-triage-ops.lib.sh,
 # `fullsend issues post-comment` with a fixed marker) would change with
 # that PR's CLI, not here.
 tracker_post_sticky_comment() {

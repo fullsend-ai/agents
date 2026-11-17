@@ -258,8 +258,13 @@ Re-running triage posts the result differently per tracker:
 - **GitLab:** every run, a retry included, posts the `sufficient` or
   `in-progress` result as a new note and never edits an earlier one.
 - **GitHub and Jira:** the `sufficient` and `in-progress` results edit the
-  earlier marked comment until fullsend-ai/fullsend#9399 lands, which is
-  expected to make them post a new comment each run as well.
+  earlier marked comment. The open PR fullsend-ai/fullsend#9399 makes them
+  post a new comment each run as well.
+
+Because triage also runs when an issue is edited, an issue that is edited
+often collects one triage note per run on GitLab. fullsend-ai/fullsend#9334
+accepts that cost; fullsend-ai/fullsend#9335 is the follow-up that brings
+each run down to one compact comment.
 
 ### Jira setup
 
@@ -326,9 +331,8 @@ somewhere else.
   run edits the earlier comment with that marker. Other comments use a
   marker scoped to the CI run (`GITHUB_RUN_ID` or `CI_PIPELINE_ID`): a
   re-run of the same workflow or pipeline edits its earlier comment, while a
-  new triage run posts a new one. This is expected to change once
-  fullsend-ai/fullsend#9399 lands (see [Multi-forge
-  support](#multi-forge-support)).
+  new triage run posts a new one. The open PR fullsend-ai/fullsend#9399
+  changes this (see [Multi-forge support](#multi-forge-support)).
 - **Write failures:** a failed Jira write fails the step. This covers label
   adds and removals, component updates, comments and transitions.
 - **Updates that cannot be applied:** these are listed under **Not applied in
