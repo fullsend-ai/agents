@@ -68,11 +68,13 @@ fold() {
 # GitHub
 # ---------------------------------------------------------------------------
 # ghc <id> <login> <type> <app slug or ""> <created> <body>
+# ghc <id> <login> <type> <app slug or ""> <created> <body> [updated]
 ghc() {
   jq -nc --arg id "$1" --arg login "$2" --arg type "$3" --arg slug "$4" --arg created "$5" --arg body "$6" \
+    --arg updated "${7:-$5}" \
     '{id: ($id | tonumber), user: {login: $login, type: $type},
       performed_via_github_app: (if $slug == "" then null else {slug: $slug} end),
-      created_at: $created, updated_at: $created, body: $body}'
+      created_at: $created, updated_at: $updated, body: $body}'
 }
 # ged <id> [lastEditedAt editor-type editor-login]
 ged() {
@@ -166,7 +168,7 @@ check "github foreign edit: unreadable editor counts as foreign" \
 # after the newer one was created, is the baseline, dated by the edit. App
 # names compare case-insensitively, from the login when there is no slug.
 new_case gh-duplicate; install_gh_stub
-gh_rest "[$(ghc 10 'Fullsend-AI-Triage[bot]' Bot "" "$T1" "$(analysis 'Kept cause')"),$(ghc 11 "${BOT}[bot]" Bot "$BOT" "$T2" "$(analysis 'Duplicate cause')")]"
+gh_rest "[$(ghc 10 'Fullsend-AI-Triage[bot]' Bot "" "$T1" "$(analysis 'Kept cause')" "$T3"),$(ghc 11 "${BOT}[bot]" Bot "$BOT" "$T2" "$(analysis 'Duplicate cause')")]"
 gh_gql first "" "$(ged 10 "$T3" Bot FullSend-AI-Triage)" "$(ged 11)"
 run_github
 check "github duplicate: edited older comment is the baseline" '.baseline.id == "10" and .baseline.dated == "'"$T3"'"'
@@ -187,7 +189,7 @@ check "github in-progress: note and question are updates, status is not" \
 # More than one page of comments and of the editor query.
 new_case gh-pages; install_gh_stub
 gh_rest "[$(ghc 1 "${BOT}[bot]" Bot "$BOT" "$T1" "$(analysis 'Page one cause')"),$(ghc 2 alice User "" "$T2" 'thanks')]" \
-  "[$(ghc 3 "${BOT}[bot]" Bot "$BOT" "$T3" "$(analysis 'Page two cause')")]"
+  "[$(ghc 3 "${BOT}[bot]" Bot "$BOT" "$T3" "$(analysis 'Page two cause')" "$T4")]"
 gh_gql first CUR1 "$(ged 1)" "$(ged 2)"
 gh_gql CUR1 "" "$(ged 3 "$T4" Bot "$BOT")"
 run_github
@@ -223,7 +225,7 @@ if test "$CASE_RC" -eq 0; then pass "github listing fails: pre-script still succ
 # names the cache cause in other words, which exact matching cannot tie.
 new_case gh-folds; install_gh_stub
 BASE_BODY="$(analysis 'Cache key collision' 'Race in worker') And Previous run in prose is not a fold.$(fold 'Previous run' "$(analysis 'Cache key collision;Stale token (unverified)' 'Bad config')")$(fold 'Previous run (2)' $'<!-- fullsend:triage-agent -->\n**Open causes:**\n- Timeout too low — evid' open)"
-gh_rest "[$(ghc 1 "${BOT}[bot]" Bot "$BOT" "$T1" "$(analysis 'Cache keys collide' 'race in worker')"),$(ghc 2 "${BOT}[bot]" Bot "$BOT" "$T2" "${BASE_BODY}")]"
+gh_rest "[$(ghc 1 "${BOT}[bot]" Bot "$BOT" "$T1" "$(analysis 'Cache keys collide' 'race in worker')"),$(ghc 2 "${BOT}[bot]" Bot "$BOT" "$T2" "${BASE_BODY}" "$T3")]"
 gh_gql first "" "$(ged 1)" "$(ged 2 "$T3" Bot "$BOT")"
 run_github
 check "github folds: baseline text stops at the first fold" \
@@ -277,9 +279,10 @@ EOF
 }
 
 # glnote <id> <author id> <username> <created> <body>
+# glnote <id> <author id> <username> <created> <body> [updated]
 glnote() {
-  jq -nc --arg id "$1" --arg a "$2" --arg u "$3" --arg c "$4" --arg body "$5" \
-    '{id: ($id | tonumber), system: false, author: {id: ($a | tonumber), username: $u}, created_at: $c, updated_at: $c, body: $body}'
+  jq -nc --arg id "$1" --arg a "$2" --arg u "$3" --arg c "$4" --arg body "$5" --arg up "${6:-$4}" \
+    '{id: ($id | tonumber), system: false, author: {id: ($a | tonumber), username: $u}, created_at: $c, updated_at: $up, body: $body}'
 }
 # gled <id> [lastEditedAt [editor id]]
 gled() {
@@ -335,7 +338,7 @@ check "gitlab own: full page without X-Next-Page reads page two" \
 # Own edit dates the note; a mixed time format still orders correctly.
 new_case gl-own-edit; install_curl_stub
 echo '{"id": 7}' > "${FIX}/user.json"
-echo "[$(glnote 1 7 b "$GL1" "$(analysis 'First')"),$(glnote 2 7 b "$GL2" "$(analysis 'Second')")]" > "${FIX}/notes_1.json"
+echo "[$(glnote 1 7 b "$GL1" "$(analysis 'First')" "$GL4"),$(glnote 2 7 b "$GL2" "$(analysis 'Second')")]" > "${FIX}/notes_1.json"
 gl_gql first "" "$(gled 1 "$GL4" 7)" "$(gled 2 "$GL2")"
 run_gitlab
 check "gitlab own edit: note edited by the account is dated by the edit" '.baseline.id == "1" and .baseline.dated == "'"$GL4"'"'
@@ -368,6 +371,15 @@ jq -nc --argjson n "$(gled 1)" '{data: {project: {issue: {notes: {pageInfo: {has
 run_gitlab
 check "gitlab editor cursor missing: trust error, nothing trusted" \
   '(.trust_error | test("without a cursor")) and .baseline == null'
+
+# GitLab: an own edit after the listing is untrusted.
+new_case gl-race; install_curl_stub
+echo '{"id": 7}' > "${FIX}/user.json"
+echo "[$(glnote 1 7 b "$GL1" "$(analysis 'First')")]" > "${FIX}/notes_1.json"
+gl_gql first "" "$(gled 1 "$GL4" 7)"
+run_gitlab
+check "gitlab edited during the read: untrusted" \
+  '.baseline == null and (.untrusted_marked | map([.id, .reason])) == [["1", "edited during the read"]]'
 
 new_case gl-no-user; install_curl_stub
 echo "[$(glnote 1 7 b "$GL1" "$(analysis 'First')")]" > "${FIX}/notes_1.json"
@@ -563,6 +575,27 @@ run_github
 check "github cursor missing: trust error, nothing trusted" \
   '(.trust_error | test("without a cursor")) and .baseline == null'
 
+# An own edit after the listing: the listed body is the old one.
+new_case gh-race; install_gh_stub
+gh_rest "[$(ghc 1 "${BOT}[bot]" Bot "$BOT" "$T1" "$(analysis 'Older')"),$(ghc 2 "${BOT}[bot]" Bot "$BOT" "$T2" "$(analysis 'Stale body')")]"
+gh_gql first "" "$(ged 1)" "$(ged 2 "$T4" Bot "$BOT")"
+run_github
+check "github edited during the read: untrusted, not the baseline" \
+  '.baseline.id == "1" and (.untrusted_marked | map([.id, .reason])) == [["2", "edited during the read"]]'
+
+# The size fold's compacted Ruled out line names each cause. A newer fold
+# lists Alpha open while an older analysis's compacted line rules it out;
+# a newer compacted line rules Beta out while an older analysis had it open.
+new_case gh-compacted; install_gh_stub
+OLDER=$'<!-- fullsend:triage-agent -->\n**Open causes:**\n- Beta — old\n\n**Ruled out:**\n- **Also ruled out (see earlier analysis):** Alpha; Gamma'
+NEWER_FOLD=$'<!-- fullsend:triage-agent -->\n**Open causes:**\n- Alpha — back\n\n**Ruled out:**\nAlso ruled out (see earlier analysis): Beta; Delta — see earlier'
+gh_rest "[$(ghc 1 "${BOT}[bot]" Bot "$BOT" "$T1" "${OLDER}"),$(ghc 2 "${BOT}[bot]" Bot "$BOT" "$T2" "$(analysis 'Now' 'Gamma')$(fold 'Previous run' "${NEWER_FOLD}")" "$T3")]"
+gh_gql first "" "$(ged 1)" "$(ged 2 "$T3" Bot "$BOT")"
+run_github
+check "github compacted lines: each name counts, newest ruling wins" \
+  '(.dropped_cause_candidates | map([.cause, .newest, .open_in, .ruled_out_in]))
+   == [["Alpha", "open", ["2 Previous run"], ["1"]], ["Beta", "ruled_out", ["1"], ["2 Previous run"]], ["Delta", "ruled_out", [], ["2 Previous run"]]]'
+
 # An editor page with errors next to partial data trusts nothing.
 new_case gh-gql-errors; install_gh_stub
 gh_rest "[$(ghc 1 "${BOT}[bot]" Bot "$BOT" "$T1" "$(analysis 'Cause')")]"
@@ -639,6 +672,30 @@ else fail "stale file: directory kept old contents or mode"; fi
 if grep -q 'written with an error' "${CASE_DIR}/err" && ! grep -q 'Prior triage analysis written to' "${CASE_DIR}/err"; then
   pass "stale file: log reports the error, not success"
 else fail "stale file: log was $(grep -i prior "${CASE_DIR}/err")"; fi
+# A directory this user cannot remove, holding a planted file, and a
+# symlink in its place: the pre-script fails rather than let the harness
+# copy the planted file into the sandbox.
+for kind in dir link; do
+  rt="${CASE_DIR}/planted-${kind}"
+  mkdir -p "${rt}" "${CASE_DIR}/elsewhere"
+  echo '{"baseline": {"id": "forged"}}' > "${CASE_DIR}/elsewhere/prior-triage.json"
+  if test "$kind" = dir; then
+    mkdir "${rt}/triage-workspace-"
+    cp "${CASE_DIR}/elsewhere/prior-triage.json" "${rt}/triage-workspace-/"
+  else
+    ln -s "${CASE_DIR}/elsewhere" "${rt}/triage-workspace-"
+  fi
+  chmod 555 "${rt}"
+  CASE_RC=0
+  env -u CI_JOB_ID PATH="${CASE_DIR}/bin:${PATH}" FIXTURES="${FIX}" RUNNER_TEMP="${rt}" FULLSEND_TRACKER=github \
+    ISSUE_URL="https://github.com/acme/widgets/issues/7" bash "${PRE_SCRIPT}" > "${CASE_DIR}/err" 2>&1 || CASE_RC=$?
+  chmod 755 "${rt}"
+  if test "$CASE_RC" -ne 0 && grep -q '::error::Prior triage directory' "${CASE_DIR}/err" \
+    && grep -q forged "${CASE_DIR}/elsewhere/prior-triage.json"; then
+    pass "planted ${kind} that cannot be removed: pre-script fails closed"
+  else fail "planted ${kind}: exit ${CASE_RC}, $(grep -i prior "${CASE_DIR}/err")"; fi
+done
+
 # RUNNER_TEMP that cannot hold the directory: no file, a warning, run continues.
 echo file > "${CASE_DIR}/blocked"
 CASE_RC=0

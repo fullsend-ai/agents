@@ -1176,17 +1176,37 @@ PRIOR_TRIAGE_SH_LOADED=1
 
 # prior_triage_write <file> — write the step 2e JSON to <file>.
 # The file's directory is this job's own: any earlier one is removed and a
-# new one is created private to this user, so a stale file, or a directory
-# another user made, is never copied into the sandbox. The caller runs
-# under set -e, so every step that can fail is checked here and ends in a
-# warning, never in a failed pre-script.
+# new one is created private to this user. If something stays at that path
+# that this user cannot remove, or the new directory is not a real
+# directory this user owns (another user planted it on a shared /tmp), the
+# harness would copy whatever is there into the sandbox as this run's
+# analysis, so this fails the pre-script instead (returns 1 under the
+# caller's set -e). Every other failure (no directory could be made, a
+# failed write) leaves nothing at the path, so it ends in a warning and the
+# run goes on without the file.
 prior_triage_write() {
   local out="$1" dir work=""
   dir=$(dirname "${out}")
   rm -rf "${dir}" 2> /dev/null || true
-  if ! mkdir -p "$(dirname "${dir}")" 2> /dev/null || ! (umask 077 && mkdir "${dir}") 2> /dev/null \
-    || ! work=$(mktemp -d 2> /dev/null); then
+  if [[ -e "${dir}" || -L "${dir}" ]]; then
+    echo "::error::Prior triage directory $(_gha_sanitize "${dir}") exists and cannot be removed; refusing to run with a file another user may control" >&2
+    return 1
+  fi
+  if ! mkdir -p "$(dirname "${dir}")" 2> /dev/null || ! (umask 077 && mkdir "${dir}") 2> /dev/null; then
+    if [[ -e "${dir}" || -L "${dir}" ]]; then
+      echo "::error::Prior triage directory $(_gha_sanitize "${dir}") appeared while it was being created; refusing to run with a file another user may control" >&2
+      return 1
+    fi
     echo "::warning::Prior triage analysis not written: cannot create $(_gha_sanitize "${dir}")"
+    return 0
+  fi
+  if [[ -L "${dir}" || ! -d "${dir}" || ! -O "${dir}" ]]; then
+    echo "::error::Prior triage directory $(_gha_sanitize "${dir}") is not a directory this user owns" >&2
+    return 1
+  fi
+  if ! work=$(mktemp -d 2> /dev/null); then
+    rm -rf "${dir}" 2> /dev/null || true
+    echo "::warning::Prior triage analysis not written: cannot create a work directory"
     return 0
   fi
   if (_prior_triage_run "${work}") > "${work}/out.json" 2> "${work}/log" \
@@ -1283,7 +1303,7 @@ _prior_triage_github() {
        trusted_names: $names,
        records: [$pages | add // [] | .[]
          | $ed[.id | tostring] as $e
-         | {id: (.id | tostring), created: .created_at,
+         | {id: (.id | tostring), created: .created_at, listed_at: .updated_at,
             edited_at: $e.lastEditedAt,
             author_ok: (.user.type == "Bot"
               and ((.performed_via_github_app.slug // .user.login // "") | triage_name)),
@@ -1362,7 +1382,7 @@ _prior_triage_gitlab() {
        trusted_names: null,
        records: [$notes[] | select(.system != true)
          | $ed[.id | tostring] as $e
-         | {id: (.id | tostring), created: .created_at,
+         | {id: (.id | tostring), created: .created_at, listed_at: .updated_at,
             edited_at: $e.lastEditedAt,
             author_ok: ($me != "" and (.author.id | tostring) == $me),
             edit: (if $e == null then "unknown"
@@ -1494,6 +1514,12 @@ def cause_name:
   | sub("\\s*\\(unverified\\)\\s*$"; "")
   | sub("^\\s+"; "") | sub("\\s+$"; "");
 def cause_key: ascii_downcase | gsub("\\s+"; " ") | sub("[.:;]+$"; "");
+# The size fold writes the oldest Ruled out entries as one line,
+# "Also ruled out (see earlier analysis): a; b; c", as a list item or a
+# plain line, label bold or not, after a colon or a spaced dash. Each
+# ";"-separated name on it is ruled out, as the eval cause_lists judge
+# reads it.
+def fold_line_re: "^\\s*(?:(?:[-*+]|[0-9]+[.)])\\s+)?\\*{0,2}also ruled out\\b[^:\\n]*?(?::\\*{0,2}|\\s[—–-]\\s|—)\\s*(?<names>.+)$";
 def cause_lists:
   reduce (split("\n")[]) as $l ({sec: null, done: false, open: [], ruled_out: [], found: false};
     if .done then .
@@ -1501,6 +1527,8 @@ def cause_lists:
     elif ($l | cause_heading("ruled out")) then .sec = "ruled_out"
     elif .sec == null then .
     elif ($l | test("^\\s*(-{3,}|\\*{3,}|_{3,})\\s*$")) then .done = true
+    elif ($l | test(fold_line_re; "i")) then
+      .ruled_out += [$l | capture(fold_line_re; "i").names | split(";")[] | cause_name | select(. != "")]
     elif ($l | test("^\\s*(\\*\\*[^*]+\\*\\*\\s*(\\([^)]*\\))?:?|#{1,6}\\s.*)\\s*$")) then .sec = null
     elif ($l | test("^\\s*([-*+]|[0-9]+[.)])\\s+\\S")) then .[.sec] += [$l | cause_name]
     else . end)
@@ -1515,8 +1543,14 @@ def cause_lists:
      | .sort_key = [(.dated | epoch), (.created | epoch), (.id | tonumber? // 0)]
      # A date that does not parse cannot be ordered, so it is not trusted.
      | .date_bad = (.sort_key[0] == null or .sort_key[1] == null)
+     # The listing and the editor query are two requests: an edit after
+     # the listing has an editor time later than the listed update time,
+     # and the listed body is then the old one. A few seconds of slack
+     # allow for the two APIs stamping the same edit apart.
+     | .raced = (.edit == "own" and .listed_at != null
+                 and ((.edited_at | epoch) // 0) > ((.listed_at | epoch) // 0) + 5)
      | .trusted = ($in.trust_error == null and .author_ok and (.edit == "none" or .edit == "own")
-                   and (.date_bad | not)))
+                   and (.date_bad | not) and (.raced | not)))
    | sort_by(.sort_key)) as $all
 | ($all | map(select(.trusted and .marker == "triage-agent"))) as $analyses
 | ($analyses | last) as $base
@@ -1563,6 +1597,7 @@ def cause_lists:
                   elif (.author_ok | not) then "not posted by the triage account"
                   elif .edit == "foreign" then "last edited by someone else"
                   elif .date_bad then "date unreadable"
+                  elif .raced then "edited during the read"
                   else "edited, editor unreadable" end),
          text, folds}],
     dropped_cause_candidates: $dropped

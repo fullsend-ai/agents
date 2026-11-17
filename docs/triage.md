@@ -282,7 +282,9 @@ page of comments on the host, applies these rules, lists the causes an older
 analysis or fold names that the newest one dropped, and writes the result to
 `${RUNNER_TEMP}/triage-workspace-${CI_JOB_ID}/prior-triage.json` (`CI_JOB_ID`
 is empty on GitHub), which the harness copies into the sandbox for the agent.
-The file is a snapshot taken before the agent starts. Without `RUNNER_TEMP` there is no file, and
+The file is a snapshot taken before the agent starts. If something
+another user made sits at the job's directory and cannot be replaced, the
+pre-script fails the run rather than let the harness copy it in. Without `RUNNER_TEMP` there is no file, and
 the agent reads the comments itself and trusts none of them. The pre-script
 identifies that account per tracker:
 
