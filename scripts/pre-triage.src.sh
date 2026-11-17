@@ -44,8 +44,9 @@ echo "Label reset complete."
 # sandbox by the optional host file in harness/triage.yaml, whose src must
 # stay this path. GitHub Actions gives each job its own RUNNER_TEMP;
 # fullsend's GitLab job script defaults it to /tmp, shared by the jobs of a
-# persistent runner, so the path carries CI_JOB_ID (unset on GitHub, where
-# the host file expands it to empty too). Never fails the run.
+# persistent runner, so the path carries CI_JOB_ID. On GitHub it is unset
+# and the host file expands it to empty too, so the directory there is
+# triage-workspace- with a trailing dash. Never fails the run.
 if [[ -n "${RUNNER_TEMP:-}" ]]; then
   prior_triage_write "${RUNNER_TEMP}/triage-workspace-${CI_JOB_ID:-}/prior-triage.json"
 fi

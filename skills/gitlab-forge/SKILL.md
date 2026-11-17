@@ -94,7 +94,8 @@ curl -K /tmp/gitlab-api.curlrc \
 
 # List issue comments (notes), oldest first, 100 a page. To read every
 # note, repeat with &page=2, &page=3, ... until a page returns fewer than
-# 100 notes or the X-Next-Page response header (curl -D) is empty.
+# 100 notes. Use the X-Next-Page response header (curl -D) for the next
+# page; a full page without it still has a next page, page+1.
 curl -K /tmp/gitlab-api.curlrc \
   "https://<GITLAB_HOST>/api/v4/projects/<REPO_ENCODED>/issues/<ISSUE_NUMBER>/notes?per_page=100&sort=asc"
 
