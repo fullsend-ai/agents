@@ -43,9 +43,7 @@ keeps ruled-out causes out unless new evidence revives them. Only an analysis po
 anyone else, is carried this way (on GitLab and Jira, by the account the
 tracker credential belongs to); any other marked comment, and the
 `Previous run` history fullsend folds into an edited comment, is re-checked
-against the evidence instead. A cause an earlier trusted analysis or a fold lists
-that the newest analysis dropped altogether, under any wording, comes back
-as an unverified open cause unless current evidence rules it out. A comment saying a cause is wrong, or that a
+against the evidence instead. A comment saying a cause is wrong, or that a
 ruled-out cause is right, moves it only when evidence in the code or the
 issue backs it.
 
