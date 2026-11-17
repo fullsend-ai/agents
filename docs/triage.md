@@ -44,7 +44,8 @@ anyone else, is carried this way (on GitLab and Jira, by the account the
 tracker credential belongs to); any other marked comment, and the
 `Previous run` history fullsend folds into an edited comment, is re-checked
 against the evidence instead. A cause a fold lists that the newest analysis
-dropped without ruling it out comes back as an unverified open cause. A comment saying a cause is wrong, or that a
+dropped altogether, under any wording, comes back in the list the fold has
+it in, marked unverified when it is open. A comment saying a cause is wrong, or that a
 ruled-out cause is right, moves it only when evidence in the code or the
 issue backs it.
 
