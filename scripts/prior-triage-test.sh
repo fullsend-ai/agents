@@ -354,6 +354,21 @@ check "gitlab dropped causes: each comes back on the list its newest source had"
   '(.dropped_cause_candidates | map([.cause, .newest, .open_in, .ruled_out_in]))
    == [["Bad proxy", "open", ["2"], ["1"]], ["Disk full", "ruled_out", ["1"], ["2"]], ["Flaky DNS", "open", ["1"], []]]'
 
+# GitLab editor pages with errors, or a next page without a cursor, trust
+# nothing.
+new_case gl-gql-errors; install_curl_stub
+echo '{"id": 7}' > "${FIX}/user.json"
+echo "[$(glnote 1 7 b "$GL1" "$(analysis 'First')")]" > "${FIX}/notes_1.json"
+jq -nc --argjson n "$(gled 1)" '{data: {project: {issue: {notes: {pageInfo: {hasNextPage: false, endCursor: null}, nodes: [$n]}}}},
+  errors: [{message: "lastEditedBy: forbidden"}]}' > "${FIX}/gql_first.json"
+run_gitlab
+check "gitlab editor errors: trust error, nothing trusted" \
+  '(.trust_error | test("returned errors")) and .baseline == null'
+jq -nc --argjson n "$(gled 1)" '{data: {project: {issue: {notes: {pageInfo: {hasNextPage: true, endCursor: null}, nodes: [$n]}}}}}' > "${FIX}/gql_first.json"
+run_gitlab
+check "gitlab editor cursor missing: trust error, nothing trusted" \
+  '(.trust_error | test("without a cursor")) and .baseline == null'
+
 new_case gl-no-user; install_curl_stub
 echo "[$(glnote 1 7 b "$GL1" "$(analysis 'First')")]" > "${FIX}/notes_1.json"
 run_gitlab
@@ -489,11 +504,12 @@ if test "$CASE_RC" -eq 0; then pass "github empty: exit 0"; else fail "github em
 # An analysis written before the lists rule: has_lists false, and the
 # older analyses' text is there to rebuild from.
 new_case gh-no-lists; install_gh_stub
-gh_rest "[$(ghc 1 "${BOT}[bot]" Bot "$BOT" "$T1" $'<!-- fullsend:triage-agent -->\nThe cache is stale.'),$(ghc 2 "${BOT}[bot]" Bot "$BOT" "$T2" $'<!-- fullsend:triage-agent -->\nStill the cache.')]"
+gh_rest "[$(ghc 1 "${BOT}[bot]" Bot "$BOT" "$T1" "$(analysis 'Old cause')"),$(ghc 2 "${BOT}[bot]" Bot "$BOT" "$T2" $'<!-- fullsend:triage-agent -->\nStill the cache.')]"
 gh_gql first "" "$(ged 1)" "$(ged 2)"
 run_github
-check "github no lists: has_lists false" '.baseline.id == "2" and (.baseline.has_lists | not) and .dropped_cause_candidates == []'
-check "github no lists: analyses carry their text" '.analyses[0].text | contains("The cache is stale")'
+check "github no lists: has_lists false, no candidates although an older analysis has lists" \
+  '.baseline.id == "2" and (.baseline.has_lists | not) and .dropped_cause_candidates == []'
+check "github no lists: analyses carry their text" '.analyses[0].text | contains("Old cause")'
 
 # A Bot named like a triage App but not one of the trusted names gets its
 # own reason, so a missing FULLSEND_APP_SET shows.
@@ -519,10 +535,10 @@ else fail "failed copy: exit ${CASE_RC}, $(grep -i prior "${CASE_DIR}/err")"; fi
 # Unmarked triage results before the baseline, and all of them when there
 # is no baseline, are earlier_results.
 new_case gh-earlier; install_gh_stub
-gh_rest "[$(ghc 1 "${BOT}[bot]" Bot "$BOT" "$T1" 'Duplicate of #12: the cache key collides.'),$(ghc 2 "${BOT}[bot]" Bot "$BOT" "$T2" "$(analysis 'Cause')"),$(ghc 3 "${BOT}[bot]" Bot "$BOT" "$T3" 'Which version?')]"
-gh_gql first "" "$(ged 1)" "$(ged 2)" "$(ged 3)"
+gh_rest "[$(ghc 1 "${BOT}[bot]" Bot "$BOT" "$T1" 'Duplicate of #12: the cache key collides.'),$(ghc 5 "${BOT}[bot]" Bot "$BOT" 2026-01-01T12:00:00Z $'<!-- fullsend:triage-in-progress -->\nWork is in progress in #9.'),$(ghc 2 "${BOT}[bot]" Bot "$BOT" "$T2" "$(analysis 'Cause')"),$(ghc 3 "${BOT}[bot]" Bot "$BOT" "$T3" 'Which version?')]"
+gh_gql first "" "$(ged 1)" "$(ged 5)" "$(ged 2)" "$(ged 3)"
 run_github
-check "github earlier results: older unmarked result kept, newer one is an update" \
+check "github earlier results: older unmarked result kept, in-progress note left out, newer one is an update" \
   '(.earlier_results | map(.id)) == ["1"] and (.updates | map(.id)) == ["3"]'
 new_case gh-earlier-no-base; install_gh_stub
 gh_rest "[$(ghc 1 "${BOT}[bot]" Bot "$BOT" "$T1" 'Which version?')]"
@@ -546,6 +562,15 @@ jq -nc --argjson n "$(ged 1)" '{data: {repository: {issue: {comments: {pageInfo:
 run_github
 check "github cursor missing: trust error, nothing trusted" \
   '(.trust_error | test("without a cursor")) and .baseline == null'
+
+# An editor page with errors next to partial data trusts nothing.
+new_case gh-gql-errors; install_gh_stub
+gh_rest "[$(ghc 1 "${BOT}[bot]" Bot "$BOT" "$T1" "$(analysis 'Cause')")]"
+jq -nc --argjson n "$(ged 1)" '{data: {repository: {issue: {comments: {pageInfo: {hasNextPage: false, endCursor: null}, nodes: [$n]}}}},
+  errors: [{message: "editor: forbidden"}]}' > "${FIX}/gql_first.json"
+run_github
+check "github editor errors: trust error, nothing trusted" \
+  '(.trust_error | test("returned errors")) and .baseline == null'
 
 # Nested folds (several closing tags at the end) leave no stray </details>.
 new_case gh-nested-fold; install_gh_stub

@@ -1253,6 +1253,11 @@ _prior_triage_github() {
       trust_error="cannot read who last edited each comment: $(head -c 200 "${work}/gql.err")"
       break
     fi
+    # Partial data next to errors may hide an editor: trust nothing then.
+    if jq -e '(.errors // []) | length > 0' "${work}/page.json" > /dev/null 2>&1; then
+      trust_error="editor query returned errors: $(jq -c '[.errors[].message]' "${work}/page.json" | head -c 200)"
+      break
+    fi
     jq -c '.data.repository.issue.comments.nodes[]' "${work}/page.json" >> "${work}/editors.jsonl"
     after=$(jq -r '.data.repository.issue.comments.pageInfo | if .hasNextPage then .endCursor // "?" else "" end' "${work}/page.json")
     if [[ "${after}" == "?" ]]; then
@@ -1328,8 +1333,18 @@ _prior_triage_gitlab() {
         trust_error="cannot read who last edited each note: $(head -c 200 "${work}/gql.err")"
         break
       fi
+      # Partial data next to errors may hide an editor: trust nothing then.
+      if jq -e '(.errors // []) | length > 0' "${work}/page.json" > /dev/null 2>&1; then
+        trust_error="editor query returned errors: $(jq -c '[.errors[].message]' "${work}/page.json" | head -c 200)"
+        break
+      fi
       jq -c '.data.project.issue.notes.nodes[]' "${work}/page.json" >> "${work}/editors.jsonl"
-      after=$(jq -c '.data.project.issue.notes.pageInfo | if .hasNextPage and .endCursor then .endCursor else null end' "${work}/page.json")
+      after=$(jq -c '.data.project.issue.notes.pageInfo
+        | if .hasNextPage then (.endCursor // "?") else null end' "${work}/page.json")
+      if [[ "${after}" == '"?"' ]]; then
+        trust_error="editor query reported another page without a cursor"
+        break
+      fi
       [[ "${after}" != null ]] || break
     done
     [[ "${after}" == null || -n "${trust_error}" ]] || trust_error="editor query did not finish paging"
@@ -1505,7 +1520,9 @@ def cause_lists:
    | sort_by(.sort_key)) as $all
 | ($all | map(select(.trusted and .marker == "triage-agent"))) as $analyses
 | ($analyses | last) as $base
-| (if $base == null then [] else
+# Only a baseline with lists has causes to drop; without them the rebuild
+# path in step 2e reads every earlier analysis anyway.
+| (if $base == null or ($base.text | cause_lists | .found | not) then [] else
      ($base.text | cause_lists | .open + .ruled_out | map(cause_key)) as $kept
      | ([$base.folds[] | {source: ($base.id + " " + .title), text}]
         + [$analyses[:-1] | reverse[]
@@ -1534,7 +1551,8 @@ def cause_lists:
       [$all[] | select(.trusted and .marker != "triage-agent" and (.status_note | not)
                        and (.sort_key > $base.sort_key))
               | {id, dated, marker, text}] end),
-    earlier_results: [$all[] | select(.trusted and .marker != "triage-agent" and (.status_note | not)
+    earlier_results: [$all[] | select(.trusted and .marker != "triage-agent" and .marker != "triage-in-progress"
+                       and (.status_note | not)
                        and ($base == null or .sort_key <= $base.sort_key))
               | {id, dated, marker, text}],
     untrusted_marked: [$all[] | select(.marker != null and (.trusted | not))
