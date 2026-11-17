@@ -39,7 +39,8 @@ Pick the auth mode as the `jira` skill describes: Basic when
 ```bash
 JIRA_EMAIL="${JIRA_USER_EMAIL:-}"; JIRA_EMAIL="${JIRA_EMAIL//[[:space:]]/}"
 JIRA_AUTH_FLAG=--oauth2-bearer; test -n "${JIRA_EMAIL}" && JIRA_AUTH_FLAG=--user
-JIRA_AUTH="${JIRA_EMAIL:+${JIRA_EMAIL}:}${JIRA_TOKEN}"
+JIRA_TOKEN_NOW="$(cat /sandbox/fullsend-jira/token 2>/dev/null)"; JIRA_TOKEN_NOW="${JIRA_TOKEN_NOW:-${JIRA_TOKEN}}"
+JIRA_AUTH="${JIRA_EMAIL:+${JIRA_EMAIL}:}${JIRA_TOKEN_NOW}"
 curl --silent "${JIRA_AUTH_FLAG}" "${JIRA_AUTH}" \
   "${JIRA_API_URL:-${JIRA_BASE_URL}}/rest/api/3/label?startAt=0&maxResults=200" \
   | jq -r '.values[]'
@@ -60,7 +61,8 @@ issues in the project. The sub-agent should:
    ```bash
    JIRA_EMAIL="${JIRA_USER_EMAIL:-}"; JIRA_EMAIL="${JIRA_EMAIL//[[:space:]]/}"
    JIRA_AUTH_FLAG=--oauth2-bearer; test -n "${JIRA_EMAIL}" && JIRA_AUTH_FLAG=--user
-   JIRA_AUTH="${JIRA_EMAIL:+${JIRA_EMAIL}:}${JIRA_TOKEN}"
+   JIRA_TOKEN_NOW="$(cat /sandbox/fullsend-jira/token 2>/dev/null)"; JIRA_TOKEN_NOW="${JIRA_TOKEN_NOW:-${JIRA_TOKEN}}"
+   JIRA_AUTH="${JIRA_EMAIL:+${JIRA_EMAIL}:}${JIRA_TOKEN_NOW}"
    curl --fail-with-body --silent "${JIRA_AUTH_FLAG}" "${JIRA_AUTH}" \
      --header "Content-Type: application/json" \
      --get --data-urlencode "jql=project = <PROJECT_KEY> ORDER BY updated DESC" \

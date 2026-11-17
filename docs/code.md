@@ -52,7 +52,7 @@ See [Customizing with AGENTS.md](https://fullsend.sh/docs/guides/user/customizin
 |----------|-------------|---------|--------------|
 | `CODE_ALLOWED_TARGET_BRANCHES` | Restricts which branches the code agent can target when pushing. The post-code script reads it from the runner when present and validates the agent's chosen target branch before pushing. It is never injected into the sandbox. | Repo default branch (auto-detected via forge API; falls back to `main`) | Comma-separated branch names (e.g. `main,develop`) or `*` for any branch |
 | `FULLSEND_FORGE` | Forge platform. Set automatically by the harness overlay `env` section (matched via `when: 'runtime.forge == "<platform>"'`). | (set by harness) | `"github"`, `"gitlab"` |
-| `FULLSEND_TRACKER` | Source tracker for the work item (matches triage convention). When set to `"jira"`, the code agent reads the Jira work item directly via provider-backed Jira API access (the `jira-ro` provider handles credential injection at the network layer). Set by the Jira-source overlay in `harness/code.yaml`. | (unset — forge-native) | `"jira"` |
+| `FULLSEND_TRACKER` | Source tracker for the work item (matches triage convention). When set to `"jira"`, the code agent reads the Jira work item directly via provider-backed Jira API access (fullsend's builtin `jira` provider handles credential injection at the network layer). Set by the Jira-source overlay in `harness/code.yaml`. | (unset — forge-native) | `"jira"` |
 | `ISSUE_NUMBER` | Numeric source issue identifier used when the source tracker is the target forge. It is optional for external-tracker runs because that work-item key is not a target-forge issue number. | (set by forge-native workflows) | Positive integer |
 | `CODE_AUTO_MERGE` | Set to `"true"` to enable auto-merge on PRs/MRs created by the code agent. On GitHub, uses `gh pr merge --auto`; on GitLab, uses `merge_when_pipeline_succeeds`. Requires branch protection with required reviews or status checks on the target branch. Read directly from the runner environment (not declared in `env.runner`). | `""` (disabled) | `"true"` to enable |
 | `CODE_AUTO_MERGE_METHOD` | Merge method for auto-merge: `"squash"`, `"rebase"`, or `"merge"`. When unset, auto-detected from the repo's allowed merge methods (prefers squash). Omitted automatically when the target branch uses a merge queue. Ignored unless `CODE_AUTO_MERGE` is `"true"`. | Auto-detected (prefers squash) | `"squash"`, `"rebase"`, `"merge"` |
@@ -317,26 +317,28 @@ vars. Key differences from single-forge setup:
   per-forge env file (`env/github/code.env` or `env/gitlab/code.env`)
   maps the platform-specific variable to `ISSUE_URL`.
 - **Jira-source overlay** — when the work item originates from Jira
-  (`event.source.system == "jira"`), a dedicated overlay attaches the
-  `jira-ro` provider and `fullsend-jira-ro` OpenShell profile so the
-  sandbox can read the Jira work item via the REST API. Sandbox curl
-  commands use `--user "${JIRA_USER_EMAIL}:${JIRA_TOKEN}"` (Basic auth)
-  when `JIRA_USER_EMAIL` is set and `--oauth2-bearer "${JIRA_TOKEN}"`
-  (Bearer auth, for a service account) when it is empty, but
-  `JIRA_TOKEN` inside the sandbox is the provider's opaque
-  placeholder — the real API token is never expanded into sandbox
-  config or env files. OpenShell replaces the placeholder in the
-  Authorization header at the proxy boundary. Requests go to
-  `JIRA_API_URL` (the Atlassian API gateway) and fall back to
-  `JIRA_BASE_URL` when it is empty. `JIRA_API_URL` and
-  `JIRA_USER_EMAIL` reach the sandbox through the expanded
-  `env/jira/code.env` host file, so an unset value is empty instead of
-  failing the run. `fullsend run` sets `JIRA_USER_EMAIL` from the
-  optional `FULLSEND_JIRA_EMAIL` repository secret, and the `jira-ro`
-  provider reads the `FULLSEND_JIRA_TOKEN` repository secret (both need
-  fullsend-ai/fullsend#9411, see below). The Jira overlay
-  composes with the target-forge overlay (GitHub or GitLab) via
-  merge-all-matching.
+  (`event.source.system == "jira"`), a dedicated overlay lets the sandbox
+  read the Jira work item via the REST API:
+  - It attaches fullsend's builtin `jira` provider (profile
+    `fullsend-jira`,
+    [fullsend-ai/fullsend#9233](https://github.com/fullsend-ai/fullsend/pull/9233)),
+    which reads the Jira credentials on the host (see below).
+  - The skills read the token on every call from
+    `/sandbox/fullsend-jira/token`, falling back to `JIRA_TOKEN`, and send
+    it with `--user` (Basic auth) when `JIRA_USER_EMAIL` is set and
+    `--oauth2-bearer` (Bearer auth) when it is empty.
+  - That token is the provider's opaque placeholder; OpenShell replaces it
+    in the Authorization header at the proxy boundary, so the real
+    credential never reaches sandbox config or env files. With OAuth 2.0
+    client credentials, `fullsend run` mints the access token and
+    rewrites the placeholder file when it refreshes it.
+  - Requests go to `JIRA_API_URL` (the Atlassian API gateway) and fall
+    back to `JIRA_BASE_URL` when it is empty. `JIRA_API_URL` and
+    `JIRA_USER_EMAIL` reach the sandbox through the expanded
+    `env/jira/code.env` host file, so an unset value is empty instead of
+    failing the run.
+  - The overlay composes with the target-forge overlay (GitHub or GitLab)
+    via merge-all-matching.
 - **External work-item identity** — when the source tracker differs from the
   target forge, the code agent derives the key from `ISSUE_URL`.
   Branch names and PR text use that key and link the source URL; they do not
@@ -349,27 +351,38 @@ vars. Key differences from single-forge setup:
   the post-script posts a short code-stage update with the PR/MR URL to the
   Jira issue through `fullsend issues post-comment --tracker jira`. The
   comment uses the fixed marker `<!-- fullsend:code-agent -->`, so a retried
-  run edits it instead of adding another. The write uses the runner-only
-  `JIRA_TOKEN` and optional `JIRA_USER_EMAIL`, which the Jira overlay of
-  `harness/code.yaml` maps from the `FULLSEND_JIRA_TOKEN` and optional
-  `FULLSEND_JIRA_EMAIL` repository secrets. The post-script passes them to
-  the CLI as `FULLSEND_JIRA_TOKEN` and, only when the email is set,
-  `FULLSEND_JIRA_EMAIL`: with an email the CLI uses bot-user Basic auth,
-  without one service-account Bearer auth. It passes
+  run edits it instead of adding another. The post-script runs the CLI with
+  the runner-only credentials of the selected mode: `FULLSEND_JIRA_TOKEN`
+  (plus `FULLSEND_JIRA_EMAIL` for bot-user Basic auth), or
+  `FULLSEND_JIRA_CLIENT_ID` and `FULLSEND_JIRA_CLIENT_SECRET`. It passes
   `--fullsend-dir "${FULLSEND_DIR}"`, so the CLI takes the Jira site and API
   gateway from `tracker.jira` in that directory's `config.yaml`. This needs
   a fullsend release that includes the config-backed Jira commands
   ([fullsend-ai/fullsend#9078](https://github.com/fullsend-ai/fullsend/pull/9078)).
 
-  Jira secrets:
+  Jira secrets — set exactly one of the two credential modes:
 
-  - Set `FULLSEND_JIRA_TOKEN`, and `FULLSEND_JIRA_EMAIL` for a bot user.
-  - The post-script and the sandbox `jira-ro` provider both read
-    `FULLSEND_JIRA_TOKEN`. `fullsend run` sets `JIRA_USER_EMAIL` from
+  - **Static token:** `FULLSEND_JIRA_TOKEN`. A bot user's token also needs
+    `FULLSEND_JIRA_EMAIL`; a service account's scoped token does not.
+  - **OAuth 2.0 client credentials:** `FULLSEND_JIRA_CLIENT_ID` and
+    `FULLSEND_JIRA_CLIENT_SECRET` of an Atlassian service account, with
+    `FULLSEND_JIRA_TOKEN` and `FULLSEND_JIRA_EMAIL` unset. The Jira overlay
+    maps both to `env.runner` only; the secret never reaches the sandbox, a
+    provider value or a host file. In this mode the post-script runs the CLI with
+    the client variables (and no `FULLSEND_JIRA_TOKEN`), so the CLI
+    mints its own token, and host-side REST calls mint a short-lived
+    token and require `JIRA_API_URL` (the
+    `api.atlassian.com/ex/jira/<cloudId>` gateway, which `fullsend run`
+    sets on Jira-sourced runs) instead of falling back to `JIRA_BASE_URL`.
+  - A token together with client credentials, or only one of the two
+    client variables, fails the run.
+  - The post-script and the sandbox `jira` provider both read the
+    selected credentials. `fullsend run` sets `JIRA_USER_EMAIL` from
     `FULLSEND_JIRA_EMAIL`.
   - The legacy `JIRA_TOKEN` and `JIRA_USER_EMAIL` secrets are no longer read.
-  - The provider read and the `JIRA_USER_EMAIL` mapping need a fullsend
-    release that includes
+  - The builtin `jira` provider needs a fullsend release that includes
+    [fullsend-ai/fullsend#9233](https://github.com/fullsend-ai/fullsend/pull/9233);
+    the `JIRA_USER_EMAIL` mapping needs
     [fullsend-ai/fullsend#9411](https://github.com/fullsend-ai/fullsend/issues/9411).
 
   The post-script takes the Jira credentials out of its environment before

@@ -16,17 +16,22 @@
 [[ -n "${GITHUB_REVIEW_OPS_SH_LOADED:-}" ]] && return 0
 GITHUB_REVIEW_OPS_SH_LOADED=1
 
+# shellcheck source=github-host.lib.sh
+source "${BASH_SOURCE[0]%/*}/github-host.lib.sh"
+
 # --- URL handling ---
 
 forge_validate_pr_url() {
-  if [[ ! "${PR_URL}" =~ ^https://github\.com/[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+/pull/[0-9]+$ ]]; then
+  local path
+  if ! path=$(_github_url_path "${PR_URL}") \
+    || [[ ! "${path}" =~ ^[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+/pull/[0-9]+$ ]]; then
     echo "ERROR: PR_URL does not match expected GitHub pattern: $(_gha_sanitize "${PR_URL}")" >&2
     return 1
   fi
 }
 
 forge_parse_pr_url() {
-  REPO=$(echo "${PR_URL}" | sed 's|https://github.com/||; s|/pull/.*||')
+  REPO=$(_github_url_path "${PR_URL}" | sed 's|/pull/.*||')
   PR_NUMBER=$(basename "${PR_URL}")
 }
 
