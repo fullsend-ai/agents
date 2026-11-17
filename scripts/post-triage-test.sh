@@ -20,10 +20,20 @@ trap 'rm -rf "${TMPDIR}"' EXIT
 # Mock gh: record all calls to a log file.
 GH_LOG="${TMPDIR}/gh-calls.log"
 FULLSEND_ENV_LOG="${TMPDIR}/fullsend-env.log"
+MOCK_ISSUE_LABELS_FILE="${TMPDIR}/mock-issue-labels"
+MOCK_ISSUE_LABELS_FAIL="${TMPDIR}/mock-issue-labels-fail"
+: > "${MOCK_ISSUE_LABELS_FILE}"
 MOCK_BIN="${TMPDIR}/bin"
 mkdir -p "${MOCK_BIN}"
 cat > "${MOCK_BIN}/gh" <<MOCKEOF
 #!/usr/bin/env bash
+# The issue labels list (skip-label check, #2076) returns the labels in
+# MOCK_ISSUE_LABELS_FILE, one per line, or fails when MOCK_ISSUE_LABELS_FAIL exists.
+if [[ "\$1" == "api" ]] && [[ "\$2" == *"/issues/"*"/labels" ]] && [[ "\$*" == *"--paginate"* ]] && [[ "\$*" != *"-f "* ]] && [[ "\$*" != *"-X "* ]]; then
+  [[ -f "${MOCK_ISSUE_LABELS_FAIL}" ]] && exit 1
+  cat "${MOCK_ISSUE_LABELS_FILE}"
+  exit 0
+fi
 # When querying the repo labels list, return a set of known test labels so that
 # the label-existence guard in post-triage.sh allows them through.
 if [[ "\$1" == "api" ]] && [[ "\$2" == *"/labels" ]] && [[ "\$*" == *"--paginate"* ]] && [[ "\$*" != *"-f "* ]] && [[ "\$*" != *"-X "* ]]; then
@@ -1332,6 +1342,42 @@ run_test_with_env "auto-code-discretionary-uppercase-promote-true" \
   "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=ready-to-code --silent" \
   "false" \
   "TRIAGE_AUTO_CODE=DISCRETIONARY"
+
+# --- Skip labels never promote to ready-to-code (#2076) ---
+# A human /fs-triage can triage an issue that carries skip-triage or a label
+# in TRIAGE_SKIP_LABELS, but post-triage must not promote it. The mock gh
+# reports the issue labels from MOCK_ISSUE_LABELS_FILE.
+
+printf '%s\n' "kind/bug" "skip-triage" > "${MOCK_ISSUE_LABELS_FILE}"
+run_test "skip-label-bug-gets-triaged" \
+  "${AUTO_CODE_BUG_FIXTURE}" \
+  "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=triaged --silent"
+run_test_no_pattern "skip-label-bug-no-ready-to-code" \
+  "${AUTO_CODE_BUG_FIXTURE}" \
+  "labels[]=ready-to-code"
+run_test_stdout "skip-label-bug-logs-notice" \
+  "${AUTO_CODE_BUG_FIXTURE}" \
+  "Issue carries skip label 'skip-triage' — not promoting to ready-to-code"
+
+printf '%s\n' "needs-design" > "${MOCK_ISSUE_LABELS_FILE}"
+run_test_no_pattern_with_env "configured-skip-label-bug-no-ready-to-code" \
+  "${AUTO_CODE_BUG_FIXTURE}" \
+  "labels[]=ready-to-code" \
+  "TRIAGE_SKIP_LABELS=needs-design"
+run_test "unconfigured-label-bug-gets-ready-to-code" \
+  "${AUTO_CODE_BUG_FIXTURE}" \
+  "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=ready-to-code --silent"
+
+# Labels that cannot be read withhold promotion.
+touch "${MOCK_ISSUE_LABELS_FAIL}"
+run_test "skip-label-read-failure-gets-triaged" \
+  "${AUTO_CODE_BUG_FIXTURE}" \
+  "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=triaged --silent"
+run_test_no_pattern "skip-label-read-failure-no-ready-to-code" \
+  "${AUTO_CODE_BUG_FIXTURE}" \
+  "labels[]=ready-to-code"
+rm -f "${MOCK_ISSUE_LABELS_FAIL}"
+: > "${MOCK_ISSUE_LABELS_FILE}"
 
 # --- Split action tests (#756) ---
 

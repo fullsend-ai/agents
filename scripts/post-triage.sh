@@ -170,6 +170,11 @@ tracker_verify_labels_stripped() {
   fi
 }
 
+# Print the issue's labels, one per line. Fails when they cannot be read.
+tracker_list_issue_labels() {
+  gh api "repos/${REPO}/issues/${ISSUE_NUMBER}/labels" --paginate --jq '.[].name'
+}
+
 tracker_list_repo_labels() {
   gh api "repos/${REPO}/labels" --paginate --jq '.[].name' 2>/dev/null || true
 }
@@ -494,6 +499,13 @@ tracker_verify_labels_stripped() {
     echo "ERROR: triage labels still present after reset: ${remaining}" >&2
     return 1
   fi
+}
+
+# Print the issue's labels, one per line. Fails when they cannot be read.
+tracker_list_issue_labels() {
+  local issue
+  issue=$(_gitlab_api GET "/projects/${REPO_ENCODED}/issues/${ISSUE_NUMBER}") || return 1
+  printf '%s' "${issue}" | jq -r '.labels[]'
 }
 
 tracker_list_repo_labels() {
@@ -1210,6 +1222,13 @@ tracker_verify_labels_stripped() {
   fi
 }
 
+# Print the issue's labels, one per line. Fails when they cannot be read.
+tracker_list_issue_labels() {
+  local issue
+  issue=$(_jira_api GET "/issue/${ISSUE_NUMBER}?fields=labels") || return 1
+  printf '%s' "${issue}" | jq -r '.fields.labels[]'
+}
+
 # Jira has no per-project label registry like GitHub/GitLab — any string is
 # a valid label with no creation step. As the closest analog to "labels the
 # maintainers already established" (which the "will not auto-create" guard
@@ -1467,6 +1486,35 @@ tracker_dispatch_triage() {
     exit 1
     ;;
 esac
+
+# triage_find_skip_label — print the first skip label on the issue (#2076).
+# A skip label keeps an issue with a planning process: the built-in
+# skip-triage, plus each label in the comma-separated TRIAGE_SKIP_LABELS.
+# Returns 0 when the issue carries one, 1 when it carries none, and 2 when
+# its labels cannot be read. Call after tracker_parse_issue_url.
+triage_find_skip_label() {
+  local issue_labels
+  issue_labels=$(tracker_list_issue_labels) || return 2
+
+  local skip_labels=("skip-triage") extra_labels label
+  IFS=',' read -ra extra_labels <<< "${TRIAGE_SKIP_LABELS:-}"
+  for label in "${extra_labels[@]}"; do
+    label="${label#"${label%%[![:space:]]*}"}"
+    label="${label%"${label##*[![:space:]]}"}"
+    [[ -n "${label}" ]] && skip_labels+=("${label}")
+  done
+
+  local current
+  while IFS= read -r current; do
+    for label in "${skip_labels[@]}"; do
+      if [[ -n "${current}" && "${current}" == "${label}" ]]; then
+        printf '%s\n' "${current}"
+        return 0
+      fi
+    done
+  done <<< "${issue_labels}"
+  return 1
+}
 # END bundled: lib/triage-ops.lib.sh
 # shellcheck source=lib/labels.lib.sh
 # BEGIN bundled: lib/labels.lib.sh
@@ -2005,6 +2053,22 @@ ${FAILED_CREATES}"
       AUTO_CODE_ALLOWED=true
     else
       AUTO_CODE_ALLOWED=false
+    fi
+
+    # Skip-label guard (#2076): an issue that carries skip-triage, or a label
+    # listed in TRIAGE_SKIP_LABELS, stays with its planning process. A human
+    # /fs-triage may still triage it, but triage never promotes it to
+    # ready-to-code. Labels that cannot be read also withhold promotion.
+    if [[ "${AUTO_CODE_ALLOWED}" == "true" ]]; then
+      skip_rc=0
+      SKIP_LABEL="$(triage_find_skip_label)" || skip_rc=$?
+      if [[ "${skip_rc}" -eq 0 ]]; then
+        echo "::notice::Issue carries skip label '$(_gha_sanitize "${SKIP_LABEL}")' — not promoting to ready-to-code"
+        AUTO_CODE_ALLOWED=false
+      elif [[ "${skip_rc}" -ne 1 ]]; then
+        echo "::warning::Cannot read the issue labels to check for skip labels — not promoting to ready-to-code"
+        AUTO_CODE_ALLOWED=false
+      fi
     fi
 
     # Workflow-change guard: if triage detected workflow file changes, always
