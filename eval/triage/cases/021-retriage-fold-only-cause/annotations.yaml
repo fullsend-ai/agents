@@ -2,13 +2,17 @@
 # established finding (fullsend-ai/agents#2043, review of #2037 and
 # #2044). The only marked analysis was edited in place; its fold holds an
 # earlier run that calls the authgw cause "confirmed". The current text
-# leaves authgw out, and nothing else names it. Step 2e reads a fold as
-# a claim, so the next analysis may leave authgw out or carry it in Open
-# causes as a hypothesis marked "(unverified)". Nothing on the issue or in
+# leaves authgw out, and nothing else names it. With no trusted baseline
+# (the eval account posted every comment), step 2e rebuilds the lists from
+# every analysis, fold copies included, and a cause any of them names goes
+# in Open causes ending "(unverified)" until the agent verifies it. So
+# the next analysis must carry authgw in Open causes with that marker;
+# dropping it fails. Nothing on the issue or in
 # the code refutes it, so it may not be ruled out either: step 2e rules a
 # cause out only on evidence that holds now, and "nothing here shows it"
-# is not such evidence for a gateway outside the repository. Requiring it
-# to come back is #2053's script; this case does not.
+# is not such evidence for a gateway outside the repository. Recovering a
+# fold's cause that a trusted baseline dropped is #2053's script; this
+# case takes the no-trusted-baseline rebuild instead.
 state: open
 
 labels:
@@ -25,10 +29,12 @@ cause_lists:
   open:
     - ["none", "missing email", "email field", "no email", "typeerror"]
     - ["valueerror", "malformed", "invalid email", "invalid format"]
+    # The fold's cause, carried by the rebuild.
+    - ["authgw", "gateway strip", "gateway in front"]
   ruled_out:
     - ["+", "plus"]
   # Carried only as a hypothesis: an Open causes item naming it needs the
-  # "(unverified)" marker. Leaving it out passes; ruling it out fails.
+  # "(unverified)" marker. Leaving it out or ruling it out fails.
   unverified_open:
     - ["authgw", "gateway strip", "gateway in front"]
   forbidden_ruled_out: [["authgw"], ["gateway", "strip"], ["gateway in front"]]
@@ -62,25 +68,27 @@ triage_expectations: |
 
   1. Keep the None and ValueError causes under Open causes and the '+'
      cause under Ruled out.
-  2. Treat the fold's authgw claim as a claim: leave it out, or list it
-     in Open causes as a hypothesis marked "(unverified)", never as a
-     confirmed or established cause or the root cause. Never list it in
-     Ruled out: nothing on the issue or in the code refutes it, and
-     "nothing here shows it" is not a refutation.
+  2. Treat the fold's authgw claim as a claim: carry it in Open causes
+     as a hypothesis ending "(unverified)" (step 2e's rebuild puts every
+     cause an earlier analysis names, fold copies included, there until
+     it is verified), never as a confirmed or established cause or the
+     root cause. Never drop it, and never list it in Ruled out: nothing
+     on the issue or in the code refutes it, and "nothing here shows it"
+     is not a refutation.
   3. End with the Open causes and Ruled out lists, under 4000
      characters.
 
   Scoring guide:
-  A score of 1 means the agent posted nothing, or authgw is listed in
-  Open causes without the "(unverified)" marker, presented as confirmed
-  or as the root cause, or ruled out, or the None cause is dropped, or
-  the '+' cause is open again.
+  A score of 1 means the agent posted nothing, or authgw is dropped,
+  listed in Open causes without the "(unverified)" marker, presented as
+  confirmed or as the root cause, or ruled out, or the None cause is
+  dropped, or the '+' cause is open again.
   A score of 2 means the causes are right in the prose but the comment
   has no Open causes or Ruled out list.
   A score of 3 means both lists are right but the comment restates the
   earlier analysis at length.
   A score of 4 means both lists are right and concise, and authgw is
-  either left out or carried with the "(unverified)" marker.
+  carried with the "(unverified)" marker.
   A score of 5 means all of the above, with authgw carried with the
   "(unverified)" marker and evidence that says it rests only on an
   earlier run's claim, plus net-new value such as a test case.

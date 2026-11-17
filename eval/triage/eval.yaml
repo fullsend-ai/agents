@@ -270,9 +270,10 @@ judges:
       # A forbidden entry is a phrase or a list of phrases that must all
       # appear in the same cause name. A regex character class with no
       # spaces and a range or an escape, such as [a-zA-Z0-9._%+-], is cut
-      # first, so a cause that quotes the pattern does not match a "+"
+      # first, with any quantifier after it ("+", "*", "?", "{2,}"), so a
+      # cause that quotes the pattern does not match a "+"
       # phrase; "[+]" or a markdown link's text ("[a-b](url)") is kept.
-      bare_open = [re.sub(r"\[[^\]\s]*(?:\w-\w|\\)[^\]\s]*\](?!\()", "", n) for n in open_n]
+      bare_open = [re.sub(r"\[[^\]\s]*(?:\w-\w|\\)[^\]\s]*\](?!\()(?:[+*?]|\{\d*,?\d*\})?", "", n) for n in open_n]
       for p in spec.get("forbidden_open") or []:
           parts = [p] if isinstance(p, str) else list(p)
           if any(all(q.lower() in n for q in parts) for n in bare_open):

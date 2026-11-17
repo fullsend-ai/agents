@@ -24,10 +24,17 @@ cause_lists:
   ruled_out:
     - ["authgw", "gateway"]
     - ["+", "plus"]
-  # authgw with a stripping claim is run 1's cause back. A correct open
-  # cause may say batch-client bypasses the gateway, so "gateway" alone
-  # is not forbidden.
-  forbidden_open: [["authgw", "strip"], ["gateway", "strip"], ["+", "reject"], ["plus", "reject"]]
+  # authgw is ruled out, so no Open causes name may name it at all, nor
+  # name the gateway as removing the parameter. A correct open cause may
+  # say batch-client bypasses the gateway, so "gateway" alone is not
+  # forbidden.
+  forbidden_open:
+    - ["authgw"]
+    - ["gateway", "strip"]
+    - ["gateway", "drop"]
+    - ["gateway", "remov"]
+    - ["+", "reject"]
+    - ["plus", "reject"]
 
 max_turns: 35
 max_cost_usd: 0.50
