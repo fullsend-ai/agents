@@ -219,8 +219,8 @@ judges:
       if open_s is None:
           return False, "No Open causes list in the run's analysis"
       # Phrases are matched only in each list item's cause name (the text
-      # before its evidence: a spaced dash or an unspaced em dash, as the
-      # prompt's template writes it; an unspaced en dash, as in "3–5", stays
+      # before its evidence: a spaced dash, as the prompt's template writes
+      # it, or an unspaced em dash; an unspaced en dash, as in "3–5", stays
       # in the name), so evidence that mentions a cause never counts as
       # listing it. A colon is part of the name: cutting there would hide a
       # restored cause written "Cause: regex rejects '+'".
