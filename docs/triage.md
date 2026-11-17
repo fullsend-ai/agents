@@ -272,10 +272,11 @@ tracker:
   `env/github/triage.env` passes `FULLSEND_APP_SET` into the sandbox, but
   fullsend's route-based `triage` job, which runs the built-in triage
   agent, does not export it yet (fullsend-ai/fullsend#9568); the
-  `harness-run` job already does.
-  Until the `triage` job does, an install whose custom App set is not named after the
-  repository owner matches none of these names, so its earlier analyses are
-  read as human comments.
+  `harness-run` job already does (both in fullsend's
+  `.github/workflows/reusable-dispatch.yml`). Until the `triage` job does, an
+  install whose custom App set is not named after the repository owner, and
+  whose harness `slug` is not its triage App's slug, matches none of these
+  names, so its earlier analyses are read as human comments.
 - **GitLab:** the account `GET /api/v4/user` returns for `GITLAB_TOKEN`.
 - **Jira:** the account `GET /rest/api/3/myself` returns, which needs the
   `read:jira-user` scope (or the granular `read:user:jira`) on
