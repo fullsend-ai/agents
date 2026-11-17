@@ -113,6 +113,11 @@ esac
 # The listing must ask for every page.
 case " $* " in *" --paginate "*) ;; *) echo "not paginated" >&2; exit 2 ;; esac
 test -f "${FIXTURES}/comments.fail" && { echo "HTTP 404" >&2; exit 1; }
+# Swap the job directory for a symlink while the comments are read.
+if test -f "${FIXTURES}/swap"; then
+  rm -rf "$(cat "${FIXTURES}/swap")"
+  ln -s "${FIXTURES}/elsewhere" "$(cat "${FIXTURES}/swap")"
+fi
 cat "${FIXTURES}/comments.json"
 EOF
   chmod +x "${CASE_DIR}/bin/gh"
@@ -695,6 +700,20 @@ for kind in dir link; do
     pass "planted ${kind} that cannot be removed: pre-script fails closed"
   else fail "planted ${kind}: exit ${CASE_RC}, $(grep -i prior "${CASE_DIR}/err")"; fi
 done
+
+# The job directory swapped for a symlink to a planted file during the
+# reads: the pre-script fails and neither reads nor overwrites the file.
+new_case swapped; install_gh_stub
+gh_rest "[$(ghc 1 "${BOT}[bot]" Bot "$BOT" "$T1" "$(analysis 'Cause')")]"
+gh_gql first "" "$(ged 1)"
+mkdir -p "${FIX}/elsewhere"
+echo '{"baseline": {"id": "forged"}}' > "${FIX}/elsewhere/prior-triage.json"
+echo "${CASE_DIR}/rt/triage-workspace-" > "${FIX}/swap"
+run_github
+if test "$CASE_RC" -ne 0 && grep -q 'changed while the comments were read' "${CASE_DIR}/err" \
+  && grep -q forged "${FIX}/elsewhere/prior-triage.json" && ! grep -q 'analysis written to' "${CASE_DIR}/err"; then
+  pass "directory swapped during the reads: pre-script fails closed"
+else fail "swapped: exit ${CASE_RC}, $(grep -i prior "${CASE_DIR}/err"), planted $(cat "${FIX}/elsewhere/prior-triage.json")"; fi
 
 # RUNNER_TEMP that cannot hold the directory: no file, a warning, run continues.
 echo file > "${CASE_DIR}/blocked"

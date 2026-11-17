@@ -1149,8 +1149,9 @@ esac
 # issue (all pages of the listing and of the editor query), decides which
 # ones the triage account posted and last edited, dates them, cuts each at
 # its first "Previous run" fold, and writes one JSON object that
-# harness/triage.yaml copies into the sandbox for step 2e. It never fails
-# the pre-script: an error is written into the file instead.
+# harness/triage.yaml copies into the sandbox for step 2e. A tracker error
+# is written into the file and the pre-script goes on; only a job
+# directory another user could control fails it (see prior_triage_write).
 #
 # Expected globals (set by tracker_parse_issue_url): REPO, ISSUE_NUMBER,
 # and on GitLab REPO_ENCODED.
@@ -1168,22 +1169,27 @@ esac
 #   Jira marker  internal/tracker/jira_client.go stickyPropertyKey
 #                ("fullsend.sticky-marker")
 #
-# The fold cut and the Open causes / Ruled out parsing follow the rules of
-# the cause_lists judge in eval/triage/eval.yaml; change them together.
+# The fold cut and the Open causes / Ruled out parsing below read the
+# lists the way step 2e and the sufficient action in agents/triage.md
+# write them; the cause_lists judge in eval/triage/eval.yaml reads the same
+# lists to grade a run, so a format change there belongs here too.
 
 [[ -n "${PRIOR_TRIAGE_SH_LOADED:-}" ]] && return 0
 PRIOR_TRIAGE_SH_LOADED=1
 
 # prior_triage_write <file> — write the step 2e JSON to <file>.
 # The file's directory is this job's own: any earlier one is removed and a
-# new one is created private to this user. If something stays at that path
-# that this user cannot remove, or the new directory is not a real
-# directory this user owns (another user planted it on a shared /tmp), the
-# harness would copy whatever is there into the sandbox as this run's
-# analysis, so this fails the pre-script instead (returns 1 under the
-# caller's set -e). Every other failure (no directory could be made, a
-# failed write) leaves nothing at the path, so it ends in a warning and the
-# run goes on without the file.
+# new one is created private to this user. The harness copies whatever is
+# at the path into the sandbox as this run's analysis, so anything another
+# user could control there fails the pre-script (returns 1 under the
+# caller's set -e): a directory this user cannot remove, one that appears
+# while it is being created, or, checked again before and after the copy
+# because the network reads take seconds, a directory that is no longer a
+# real one this user owns or a file that is not the one this run wrote.
+# Every other failure (no directory could be made, a failed write) leaves
+# nothing at the path, so it ends in a warning and the run goes on without
+# the file. What remains is the instant between the last check and the
+# harness copying the file, which a check here cannot close.
 prior_triage_write() {
   local out="$1" dir work=""
   dir=$(dirname "${out}")
@@ -1200,32 +1206,42 @@ prior_triage_write() {
     echo "::warning::Prior triage analysis not written: cannot create $(_gha_sanitize "${dir}")"
     return 0
   fi
-  if [[ -L "${dir}" || ! -d "${dir}" || ! -O "${dir}" ]]; then
-    echo "::error::Prior triage directory $(_gha_sanitize "${dir}") is not a directory this user owns" >&2
-    return 1
-  fi
   if ! work=$(mktemp -d 2> /dev/null); then
     rm -rf "${dir}" 2> /dev/null || true
     echo "::warning::Prior triage analysis not written: cannot create a work directory"
     return 0
   fi
-  if (_prior_triage_run "${work}") > "${work}/out.json" 2> "${work}/log" \
-    && jq -e 'type == "object"' "${work}/out.json" > /dev/null 2>&1; then
-    (umask 077 && cp "${work}/out.json" "${out}") 2> /dev/null || rm -f "${out}" 2> /dev/null || true
+  if ! (_prior_triage_run "${work}") > "${work}/out.json" 2> "${work}/log" \
+    || ! jq -e 'type == "object"' "${work}/out.json" > /dev/null 2>&1; then
+    _prior_triage_error "$(tail -n 3 "${work}/log" | tr '\n' ' ' | cut -c1-300)" > "${work}/out.json" 2> /dev/null || true
+  fi
+  if ! _prior_triage_dir_ok "${dir}"; then
+    rm -rf "${work}" 2> /dev/null || true
+    echo "::error::Prior triage directory $(_gha_sanitize "${dir}") changed while the comments were read; refusing to run with a file another user may control" >&2
+    return 1
+  fi
+  (umask 077 && cp "${work}/out.json" "${out}") 2> /dev/null || true
+  if cmp -s "${work}/out.json" "${out}" && _prior_triage_dir_ok "${dir}" && [[ ! -L "${out}" ]]; then
+    if [[ "$(jq -r '.error // empty' "${out}" 2> /dev/null)" != "" ]]; then
+      echo "::warning::Prior triage analysis written with an error: $(_gha_sanitize "$(jq -r .error "${out}")")"
+    else
+      echo "Prior triage analysis written to $(_gha_sanitize "${out}")."
+    fi
+  elif [[ -e "${out}" || -L "${out}" ]] || ! _prior_triage_dir_ok "${dir}"; then
+    rm -f "${out}" 2> /dev/null || true
+    rm -rf "${work}" 2> /dev/null || true
+    echo "::error::Prior triage file $(_gha_sanitize "${out}") is not the one this run wrote; refusing to run with a file another user may control" >&2
+    return 1
   else
-    (umask 077 && _prior_triage_error "$(tail -n 3 "${work}/log" | tr '\n' ' ' | cut -c1-300)" > "${out}") 2> /dev/null \
-      || rm -f "${out}" 2> /dev/null || true
+    echo "::warning::Prior triage analysis not written to $(_gha_sanitize "${out}")"
   fi
   rm -rf "${work}" 2> /dev/null || true
-  if [[ ! -s "${out}" ]] || ! jq -e 'type == "object"' "${out}" > /dev/null 2>&1; then
-    rm -f "${out}" 2> /dev/null || true
-    echo "::warning::Prior triage analysis not written to $(_gha_sanitize "${out}")"
-  elif [[ "$(jq -r '.error // empty' "${out}")" != "" ]]; then
-    echo "::warning::Prior triage analysis written with an error: $(_gha_sanitize "$(jq -r .error "${out}")")"
-  else
-    echo "Prior triage analysis written to $(_gha_sanitize "${out}")."
-  fi
   return 0
+}
+
+# A real directory, not a symlink, that this user owns.
+_prior_triage_dir_ok() {
+  [[ ! -L "$1" && -d "$1" && -O "$1" ]]
 }
 
 _prior_triage_error() {
@@ -1517,8 +1533,10 @@ def cause_key: ascii_downcase | gsub("\\s+"; " ") | sub("[.:;]+$"; "");
 # The size fold writes the oldest Ruled out entries as one line,
 # "Also ruled out (see earlier analysis): a; b; c", as a list item or a
 # plain line, label bold or not, after a colon or a spaced dash. Each
-# ";"-separated name on it is ruled out, as the eval cause_lists judge
-# reads it.
+# ";"-separated name on it is ruled out, each cut at its evidence like a
+# list item; a plain list item such as "Alpha, Beta" stays one name. The
+# cause_lists judge as fullsend-ai/agents#2062 changes it reads the fold
+# line the same way.
 def fold_line_re: "^\\s*(?:(?:[-*+]|[0-9]+[.)])\\s+)?\\*{0,2}also ruled out\\b[^:\\n]*?(?::\\*{0,2}|\\s[—–-]\\s|—)\\s*(?<names>.+)$";
 def cause_lists:
   reduce (split("\n")[]) as $l ({sec: null, done: false, open: [], ruled_out: [], found: false};
@@ -1625,7 +1643,8 @@ echo "Label reset complete."
 # fullsend's GitLab job script defaults it to /tmp, shared by the jobs of a
 # persistent runner, so the path carries CI_JOB_ID. On GitHub it is unset
 # and the host file expands it to empty too, so the directory there is
-# triage-workspace- with a trailing dash. Never fails the run.
+# triage-workspace- with a trailing dash. Tracker errors only warn; a job
+# directory another user could control fails the run (prior-triage.lib.sh).
 if [[ -n "${RUNNER_TEMP:-}" ]]; then
   prior_triage_write "${RUNNER_TEMP}/triage-workspace-${CI_JOB_ID:-}/prior-triage.json"
 fi

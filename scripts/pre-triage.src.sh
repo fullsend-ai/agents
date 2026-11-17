@@ -46,7 +46,8 @@ echo "Label reset complete."
 # fullsend's GitLab job script defaults it to /tmp, shared by the jobs of a
 # persistent runner, so the path carries CI_JOB_ID. On GitHub it is unset
 # and the host file expands it to empty too, so the directory there is
-# triage-workspace- with a trailing dash. Never fails the run.
+# triage-workspace- with a trailing dash. Tracker errors only warn; a job
+# directory another user could control fails the run (prior-triage.lib.sh).
 if [[ -n "${RUNNER_TEMP:-}" ]]; then
   prior_triage_write "${RUNNER_TEMP}/triage-workspace-${CI_JOB_ID:-}/prior-triage.json"
 fi
