@@ -13,15 +13,21 @@
 # Relation to fullsend's specs (fullsend-ai/fullsend docs/ADRs): this is an
 # interim, agents-side subset of ADR 0141's entity-context snapshot and
 # agent-run receipts, and step 2e moves to those when they ship. Under ADR
-# 0133 only records the pre-script trusts carry text into the file;
-# anything else is listed by id and reason only. The GitHub App-name list
+# 0133 only comments the pre-script trusts carry text into the file;
+# anything else is listed by id and reason only. A trusted comment's
+# Previous run folds are included, but a fold may hold text someone else
+# edited before fullsend folded it, so step 2e reads fold text as claims. The GitHub App-name list
 # below is an interim naming convention that ADR 0107 does not accept as
 # bot identity; it is to be replaced by the mint's bot_role == "triage"
 # once fullsend-ai/fullsend#9602 exposes that lookup to harness scripts.
 # The GitLab and Jira own-account match is an exact identity (pending
 # confirmation in #9602). The trusted text is not run through an input
-# scanner here (see the PR notes); the sandbox's PostToolUse hooks see it
-# when the agent reads the file, as they see the agent's own reads.
+# scanner here: `fullsend scan input` takes one event payload, flags
+# private-network URLs quoted in a body, and does no secret redaction. The
+# sandbox's PostToolUse chain (fullsend internal/security/hooks.go, every
+# tool, on by default: Unicode, secret redaction, context suppression)
+# sees the text when the agent reads the file, as it sees the agent's own
+# comment reads.
 #
 # Expected globals (set by tracker_parse_issue_url): REPO, ISSUE_NUMBER,
 # and on GitLab REPO_ENCODED.

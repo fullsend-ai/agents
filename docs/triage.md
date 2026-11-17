@@ -314,10 +314,13 @@ Relation to fullsend's specs (`docs/ADRs` in fullsend-ai/fullsend):
   exposes that lookup to harness scripts. The GitLab and Jira own-account
   match is an exact identity, pending confirmation in #9602.
 - Following ADR 0133, the file carries text only for comments the
-  pre-script trusts. Other marked comments are listed by id and reason, and
-  the agent reads them itself with its forge skill. The trusted text is not
-  run through an input scanner on the host. The sandbox's tool hooks see it
-  when the agent reads the file, as they see the agent's own comment reads.
+  pre-script trusts. Their `Previous run` folds are included as claims,
+  since a fold may hold text someone else edited before fullsend folded it.
+  Other marked comments are listed by id and reason, and the agent reads
+  them itself with its forge skill. The trusted text is not run through an
+  input scanner on the host. fullsend's sandbox PostToolUse hooks (Unicode,
+  secret redaction, context suppression; on by default for every tool) see
+  it when the agent reads the file, as they see its own comment reads.
 - The pre-script is an interim, agents-side subset of ADR 0141's
   entity-context snapshot and agent-run receipts. Step 2e moves to those
   when they ship.
