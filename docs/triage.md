@@ -296,8 +296,8 @@ tracker:
 - **Jira:** the account `GET /rest/api/3/myself` returns, which needs the
   `read:jira-user` scope (or the granular `read:user:jira`) on
   `FULLSEND_JIRA_TOKEN`. Without it, there is no trusted baseline: the
-  agent rebuilds both lists from every earlier analysis and says so in its
-  reasoning.
+  agent rebuilds both lists from every earlier analysis and says so in the
+  `reasoning` field of the run's result, which is not posted to the issue.
 
 ### Jira setup
 

@@ -93,11 +93,11 @@ fi
 # route-based triage job does not export it, and an unset ${VAR} in
 # harness/triage.yaml env fails the run, while the host file expands it to
 # empty.
-if grep -qF 'export FULLSEND_APP_SET=' "${REPO_ROOT}/env/github/triage.env" \
-  && ! grep -qF 'FULLSEND_APP_SET' "${TRIAGE_HARNESS}"; then
+if grep -qxF 'export FULLSEND_APP_SET="${FULLSEND_APP_SET}"' "${REPO_ROOT}/env/github/triage.env" \
+  && ! grep -v '^[[:space:]]*#' "${TRIAGE_HARNESS}" | grep -qF 'FULLSEND_APP_SET'; then
   assert_pass "triage-app-set-in-sandbox-host-file"
 else
-  assert_fail "triage-app-set-in-sandbox-host-file" "FULLSEND_APP_SET must come from env/github/triage.env, not harness/triage.yaml"
+  assert_fail "triage-app-set-in-sandbox-host-file" 'env/github/triage.env must export FULLSEND_APP_SET="${FULLSEND_APP_SET}", and harness/triage.yaml must not set it'
 fi
 
 # Host-side credentials come from the FULLSEND_JIRA_* repository secrets
