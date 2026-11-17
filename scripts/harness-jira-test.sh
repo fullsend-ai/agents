@@ -89,6 +89,17 @@ else
   assert_fail "triage-jira-email-in-sandbox-host-file" "JIRA_USER_EMAIL must come from env/jira/triage.env, not env.sandbox"
 fi
 
+# FULLSEND_APP_SET reaches the GitHub triage sandbox the same way: fullsend's
+# route-based triage job does not export it, and an unset ${VAR} in
+# harness/triage.yaml env fails the run, while the host file expands it to
+# empty.
+if grep -qF 'export FULLSEND_APP_SET=' "${REPO_ROOT}/env/github/triage.env" \
+  && ! grep -qF 'FULLSEND_APP_SET' "${TRIAGE_HARNESS}"; then
+  assert_pass "triage-app-set-in-sandbox-host-file"
+else
+  assert_fail "triage-app-set-in-sandbox-host-file" "FULLSEND_APP_SET must come from env/github/triage.env, not harness/triage.yaml"
+fi
+
 # Host-side credentials come from the FULLSEND_JIRA_* repository secrets
 # (fullsend#9079), and the fullsend CLI gets the .fullsend directory.
 check_runner_mapping() {
