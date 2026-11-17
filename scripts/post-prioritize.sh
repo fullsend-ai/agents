@@ -19,6 +19,8 @@
 #
 # Jira-specific env vars (consumed inside jira-prioritize-ops.lib.sh):
 #   JIRA_TOKEN      — Jira API token (from FULLSEND_JIRA_TOKEN)
+#                     or FULLSEND_JIRA_CLIENT_ID and FULLSEND_JIRA_CLIENT_SECRET
+#                     (OAuth 2.0 client credentials) instead; not both
 #   JIRA_USER_EMAIL — optional bot-user email (from FULLSEND_JIRA_EMAIL)
 #   FULLSEND_DIR    — .fullsend dir for tracker.jira: base_url (site for
 #                     cloud-ID discovery), api_url (gateway base, default
@@ -798,7 +800,10 @@ ${body}"
 #
 # Expected env vars:
 #   ISSUE_URL       — HTML URL (https://<host>.atlassian.net/browse/KEY)
-#   JIRA_TOKEN      — Jira API token (required for field writes and comments)
+#   JIRA_TOKEN      — Jira API token (token modes), or
+#   FULLSEND_JIRA_CLIENT_ID and FULLSEND_JIRA_CLIENT_SECRET — OAuth 2.0
+#                     client credentials, the alternative to the token.
+#                     Exactly one mode: both set fails closed, none fails.
 #   JIRA_USER_EMAIL — optional bot-user email; empty selects Bearer auth
 #   FULLSEND_DIR    — .fullsend dir whose config.yaml holds tracker.jira
 #
@@ -1114,6 +1119,27 @@ _jira_require_vars() {
   fi
 }
 
+# Select the credential mode once, before any Jira REST or `fullsend issues`
+# call, the way the triage and scribe libraries do: a token, or the client
+# credentials, but never both and never neither. Client credentials mint
+# the Bearer access token here, in the script's own shell, so the
+# $(_jira_api ...) calls reuse it. A mint failure is fatal: prioritize
+# writes nothing without a usable credential. Not called at source time,
+# because pre-prioritize bundles this library and only validates the URL.
+# The gateway comes from tracker.jira.api_url (default
+# https://api.atlassian.com), which accepts minted access tokens, so
+# JIRA_API_URL is not required in client-credentials mode.
+_jira_auth_init() {
+  [[ -n "${_JIRA_PRIORITIZE_AUTH_READY:-}" ]] && return 0
+  jira_auth_select "${JIRA_TOKEN:-}" FULLSEND_JIRA_CLIENT_ID FULLSEND_JIRA_CLIENT_SECRET || return 1
+  if [[ "${JIRA_AUTH_MODE}" == "none" ]]; then
+    echo "ERROR: JIRA_TOKEN must be set, or FULLSEND_JIRA_CLIENT_ID and FULLSEND_JIRA_CLIENT_SECRET" >&2
+    return 1
+  fi
+  jira_auth_mint || return 1
+  _JIRA_PRIORITIZE_AUTH_READY=1
+}
+
 # Print the trimmed string value at a tracker.jira key in
 # ${FULLSEND_DIR}/config.yaml. Prints nothing when there is no config file
 # or the key is unset. Fails closed (non-zero) when the config file exists
@@ -1227,7 +1253,7 @@ _jira_api() {
   _jira_resolve_cloud_id || return 1
   rest_root="${gateway}/ex/jira/${JIRA_CLOUD_ID}/rest/api/3"
 
-  jira_auth_curl "${JIRA_TOKEN}" "${JIRA_USER_EMAIL:-}" \
+  jira_auth_curl "${JIRA_TOKEN:-}" "${JIRA_USER_EMAIL:-}" \
     --fail --silent --show-error \
     --connect-timeout 10 --max-time 30 \
     --header "Content-Type: application/json" \
@@ -1331,8 +1357,9 @@ _jira_assert_rice_only_payload() {
 # Reach, impact, confidence, and effort ($1-$4) go in the sticky comment;
 # only the computed score ($5) is written to Jira.
 forge_update_project_scores() {
-  : "${JIRA_TOKEN:?JIRA_TOKEN must be set}"
   local score="$5"
+
+  _jira_auth_init || return 1
 
   if [[ -z "${ISSUE_NUMBER:-}" ]]; then
     echo "ERROR: ISSUE_NUMBER is not set — call forge_parse_issue_url first" >&2
@@ -1373,15 +1400,15 @@ forge_update_project_scores() {
 # --- Comments ---
 
 forge_post_sticky_comment() {
-  : "${JIRA_TOKEN:?JIRA_TOKEN must be set}"
   local body="$1"
   local marker="$2"
+  _jira_auth_init || return 1
   _jira_require_vars || return 1
   if [[ -z "${FULLSEND_DIR:-}" ]]; then
     echo "ERROR: FULLSEND_DIR is not set; the fullsend CLI needs it for the tracker.jira settings" >&2
     return 1
   fi
-  printf '%s' "${body}" | jira_auth_fullsend fullsend "${JIRA_TOKEN}" "${JIRA_USER_EMAIL:-}" \
+  printf '%s' "${body}" | jira_auth_fullsend fullsend "${JIRA_TOKEN:-}" "${JIRA_USER_EMAIL:-}" \
     issues post-comment --tracker jira --fullsend-dir "${FULLSEND_DIR}" \
     --project "${REPO}" --number "${JIRA_ISSUE_NUM}" \
     --marker "${marker}" --result -

@@ -18,6 +18,8 @@
 #
 # Jira-specific env vars (consumed inside jira-prioritize-ops.lib.sh):
 #   JIRA_TOKEN      — Jira API token (from FULLSEND_JIRA_TOKEN)
+#                     or FULLSEND_JIRA_CLIENT_ID and FULLSEND_JIRA_CLIENT_SECRET
+#                     (OAuth 2.0 client credentials) instead; not both
 #   JIRA_USER_EMAIL — optional bot-user email (from FULLSEND_JIRA_EMAIL)
 #   FULLSEND_DIR    — .fullsend dir for tracker.jira: base_url (site for
 #                     cloud-ID discovery), api_url (gateway base, default

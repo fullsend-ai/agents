@@ -114,7 +114,7 @@ cat > "${MOCK_BIN}/fullsend" <<MOCKEOF
 #!/usr/bin/env bash
 BODY=""
 PREV=""
-echo "email=\${FULLSEND_JIRA_EMAIL-<unset>} token=\${FULLSEND_JIRA_TOKEN-<unset>}" >> "${FS_ENV_LOG}"
+echo "email=\${FULLSEND_JIRA_EMAIL-<unset>} token=\${FULLSEND_JIRA_TOKEN-<unset>} client-id=\${FULLSEND_JIRA_CLIENT_ID-<unset>} client-secret=\${FULLSEND_JIRA_CLIENT_SECRET:+set}" >> "${FS_ENV_LOG}"
 for arg in "\$@"; do
   if [[ "\${arg}" == "-" ]] && [[ "\${PREV}" == "--result" ]]; then
     BODY=\$(cat)
@@ -1629,6 +1629,104 @@ SAVED_JIRA_TOKEN="${JIRA_TOKEN}"
 unset JIRA_TOKEN
 run_jira_test "jira-unset-token-fails" "true"
 export JIRA_TOKEN="${SAVED_JIRA_TOKEN}"
+
+# --- OAuth 2.0 client credentials (#1926) ---
+# post-prioritize selects the credential mode with jira_auth_select before
+# any Jira call. Token-only mode is covered above. Client credentials alone
+# mint a Bearer access token: the RICE Score write and the sticky comment
+# work without JIRA_TOKEN, REST calls use the minted token and never Basic
+# auth, the CLI gets the client variables and no token or email, and the
+# secret reaches no command line and no output. The curl mock is wrapped to
+# answer the Atlassian token endpoint (body on stdin).
+JIRA_CLIENT_SECRET_VALUE="prioritize-client-secret-DO-NOT-LEAK"
+mv "${MOCK_BIN}/curl" "${TEST_TMPDIR}/curl-before-client"
+cat > "${MOCK_BIN}/curl" <<CURLMOCK
+#!/usr/bin/env bash
+for arg in "\$@"; do
+  if [[ "\${arg}" == "https://auth.atlassian.com/oauth/token" ]]; then
+    echo "curl \$*" >> "${CURL_LOG}"
+    cat > /dev/null
+    printf '{"access_token":"minted-access-token","expires_in":3600}\n200'
+    exit 0
+  fi
+done
+exec "${TEST_TMPDIR}/curl-before-client" "\$@"
+CURLMOCK
+chmod +x "${MOCK_BIN}/curl"
+
+SAVED_JIRA_TOKEN="${JIRA_TOKEN}"
+export JIRA_TOKEN=""
+export FULLSEND_JIRA_CLIENT_ID="client-id-1"
+export FULLSEND_JIRA_CLIENT_SECRET="${JIRA_CLIENT_SECRET_VALUE}"
+
+# Client credentials only (JIRA_USER_EMAIL is still set by the harness
+# mapping and must not select Basic auth).
+run_jira_test "jira-client-credentials-only"
+if [[ -f "${CURL_DATA_FILE}" ]] \
+  && [[ "$(jq -c '.' "${CURL_DATA_FILE}")" == '{"fields":{"customfield_10105":2.4}}' ]] \
+  && grep -qF -- '--request PUT' "${CURL_LOG}"; then
+  echo "PASS: jira-client-credentials-only-writes-rice-score"
+else
+  echo "FAIL: jira-client-credentials-only-writes-rice-score — expected the RICE Score PUT"
+  cat "${CURL_LOG}" "${TEST_TMPDIR}/stdout-jira-client-credentials-only.log"
+  FAILURES=$((FAILURES + 1))
+fi
+if grep -F "${JIRA_DEFAULT_REST}/" "${CURL_LOG}" | grep -vqF -- "--oauth2-bearer minted-access-token" \
+  || ! grep -qF "${JIRA_DEFAULT_REST}/field" "${CURL_LOG}" \
+  || grep -qF -- '--user' "${CURL_LOG}"; then
+  echo "FAIL: jira-client-credentials-only-rest-bearer — expected the minted Bearer token on every REST call and no Basic auth"
+  cat "${CURL_LOG}"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: jira-client-credentials-only-rest-bearer"
+fi
+if grep -qF 'fullsend issues post-comment --tracker jira' "${GH_LOG}" \
+  && grep -qF '**RICE Score: 2.4**' "${GH_LOG}" \
+  && grep -qF "email=<unset> token=<unset> client-id=client-id-1 client-secret=set" "${FS_ENV_LOG}"; then
+  echo "PASS: jira-client-credentials-only-sticky-comment-cli-env"
+else
+  echo "FAIL: jira-client-credentials-only-sticky-comment-cli-env — expected the sticky comment with client vars and no token or email for the CLI"
+  cat "${GH_LOG}" "${FS_ENV_LOG}"
+  FAILURES=$((FAILURES + 1))
+fi
+if grep -qx "::add-mask::minted-access-token" "${TEST_TMPDIR}/stdout-jira-client-credentials-only.log" \
+  && ! grep -qF "${JIRA_CLIENT_SECRET_VALUE}" "${CURL_LOG}" "${GH_LOG}" "${TEST_TMPDIR}/stdout-jira-client-credentials-only.log"; then
+  echo "PASS: jira-client-credentials-only-secret-hidden"
+else
+  echo "FAIL: jira-client-credentials-only-secret-hidden — expected a masked access token and no client secret in argv or output"
+  cat "${CURL_LOG}" "${TEST_TMPDIR}/stdout-jira-client-credentials-only.log"
+  FAILURES=$((FAILURES + 1))
+fi
+
+# A token next to client credentials fails closed: no Jira call at all and
+# no write, and the error names the variables, never the secret.
+export JIRA_TOKEN="${SAVED_JIRA_TOKEN}"
+run_jira_test_stdout "jira-token-and-client-credentials-fail" "not both" "true"
+assert_jira_no_writes "jira-token-and-client-credentials-fail"
+if [[ -s "${CURL_LOG}" ]]; then
+  echo "FAIL: jira-token-and-client-credentials-fail — a Jira or auth call was made"
+  cat "${CURL_LOG}"
+  FAILURES=$((FAILURES + 1))
+elif grep -qE '^fullsend ' "${GH_LOG}"; then
+  echo "FAIL: jira-token-and-client-credentials-fail — the fullsend CLI was called"
+  cat "${GH_LOG}"
+  FAILURES=$((FAILURES + 1))
+elif grep -qF "${JIRA_CLIENT_SECRET_VALUE}" "${TEST_TMPDIR}/stdout-jira-token-and-client-credentials-fail.log"; then
+  echo "FAIL: jira-token-and-client-credentials-fail — the client secret appeared in the output"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: jira-token-and-client-credentials-fail-no-calls"
+fi
+
+# Only one of the two client variables fails closed too.
+export JIRA_TOKEN=""
+unset FULLSEND_JIRA_CLIENT_SECRET
+run_jira_test_stdout "jira-client-id-without-secret-fails" "must be set together" "true"
+assert_jira_no_writes "jira-client-id-without-secret-fails"
+
+unset FULLSEND_JIRA_CLIENT_ID FULLSEND_JIRA_CLIENT_SECRET
+export JIRA_TOKEN="${SAVED_JIRA_TOKEN}"
+mv "${TEST_TMPDIR}/curl-before-client" "${MOCK_BIN}/curl"
 
 # Restore GitHub forge and prove no Jira state leaked into it.
 export FULLSEND_FORGE="github"
