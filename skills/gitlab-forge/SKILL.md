@@ -121,6 +121,16 @@ curl -K /tmp/gitlab-api.curlrc \
   "https://<GITLAB_HOST>/api/v4/projects/<REPO_ENCODED>/issues?state=opened&search=keyword&per_page=30"
 ```
 
+## Prior triage analysis
+
+For the triage agent's step 2e, `scripts/prior-triage.sh` reads every page
+of the notes listing and of the editor query above, keeps the notes this
+token's account posted and last edited, dates them, and prints the JSON
+that `scripts/prior-triage.jq` builds (the same file as in the github and
+jira forge skills). It writes its own curl config file for the token, so
+it needs no token setup call. Step 2e says how to run it and what the JSON
+holds.
+
 ## Merge Requests
 
 ```bash

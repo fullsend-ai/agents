@@ -73,6 +73,7 @@ script-test:
 	$(call run-timed,bash scripts/labels-test.sh)
 	$(call run-timed,bash scripts/post-triage-test.sh)
 	$(call run-timed,bash scripts/pre-triage-test.sh)
+	$(call run-timed,bash scripts/prior-triage-test.sh)
 	$(call run-timed,bash scripts/pre-prioritize-test.sh)
 	$(call run-timed,bash scripts/post-prioritize-test.sh)
 	$(call run-timed,bash scripts/pre-code-test.sh)

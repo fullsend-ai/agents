@@ -102,6 +102,15 @@ so use `orderBy=-created` when you only need the latest replies.
 Gone) cause curl to exit non-zero instead of silently returning an error body
 that could be mistaken for an empty result set.
 
+## Prior triage analysis
+
+For the triage agent's step 2e, `scripts/prior-triage.sh` reads every page
+of the comment listing above with its properties, keeps the comments this
+credential's account posted and last edited, dates them, renders each body
+as text cut at its first `Previous run` fold, and prints the JSON that
+`scripts/prior-triage.jq` builds (the same file as in the github and gitlab
+forge skills). Step 2e says how to run it and what the JSON holds.
+
 ## Searching for Duplicates and Related Issues
 
 ```bash
