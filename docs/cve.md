@@ -116,6 +116,10 @@ assignee and a `fullsend.cve.intake` issue property:
  "release": "1.8", "stream": "1.8", "component": "app.py"}
 ```
 
+Known limit: a Jira site that puts a security level on every vulnerability
+tracker, public CVEs included, has all of them refused. The gate does not yet
+let a policy name the levels it accepts.
+
 On GitLab an agent job assesses the project directory itself, which also holds
 the run's `.fullsend` directory, read from the default branch. The pre-script
 checks a mapped branch out there only when that branch carries exactly the same

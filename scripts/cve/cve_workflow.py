@@ -774,6 +774,14 @@ def check_disclosure(issue, policy):
     if not isinstance(labels, list) or any(not isinstance(x, str) for x in labels):
         raise GateError("invalid labels")
     lowered = {x.lower() for x in labels}
+    # Any Jira security level refuses the case, whatever the level is called.
+    # KNOWN LIMIT: a Jira site can put a site-wide level (for example
+    # "employees only") on every vulnerability tracker, public CVEs included.
+    # The first team this lane was tried with has that on all of its open
+    # trackers, so this check refuses every real one of them, and the trial
+    # ran on a hand-made copy of the public facts instead. Letting such a
+    # tracker in means its text reaches the model and the job log, so naming
+    # the levels an adopter accepts has to be a policy decision, not a default.
     if (
         "security" not in fields
         or fields["security"] is not None
@@ -1437,7 +1445,23 @@ def publish_remote(publisher):
         GITHUB_SIGNED_COMMITS="true",
     )
     try:
-        return subprocess.run(["bash", publisher], env=env, check=False).returncode
+        # The publisher announces its token with a GitHub Actions masking
+        # command. Only Actions acts on it; any other CI prints the line. Drop
+        # those lines and redact the token from everything else it writes.
+        process = subprocess.Popen(
+            ["bash", publisher],
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            errors="replace",
+        )
+        for line in process.stdout:
+            if line.startswith("::add-mask::"):
+                continue
+            sys.stdout.write(line.replace(token, "[redacted]"))
+            sys.stdout.flush()
+        return process.wait()
     finally:
         subprocess.run(clean, check=False, capture_output=True)
 

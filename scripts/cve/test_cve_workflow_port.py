@@ -261,6 +261,27 @@ class RemoteSourceTest(unittest.TestCase):
             self.assertNotIn(name, got)
         self.assertEqual(git("remote", "get-url", "origin", cwd=self.job), self.source["url"])
 
+    def test_publisher_output_never_shows_the_token(self):
+        workflow.prepare_remote_source(self.context("release-1.3"), self.job, self.source, token="t")
+        publisher = Path(self.folder.name) / "publisher.sh"
+        publisher.write_text(
+            'echo "::add-mask::${PUSH_TOKEN}"\n'
+            'echo "pushing to https://x-access-token:${PUSH_TOKEN}@github.com/acme/service.git" >&2\n'
+            'echo "PR created"\n')
+        env = {"REPO_DIR": str(self.job), "CODE_ALLOWED_TARGET_BRANCHES": "release-1.3"}
+        import contextlib
+        import io
+        shown = io.StringIO()
+        with mock.patch.dict(os.environ, env), \
+                mock.patch.object(workflow, "remote_source", return_value=self.source), \
+                mock.patch.object(workflow, "github_app_token", return_value="gh-secret-token"), \
+                contextlib.redirect_stdout(shown):
+            self.assertEqual(workflow.publish_remote(str(publisher)), 0)
+        self.assertNotIn("gh-secret-token", shown.getvalue())
+        self.assertNotIn("add-mask", shown.getvalue())
+        self.assertIn("x-access-token:[redacted]@github.com", shown.getvalue())
+        self.assertIn("PR created", shown.getvalue())
+
 
 
 class Rs256Test(unittest.TestCase):
