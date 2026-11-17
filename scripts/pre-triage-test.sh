@@ -58,6 +58,9 @@ chmod +x "${MOCK_BIN}/curl"
 
 export PATH="${MOCK_BIN}:${PATH}"
 export FULLSEND_TRACKER="jira"
+# pre-triage.sh writes the prior triage analysis only when RUNNER_TEMP is
+# set (prior-triage-test.sh covers it); keep these label tests to labels.
+unset RUNNER_TEMP
 export JIRA_USER_EMAIL="triage@example.com"
 export JIRA_TOKEN="fake-jira-token"
 unset JIRA_API_URL

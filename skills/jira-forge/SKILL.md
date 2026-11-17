@@ -65,7 +65,9 @@ curl --fail-with-body --silent "${JIRA_AUTH_FLAG}" "${JIRA_AUTH}" \
 # expand=properties adds each comment's entity properties: a comment fullsend
 # posted with a marker carries it as properties[] key "fullsend.sticky-marker",
 # value {"marker": "<!-- fullsend:... -->"}, not in the comment body (check the
-# body too if the property is missing). In a fullsend comment's body (Atlassian
+# body too if the property is missing). To read every comment, repeat with
+# &startAt=N, advancing N by the number of comments returned, until N
+# reaches the response's total. In a fullsend comment's body (Atlassian
 # Document Format), a horizontal rule is a "rule" node and a folded "Previous
 # run" block is an "expand" node whose attrs.title starts with "Previous run".
 curl --fail-with-body --silent "${JIRA_AUTH_FLAG}" "${JIRA_AUTH}" \
@@ -101,16 +103,6 @@ so use `orderBy=-created` when you only need the latest replies.
 **Error handling:** Always use `--fail-with-body` so HTTP errors (e.g. 410
 Gone) cause curl to exit non-zero instead of silently returning an error body
 that could be mistaken for an empty result set.
-
-## Prior triage analysis
-
-For the triage agent's step 2e, `scripts/prior-triage.sh` reads every page
-of the comment listing above with its properties, keeps the comments this
-credential's account posted and last edited, dates them, renders each body
-as text cut at its first `Previous run` fold, and prints the JSON that
-`scripts/prior-triage.jq` builds (the same file as in the github and gitlab
-forge skills). It keeps the credential in its own curl config file, never
-on a command line. Step 2e says how to run it and what the JSON holds.
 
 ## Searching for Duplicates and Related Issues
 

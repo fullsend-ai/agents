@@ -276,23 +276,25 @@ Re-running triage posts the result differently per tracker:
 A re-run treats an earlier marked comment as its own prior analysis only
 when the triage account wrote it and made its last edit; any other marked
 comment is read as a human comment, and so is the `Previous run` history
-fullsend folds into an edited comment. The agent runs its forge skill's
-`scripts/prior-triage.sh`, which reads every page of comments, applies these
-rules, and lists the causes an older analysis or fold names that the newest
-one dropped, for the agent to re-check. It identifies that account per
-tracker:
+fullsend folds into an edited comment. The pre-script
+(`scripts/pre-triage.sh`, with `scripts/lib/prior-triage.lib.sh`) reads every
+page of comments on the host, applies these rules, lists the causes an older
+analysis or fold names that the newest one dropped, and writes the result to
+`${RUNNER_TEMP}/triage-workspace/prior-triage.json`, which the harness copies
+into the sandbox for the agent. Without `RUNNER_TEMP` there is no file, and
+the agent reads the comments itself and trusts none of them. The pre-script
+identifies that account per tracker:
 
-- **GitHub:** a `Bot` author whose App is `$FULLSEND_SLUG`, `<owner>-triage`,
-  `fullsend-ai-triage` or, when `FULLSEND_APP_SET` is not empty, `${FULLSEND_APP_SET}-triage`.
-  `env/github/triage.env` passes `FULLSEND_APP_SET` into the sandbox, but
-  fullsend's route-based `triage` job, which runs the built-in triage
-  agent, does not export it yet (fullsend-ai/fullsend#9568); the
-  `harness-run` job already does (both in fullsend's
-  `.github/workflows/reusable-dispatch.yml`). Until the `triage` job does, an
-  install whose custom App set is not named after the repository owner, and
-  whose harness `slug` is not its triage App's slug, matches none of these
-  names, so it gets no trusted baseline and the agent rebuilds its lists from
-  the earlier analyses.
+- **GitHub:** a `Bot` author whose App is `<owner>-triage`,
+  `fullsend-ai-triage` or, when `FULLSEND_APP_SET` is set,
+  `${FULLSEND_APP_SET}-triage` (the names the review pre-script trusts for
+  the review App, with `-triage`). fullsend's route-based `triage` job, which
+  runs the built-in triage agent, does not export `FULLSEND_APP_SET` yet
+  (fullsend-ai/fullsend#9568); the `harness-run` job already does (both in
+  fullsend's `.github/workflows/reusable-dispatch.yml`). Until the `triage`
+  job does, an install whose custom App set is not named after the
+  repository owner matches none of these names, so it gets no trusted
+  baseline and the agent rebuilds its lists from the earlier analyses.
 - **GitLab:** the account `GET /api/v4/user` returns for `GITLAB_TOKEN`.
 - **Jira:** the account `GET /rest/api/3/myself` returns, which needs the
   `read:jira-user` scope (or the granular `read:user:jira`) on

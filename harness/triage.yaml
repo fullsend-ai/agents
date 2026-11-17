@@ -58,6 +58,12 @@ host_files:
   - src: ${GCP_OIDC_TOKEN_FILE}
     dest: /sandbox/workspace/.gcp-oidc-token
     optional: true
+  # Step 2e's prior triage analysis, which scripts/pre-triage.sh writes on
+  # the host (scripts/lib/prior-triage.lib.sh). Optional: without
+  # RUNNER_TEMP there is no file and step 2e reads the comments by hand.
+  - src: ${RUNNER_TEMP}/triage-workspace/prior-triage.json
+    dest: /sandbox/workspace/prior-triage.json
+    optional: true
 
 pre_script: scripts/pre-triage.sh
 post_script: scripts/post-triage.sh
