@@ -71,10 +71,10 @@ triage_expectations: |
      characters.
 
   Scoring guide:
-  A score of 1 means authgw is listed in Open causes without the
-  "(unverified)" marker, presented as confirmed or as the root cause, or
-  ruled out, or the None cause is dropped, or the '+' cause is open
-  again.
+  A score of 1 means the agent posted nothing, or authgw is listed in
+  Open causes without the "(unverified)" marker, presented as confirmed
+  or as the root cause, or ruled out, or the None cause is dropped, or
+  the '+' cause is open again.
   A score of 2 means the causes are right in the prose but the comment
   has no Open causes or Ruled out list.
   A score of 3 means both lists are right but the comment restates the
