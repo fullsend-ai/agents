@@ -30,8 +30,8 @@ cause_lists:
   # Carried only as a hypothesis: an Open causes item naming it needs the
   # "(unverified)" marker. Leaving it out passes; ruling it out fails.
   unverified_open:
-    - ["authgw", "gateway strip"]
-  forbidden_ruled_out: [["authgw"], ["gateway", "strip"]]
+    - ["authgw", "gateway strip", "gateway in front"]
+  forbidden_ruled_out: [["authgw"], ["gateway", "strip"], ["gateway in front"]]
   forbidden_open: [["+", "reject"], ["plus", "reject"]]
 
 max_turns: 35
