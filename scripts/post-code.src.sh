@@ -427,9 +427,12 @@ else
   echo "No agent branch preference — using repo default: ${TARGET_BRANCH}"
 fi
 
-echo "::add-mask::${PUSH_TOKEN}"
-if [ -n "${GITLAB_TOKEN:-}" ]; then
-  echo "::add-mask::${GITLAB_TOKEN}"
+# ::add-mask:: is GHA-only; on other runners the echo would print the token.
+if [ "${GITHUB_ACTIONS:-}" = "true" ]; then
+  echo "::add-mask::${PUSH_TOKEN}"
+  if [ -n "${GITLAB_TOKEN:-}" ]; then
+    echo "::add-mask::${GITLAB_TOKEN}"
+  fi
 fi
 
 # Scan optional public text with built-in rules, not repository policy.
