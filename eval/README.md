@@ -323,8 +323,8 @@ Each case directory under `eval/<agent>/cases/` contains:
   each name on it and other prose does not; `forbidden_open`, AND-groups
   no Open causes name may match, with regex character classes such as
   `[a-z0-9._%+-]` (and a quantifier after one) cut first;
-  `forbidden_ruled_out`, the same for Ruled out
-  names; `unverified_open`, groups an Open causes item may name only with
+  `forbidden_ruled_out`, AND-groups no Ruled out name may match (no class
+  cut); `unverified_open`, groups an Open causes item may name only with
   the `(unverified)` marker, in its name or at its end; `seeded_folds`, a
   list of how many `Previous run` folds each seeded comment holds, in
   order, missing entries 0; any other key fails the check, so a typo
@@ -376,8 +376,10 @@ Not covered, and why:
   entries that say which identity posts them, plus edits after creation
   for the edit-time rules.
 - **Recovering a cause the newest trusted analysis dropped but a fold
-  still lists.** That is the script fullsend-ai/agents#2053 asks for; case
-  021 only checks that a fold's cause is never carried as established.
+  still lists.** That is the script fullsend-ai/agents#2053 asks for. Case
+  021 has no trusted baseline, so it checks the rebuild path: the fold's
+  cause is carried in Open causes as `(unverified)`, never asserted or
+  ruled out.
 - **GitLab and Jira.** `setup-fixture.sh` creates GitHub repositories and
   fixtures only, so there is nothing to seed notes or Jira comments
   (with the `fullsend.sticky-marker` property and ADF folds) on. Nothing

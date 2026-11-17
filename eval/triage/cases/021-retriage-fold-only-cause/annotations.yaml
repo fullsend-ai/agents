@@ -37,7 +37,7 @@ cause_lists:
   # "(unverified)" marker. Leaving it out or ruling it out fails.
   unverified_open:
     - ["authgw", "gateway strip", "gateway in front"]
-  forbidden_ruled_out: [["authgw"], ["gateway", "strip"], ["gateway in front"]]
+  forbidden_ruled_out: [["authgw"], ["gateway", "strip"], ["gateway", "drop"], ["gateway", "remov"], ["gateway in front"]]
   forbidden_open: [["+", "reject"], ["plus", "reject"]]
 
 max_turns: 35

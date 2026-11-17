@@ -22,10 +22,12 @@ fixture:
   # run" then "Previous run (2)", never nested ones. The fold's analysis
   # calls the authgw gateway stripping the email parameter "confirmed"; the current
   # text leaves authgw out without a ruling, and nothing else on the issue
-  # or in the fixture repo names it. A fold is a claim (step 2e), so the
-  # next analysis may leave authgw out or carry it as a hypothesis, but
-  # must not assert it.
-  # Whether it must be recovered is #2053's script, not this case.
+  # or in the fixture repo names it. The fixture posts as the eval account,
+  # so there is no trusted baseline: step 2e rebuilds the lists and reads
+  # the fold as a claim. The next analysis must carry authgw in Open causes
+  # ending (unverified), never assert it, and never rule it out, since
+  # nothing refutes it. Recovering a cause a trusted baseline dropped is
+  # #2053's script, not this case.
   comments:
     - |
       <!-- fullsend:triage-agent -->
