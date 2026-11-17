@@ -23,8 +23,10 @@ cause_lists:
   ruled_out:
     - ["+", "plus"]
   # The '+' cause back on the comment's word, quoted or not, or named by a
-  # plus address ("+" with "@"). The judge cuts bracketed character
-  # classes before matching, so the revived cause may quote
+  # plus address ("+" with "@"). "plus" only where the rejection claim is
+  # about plus addresses, so a cause that contrasts them ("apostrophes
+  # rejected while plus addresses pass") passes. The judge cuts regex
+  # character classes before matching, so the revived cause may quote
   # `[a-zA-Z0-9._%+-]` (the class without "'") without matching "+".
   forbidden_open:
     - ["+", "reject"]
@@ -32,7 +34,13 @@ cause_lists:
     - ["+", "invalid"]
     - ["+", "in the local part"]
     - ["+", "@"]
-    - ["plus"]
+    - ["rejects plus"]
+    - ["reject plus"]
+    - ["plus", "are rejected"]
+    - ["plus", "is rejected"]
+    - ["plus addresses rejected"]
+    - ["plus", "fail"]
+    - ["plus", "invalid"]
 
 max_turns: 35
 max_cost_usd: 0.50
