@@ -52,17 +52,17 @@ bot's login, so keep the suffix match there.
 
 ```bash
 REVIEW_BODY_FILE="/sandbox/workspace/review-body.txt"
-if [ ! -s "${REVIEW_BODY_FILE}" ] || ! grep -q '[^[:space:]]' "${REVIEW_BODY_FILE}" ||
+if ! test -s "${REVIEW_BODY_FILE}" || ! grep -q '[^[:space:]]' "${REVIEW_BODY_FILE}" ||
    grep -qxE 'See the .*review comment.*for full details\.?' "${REVIEW_BODY_FILE}" ||
-   [ "$(wc -c < "${REVIEW_BODY_FILE}")" -lt 200 ]; then
-  if [[ "${TRIGGER_SOURCE}" == *"[bot]" ]]; then
+   test "$(wc -c < "$REVIEW_BODY_FILE")" -lt 200; then
+  if test "${TRIGGER_SOURCE%"[bot]"}" != "${TRIGGER_SOURCE}"; then
     LOGIN_SELECT='select(.user.login == env.TRIGGER_SOURCE)'
   else
     LOGIN_SELECT='select(.user.login | endswith("-review[bot]"))'
   fi
-  REVIEW_COMMENT=$(gh api --paginate --slurp "repos/${REPO_FULL_NAME}/issues/${PR_NUMBER}/comments" \
-    | jq -r "add // [] | [.[] | ${LOGIN_SELECT} | select(.body | contains(\"<!-- fullsend:review-agent -->\"))] | last | .body // empty")
-  if [ -n "${REVIEW_COMMENT}" ]; then
+  REVIEW_COMMENT=$(gh api --paginate --slurp "repos/$REPO_FULL_NAME/issues/$PR_NUMBER/comments" \
+    | jq -r "add // [] | [.[] | $LOGIN_SELECT | select(.body | contains(\"<!-- fullsend:review-agent -->\"))] | last | .body // empty")
+  if test -n "${REVIEW_COMMENT}"; then
     echo "::notice::Recovered review findings from issue comment API fallback"
     printf '%s\n' "${REVIEW_COMMENT}" > "${REVIEW_BODY_FILE}"
   else
@@ -81,7 +81,7 @@ commands: `gh pr checks` covers Actions plus third-party status contexts;
 `gh run list` covers Actions runs that have logs and artifacts.
 
 ```bash
-HEAD_SHA=$(gh pr view "${PR_NUMBER}" --repo "${REPO_FULL_NAME}" --json headRefOid --jq '.headRefOid')
+HEAD_SHA=$(gh pr view "$PR_NUMBER" --repo "$REPO_FULL_NAME" --json headRefOid --jq '.headRefOid')
 
 # All checks and status contexts on the PR head. Exits nonzero when any
 # check is pending or failing — expected here, so don't let it stop the

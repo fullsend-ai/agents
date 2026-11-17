@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
-# pre-triage-test.sh — Test pre-triage.sh with the Jira and GitLab trackers.
+# pre-triage-test.sh — Test pre-triage.sh with the Jira, GitLab, and GitHub
+# trackers.
 #
-# Uses a mock curl command to capture calls without hitting Jira Cloud or GitLab.
+# Uses mock curl and gh commands to capture calls without hitting Jira Cloud,
+# GitLab, or GitHub.
 # Run from the repo root: bash scripts/pre-triage-test.sh
 
 set -euo pipefail
@@ -46,6 +48,13 @@ for arg in "\$@"; do
       ;;
   esac
 done
+
+# OAuth 2.0 client-credentials token request: the body comes on stdin.
+if [[ "\${URL}" == "https://auth.atlassian.com/oauth/token" ]]; then
+  cat > /dev/null
+  printf '{"access_token":"minted-access-token","expires_in":3600}\n200'
+  exit 0
+fi
 
 if [[ "\${URL}" =~ \\?fields=labels\$ ]] && [[ "\${METHOD}" == "GET" ]]; then
   echo '{"fields":{"labels":'"\$(cat "${MOCK_LABELS_FILE}")"'}}'
@@ -269,6 +278,95 @@ fi
 unset JIRA_API_URL
 export JIRA_USER_EMAIL="triage@example.com"
 
+# --- OAuth 2.0 client credentials (#1926) ---
+# With only the client credentials, REST calls send a minted, masked Bearer
+# token to JIRA_API_URL, and the secret reaches no command line or output.
+JIRA_CLIENT_SECRET_VALUE="client-secret-DO-NOT-LEAK"
+export JIRA_TOKEN=""
+export FULLSEND_JIRA_CLIENT_ID="client-id-1"
+export FULLSEND_JIRA_CLIENT_SECRET="${JIRA_CLIENT_SECRET_VALUE}"
+export JIRA_API_URL="https://api.atlassian.com/ex/jira/11111111-2222-3333-4444-555555555555"
+run_test "jira-client-credentials-uses-minted-token" \
+  "https://test.atlassian.net/browse/TESTPROJ-42" \
+  "--oauth2-bearer minted-access-token --fail --silent --show-error --connect-timeout 10 --max-time 30 --header Content-Type: application/json --request GET ${JIRA_API_URL}/rest/api/3/issue/TESTPROJ-42"
+if grep -qF -- "--user" "${CURL_LOG}" \
+  || ! grep -qx "::add-mask::minted-access-token" "${TMPDIR}/stdout.log" \
+  || grep -qF "${JIRA_CLIENT_SECRET_VALUE}" "${CURL_LOG}" "${TMPDIR}/stdout.log"; then
+  echo "FAIL: jira-client-credentials-masked-and-secret-hidden"
+  cat "${CURL_LOG}" "${TMPDIR}/stdout.log"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: jira-client-credentials-masked-and-secret-hidden"
+fi
+
+# The documented setup maps only the client variables, so JIRA_TOKEN is
+# unset, not empty; the script runs under set -u.
+unset JIRA_TOKEN
+run_test "jira-client-credentials-token-unset" \
+  "https://test.atlassian.net/browse/TESTPROJ-42" \
+  "--request GET ${JIRA_API_URL}/rest/api/3/issue/TESTPROJ-42"
+export JIRA_TOKEN=""
+
+# A first mint inside a command substitution, with stdout redirected to a
+# file, sends its mask line to stderr. When the REST call then fails, the
+# error that echoes curl's stderr must not print the token.
+MINT_FAIL_BIN="${TMPDIR}/bin-mint-fail"
+MINT_FAIL_STATE="${TMPDIR}/mint-fail-count"
+mkdir -p "${MINT_FAIL_BIN}"
+cat > "${MINT_FAIL_BIN}/curl" <<MOCKEOF
+#!/usr/bin/env bash
+for arg in "\$@"; do
+  if [[ "\${arg}" == "https://auth.atlassian.com/oauth/token" ]]; then
+    cat > /dev/null
+    n=0; [[ -f "${MINT_FAIL_STATE}" ]] && n="\$(cat "${MINT_FAIL_STATE}")"
+    printf '%s' "\$((n + 1))" > "${MINT_FAIL_STATE}"
+    if [[ "\${n}" -eq 0 ]]; then printf '{}\n401'; else printf '{"access_token":"subshell-tok-xyz","expires_in":3600}\n200'; fi
+    exit 0
+  fi
+done
+echo "curl: (7) Failed to connect" >&2
+exit 7
+MOCKEOF
+chmod +x "${MINT_FAIL_BIN}/curl"
+mint_fail_rc=0
+env -u JIRA_TOKEN PATH="${MINT_FAIL_BIN}:${PATH}" JIRA_BASE_URL="https://test.atlassian.net" bash -c '
+  set -euo pipefail
+  SCRIPT_DIR="$1"
+  source "${SCRIPT_DIR}/lib/jira-triage-ops.lib.sh"
+  r="$(_jira_api_with_status GET /myself)" || true
+' _ "${SCRIPT_DIR}" > "${TMPDIR}/mint-fail.out" 2> "${TMPDIR}/mint-fail.err" || mint_fail_rc=$?
+if [[ ${mint_fail_rc} -ne 0 ]] || ! grep -qF "Jira API error: curl failed" "${TMPDIR}/mint-fail.err" \
+  || grep -h "subshell-tok-xyz" "${TMPDIR}/mint-fail.out" "${TMPDIR}/mint-fail.err" | grep -qv '^::add-mask::'; then
+  echo "FAIL: jira-client-subshell-mint-curl-failure — the token was printed outside a mask line, or no curl error was reported (rc=${mint_fail_rc})"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: jira-client-subshell-mint-curl-failure"
+fi
+
+# Client credentials need JIRA_API_URL; JIRA_BASE_URL is no fallback.
+unset JIRA_API_URL
+run_test "jira-client-credentials-without-api-url-fails" \
+  "https://test.atlassian.net/browse/TESTPROJ-42" \
+  "JIRA_API_URL (the Atlassian API gateway URL) must be set" \
+  "true" "true"
+
+# A token next to client credentials, or one client variable alone, fails
+# before any request, naming the variables.
+export JIRA_API_URL="https://api.atlassian.com/ex/jira/11111111-2222-3333-4444-555555555555"
+export JIRA_TOKEN="fake-jira-token"
+run_test "jira-token-and-client-credentials-fail" \
+  "https://test.atlassian.net/browse/TESTPROJ-42" \
+  "not both" \
+  "true" "true"
+export JIRA_TOKEN=""
+unset FULLSEND_JIRA_CLIENT_SECRET
+run_test "jira-one-client-variable-fails" \
+  "https://test.atlassian.net/browse/TESTPROJ-42" \
+  "must be set together" \
+  "true" "true"
+export JIRA_TOKEN="fake-jira-token"
+unset FULLSEND_JIRA_CLIENT_ID JIRA_API_URL
+
 # --- GitLab origin validation (#1732) ---
 # Self-managed GitLab on a non-default HTTPS port: the issue URL's scheme,
 # host, and port must match the trusted CI server origin before any token is
@@ -342,6 +440,66 @@ run_test "gitlab-com-no-ci-server-url-ok" \
   "https://gitlab.com/api/v4/projects/group%2Fproject/issues/42"
 
 unset CI_SERVER_HOST GITLAB_TOKEN
+
+# --- GitHub host validation (#1865) ---
+# The issue URL must be on the GitHub host the run executes against
+# (GITHUB_SERVER_URL, default https://github.com), and REPO must parse as
+# owner/repo for it. Mock gh logs to the same calls log as mock curl.
+
+printf '#!/usr/bin/env bash\necho "gh $*" >> %s\n' "${CURL_LOG}" > "${MOCK_BIN}/gh"
+cat >> "${MOCK_BIN}/gh" <<'GHMOCK'
+echo '[]'
+exit 0
+GHMOCK
+chmod +x "${MOCK_BIN}/gh"
+
+export FULLSEND_TRACKER="github"
+export GH_TOKEN="fake-gh-token"
+unset GITHUB_SERVER_URL
+
+run_test "github-com-no-server-url-ok" \
+  "https://github.com/test-org/test-repo/issues/42" \
+  "gh api repos/test-org/test-repo/issues/42/labels"
+
+export GITHUB_SERVER_URL="https://ghe.example.com"
+run_test "github-custom-host-matching-url-ok" \
+  "https://ghe.example.com/acme/widgets/issues/79" \
+  "gh api repos/acme/widgets/issues/79/labels"
+
+run_test "github-custom-host-github-com-url-fails" \
+  "https://github.com/acme/widgets/issues/79" \
+  "ISSUE_URL does not match expected pattern" \
+  "true" "true"
+
+run_test "github-custom-host-lookalike-host-fails" \
+  "https://ghe.example.com.evil.test/acme/widgets/issues/79" \
+  "ISSUE_URL does not match expected pattern" \
+  "true" "true"
+
+run_test "github-custom-host-non-numeric-issue-fails" \
+  "https://ghe.example.com/acme/widgets/issues/abc" \
+  "ISSUE_URL does not match expected pattern" \
+  "true" "true"
+
+run_test "github-custom-host-extra-path-fails" \
+  "https://ghe.example.com/acme/widgets/extra/issues/79" \
+  "ISSUE_URL does not match expected pattern" \
+  "true" "true"
+
+# A trailing slash on GITHUB_SERVER_URL still matches.
+export GITHUB_SERVER_URL="https://ghe.example.com/"
+run_test "github-server-url-trailing-slash-ok" \
+  "https://ghe.example.com/acme/widgets/issues/79" \
+  "gh api repos/acme/widgets/issues/79/labels"
+
+# A non-HTTPS GITHUB_SERVER_URL fails closed.
+export GITHUB_SERVER_URL="http://ghe.example.com"
+run_test "github-non-https-server-url-fails" \
+  "http://ghe.example.com/acme/widgets/issues/79" \
+  "GITHUB_SERVER_URL is not an HTTPS origin" \
+  "true" "true"
+
+unset GITHUB_SERVER_URL GH_TOKEN
 
 # --- Summary ---
 
