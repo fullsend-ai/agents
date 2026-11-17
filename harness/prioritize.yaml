@@ -9,7 +9,7 @@ model: opus
 # effort is unset (internal/runtime/pi_run.go piDefaultThinking). Revisit
 # when the model: above moves to a generation with a different default.
 effort: high
-image: ghcr.io/fullsend-ai/fullsend-sandbox@sha256:1b427b856e584b5de905553e4121feef2969b5f46d4607cef0d323f5ad712c59
+image: ghcr.io/fullsend-ai/fullsend-sandbox@sha256:40d00451d1e1927f9c6575e668d2b316fb096ae74b870d13c9960bc94c184086
 policy: policies/base.yaml
 providers:
   - vertex-ai
@@ -97,3 +97,41 @@ forge:
       sandbox:
         ISSUE_URL: "${GITLAB_ISSUE_URL}"
         FULLSEND_FORGE: gitlab
+  # Dark / opt-in. GitHub and GitLab /fs-prioritize comments, the GitHub
+  # project-board poller, and existing prioritize behavior are unchanged.
+  # This block is used only when runtime.forge is jira (FULLSEND_FORGE=jira).
+  # Nothing in this repo dispatches prioritize onto Jira yet.
+  jira:
+    # The builtin `jira` provider (profile `fullsend-jira`, shipped with
+    # fullsend) gives the sandbox a placeholder, never the real credential,
+    # like the triage and code Jira overlays.
+    providers:
+      - jira
+    skills:
+      - skills/jira-forge
+    # JIRA_API_URL and JIRA_USER_EMAIL reach the sandbox through this host
+    # file, not env.sandbox: a ${VAR} there fails the run when unset.
+    host_files:
+      - src: env/jira/prioritize.env
+        dest: /sandbox/workspace/.env.d/prioritize.env
+        expand: true
+    env:
+      runner:
+        ISSUE_URL: ${FULLSEND_WORK_ITEM_URL}
+        # Host-side Jira credentials from the FULLSEND_JIRA_TOKEN and
+        # optional FULLSEND_JIRA_EMAIL repository secrets (fullsend#9079).
+        JIRA_TOKEN: ${FULLSEND_JIRA_TOKEN}
+        JIRA_USER_EMAIL: ${FULLSEND_JIRA_EMAIL}
+        # OAuth 2.0 client credentials, the alternative to the token
+        # (#1926). Optional keys: an unset value is dropped. Runner only —
+        # never env.sandbox, a host file or a provider.
+        # scripts/lib/jira-auth.lib.sh refuses them next to a token.
+        FULLSEND_JIRA_CLIENT_ID: ${FULLSEND_JIRA_CLIENT_ID}
+        FULLSEND_JIRA_CLIENT_SECRET: ${FULLSEND_JIRA_CLIENT_SECRET}
+        FULLSEND_DIR: ${FULLSEND_DIR}
+        JIRA_BASE_URL: ${JIRA_BASE_URL}
+        FULLSEND_FORGE: jira
+      sandbox:
+        ISSUE_URL: "${FULLSEND_WORK_ITEM_URL}"
+        JIRA_BASE_URL: "${JIRA_BASE_URL}"
+        FULLSEND_FORGE: jira

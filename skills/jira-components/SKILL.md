@@ -30,7 +30,8 @@ Bearer when it is empty.
 ```bash
 JIRA_EMAIL="${JIRA_USER_EMAIL:-}"; JIRA_EMAIL="${JIRA_EMAIL//[[:space:]]/}"
 JIRA_AUTH_FLAG=--oauth2-bearer; test -n "${JIRA_EMAIL}" && JIRA_AUTH_FLAG=--user
-JIRA_AUTH="${JIRA_EMAIL:+${JIRA_EMAIL}:}${JIRA_TOKEN}"
+JIRA_TOKEN_NOW="$(cat /sandbox/fullsend-jira/token 2>/dev/null)"; JIRA_TOKEN_NOW="${JIRA_TOKEN_NOW:-${JIRA_TOKEN}}"
+JIRA_AUTH="${JIRA_EMAIL:+${JIRA_EMAIL}:}${JIRA_TOKEN_NOW}"
 ISSUE_KEY="${ISSUE_URL##*/browse/}"
 PROJECT_KEY="${ISSUE_KEY%-*}"
 curl --silent "${JIRA_AUTH_FLAG}" "${JIRA_AUTH}" \
@@ -46,7 +47,8 @@ emit `component_actions`.
 ```bash
 JIRA_EMAIL="${JIRA_USER_EMAIL:-}"; JIRA_EMAIL="${JIRA_EMAIL//[[:space:]]/}"
 JIRA_AUTH_FLAG=--oauth2-bearer; test -n "${JIRA_EMAIL}" && JIRA_AUTH_FLAG=--user
-JIRA_AUTH="${JIRA_EMAIL:+${JIRA_EMAIL}:}${JIRA_TOKEN}"
+JIRA_TOKEN_NOW="$(cat /sandbox/fullsend-jira/token 2>/dev/null)"; JIRA_TOKEN_NOW="${JIRA_TOKEN_NOW:-${JIRA_TOKEN}}"
+JIRA_AUTH="${JIRA_EMAIL:+${JIRA_EMAIL}:}${JIRA_TOKEN_NOW}"
 ISSUE_KEY="${ISSUE_URL##*/browse/}"
 curl --silent "${JIRA_AUTH_FLAG}" "${JIRA_AUTH}" \
   "${JIRA_API_URL:-${JIRA_BASE_URL}}/rest/api/3/issue/${ISSUE_KEY}?fields=components" \

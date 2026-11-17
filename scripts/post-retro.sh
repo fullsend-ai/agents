@@ -56,10 +56,50 @@ case "${FULLSEND_FORGE:-}" in
 [[ -n "${GITHUB_RETRO_OPS_SH_LOADED:-}" ]] && return 0
 GITHUB_RETRO_OPS_SH_LOADED=1
 
+# shellcheck source=github-host.lib.sh
+# BEGIN bundled: lib/github-host.lib.sh
+# shellcheck shell=bash
+# github-host.lib.sh — Shared GitHub host handling for GitHub ops.
+#
+# Derives the GitHub origin the run executes against from GITHUB_SERVER_URL,
+# a GitHub Actions default variable (https://github.com on github.com, the
+# instance URL on GitHub Enterprise Server). Defaults to https://github.com
+# when unset. Issue/PR URL validation, URL parsing and generated links use
+# this origin instead of a hard-coded github.com.
+#
+# Sourced by the github-*-ops.lib.sh files and inlined by the bundler.
+
+[[ -n "${GITHUB_HOST_SH_LOADED:-}" ]] && return 0
+GITHUB_HOST_SH_LOADED=1
+
+# Prints the GitHub origin (https://host[:port]) without a trailing slash.
+# Fails closed when GITHUB_SERVER_URL is not an HTTPS origin.
+_github_server_url() {
+  local origin="${GITHUB_SERVER_URL:-https://github.com}"
+  origin="${origin%/}"
+  if [[ ! "${origin}" =~ ^https://[a-zA-Z0-9.-]+(:[0-9]+)?$ ]]; then
+    echo "ERROR: GITHUB_SERVER_URL is not an HTTPS origin (https://host[:port]): $(printf '%s' "${origin}" | tr -d '\n\r')" >&2
+    return 1
+  fi
+  printf '%s\n' "${origin}"
+}
+
+# Prints the remainder of a URL after "<origin>/" when the URL is on the
+# GitHub origin; fails (printing nothing) when it is on another host.
+_github_url_path() {
+  local url="$1" base
+  base="$(_github_server_url)/" || return 1
+  [[ "${url}" == "${base}"* ]] || return 1
+  printf '%s\n' "${url#"${base}"}"
+}
+# END bundled: lib/github-host.lib.sh
+
 # --- URL handling ---
 
 forge_validate_originating_url() {
-  if [[ ! "${ORIGINATING_URL}" =~ ^https://github\.com/[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+/(issues|pull)/[0-9]+$ ]]; then
+  local path
+  if ! path=$(_github_url_path "${ORIGINATING_URL}") \
+    || [[ ! "${path}" =~ ^[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+/(issues|pull)/[0-9]+$ ]]; then
     echo "ERROR: ORIGINATING_URL does not match expected pattern: $(_gha_sanitize "${ORIGINATING_URL}")" >&2
     return 1
   fi
@@ -67,7 +107,7 @@ forge_validate_originating_url() {
 
 forge_parse_originating_url() {
   # shellcheck disable=SC2034 # ORIGINATING_REPO consumed by callers after function returns
-  ORIGINATING_REPO=$(echo "${ORIGINATING_URL}" | sed -E 's#https://github.com/##; s#/(issues|pull)/.*##')
+  ORIGINATING_REPO=$(_github_url_path "${ORIGINATING_URL}" | sed -E 's#/(issues|pull)/.*##')
   # shellcheck disable=SC2034 # ORIGINATING_NUMBER consumed by callers after function returns
   ORIGINATING_NUMBER=$(basename "${ORIGINATING_URL}")
 }
