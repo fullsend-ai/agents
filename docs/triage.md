@@ -281,8 +281,8 @@ tracker:
 - **Jira:** the account `GET /rest/api/3/myself` returns, which needs the
   `read:jira-user` scope (or the granular `read:user:jira`) on
   `FULLSEND_JIRA_TOKEN`. Without it, no marked comment counts as the agent's
-  own: their causes are read as hypotheses, and the agent says so in its
-  reasoning.
+  own: their causes are read as hypotheses, and the agent says so in the
+  `reasoning` field of the run's result, which is not posted to the issue.
 
 ### Jira setup
 
