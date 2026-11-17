@@ -1,0 +1,47 @@
+forge: github
+fixture:
+  type: issue
+  title: "Login returns 500 for some users"
+  body: |
+    Since last week a few users get an HTTP 500 when they submit the
+    login form. Most users can log in fine. The server log shows
+    `TypeError: expected string or bytes-like object` from `re.match` in
+    `validate_email` (`src/auth/validators.py`), called from
+    `login_handler`.
+
+    Steps to reproduce: POST the login form with a password and no
+    email field. Expected a validation message, got a 500.
+
+    Environment: current main, Python 3.12.
+  # Two earlier triage runs written before the triage state existed: no
+  # cause lists and no triage-state-v1 marker. Run 1 named two causes; run 2 refuted the second in prose.
+  # The agent has to build both lists from these once. The last comment
+  # is a human follow-up that names neither cause.
+  comments:
+    - |
+      <!-- fullsend:triage-agent -->
+      The 500 most likely comes from the login handler's email check. Two causes fit:
+
+      1. When the email field is missing, login_handler passes None from request.params.get("email") to validate_email, and re.match(pattern, None) raises TypeError.
+      2. validate_email may reject addresses with '+' in the local part; its docstring says the regex does.
+
+      **Proposed test case:**
+      ```
+      POST the login form without an email field, and with "a+b@example.com".
+      Expect: a 400 with a validation message, never a 500.
+      ```
+
+      ---
+      **Next steps:**
+      - `/fs-code` — agent creates a PR to implement this issue
+      - `/fs-code <your instruction>` — agent implements with your specific guidance
+    - |
+      <!-- fullsend:triage-agent -->
+      Re-triaged after re-checking the code. The '+' theory does not hold: the local-part character class in the pattern includes '+', so plus addresses validate, and the docstring is stale. The missing email field reaching validate_email as None is still the likely cause.
+
+      ---
+      **Next steps:**
+      - `/fs-code` — agent creates a PR to implement this issue
+      - `/fs-code <your instruction>` — agent implements with your specific guidance
+    - |
+      Still seeing this after Monday's deploy, a handful of 500s a day. Can this be picked up?

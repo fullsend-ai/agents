@@ -92,7 +92,7 @@ other judges run and are reported, but don't fail the run:
   `triage_quality`)
 - live-model behaviour checks: `finding_expectations`, `required_labels`,
   `forbidden_labels`, `risk_label_present`, `expected_files`,
-  `expected_state`, `expected_review_action`
+  `expected_state`, `expected_review_action`, `cause_lists`
 - the `max_turns`/`max_cost` budget judges
 
 Their thresholds stay in each `eval.yaml`; `run-functional.sh` drops
@@ -146,11 +146,15 @@ eval/scripts/aggregate-nightly.sh eval/review/eval.yaml \
 
 - **Behaviour checks** (`finding_expectations`, `required_labels`,
   `forbidden_labels`, `risk_label_present`, `expected_files`,
-  `expected_state`, `expected_review_action`) with a `min_pass_rate`: a
+  `expected_state`, `expected_review_action`, `cause_lists`) with a
+  `min_pass_rate`: a
   case fails the check when it is `false` in at least
   2 of the given runs. The nightly pass rate is the share of cases that
   do not fail, and is compared with `min_pass_rate`. A flake that hits a
   different case each night passes; a case that keeps failing does not.
+  `cause_lists` has no `min_pass_rate` yet: it is scored in each run's
+  summary but is not part of the nightly verdict until its cases have run
+  live (fullsend-ai/agents#2043).
 - **Quality judges** (`*_quality`) with a `min_mean`: the verdict fails
   when the median of 3 non-null per-run means is below `min_mean`. With
   fewer than 3, the judge reports "insufficient history" and does not
@@ -301,7 +305,12 @@ Each case directory under `eval/<agent>/cases/` contains:
 - `input.yaml` — fixture definition (forge, fixture type, title, body,
   PR files). `${REPO_URL}` in a fixture body expands to the ephemeral GitHub
   repository URL. Issue cases may set `labels`, applied before the agent runs
-  (e.g. `ready-to-code` for a code case). Pull-request cases may add
+  (e.g. `ready-to-code` for a code case). GitHub issue cases may also set
+  `comments`, a list of comment bodies posted oldest first before the agent
+  runs (e.g. earlier triage analyses for a re-triage case). The eval account
+  posts them, so the triage agent never trusts them as its own: re-triage
+  cases exercise its rebuild path (fullsend-ai/agents#2043 tracks a
+  bot-authored baseline). Pull-request cases may add
   `followup_files`, `commit_message` (default `eval: fixture changes`),
   and a `prior_review` body/provenance to exercise a re-review. Each PR
   file is written ending with exactly one final newline, whatever block
@@ -309,7 +318,15 @@ Each case directory under `eval/<agent>/cases/` contains:
 - `annotations.yaml` — expected outcomes (labels, final `state`, review
   expectations, and for review cases an optional `review_action` list of
   actions allowed in the review-findings marker, which can keep an agent's
-  approve after a post-review downgrade) and the report-only budgets:
+  approve after a post-review downgrade), for triage cases an optional
+  `cause_lists` block checked against the `triage-state-v1` marker of the
+  run's own comment (`seeded_comments`, required: how many
+  `fixture.comments` precede the run, 0 for none; `open` and `ruled_out`,
+  lists of phrase groups matched in the cause names; `forbidden_open`;
+  `verified_open` and `unverified_open`, groups whose open cause must or
+  must not be verified; a case without the block is not scored by that
+  check), and the
+  report-only budgets:
   `max_cost_usd`, plus `max_turns` where the eval has a `max_turns` judge.
   Set `release: true` to include the case in `EVAL_TIER=release` runs (see
   [Tiers](#tiers) above).
@@ -321,6 +338,9 @@ to must exist in its fixture repo (`repo/`, plus the PR's files) or in
 the fixture's `labels`. The expected outcome in `annotations.yaml` must
 be what a careful engineer would conclude from that repo alone: an agent
 that checks the code and finds a gap will rightly answer `needs-info`.
+A re-triage case may name things the repo cannot contain inside its seeded
+`comments` (for example a cause supported only by an earlier analysis), when
+carrying that state forward is what the case grades.
 When a case needs code that the shared fixture repo lacks, give the case
 its own repo under `eval/<agent>/repos/` rather than changing the shared
 one (e.g. triage cases 001 and 003).
