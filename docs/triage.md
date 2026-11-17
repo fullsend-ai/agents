@@ -268,7 +268,7 @@ fullsend folds into an edited comment. The agent identifies that account per
 tracker:
 
 - **GitHub:** a `Bot` author whose App is `$FULLSEND_SLUG`, `<owner>-triage`,
-  `fullsend-ai-triage` or `${FULLSEND_APP_SET}-triage`.
+  `fullsend-ai-triage` or, when `FULLSEND_APP_SET` is set, `${FULLSEND_APP_SET}-triage`.
   `env/github/triage.env` passes `FULLSEND_APP_SET` into the sandbox, but
   fullsend's route-based `triage` job, which runs the built-in triage
   agent, does not export it yet (fullsend-ai/fullsend#9568); the
