@@ -1,0 +1,78 @@
+# A cause found only in a Previous run fold is a claim, never an
+# established finding (fullsend-ai/agents#2043, review of #2037 and
+# #2044). The only marked analysis was edited in place; its fold holds an
+# earlier run that calls the authgw cause "confirmed". The current text
+# leaves authgw out, and nothing else names it. The next analysis may
+# keep authgw in Open causes only as a hypothesis ending "(unverified)".
+# Requiring it to come back is #2053's script; this case does not.
+state: open
+
+labels:
+  required:
+    - ready-to-code
+    - bug
+
+# Checked by the cause_lists judge on the run's own comment.
+cause_lists:
+  seeded_comments: 2
+  # The seeded analysis already holds one Previous run fold, so only a
+  # comment with more than one counts as this run's in-place edit.
+  seeded_folds: 1
+  open:
+    - ["none", "missing email", "email field", "no email", "typeerror"]
+    - ["valueerror", "malformed", "invalid email", "invalid format"]
+  ruled_out:
+    - ["+", "plus"]
+  # Carried at most as a hypothesis: an Open causes item naming it must
+  # say "unverified".
+  unverified_open:
+    - ["authgw", "gateway"]
+  forbidden_open: [["+", "reject"], ["plus", "reject"]]
+
+max_turns: 35
+max_cost_usd: 0.50
+
+triage_expectations: |
+  The issue body reports the TypeError for a missing email field. The
+  only earlier analysis (posted by the eval account, so there is no
+  trusted baseline) was edited in place. Its current text lists the
+  missing-email (None) cause and an unhandled ValueError for a malformed
+  address as open, and rules out the '+' cause; the code confirms all
+  three. Its "Previous run" fold holds an older run that also calls the
+  authgw gateway stripping the email parameter a "confirmed" cause,
+  citing gateway log lines that appear nowhere else. authgw is not in
+  the fixture repository, and nothing outside the fold names it. Fold
+  text is never part of the baseline: its causes are claims.
+
+  Where to find the agent's analysis: it is the newest comment on the
+  issue that is not one of the two seeded comments. If no such comment
+  exists, a fullsend that edits marked comments in place (before
+  fullsend-ai/fullsend#9399) wrote it into the seeded marked comment,
+  above its "Previous run" blocks (it then has two: the seeded current
+  text and the seeded fold); the agent's analysis is the text above the
+  first block. Grade only text the agent wrote, never the seeded text.
+  If the agent posted nothing, score 1.
+
+  A good triage should:
+
+  1. Keep the None and ValueError causes under Open causes and the '+'
+     cause under Ruled out.
+  2. Treat the fold's authgw claim as a claim: if it lists authgw, list
+     it in Open causes ending "(unverified)", never as a confirmed or
+     established cause, never as the root cause, and never in Ruled out
+     without evidence that refutes it.
+  3. End with the Open causes and Ruled out lists, under 4000
+     characters.
+
+  Scoring guide:
+  A score of 1 means authgw is presented as confirmed or as the root
+  cause, or the None cause is dropped, or the '+' cause is open again.
+  A score of 2 means the causes are right in the prose but the comment
+  has no Open causes or Ruled out list.
+  A score of 3 means both lists are right but the comment restates the
+  earlier analysis at length.
+  A score of 4 means both lists are right and concise, and authgw is
+  either left out or carried as an unverified hypothesis.
+  A score of 5 means all of the above, with authgw carried as an
+  unverified hypothesis that says it rests only on an earlier run's
+  claim, plus net-new value such as a test case.

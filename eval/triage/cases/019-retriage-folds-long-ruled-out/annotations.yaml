@@ -1,0 +1,87 @@
+# The size fold keeps every ruling (fullsend-ai/agents#2043). Run 2's
+# comment is close to 4000 characters, with fifteen ruled-out names, the
+# three oldest already folded into one line of names. The next analysis
+# adds its own text, so it has to shorten or fold more entries (step 2e,
+# "Comment content rules"), and every name must stay ruled out. Each
+# ruling holds in the fixture code, so the no-trusted-baseline rebuild
+# (the eval account posted every comment) keeps them too.
+state: open
+
+labels:
+  required:
+    - ready-to-code
+    - bug
+
+# Checked by the cause_lists judge on the run's own comment. A folded
+# line of names counts, as a list item or a plain line.
+cause_lists:
+  seeded_comments: 4
+  open:
+    - ["none", "missing email", "email field", "no email", "typeerror"]
+    - ["valueerror", "malformed", "invalid email", "invalid format"]
+  # One group per ruled-out name, each with phrases no other name here
+  # contains, so a dropped name cannot pass on another's line.
+  ruled_out:
+    - ["+", "plus"]
+    - ["uppercase", "upper-case", "upper case", "capital"]
+    - ["digit", "numeric", "number"]
+    - ["subdomain", "sub-domain", "multi-level", "co.uk"]
+    - ["hyphen"]
+    - ["tld", "top-level", "top level"]
+    - ["underscore"]
+    - ["percent"]
+    - ["backtrack", "redos", "catastrophic"]
+    - ["password"]
+    - ["authenticat", "backend"]
+    - ["circular"]
+    - ["leading dot", "dot at the start", "starts with a dot", "initial dot"]
+    - ["normaliz", "lowercas"]
+    - ["cache"]
+  forbidden_open: [["+", "reject"], ["plus", "reject"], ["backtrack"], ["circular"], ["cache"]]
+
+max_turns: 35
+max_cost_usd: 0.50
+
+triage_expectations: |
+  Two earlier analyses (posted by the eval account, so there is no
+  trusted baseline) list two open causes, the missing-email TypeError
+  and the unhandled ValueError for a malformed address, and fifteen
+  ruled-out causes: twelve with their evidence, and the three oldest
+  ('+', uppercase letters, digits) folded into one line of names that
+  points back at run 1, which has their evidence. Every ruling holds in
+  src/auth/validators.py and src/auth/views.py. Run 2's comment is
+  already close to 4000 characters. The newest comment asks for
+  progress and adds no evidence.
+
+  Where to find the agent's analysis: it is the newest comment on the
+  issue that is not one of the four seeded comments. If no such comment
+  exists, a fullsend that edits marked comments in place (before
+  fullsend-ai/fullsend#9399) wrote it into the first seeded marked
+  comment, above a "Previous run" block holding that comment's old
+  text; the agent's analysis is then the text above that block. Grade
+  only text the agent wrote, never the seeded text. If the agent posted
+  nothing, score 1.
+
+  A good triage should:
+
+  1. Keep both open causes.
+  2. Keep all fifteen ruled-out names under Ruled out. To stay under
+     4000 characters it shortens the oldest entries to their names with
+     "(see earlier analysis)" and, if that is not enough, folds them
+     into one line that lists their names. It never drops a name.
+  3. Keep the comment under 4000 characters (the footer after the lists
+     does not count), mostly by not restating run 2's prose.
+  4. Not move any ruled-out cause back to Open causes.
+
+  Scoring guide:
+  A score of 1 means a ruled-out name is missing from Ruled out, or a
+  ruled-out cause is open again.
+  A score of 2 means the lists are right but the comment is well over
+  4000 characters, or the lists are missing.
+  A score of 3 means the lists are right and the comment is near the
+  limit, but it repeats run 2's prose at length.
+  A score of 4 means the lists are right, the comment is under 4000
+  characters, and the oldest entries are shortened or folded as the
+  prompt describes.
+  A score of 5 means all of the above plus net-new value, such as a
+  test case or a concrete fix for both open causes.

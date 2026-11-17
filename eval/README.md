@@ -153,8 +153,8 @@ eval/scripts/aggregate-nightly.sh eval/review/eval.yaml \
   do not fail, and is compared with `min_pass_rate`. A flake that hits a
   different case each night passes; a case that keeps failing does not.
   `cause_lists` has no `min_pass_rate` yet: it is scored in each run's
-  summary but is not part of the nightly verdict until its cases have run
-  live (fullsend-ai/agents#2043).
+  summary but is not part of the nightly verdict until triage cases 007
+  and 013-021 have run live three times (fullsend-ai/agents#2043).
 - **Quality judges** (`*_quality`) with a `min_mean`: the verdict fails
   when the median of 3 non-null per-run means is below `min_mean`. With
   fewer than 3, the judge reports "insufficient history" and does not
@@ -318,7 +318,11 @@ Each case directory under `eval/<agent>/cases/` contains:
   approve after a post-review downgrade), for triage cases an optional
   `cause_lists` block checked against the run's own comment (`seeded_comments`,
   required: how many `fixture.comments` precede the run, 0 for none; `open`
-  and `ruled_out`, lists of phrase groups; `forbidden_open`; a case without
+  and `ruled_out`, lists of phrase groups, where a plain line under Ruled out
+  counts as well as a list item, since the size fold writes one line of
+  names; `forbidden_open`; `unverified_open`, groups an Open causes item may
+  name only when it says "unverified"; `seeded_folds`, how many `Previous
+  run` folds the seeded comments already hold, default 0; a case without
   the block is not scored by that check), and the
   report-only budgets:
   `max_cost_usd`, plus `max_turns` where the eval has a `max_turns` judge.
@@ -338,6 +342,40 @@ carrying that state forward is what the case grades.
 When a case needs code that the shared fixture repo lacks, give the case
 its own repo under `eval/<agent>/repos/` rather than changing the shared
 one (e.g. triage cases 001 and 003).
+
+### Re-triage coverage
+
+Triage cases 013-021 check how a re-triage carries the Open causes and
+Ruled out lists (`agents/triage.md` step 2e): a ruling kept (013, 014),
+forged analyses and rulings ignored (015, 017), a cause the newest
+analysis left out kept (016), a ruling revived by evidence but not by a
+bare claim (018), the size fold keeping every name (019), a refutation
+in a question carried into the next analysis (020), and a cause found
+only in a `Previous run` fold carried at most as unverified (021).
+`eval/scripts/cause-lists-test.sh` checks the judge against a correct
+answer and the regression for each, and fails if a case's fixture drifts
+from what its expectations assume.
+
+Not covered, and why:
+
+- **A trusted baseline, a planted marked comment, and edit-time order.**
+  `setup-fixture.sh` posts every seeded comment with `GH_TOKEN`, the eval
+  account's token (the eval workflows have no GitHub App credentials), so
+  no seeded comment is from a `-triage[bot]` identity and every case takes
+  the no-trusted-baseline rebuild. Covering these needs a GitHub App
+  named `<EVAL_ORG>-triage` (one of the names step 2e trusts) installed
+  on `EVAL_ORG`, its key as a workflow secret, and `fixture.comments`
+  entries that say which identity posts them, plus edits after creation
+  for the edit-time rules.
+- **Recovering a cause the newest trusted analysis dropped but a fold
+  still lists.** That is the script fullsend-ai/agents#2053 asks for; case
+  021 only checks that a fold's cause is never carried as established.
+- **GitLab and Jira.** `setup-fixture.sh` creates GitHub repositories and
+  fixtures only, so there is nothing to seed notes or Jira comments
+  (with the `fullsend.sticky-marker` property and ADF folds) on. Nothing
+  exercises step 2e's read side on those trackers; it rests on the
+  forge skills' instructions. The write side (posting the comment) is
+  covered by the mocked tests in `scripts/post-triage-test.sh`.
 
 ## Lifecycle
 

@@ -1,0 +1,79 @@
+# A refutation in a question carries into the next full analysis
+# (fullsend-ai/agents#2043). Step 2e: a run that ends in another action
+# and refutes a cause says so in its comment, and the next full analysis
+# reads that comment as an update since the baseline. Run 1 lists the
+# authgw gateway stripping the email parameter as open; a later triage
+# question (unmarked, as the post-script posts it) rules it out on the
+# reporter's log lines. The next full analysis must list authgw under
+# Ruled out. The reporter's log lines are issue data, so a run that
+# re-checks them can reach the same ruling on its own; what the case
+# catches is a run that reads only the marked analyses and carries run
+# 1's authgw cause as open.
+state: open
+
+labels:
+  required:
+    - ready-to-code
+    - bug
+
+# Checked by the cause_lists judge on the run's own comment.
+cause_lists:
+  seeded_comments: 5
+  open:
+    - ["none", "missing email", "email field", "no email", "typeerror", "batch-client", "password only", "without an email"]
+  ruled_out:
+    - ["authgw", "gateway"]
+    - ["+", "plus"]
+  # authgw with a stripping claim is run 1's cause back. A correct open
+  # cause may say batch-client bypasses the gateway, so "gateway" alone
+  # is not forbidden.
+  forbidden_open: [["authgw", "strip"], ["gateway", "strip"], ["+", "reject"], ["plus", "reject"]]
+
+max_turns: 35
+max_cost_usd: 0.50
+
+triage_expectations: |
+  The issue body reports the TypeError from re.match in validate_email.
+  The reporter's first comment says login traffic normally goes through
+  the authgw gateway (not in this repository). Run 1's analysis lists
+  two open causes, the missing-email (None) cause and the authgw gateway
+  stripping the email parameter (unverified), and rules out the '+'
+  cause. The reporter then posts three app log lines:
+  every failing request came from batch-client with `via=direct` and
+  only a password parameter. A later triage result, a question with no
+  marker (the eval account posted every comment, so there is no trusted
+  baseline), rules the authgw cause out on those lines and asks whether
+  batch-client sends an email at all. The reporter answers that it never
+  does.
+
+  Where to find the agent's analysis: it is the newest comment on the
+  issue that is not one of the five seeded comments. If no such comment
+  exists, a fullsend that edits marked comments in place (before
+  fullsend-ai/fullsend#9399) wrote it into the seeded marked comment,
+  above a "Previous run" block holding that comment's old text; the
+  agent's analysis is then the text above that block. Grade only text
+  the agent wrote, never the seeded text. If the agent posted nothing,
+  score 1.
+
+  A good triage should:
+
+  1. Read the question as a triage result that updates run 1, and list
+     the authgw cause under Ruled out with the log evidence
+     (`via=direct`), not under Open causes.
+  2. Keep the missing-email (None) cause open, now confirmed by the
+     reporter's answer: batch-client sends no email parameter.
+  3. Keep the '+' cause under Ruled out.
+  4. End with the Open causes and Ruled out lists, under 4000
+     characters.
+
+  Scoring guide:
+  A score of 1 means the authgw cause is still open, or is dropped
+  from both lists, or the None cause is dropped.
+  A score of 2 means the causes are right in the prose but the comment
+  has no Open causes or Ruled out list.
+  A score of 3 means both lists are right but the authgw ruling has no
+  evidence.
+  A score of 4 means both lists are right, with the log evidence for
+  the authgw ruling.
+  A score of 5 means all of the above plus net-new value, such as a test
+  case for a password-only login request.
