@@ -20,6 +20,7 @@ FAILURES=0
 
 # Create root temp directory for all fixture tests with automatic cleanup on EXIT
 FIXTURE_ROOT_TEMP=""
+FIXTURE_COUNTER=0
 setup_fixture_cleanup() {
   if [[ -z "${FIXTURE_ROOT_TEMP}" ]]; then
     FIXTURE_ROOT_TEMP="$(mktemp -d)" || {
@@ -456,11 +457,12 @@ check_schema_files_at_path() {
   # (engine's ResolveRelativeTo enforces containment for relative paths)
   # Normalize the path and check if the target lies outside resolve_root
   if [[ "${schema_path}" != /* ]] && [[ "${schema_path}" =~ (^|/)\.\.(/|$) ]]; then
-    # Resolve the path and check containment using real path operations
+    # Resolve the path and check containment using Python for portability
+    # (realpath -s is GNU-only and fails on macOS)
     local normalized_path
-    normalized_path="$(cd "${resolve_dir}" 2>/dev/null && realpath -s "${schema_path}" 2>/dev/null || echo "")"
+    normalized_path="$(cd "${resolve_dir}" 2>/dev/null && python3 -I -c "import os, sys; print(os.path.abspath(os.path.normpath(sys.argv[1])))" "${schema_path}" 2>/dev/null || echo "")"
     local resolve_root_real
-    resolve_root_real="$(cd "${resolve_dir}" 2>/dev/null && realpath -s . 2>/dev/null || echo "")"
+    resolve_root_real="$(cd "${resolve_dir}" 2>/dev/null && python3 -I -c "import os; print(os.path.abspath(os.getcwd()))" 2>/dev/null || echo "")"
 
     # Enforce directory boundary: normalized path must start with resolve_root_real/ (with trailing slash)
     # This prevents sibling directories with shared prefix (e.g., /bundle/example vs /bundle/example-other) from passing
@@ -708,7 +710,8 @@ test_negative_fixtures() {
     local exit_code=0
     # Create a temporary subdirectory under root temp for this fixture (auto-cleaned via EXIT trap)
     local test_dir
-    test_dir="${FIXTURE_ROOT_TEMP}/negative-$(date +%s%N)-${fixture_name%.*}"
+    FIXTURE_COUNTER=$((FIXTURE_COUNTER + 1))
+    test_dir="${FIXTURE_ROOT_TEMP}/negative-${FIXTURE_COUNTER}-${fixture_name%.*}"
     mkdir -p "${test_dir}" || {
       echo "Failed to create temporary directory for fixture ${fixture_name}"
       found_error=1
@@ -750,9 +753,38 @@ test_negative_fixtures() {
       done <<< "${referenced_files}"
     fi
 
-    # Run the test with HARNESS_DIR set to temp dir containing only this fixture
-    # Use test_dir as both HARNESS_DIR and REPO_ROOT so resolve_root is the fixture directory
-    output="$(HARNESS_DIR="${test_dir}" REPO_ROOT="${test_dir}" ${test_func} 2>&1)" || exit_code=$?
+    # Special handling for schema-traversal-to-sibling fixture to test shared-prefix boundary bug
+    # This fixture needs a directory structure where the HARNESS_DIR parent contains both a bundle root
+    # and a sibling directory with the same prefix but separate path
+    if [[ "${fixture_name}" == "schema-traversal-to-sibling.yaml" ]]; then
+      local parent_dir="${test_dir}"
+      local bundle_dir="${parent_dir}/example"
+      local sibling_dir="${parent_dir}/example-other"
+      mkdir -p "${bundle_dir}" "${sibling_dir}/schemas" || {
+        echo "Failed to create sibling directory structure for schema-traversal-to-sibling fixture"
+        found_error=1
+        continue
+      }
+      # Move the fixture to the bundle directory (as a harness file within the bundle)
+      mv "${test_dir}/${fixture_name}" "${bundle_dir}/${fixture_name}" || {
+        echo "Failed to move fixture to bundle directory"
+        found_error=1
+        continue
+      }
+      # Create a valid schema file in the sibling directory to prove it exists
+      printf '{"type": "object"}\n' > "${sibling_dir}/schemas/schema.json" || {
+        echo "Failed to create sibling schema file"
+        found_error=1
+        continue
+      }
+      # Set HARNESS_DIR to point to the bundle directory, and REPO_ROOT to its parent
+      # This makes the containment check work: resolve_root is parent_dir, normalized path tries to escape to example-other
+      output="$(HARNESS_DIR="${bundle_dir}" REPO_ROOT="${parent_dir}" ${test_func} 2>&1)" || exit_code=$?
+    else
+      # Run the test with HARNESS_DIR set to temp dir containing only this fixture
+      # Use test_dir as both HARNESS_DIR and REPO_ROOT so resolve_root is the fixture directory
+      output="$(HARNESS_DIR="${test_dir}" REPO_ROOT="${test_dir}" ${test_func} 2>&1)" || exit_code=$?
+    fi
 
     if [[ ${exit_code} -ne 0 ]]; then
       # Match the expected message - should be simpler now since output is from single fixture
@@ -807,7 +839,8 @@ test_positive_fixtures() {
     local exit_code=0
     # Create a temporary subdirectory under root temp for this fixture (auto-cleaned via EXIT trap)
     local test_dir
-    test_dir="${FIXTURE_ROOT_TEMP}/positive-$(date +%s%N)-${fixture_name%.*}"
+    FIXTURE_COUNTER=$((FIXTURE_COUNTER + 1))
+    test_dir="${FIXTURE_ROOT_TEMP}/positive-${FIXTURE_COUNTER}-${fixture_name%.*}"
     mkdir -p "${test_dir}/schemas" || {
       echo "Failed to create temporary directory for fixture ${fixture_name}"
       found_error=1
@@ -853,7 +886,8 @@ test_positive_fixtures() {
 
   # Test absolute-schema-path-valid: create a temporary fixture with an absolute path
   local abs_test_dir
-  abs_test_dir="${FIXTURE_ROOT_TEMP}/absolute-$(date +%s%N)"
+  FIXTURE_COUNTER=$((FIXTURE_COUNTER + 1))
+  abs_test_dir="${FIXTURE_ROOT_TEMP}/absolute-${FIXTURE_COUNTER}"
   mkdir -p "${abs_test_dir}/schemas" || {
     echo "Failed to create temporary directory for absolute path fixture"
     return 1
