@@ -3,7 +3,8 @@
 # harness-config-lint-test.sh — Test harness config structural invariants.
 #
 # Validates that all harness/*.yaml files follow consistent patterns:
-# - Every validation_loop with a script key must have a schema key
+# - Top-level validation_loop with a script key must have a schema key
+# - Per-location (forge/overlay) validation_loop: absent/null/empty schema inherits from top-level
 # - No env.runner block contains FULLSEND_OUTPUT_SCHEMA
 # - Each referenced schema file exists and is valid JSON
 #
@@ -54,7 +55,7 @@ run_test() {
 
 # Helper: check validation_loop at a given path
 # Top-level: require schema if script is present
-# Per-location (forge/overlay): only require schema if script is explicitly overridden (different from top-level)
+# Per-location (forge/overlay): absent/null/empty schema inherits from top-level (which must be non-empty)
 check_validation_loop_at_path() {
   local harness="$1"
   local path="$2"
