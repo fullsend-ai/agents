@@ -4,9 +4,13 @@
 # which ones this token's account wrote and last edited, dates them, and
 # prints the JSON that prior-triage.jq builds. Reads ISSUE_URL and
 # GITLAB_TOKEN. Exits 1, with "error" set, when the notes cannot be read.
-set -u
+set -u -o pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
-fail() { jq -n --arg e "$1" '{forge: "gitlab", error: $e}'; exit 1; }
+fail() {
+  jq -n --arg e "$1" '{forge: "gitlab", error: $e, trust_error: null, trusted_names: null, analyses: [],
+    baseline: null, updates: [], untrusted_marked: [], dropped_cause_candidates: []}'
+  exit 1
+}
 
 HOST=$(printf '%s\n' "${ISSUE_URL:-}" | sed -nE 's|^https://([A-Za-z0-9.-]+)/.+/-/issues/[0-9]+$|\1|p')
 PROJECT=$(printf '%s\n' "${ISSUE_URL:-}" | sed -nE 's|^https://[^/]+/(.+)/-/issues/[0-9]+$|\1|p')
@@ -30,8 +34,9 @@ while test -n "$PAGE"; do
     fail "cannot list the issue notes: $(head -c 300 "$TMP/err")"
   fi
   jq -c '.[]' "$TMP/page.json" >> "$TMP/notes.jsonl"
-  PAGE=$(tr -d '\r' < "$TMP/headers" | sed -nE 's/^[Xx]-[Nn]ext-[Pp]age:[[:space:]]*([0-9]*).*/\1/p' | tail -n 1)
-  test "$(jq length "$TMP/page.json")" -ge 100 || PAGE=""
+  # A short page is the last; a full one without X-Next-Page is not.
+  NEXT=$(tr -d '\r' < "$TMP/headers" | sed -nE 's/^[Xx]-[Nn]ext-[Pp]age:[[:space:]]*([0-9]*).*/\1/p' | tail -n 1)
+  if test "$(jq length "$TMP/page.json")" -lt 100; then PAGE=""; else PAGE="${NEXT:-$((PAGE + 1))}"; fi
   test "${PAGE:-0}" -le 1000 || fail "too many note pages"
 done
 
@@ -78,4 +83,8 @@ jq -n --slurpfile notes "$TMP/notes.jsonl" --slurpfile editors "$TMP/editors.jso
                  elif $e.lastEditedBy == null then "none"
                  elif ($e.lastEditedBy.id | gid_number) == $me then "own"
                  else "foreign" end),
-          body}]}' | jq -f "$HERE/prior-triage.jq"
+          body}]}' \
+  > "$TMP/in.json" 2> "$TMP/err" || fail "cannot read the comments: $(head -c 300 "$TMP/err")"
+jq -f "$HERE/prior-triage.jq" "$TMP/in.json" > "$TMP/out.json" 2> "$TMP/err" \
+  || fail "cannot build the result: $(head -c 300 "$TMP/err")"
+cat "$TMP/out.json"

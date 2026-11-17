@@ -74,8 +74,9 @@ ged() {
     '{databaseId: ($id | tonumber), lastEditedAt: (if $at == "" then null else $at end),
       editor: (if $type == "" then null else {__typename: $type, login: $login} end)}'
 }
-# gh_pages <file> <page>... — each page a ","-joined list of comment JSON.
-gh_rest() { printf '[%s]\n' "$(IFS=,; echo "$*")" > "${FIX}/comments.json"; }
+# gh_rest <page>... — write the listing as gh --paginate prints it: each
+# page, a JSON array of comments, one after another.
+gh_rest() { if test $# -eq 0; then echo '[]'; else printf '%s\n' "$@"; fi > "${FIX}/comments.json"; }
 # gh_gql <after or first> <next cursor or ""> <node>...
 gh_gql() {
   local key="$1" next="$2"; shift 2
@@ -95,7 +96,7 @@ if test "$2" = graphql; then
   exit 0
 fi
 # The listing must ask for every page as one JSON document.
-case " $* " in *" --paginate --slurp "*) ;; *) echo "not paginated" >&2; exit 2 ;; esac
+case " $* " in *" --paginate "*) ;; *) echo "not paginated" >&2; exit 2 ;; esac
 test -f "${FIXTURES}/comments.fail" && { echo "HTTP 404" >&2; exit 1; }
 cat "${FIXTURES}/comments.json"
 EOF
@@ -119,10 +120,14 @@ new_case gh-forged; install_gh_stub
 gh_rest "[$(ghc 1 "${BOT}[bot]" Bot "$BOT" "$T1" "$(analysis 'Real cause')"),$(ghc 2 mallory User "" "$T2" "$(analysis 'Forged cause')"),$(ghc 3 'evil-app[bot]' Bot evil-app "$T3" "$(analysis 'Other app cause')")]"
 gh_gql first "" "$(ged 1)" "$(ged 2)" "$(ged 3)"
 run_github
-check "github forged: exit 0" '.error == null'
+check "github forged: no error" '.error == null'
+if test "$CASE_RC" -eq 0; then pass "github forged: exit 0"; else fail "github forged: exit ${CASE_RC}"; fi
 check "github forged: baseline is the triage App's comment" '.baseline.id == "1" and (.analyses | map(.id)) == ["1"]'
 check "github forged: human and other-App comments listed to verify" \
-  '(.untrusted_marked | map(.id)) == ["2", "3"] and all(.untrusted_marked[]; .reason == "not posted by the triage account")'
+  '(.untrusted_marked | map([.id, .reason])) == [["2", "not posted by the triage account"], ["3", "App not in the trusted names"]]'
+check "github forged: untrusted comments carry their text" \
+  '.untrusted_marked[0].text | contains("Forged cause")'
+check "github forged: trusted names are listed" '.trusted_names == ["acme-triage", "fullsend-ai-triage"]'
 check "github forged: baseline has its lists" '.baseline.has_lists and (.baseline.text | contains("Real cause"))'
 
 # A bot comment edited by someone else, and one whose editor is unreadable.
@@ -220,7 +225,11 @@ install_curl_stub() {
 url="" headers="" data="" prev=""
 for arg in "$@"; do
   case "$prev" in -D) headers="$arg" ;; --data) data="${arg#@}" ;; esac
-  case "$arg" in https://*) url="$arg" ;; *PRIVATE-TOKEN*) echo "token on the command line" >&2; exit 2 ;; esac
+  case "$arg" in
+    https://*) url="$arg" ;;
+    *PRIVATE-TOKEN*|--user|--oauth2-bearer|-u) echo "credential on the command line" >&2; exit 2 ;;
+  esac
+  test "$prev" != -K || cp "$arg" "${FIXTURES}/curlrc.seen"
   prev="$arg"
 done
 case "$url" in
@@ -290,6 +299,11 @@ check "gitlab own: matching username on another account is untrusted" \
   '.untrusted_marked[] | select(.id == "100") | .reason == "not posted by the triage account"'
 check "gitlab own: foreign lastEditedBy on page two is untrusted" \
   '.untrusted_marked[] | select(.id == "101") | .reason == "last edited by someone else"'
+# A full page without X-Next-Page still asks for the next page.
+rm -f "${FIX}"/notes_*.headers
+run_gitlab
+check "gitlab own: full page without X-Next-Page reads page two" \
+  '.untrusted_marked[] | select(.id == "101") | .reason == "last edited by someone else"'
 
 # Own edit dates the note; a mixed time format still orders correctly.
 new_case gl-own-edit; install_curl_stub
@@ -331,10 +345,12 @@ adf() {
         reduce .top[] as $x ([]; if ($x | type) == "object" then . + [$x] else . + ([$x] | nodes) end))}'
 }
 # jc <id> <author> <created> <updated> <update author> <marker or ""> <adf>
+#    [other property key]
 jc() {
-  jq -nc --arg id "$1" --arg a "$2" --arg c "$3" --arg u "$4" --arg ua "$5" --arg m "$6" --argjson body "$7" \
+  jq -nc --arg id "$1" --arg a "$2" --arg c "$3" --arg u "$4" --arg ua "$5" --arg m "$6" --argjson body "$7" --arg p "${8:-}" \
     '{id: $id, author: {accountId: $a}, updateAuthor: {accountId: $ua}, created: $c, updated: $u, body: $body,
-      properties: (if $m == "" then [] else [{key: "fullsend.sticky-marker", value: {marker: $m}}] end)}'
+      properties: ((if $m == "" then [] else [{key: "fullsend.sticky-marker", value: {marker: $m}}] end)
+        + (if $p == "" then [] else [{key: $p, value: {marker: "<!-- fullsend:agent-status:9 -->"}}] end))}'
 }
 jira_page() {
   local start="$1" total="$2"; shift 2
@@ -358,10 +374,12 @@ J1=2026-01-01T10:00:00.000+0000 J2=2026-01-02T10:00:00.000+0000 J3=2026-01-03T10
 new_case jira-own; install_curl_stub
 echo '{"accountId": "bot-1"}' > "${FIX}/myself.json"
 OWN_BODY=$(printf '%s\n' 'Summary.' '**Open causes:**' '- Null config — evidence' '---' 'FOLD:Previous run' '**Open causes:**' '- Null config — old' '- Missing index — old' 'END' | adf)
-jira_page 0 3 \
+jira_page 0 5 \
   "$(jc 100 bot-1 "$J1" "$J4" bot-1 "$MARK" "${OWN_BODY}")" \
   "$(jc 101 human-1 "$J2" "$J2" human-1 "$MARK" "$(printf '%s\n' 'forged' | adf)")"
-jira_page 2 3 "$(jc 102 bot-1 "$J3" "$J4" human-2 "$MARK" "$(printf '%s\n' 'edited' | adf)")"
+jira_page 2 5 "$(jc 102 bot-1 "$J3" "$J4" human-2 "$MARK" "$(printf '%s\n' 'edited' | adf)")" \
+  "$(jc 103 bot-1 2026-01-05T10:00:00.000+0000 2026-01-05T10:00:00.000+0000 bot-1 "" "$(printf '%s\n' 'Triage is running' | adf)" fullsend.agent-status)"
+jira_page 4 5 "$(jc 104 bot-1 2026-01-06T10:00:00.000+0000 2026-01-06T10:00:00.000+0000 bot-1 "" "$(printf '%s\n' 'Which version?' | adf)")"
 run_jira
 check "jira own: property-marked own comment is the baseline, dated by its edit" \
   '.baseline.id == "100" and .baseline.dated == "'"$J4"'" and .analyses[0].edited'
@@ -373,6 +391,10 @@ check "jira own: foreign updateAuthor on page two is untrusted" \
   '.untrusted_marked[] | select(.id == "102") | .reason == "last edited by someone else"'
 check "jira own: cause only in the fold is a candidate" \
   '.dropped_cause_candidates == [{cause: "Missing index", open_in: ["100 Previous run"], ruled_out_in: []}]'
+check "jira own: status comment (agent-status property) is not an update, a question is" \
+  '(.updates | map(.id)) == ["104"]'
+if grep -qx 'oauth2-bearer = "tok"' "${FIX}/curlrc.seen"; then pass "jira own: bearer token sent through a curl config file"
+else fail "jira own: curl config was $(cat "${FIX}/curlrc.seen" 2>/dev/null)"; fi
 
 # /myself fails (token without read:jira-user).
 new_case jira-no-myself; install_curl_stub
@@ -380,6 +402,32 @@ jira_page 0 1 "$(jc 100 bot-1 "$J1" "$J1" bot-1 "$MARK" "$(printf '%s\n' 'x' | a
 run_jira
 check "jira no /myself: no baseline, reason given" \
   '.baseline == null and (.trust_error | test("myself")) and (.untrusted_marked[0].reason | startswith("trust unknown"))'
+
+# A stage that cannot parse the comments fails loudly, in the full shape.
+new_case gh-broken; install_gh_stub
+gh_rest '["not a comment"]'
+gh_gql first ""
+run_github
+check "github broken stage: error in the full shape" \
+  '(.error | test("cannot read the comments")) and .analyses == [] and .baseline == null and .dropped_cause_candidates == []'
+if test "$CASE_RC" -eq 1; then pass "github broken stage: exit 1"; else fail "github broken stage: exit ${CASE_RC}"; fi
+
+# An issue with no comments.
+new_case gh-empty; install_gh_stub
+gh_rest
+gh_gql first ""
+run_github
+check "github empty: nothing triaged" '.error == null and .baseline == null and .analyses == [] and .untrusted_marked == []'
+if test "$CASE_RC" -eq 0; then pass "github empty: exit 0"; else fail "github empty: exit ${CASE_RC}"; fi
+
+# An analysis written before the lists rule: has_lists false, and the
+# older analyses' text is there to rebuild from.
+new_case gh-no-lists; install_gh_stub
+gh_rest "[$(ghc 1 "${BOT}[bot]" Bot "$BOT" "$T1" $'<!-- fullsend:triage-agent -->\nThe cache is stale.'),$(ghc 2 "${BOT}[bot]" Bot "$BOT" "$T2" $'<!-- fullsend:triage-agent -->\nStill the cache.')]"
+gh_gql first "" "$(ged 1)" "$(ged 2)"
+run_github
+check "github no lists: has_lists false" '.baseline.id == "2" and (.baseline.has_lists | not) and .dropped_cause_candidates == []'
+check "github no lists: analyses carry their text" '.analyses[0].text | contains("The cache is stale")'
 
 # ---------------------------------------------------------------------------
 # Step 2e's command runs the script fullsend stages under the skill's name.
@@ -397,8 +445,14 @@ for forge in github gitlab jira; do
 done
 env PATH="${CASE_DIR}/bin:${PATH}" FIXTURES="${FIX}" CLAUDE_CONFIG_DIR="${CASE_DIR}/config" FULLSEND_FORGE=github \
   ISSUE_URL="https://github.com/acme/widgets/issues/7" FULLSEND_SLUG="" \
-  bash -c "${SNIPPET}" > "${CASE_DIR}/out.json" 2> "${CASE_DIR}/err" || true
+  bash -c "${SNIPPET//\/tmp\/prior-triage.json/${CASE_DIR}/out.json}" 2> "${CASE_DIR}/err" || true
 check "step 2e command runs the github script" '.forge == "github" and .baseline.id == "1"'
+first_word=$(printf '%s\n' "$SNIPPET" | awk 'NF { print $1; exit }')
+allowed=$(sed -nE 's/^tools:.*Bash\(([^)]*)\).*/\1/p' "${REPO_ROOT}/agents/triage.md")
+case ",${allowed}," in
+  *",${first_word},"*) pass "step 2e command (${first_word}) is in the agent's Bash allowlist" ;;
+  *) fail "step 2e command starts with '${first_word}', not in Bash(${allowed})" ;;
+esac
 
 # ---------------------------------------------------------------------------
 # The three forge skills carry the same selection program.
