@@ -12,6 +12,9 @@
 [[ -n "${GITHUB_SCRIBE_OPS_SH_LOADED:-}" ]] && return 0
 GITHUB_SCRIBE_OPS_SH_LOADED=1
 
+# shellcheck source=github-host.lib.sh
+source "${BASH_SOURCE[0]%/*}/github-host.lib.sh"
+
 # --- Pre-script: repo context ---
 
 # Fetch all open items from the issues endpoint (paginated). GitHub's REST
@@ -103,8 +106,9 @@ forge_create_issue() {
 
 # Return the base URL for linking to issues.
 forge_issue_url_base() {
-  local repo="$1"
-  echo "https://github.com/${repo}/issues"
+  local repo="$1" server
+  server=$(_github_server_url) || return 1
+  echo "${server}/${repo}/issues"
 }
 
 # Normalize labels for display and creation. Returns comma-separated string.
