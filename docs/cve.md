@@ -123,6 +123,41 @@ checks a mapped branch out there only when that branch carries exactly the same
 run's settings. Keep each mapped branch's `.fullsend` directory identical to the
 default branch's, or the run stops before the checkout.
 
+### Source on GitHub while the job runs on GitLab
+
+DRAFT, stopgap. A policy `source` block lets a GitLab installation work on a
+GitHub repository:
+
+```json
+{
+  "repository": "example-org/example-service",
+  "source": {"forge": "github", "host_project": "group/runner-project"}
+}
+```
+
+`repository` is then a github.com repository and `host_project` is the GitLab
+project the agents run in. The pre-scripts fetch the mapped branch from GitHub
+into the job's checkout and point its origin there. The run's own `.fullsend`,
+`.gitlab` and `.gitlab-ci.yml` are restored from the job's commit as ignored
+files, and a source branch that carries any of those paths is refused. The code
+agent's change is published by the stock publisher as a pull request on the
+GitHub repository, with signed commits.
+
+The GitHub identity is a GitHub App installed on that repository only. Three
+protected CI/CD variables on the GitLab project supply it:
+`CVE_PUBLISHER_GITHUB_APP_ID`, `CVE_PUBLISHER_GITHUB_INSTALLATION_ID` and
+`CVE_PUBLISHER_GITHUB_APP_KEY_B64` (the private key, base64 on one line, masked
+and hidden). Each use mints a token limited to that repository, valid for an
+hour. This is a stand-in until the token mint can serve a GitLab caller
+([fullsend#402](https://github.com/fullsend-ai/fullsend/issues/402)): a
+long-lived key in a CI/CD variable is readable by every host-side script in the
+job.
+
+Known limits: a branch that carries a `.fullsend` directory cannot be a source,
+the pull request comes from a branch in the repository and not from a fork, and
+review and fix run on the pull request only if Fullsend is also installed on
+the GitHub repository.
+
 ### Variables
 
 | Variable | Set in | Meaning |

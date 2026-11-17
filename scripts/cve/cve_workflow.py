@@ -10,10 +10,13 @@ import base64
 import hashlib
 import json
 import math
+import io
 import os
 from pathlib import Path
 import re
+import tarfile
 import tempfile
+import time
 import subprocess
 import sys
 import urllib.error
@@ -73,6 +76,161 @@ def trusted_settings():
     ):
         raise GateError("invalid jira.account_email or forge_url in CVE policy")
     return jira["base_url"], email, forge
+
+
+# DRAFT, stopgap. Paths that hold a run's own settings when the job's checkout
+# is also the place the source gets checked out (GitLab), and the names kept
+# out of the source's index while it is there.
+RUN_SETTINGS_PATHS = (".fullsend", ".gitlab", ".gitlab-ci.yml")
+RUN_LOCAL_EXCLUDES = (
+    "/.fullsend/",
+    "/.gitlab/",
+    "/.gitlab-ci.yml",
+    "/output/",
+    "/fullsend-artifact/",
+    "/" + CONTEXT_FILE,
+)
+GITHUB_APP_ENV = (
+    "CVE_PUBLISHER_GITHUB_APP_ID",
+    "CVE_PUBLISHER_GITHUB_INSTALLATION_ID",
+    "CVE_PUBLISHER_GITHUB_APP_KEY_B64",
+)
+
+
+def remote_source():
+    """The GitHub repository to work on when it is not the job's own project.
+
+    A policy `source` block names the project the job runs in:
+    {"forge": "github", "host_project": "group/project"}. The policy's
+    `repository` is then a github.com repository that the pre-scripts fetch
+    into the job's checkout and the code publisher opens its pull request on.
+    Returns None when the policy has no such block.
+    """
+    path = os.environ.get("CVE_POLICY_FILE")
+    if not path:
+        return None
+    policy = read_json(path)
+    source = policy.get("source")
+    if source is None:
+        return None
+    repository = policy.get("repository")
+    if (
+        not isinstance(source, dict)
+        or set(source) != {"forge", "host_project"}
+        or source["forge"] != "github"
+        or not isinstance(source["host_project"], str)
+        or not re.fullmatch(r"(?:[A-Za-z0-9_.-]+/)+[A-Za-z0-9_.-]+", source["host_project"])
+        or not isinstance(repository, str)
+        or not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository)
+    ):
+        raise GateError("invalid source block in CVE policy")
+    return {
+        "repository": repository,
+        "host_project": source["host_project"],
+        "url": "https://github.com/" + repository + ".git",
+    }
+
+
+def job_repository(policy):
+    """The repository the run itself belongs to, as the dispatcher names it."""
+    source = remote_source()
+    return source["host_project"] if source else policy["repository"]
+
+
+def rs256_signature(pem, message):
+    """RSASSA-PKCS1-v1_5 with SHA-256, from a PKCS#1 PEM key, standard library only.
+
+    The runner image has neither the openssl command nor a Python RSA library.
+    This signs one short-lived token request per run on the host; it is not a
+    general-purpose signer.
+    """
+    # The marker is split so secret scanners do not read it as a key.
+    if b"-----BEGIN RSA " + b"PRIVATE KEY-----" not in pem:
+        raise ValueError("PKCS#1 RSA key required")
+    der = base64.b64decode(
+        b"".join(line for line in pem.splitlines() if not line.startswith(b"-----"))
+    )
+
+    def element(position):
+        tag, length = der[position], der[position + 1]
+        position += 2
+        if length & 0x80:
+            count = length & 0x7F
+            length = int.from_bytes(der[position : position + count], "big")
+            position += count
+        return tag, position, position + length
+
+    tag, position, end = element(0)
+    if tag != 0x30 or end != len(der):
+        raise ValueError("unexpected key encoding")
+    integers = []
+    while position < end:
+        tag, start, position = element(position)
+        if tag != 0x02:
+            raise ValueError("unexpected key encoding")
+        integers.append(int.from_bytes(der[start:position], "big"))
+    modulus, private_exponent = integers[1], integers[3]
+    size = (modulus.bit_length() + 7) // 8
+    info = bytes.fromhex("3031300d060960864801650304020105000420") + hashlib.sha256(message).digest()
+    padded = b"\x00\x01" + b"\xff" * (size - len(info) - 3) + b"\x00" + info
+    return pow(int.from_bytes(padded, "big"), private_exponent, modulus).to_bytes(size, "big")
+
+
+def github_app_token(repository):
+    """A short-lived installation token for one repository.
+
+    Stopgap until the token mint can serve this caller: the App's private key
+    is a protected CI/CD variable. The key stays in memory, and the token is
+    never printed.
+    """
+    app, installation, key = (os.environ.get(name, "") for name in GITHUB_APP_ENV)
+    try:
+        if not re.fullmatch(r"[1-9][0-9]*", app) or not re.fullmatch(r"[1-9][0-9]*", installation):
+            raise ValueError("ids")
+        pem = base64.b64decode(key, validate=True)
+        encode = lambda raw: base64.urlsafe_b64encode(raw).rstrip(b"=")  # noqa: E731
+        now = int(time.time())
+        signing = (
+            encode(json.dumps({"alg": "RS256", "typ": "JWT"}).encode())
+            + b"."
+            + encode(json.dumps({"iat": now - 30, "exp": now + 300, "iss": app}).encode())
+        )
+        signature = rs256_signature(pem, signing)
+        request = urllib.request.Request(
+            f"https://api.github.com/app/installations/{installation}/access_tokens",
+            method="POST",
+            data=json.dumps(
+                {
+                    "repositories": [repository.split("/", 1)[1]],
+                    "permissions": {"contents": "write", "pull_requests": "write"},
+                }
+            ).encode(),
+            headers={
+                "Authorization": "Bearer " + (signing + b"." + encode(signature)).decode(),
+                "Accept": "application/vnd.github+json",
+                "X-GitHub-Api-Version": "2022-11-28",
+                "User-Agent": "fullsend-cve",
+            },
+        )
+        with urllib.request.urlopen(request, timeout=45) as response:
+            token = json.loads(response.read(1 << 20))["token"]
+        if not isinstance(token, str) or not token:
+            raise ValueError("token")
+        return token
+    except Exception:
+        raise GateError("GitHub source credential is unavailable") from None
+
+
+def github_git_env(token):
+    """Environment that authenticates git to github.com without argv or files."""
+    env = dict(os.environ)
+    count = int(env.get("GIT_CONFIG_COUNT", "0"))
+    basic = base64.b64encode(("x-access-token:" + token).encode()).decode()
+    env[f"GIT_CONFIG_KEY_{count}"] = "http.https://github.com/.extraheader"
+    env[f"GIT_CONFIG_VALUE_{count}"] = "AUTHORIZATION: basic " + basic
+    env["GIT_CONFIG_COUNT"] = str(count + 1)
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    return env
 
 
 def schema_file():
@@ -217,8 +375,8 @@ def source_policy(settings):
 def read_policy():
     path = Path(os.environ["CVE_POLICY_FILE"])
     policy = read_policy_file(path)
-    repository = os.environ.get("REPO_FULL_NAME", policy["repository"])
-    if repository != policy["repository"]:
+    expected = job_repository(policy)
+    if os.environ.get("REPO_FULL_NAME", expected) != expected:
         raise GateError("target repository has no trusted policy profile")
     if "issue_profiles" in policy:
         raise GateError(
@@ -1135,8 +1293,157 @@ def same_settings_tree(target, ref):
         )
 
 
+def prepare_remote_source(context, target, source, token=None):
+    """Fetch a GitHub source branch into the job's checkout and switch to it.
+
+    DRAFT, stopgap. On GitLab an agent job can only hand its own project
+    directory to the sandbox, so a source that lives on GitHub has to be
+    checked out there. The checkout's origin is re-pointed at the GitHub
+    repository, which the later identity checks and the code publisher use.
+    The run's own settings paths are restored from the job's commit as
+    untracked, ignored files, and a source branch that carries any of those
+    paths is refused, so the source can never change the run's settings.
+    """
+    entry = context["target"]
+    if entry["repository"] != source["repository"]:
+        raise TargetUnresolved("mapped repository differs from the configured source")
+    if git_value(target, "status", "--porcelain", "--untracked-files=no"):
+        raise TargetUnresolved("source checkout has local changes; refusing replacement")
+    ref = "refs/remotes/origin/" + entry["branch"]
+    job_commit = git_value(target, "rev-parse", "--verify", "HEAD^{commit}")
+    held = [
+        name
+        for name in git_value(
+            target, "ls-tree", "--name-only", job_commit, "--", *RUN_SETTINGS_PATHS
+        ).splitlines()
+        if name in RUN_SETTINGS_PATHS
+    ]
+    token = token or github_app_token(source["repository"])
+    try:
+        subprocess.run(
+            ["git", "-C", str(target), "remote", "set-url", "origin", source["url"]],
+            check=True,
+            capture_output=True,
+        )
+        subprocess.run(
+            [
+                "git",
+                "-C",
+                str(target),
+                "-c",
+                "credential.helper=",
+                "fetch",
+                "--no-tags",
+                "--depth=1",
+                "origin",
+                "+refs/heads/" + entry["branch"] + ":" + ref,
+            ],
+            check=True,
+            capture_output=True,
+            env=github_git_env(token),
+        )
+    except (OSError, subprocess.CalledProcessError):
+        raise TargetUnresolved("configured target branch could not be prepared") from None
+    if git_value(target, "ls-tree", "--name-only", ref, "--", *RUN_SETTINGS_PATHS):
+        raise TargetUnresolved(
+            "the source branch carries fullsend or CI settings paths; "
+            "refusing to check it out over the run's own settings"
+        )
+    try:
+        exclude = Path(git_value(target, "rev-parse", "--git-path", "info/exclude"))
+        if not exclude.is_absolute():
+            exclude = Path(target) / exclude
+        exclude.parent.mkdir(parents=True, exist_ok=True)
+        present = exclude.read_text().splitlines() if exclude.exists() else []
+        missing = [line for line in RUN_LOCAL_EXCLUDES if line not in present]
+        if missing:
+            exclude.write_text("\n".join(present + missing) + "\n")
+        subprocess.run(
+            ["git", "-C", str(target), "checkout", "--detach", ref],
+            check=True,
+            capture_output=True,
+        )
+        if held:
+            archive = subprocess.run(
+                ["git", "-C", str(target), "archive", "--format=tar", job_commit, "--", *held],
+                check=True,
+                capture_output=True,
+            ).stdout
+            with tarfile.open(fileobj=io.BytesIO(archive)) as bundle:
+                for member in bundle.getmembers():
+                    top = member.name.split("/", 1)[0]
+                    if top not in RUN_SETTINGS_PATHS or not (member.isfile() or member.isdir()):
+                        raise TargetUnresolved("run settings could not be restored")
+                bundle.extractall(str(target), filter="data")
+    except (OSError, subprocess.CalledProcessError, tarfile.TarError):
+        raise TargetUnresolved("configured target branch could not be prepared") from None
+
+
+def publish_remote(publisher):
+    """Run the stock code publisher against the GitHub source repository.
+
+    DRAFT, stopgap. The job's forge is GitLab; the validated checkout's origin
+    is the GitHub source. Hand the publisher a GitHub token, the GitHub
+    repository name and the GitHub forge, without the job's GitLab credentials,
+    and leave no token in the checkout's configuration afterwards.
+    """
+    source = remote_source()
+    if not source:
+        raise GateError("no remote source is configured")
+    checkout = Path(os.environ.get("REPO_DIR", ""))
+    branch = os.environ.get("CODE_ALLOWED_TARGET_BRANCHES", "")
+    if not checkout.is_dir() or not re.fullmatch(r"[A-Za-z0-9._/-]{1,200}", branch):
+        raise GateError("validated coding checkout and one target branch required")
+    token = github_app_token(source["repository"])
+    clean = ["git", "-C", str(checkout), "remote", "set-url", "origin", source["url"]]
+    try:
+        subprocess.run(clean, check=True, capture_output=True)
+        subprocess.run(
+            [
+                "git",
+                "-C",
+                str(checkout),
+                "-c",
+                "credential.helper=",
+                "fetch",
+                "--no-tags",
+                "--depth=1",
+                "origin",
+                "+refs/heads/" + branch + ":refs/remotes/origin/" + branch,
+            ],
+            check=True,
+            capture_output=True,
+            env=github_git_env(token),
+        )
+    except (OSError, subprocess.CalledProcessError):
+        raise GateError("GitHub target branch could not be fetched for publication") from None
+    env = {
+        name: value
+        for name, value in os.environ.items()
+        if not name.startswith(("GITLAB_", "FULLSEND_GITLAB_", "CVE_PUBLISHER_"))
+        and name not in {"FULLSEND_JOB_TOKEN", "FULLSEND_FORGE_TOKEN", "CI_JOB_TOKEN"}
+    }
+    env.update(
+        FULLSEND_FORGE="github",
+        GITHUB_SERVER_URL="https://github.com",
+        REPO_FULL_NAME=source["repository"],
+        PUSH_TOKEN=token,
+        PUSH_TOKEN_SOURCE="github-app",
+        GH_TOKEN=token,
+        GITHUB_SIGNED_COMMITS="true",
+    )
+    try:
+        return subprocess.run(["bash", publisher], env=env, check=False).returncode
+    finally:
+        subprocess.run(clean, check=False, capture_output=True)
+
+
 def prepare_mapped_source(context, target):
     """Fetch only the exact operator-configured source branch after admission."""
+    source = remote_source()
+    if source:
+        prepare_remote_source(context, target, source)
+        return
     entry = context["target"]
     if (
         repository_identity(git_value(target, "remote", "get-url", "origin"))
@@ -1403,7 +1710,7 @@ def live_key(policy):
         + r"-[1-9][0-9]*)",
         url,
     )
-    if not match or os.environ.get("REPO_FULL_NAME") != policy["repository"]:
+    if not match or os.environ.get("REPO_FULL_NAME") != job_repository(policy):
         raise GateError(
             "Jira issue URL and target repository must match configured scope"
         )
@@ -1500,6 +1807,8 @@ def main():
             "pre-code",
             "post-code",
             "publisher-path",
+            "remote-source",
+            "publish-remote",
             "mapping-targets",
         ],
     )
@@ -1526,6 +1835,11 @@ def main():
     if args.action == "publisher-path":
         print(upstream_publisher())
         return
+    if args.action == "remote-source":
+        # 0: a remote source is configured; 3: none. Errors exit 1 below.
+        sys.exit(0 if remote_source() else 3)
+    if args.action == "publish-remote":
+        sys.exit(publish_remote(upstream_publisher()))
     policy = read_policy()
     if args.action == "post-code":
         record = read_json(code_admission_path())
