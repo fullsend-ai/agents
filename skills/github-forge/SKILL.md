@@ -62,14 +62,6 @@ gh api graphql -F owner="OWNER" -F name="REPO" -F number:=ISSUE_NUMBER -f query=
   }' --jq '.data.repository.issue.subIssues.nodes'
 ```
 
-## Prior triage analysis
-
-For the triage agent's step 2e, `scripts/prior-triage.sh` reads every page
-of the comment listing and of the editor query above, keeps the comments a
-triage App posted and last edited, dates them, and prints the JSON that
-`scripts/prior-triage.jq` builds (the same file as in the gitlab and jira
-forge skills). Step 2e says how to run it and what the JSON holds.
-
 ## Pull Requests
 
 ```bash

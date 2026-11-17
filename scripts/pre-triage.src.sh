@@ -3,7 +3,8 @@
 #
 # Runs on the host via the harness pre_script mechanism. Ensures every
 # triage invocation starts from a clean label baseline, preventing
-# mutual-exclusion violations (Story 2, #125).
+# mutual-exclusion violations (Story 2, #125), and, when RUNNER_TEMP is
+# set, writes step 2e's prior triage analysis (prior-triage.lib.sh).
 #
 # Required env vars:
 #   ISSUE_URL        — HTML URL of the issue
@@ -23,6 +24,8 @@ FULLSEND_TRACKER="${FULLSEND_TRACKER:-${FULLSEND_FORGE:-}}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/triage-ops.lib.sh
 source "${SCRIPT_DIR}/lib/triage-ops.lib.sh"
+# shellcheck source=lib/prior-triage.lib.sh
+source "${SCRIPT_DIR}/lib/prior-triage.lib.sh"
 
 tracker_validate_issue_url
 echo "::notice::🔗 Triage target: $(_gha_sanitize "${ISSUE_URL}")"
@@ -36,3 +39,12 @@ tracker_strip_labels "${TRIAGE_LABELS[@]}"
 tracker_verify_labels_stripped "${TRIAGE_LABELS[@]}"
 
 echo "Label reset complete."
+
+# Step 2e's prior analysis, read here on the host and copied into the
+# sandbox by the optional ${RUNNER_TEMP}/triage-workspace/prior-triage.json
+# host file in harness/triage.yaml (GitHub Actions sets RUNNER_TEMP, and
+# fullsend's GitLab job script defaults it to /tmp). Never fails the run.
+if [[ -n "${RUNNER_TEMP:-}" ]]; then
+  prior_triage_write "${RUNNER_TEMP}/triage-workspace/prior-triage.json"
+  echo "Prior triage analysis written."
+fi

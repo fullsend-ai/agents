@@ -1,14 +1,20 @@
 #!/usr/bin/env bash
-# prior-triage-test.sh — Verify the forge skills' prior-triage.sh scripts
-# (step 2e of agents/triage.md) against stubbed gh and curl.
+# prior-triage-test.sh — Verify the prior triage analysis that
+# pre-triage.sh writes for step 2e of agents/triage.md
+# (scripts/lib/prior-triage.lib.sh), against stubbed gh and curl, and the
+# harness wiring that copies it into the sandbox.
 #
 # Run from the repo root:
-#   bash scripts/prior-triage-test.sh
+#   bash scripts/prior-triage-test.sh [--bundled]
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+# shellcheck source=test-lib.sh
+source "${SCRIPT_DIR}/test-lib.sh"
+parse_script_test_args "$@"
+PRE_SCRIPT="$(resolve_agent_script pre-triage "${SCRIPT_DIR}")"
 FAILURES=0
 PASSES=0
 TMP_ROOT=$(mktemp -d)
@@ -92,10 +98,17 @@ after=first
 for arg in "$@"; do case "$arg" in after=*) after="${arg#after=}" ;; esac; done
 if test "$2" = graphql; then
   test -f "${FIXTURES}/gql.fail" && { echo "graphql: forbidden" >&2; exit 1; }
+  case " $* " in *" owner=acme "*" name=widgets "*" number=7 "*) ;; *) echo "wrong issue: $*" >&2; exit 2 ;; esac
   cat "${FIXTURES}/gql_${after}.json" 2>/dev/null || exit 1
   exit 0
 fi
-# The listing must ask for every page as one JSON document.
+case " $* " in
+  *" repos/acme/widgets/issues/7/labels "*) echo '[]'; exit 0 ;;
+  *" repos/acme/widgets/issues/7/labels/"*) exit 0 ;;
+  *" repos/acme/widgets/issues/7/comments?per_page=100 "*) ;;
+  *) echo "unexpected gh call: $*" >&2; exit 3 ;;
+esac
+# The listing must ask for every page.
 case " $* " in *" --paginate "*) ;; *) echo "not paginated" >&2; exit 2 ;; esac
 test -f "${FIXTURES}/comments.fail" && { echo "HTTP 404" >&2; exit 1; }
 cat "${FIXTURES}/comments.json"
@@ -103,13 +116,20 @@ EOF
   chmod +x "${CASE_DIR}/bin/gh"
 }
 
-run_github() {
+# run_pre <VAR=value>... — run pre-triage.sh with RUNNER_TEMP in the case
+# directory and copy the file it writes to out.json.
+run_pre() {
   CASE_RC=0
-  env PATH="${CASE_DIR}/bin:${PATH}" FIXTURES="${FIX}" \
-    ISSUE_URL="https://github.com/acme/widgets/issues/7" \
-    FULLSEND_SLUG="${SLUG-fullsend-ai-triage}" FULLSEND_APP_SET="${APP_SET:-}" \
-    bash "${REPO_ROOT}/skills/github-forge/scripts/prior-triage.sh" \
-    > "${CASE_DIR}/out.json" 2> "${CASE_DIR}/err" || CASE_RC=$?
+  rm -rf "${CASE_DIR}/rt"
+  env PATH="${CASE_DIR}/bin:${PATH}" FIXTURES="${FIX}" RUNNER_TEMP="${CASE_DIR}/rt" "$@" \
+    bash "${PRE_SCRIPT}" > "${CASE_DIR}/err" 2>&1 || CASE_RC=$?
+  cp "${CASE_DIR}/rt/triage-workspace/prior-triage.json" "${CASE_DIR}/out.json" 2>/dev/null \
+    || echo '{}' > "${CASE_DIR}/out.json"
+}
+
+run_github() {
+  run_pre FULLSEND_TRACKER=github ISSUE_URL="https://github.com/acme/widgets/issues/7" \
+    FULLSEND_APP_SET="${APP_SET:-}"
 }
 
 BOT=fullsend-ai-triage
@@ -128,6 +148,7 @@ check "github forged: human and other-App comments listed to verify" \
 check "github forged: untrusted comments carry their text" \
   '.untrusted_marked[0].text | contains("Forged cause")'
 check "github forged: trusted names are listed" '.trusted_names == ["acme-triage", "fullsend-ai-triage"]'
+check "github forged: seen counts" '.seen == {comments: 3, marked: 3}'
 check "github forged: baseline has its lists" '.baseline.has_lists and (.baseline.text | contains("Real cause"))'
 
 # A bot comment edited by someone else, and one whose editor is unreadable.
@@ -177,7 +198,7 @@ check "github pages: no untrusted comments" '.untrusted_marked == [] and .trust_
 new_case gh-names; install_gh_stub
 gh_rest "[$(ghc 1 'custom-triage[bot]' Bot custom-triage "$T1" "$(analysis 'Custom')"),$(ghc 2 'acme-triage[bot]' Bot acme-triage "$T2" "$(analysis 'Owner')")]"
 gh_gql first "" "$(ged 1)" "$(ged 2)"
-SLUG="" APP_SET=custom run_github
+APP_SET=custom run_github
 check "github names: app set and owner triage Apps are trusted" '(.analyses | map(.id)) == ["1", "2"]'
 
 # The editor query fails: nothing is trusted, and the output says why.
@@ -193,7 +214,7 @@ new_case gh-no-comments; install_gh_stub
 touch "${FIX}/comments.fail"
 run_github
 check "github listing fails: error" '.error | test("cannot list the issue comments")'
-if test "$CASE_RC" -eq 1; then pass "github listing fails: exit 1"; else fail "github listing fails: exit ${CASE_RC}"; fi
+if test "$CASE_RC" -eq 0; then pass "github listing fails: pre-script still succeeds"; else fail "github listing fails: exit ${CASE_RC}"; fi
 
 # Fold cut and dropped-cause candidates. The baseline keeps "Cache key
 # collision" and rules out "Race in worker"; its first fold rules out "Bad
@@ -222,16 +243,23 @@ check "github folds: reworded cause is a candidate, case-only change is not" \
 install_curl_stub() {
   cat > "${CASE_DIR}/bin/curl" <<'EOF'
 #!/usr/bin/env bash
-url="" headers="" data="" prev=""
+url="" headers="" data="" prev="" method=GET
 for arg in "$@"; do
-  case "$prev" in -D) headers="$arg" ;; --data) data="${arg#@}" ;; esac
-  case "$arg" in
-    https://*) url="$arg" ;;
-    *PRIVATE-TOKEN*|--user|--oauth2-bearer|-u) echo "credential on the command line" >&2; exit 2 ;;
+  case "$prev" in
+    -D) headers="$arg" ;;
+    --data) data="${arg#@}" ;;
+    --request) method="$arg" ;;
+    --user|--oauth2-bearer) echo "$prev" >> "${FIXTURES}/auth.seen" ;;
   esac
-  test "$prev" != -K || cp "$arg" "${FIXTURES}/curlrc.seen"
+  case "$arg" in https://*) url="$arg"; echo "$url" >> "${FIXTURES}/urls.seen" ;; esac
   prev="$arg"
 done
+# Label reset by pre-triage.sh itself.
+if test "$method" = PUT; then echo '{}'; exit 0; fi
+case "$url" in
+  */api/v4/projects/*/issues/5) echo '{"labels": []}'; exit 0 ;;
+  *'?fields=labels') echo '{"fields": {"labels": []}}'; exit 0 ;;
+esac
 case "$url" in
   */api/graphql) key="gql_$(jq -r '.variables.after // "first"' "$data")" ;;
   */api/v4/user) key=user ;;
@@ -266,11 +294,9 @@ gl_gql() {
 }
 
 run_gitlab() {
-  CASE_RC=0
-  env PATH="${CASE_DIR}/bin:${PATH}" FIXTURES="${FIX}" GITLAB_TOKEN=glpat-test \
-    ISSUE_URL="https://gitlab.example.com/group/sub/proj/-/issues/5" \
-    bash "${REPO_ROOT}/skills/gitlab-forge/scripts/prior-triage.sh" \
-    > "${CASE_DIR}/out.json" 2> "${CASE_DIR}/err" || CASE_RC=$?
+  run_pre FULLSEND_TRACKER=gitlab GITLAB_TOKEN=glpat-test \
+    CI_SERVER_HOST=gitlab.example.com CI_SERVER_URL=https://gitlab.example.com \
+    ISSUE_URL="https://gitlab.example.com/group/sub/proj/-/issues/5"
 }
 
 GL1=2026-01-01T00:00:00.000Z GL2=2026-01-02T00:00:00.000Z GL3=2026-01-03T00:00:00.000Z GL4=2026-01-04T00:00:00Z
@@ -355,22 +381,21 @@ jc() {
 jira_page() {
   local start="$1" total="$2"; shift 2
   jq -nc --argjson s "$start" --argjson t "$total" --argjson c "[$(IFS=,; echo "$*")]" \
-    '{startAt: $s, maxResults: 2, total: $t, comments: $c}' > "${FIX}/comments_${start}.json"
+    '{startAt: $s, maxResults: 100, total: $t, comments: $c}' > "${FIX}/comments_${start}.json"
 }
+# JIRA_BASE_URL with trailing slashes, as a copy-pasted value has them.
 run_jira() {
-  CASE_RC=0
-  env PATH="${CASE_DIR}/bin:${PATH}" FIXTURES="${FIX}" JIRA_TOKEN=tok JIRA_USER_EMAIL="" \
-    JIRA_BASE_URL="https://acme.atlassian.net" JIRA_API_URL="" \
-    ISSUE_URL="https://acme.atlassian.net/browse/PROJ-12" \
-    bash "${REPO_ROOT}/skills/jira-forge/scripts/prior-triage.sh" \
-    > "${CASE_DIR}/out.json" 2> "${CASE_DIR}/err" || CASE_RC=$?
+  run_pre FULLSEND_TRACKER=jira JIRA_TOKEN=tok JIRA_USER_EMAIL="" \
+    JIRA_BASE_URL="https://acme.atlassian.net//" JIRA_API_URL="" \
+    ISSUE_URL="https://acme.atlassian.net/browse/PROJ-12"
 }
 MARK='<!-- fullsend:triage-agent -->'
 J1=2026-01-01T10:00:00.000+0000 J2=2026-01-02T10:00:00.000+0000 J3=2026-01-03T10:00:00.000+0000 J4=2026-01-04T12:00:00.000+0200
 
 # The marker is a comment property; a human's property marker, a foreign
 # updateAuthor, an own edit dated by updated (with an offset), a fold cut
-# in the document, and comments over two pages (startAt).
+# in the document, and comments over three short pages (startAt advances
+# by the comments returned, not the declared maxResults of 100).
 new_case jira-own; install_curl_stub
 echo '{"accountId": "bot-1"}' > "${FIX}/myself.json"
 OWN_BODY=$(printf '%s\n' 'Summary.' '**Open causes:**' '- Null config — evidence' '---' 'FOLD:Previous run' '**Open causes:**' '- Null config — old' '- Missing index — old' 'END' | adf)
@@ -393,8 +418,9 @@ check "jira own: cause only in the fold is a candidate" \
   '.dropped_cause_candidates == [{cause: "Missing index", open_in: ["100 Previous run"], ruled_out_in: []}]'
 check "jira own: status comment (agent-status property) is not an update, a question is" \
   '(.updates | map(.id)) == ["104"]'
-if grep -qx 'oauth2-bearer = "tok"' "${FIX}/curlrc.seen"; then pass "jira own: bearer token sent through a curl config file"
-else fail "jira own: curl config was $(cat "${FIX}/curlrc.seen" 2>/dev/null)"; fi
+if grep -qx -- '--oauth2-bearer' "${FIX}/auth.seen" && ! grep -q 'atlassian.net//' "${FIX}/urls.seen"; then
+  pass "jira own: Bearer auth, trailing slashes stripped from the base URL"
+else fail "jira own: auth $(cat "${FIX}/auth.seen" 2>/dev/null), urls $(cat "${FIX}/urls.seen")"; fi
 
 # /myself fails (token without read:jira-user).
 new_case jira-no-myself; install_curl_stub
@@ -409,15 +435,15 @@ gh_rest '["not a comment"]'
 gh_gql first ""
 run_github
 check "github broken stage: error in the full shape" \
-  '(.error | test("cannot read the comments")) and .analyses == [] and .baseline == null and .dropped_cause_candidates == []'
-if test "$CASE_RC" -eq 1; then pass "github broken stage: exit 1"; else fail "github broken stage: exit ${CASE_RC}"; fi
+  '(.error | length > 0) and .analyses == [] and .baseline == null and .seen == null and .dropped_cause_candidates == []'
+if test "$CASE_RC" -eq 0; then pass "github broken stage: pre-script still succeeds"; else fail "github broken stage: exit ${CASE_RC}"; fi
 
 # An issue with no comments.
 new_case gh-empty; install_gh_stub
 gh_rest
 gh_gql first ""
 run_github
-check "github empty: nothing triaged" '.error == null and .baseline == null and .analyses == [] and .untrusted_marked == []'
+check "github empty: nothing triaged" '.error == null and .baseline == null and .analyses == [] and .untrusted_marked == [] and .seen == {comments: 0, marked: 0}'
 if test "$CASE_RC" -eq 0; then pass "github empty: exit 0"; else fail "github empty: exit ${CASE_RC}"; fi
 
 # An analysis written before the lists rule: has_lists false, and the
@@ -430,39 +456,34 @@ check "github no lists: has_lists false" '.baseline.id == "2" and (.baseline.has
 check "github no lists: analyses carry their text" '.analyses[0].text | contains("The cache is stale")'
 
 # ---------------------------------------------------------------------------
-# Step 2e's command runs the script fullsend stages under the skill's name.
+# Wiring: pre-triage.sh writes the file only with RUNNER_TEMP, the harness
+# copies it to the path step 2e reads, and the agent needs no new tool.
 # ---------------------------------------------------------------------------
-new_case step-2e-command; install_gh_stub
+new_case no-runner-temp; install_gh_stub
 gh_rest "[$(ghc 1 "${BOT}[bot]" Bot "$BOT" "$T1" "$(analysis 'Cause')")]"
 gh_gql first "" "$(ged 1)"
-SNIPPET=$(awk '/^### 2e\./ { found = 1 } found && /^```bash$/ { code = 1; next } code && /^```$/ { exit } code { print }' \
-  "${REPO_ROOT}/agents/triage.md")
-for forge in github gitlab jira; do
-  name=$(sed -nE 's/^name: (.*)$/\1/p' "${REPO_ROOT}/skills/${forge}-forge/SKILL.md")
-  if test "$name" = "$forge"; then pass "${forge} forge skill is named ${forge}"; else fail "${forge}-forge skill is named '${name}'"; fi
-  mkdir -p "${CASE_DIR}/config/skills/${forge}"
-  cp -R "${REPO_ROOT}/skills/${forge}-forge/scripts" "${CASE_DIR}/config/skills/${forge}/"
-done
-env PATH="${CASE_DIR}/bin:${PATH}" FIXTURES="${FIX}" CLAUDE_CONFIG_DIR="${CASE_DIR}/config" FULLSEND_FORGE=github \
-  ISSUE_URL="https://github.com/acme/widgets/issues/7" FULLSEND_SLUG="" \
-  bash -c "${SNIPPET//\/tmp\/prior-triage.json/${CASE_DIR}/out.json}" 2> "${CASE_DIR}/err" || true
-check "step 2e command runs the github script" '.forge == "github" and .baseline.id == "1"'
-first_word=$(printf '%s\n' "$SNIPPET" | awk 'NF { print $1; exit }')
-allowed=$(sed -nE 's/^tools:.*Bash\(([^)]*)\).*/\1/p' "${REPO_ROOT}/agents/triage.md")
-case ",${allowed}," in
-  *",${first_word},"*) pass "step 2e command (${first_word}) is in the agent's Bash allowlist" ;;
-  *) fail "step 2e command starts with '${first_word}', not in Bash(${allowed})" ;;
-esac
+CASE_RC=0
+env -u RUNNER_TEMP PATH="${CASE_DIR}/bin:${PATH}" FIXTURES="${FIX}" FULLSEND_TRACKER=github \
+  ISSUE_URL="https://github.com/acme/widgets/issues/7" bash "${PRE_SCRIPT}" > "${CASE_DIR}/err" 2>&1 || CASE_RC=$?
+if test "$CASE_RC" -eq 0 && ! grep -q 'Prior triage analysis' "${CASE_DIR}/err"; then
+  pass "no RUNNER_TEMP: pre-triage.sh skips the prior triage analysis"
+else fail "no RUNNER_TEMP: exit ${CASE_RC}, $(cat "${CASE_DIR}/err")"; fi
 
-# ---------------------------------------------------------------------------
-# The three forge skills carry the same selection program.
-# ---------------------------------------------------------------------------
-if cmp -s "${REPO_ROOT}/skills/github-forge/scripts/prior-triage.jq" "${REPO_ROOT}/skills/gitlab-forge/scripts/prior-triage.jq" \
-  && cmp -s "${REPO_ROOT}/skills/github-forge/scripts/prior-triage.jq" "${REPO_ROOT}/skills/jira-forge/scripts/prior-triage.jq"; then
-  pass "prior-triage.jq copies match"
-else
-  fail "prior-triage.jq differs between the forge skills"
-fi
+HOST_FILE='${RUNNER_TEMP}/triage-workspace/prior-triage.json'
+SANDBOX_FILE=/sandbox/workspace/prior-triage.json
+wired=$(yq -r '.host_files[] | select(.dest == "'"${SANDBOX_FILE}"'") | [.src, .optional] | join(" ")' \
+  "${REPO_ROOT}/harness/triage.yaml")
+if test "$wired" = "${HOST_FILE} true"; then pass "harness copies the host file to ${SANDBOX_FILE}, optional"
+else fail "harness host_files for ${SANDBOX_FILE}: '${wired}'"; fi
+if grep -qF "prior_triage_write \"${HOST_FILE}\"" "${SCRIPT_DIR}/pre-triage.src.sh"; then
+  pass "pre-triage.sh writes the host file the harness copies"
+else fail "pre-triage.src.sh does not write ${HOST_FILE}"; fi
+if awk '/^### 2e\./ { found = 1 } /^## Step 3/ { exit } found' "${REPO_ROOT}/agents/triage.md" | grep -qF "${SANDBOX_FILE}"; then
+  pass "step 2e reads ${SANDBOX_FILE}"
+else fail "step 2e does not name ${SANDBOX_FILE}"; fi
+if grep -qx 'tools: Bash(gh,curl,jq), Skill' "${REPO_ROOT}/agents/triage.md"; then
+  pass "triage agent tools stay Bash(gh,curl,jq), Skill"
+else fail "triage agent tools changed: $(grep '^tools:' "${REPO_ROOT}/agents/triage.md")"; fi
 
 echo ""
 echo "${PASSES} passed, ${FAILURES} failed"

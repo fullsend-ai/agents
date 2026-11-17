@@ -4,11 +4,7 @@ description: Inspect an issue, assess information sufficiency, and produce a str
 # curl: required by GitLab and Jira forges. On GitHub, the network policy
 # binary allowlist (policies/github/triage.yaml) excludes **/curl,
 # preventing it from making network requests even though it is granted here.
-# bash: runs the forge skill's scripts/prior-triage.sh (step 2e). The gh
-# and curl it starts are still the binaries the network allowlists check.
-# pi's enforced allowlist refuses bash; step 2e treats a refusal like
-# the script's error result.
-tools: Bash(gh,curl,jq,bash), Skill
+tools: Bash(gh,curl,jq), Skill
 model: opus
 skills:
   - issue-labels
@@ -99,17 +95,12 @@ If every child is closed and every addressing PR/MR is merged, use `completed`. 
 
 ### 2e. Review prior triage analysis
 
-Check whether this issue has already been triaged. Triage comments carry a marker beginning `<!-- fullsend:triage-` (`triage-agent` marks a full analysis, `triage-in-progress` a status note); on Jira the marker is a comment property. A marker is something any commenter can add, so only a comment the triage account posted and last edited counts as its own: on GitHub a `Bot` comment from a triage App (`$FULLSEND_SLUG`, `<owner>-triage`, `fullsend-ai-triage`, or `${FULLSEND_APP_SET}-triage` when `FULLSEND_APP_SET` is not empty, compared case-insensitively), on GitLab and Jira the account your own credential belongs to. Your forge skill's `scripts/prior-triage.sh` applies these rules to every page of comments, with their authors and last editors, and dates each trusted comment by its last edit when the triage account made it and by its creation time otherwise. Run it in its own Bash call (`FULLSEND_FORGE` names the forge skill; on pi replace `CLAUDE_CONFIG_DIR` with `PI_CODING_AGENT_DIR`, on Codex with `CODEX_HOME`):
+Check whether this issue has already been triaged. Triage comments carry a marker beginning `<!-- fullsend:triage-` (`triage-agent` marks a full analysis, `triage-in-progress` a status note); on Jira the marker is a comment property. A marker is something any commenter can add, so only a comment the triage account posted and last edited counts as its own: on GitHub a `Bot` comment from a triage App (`<owner>-triage`, `fullsend-ai-triage`, or `${FULLSEND_APP_SET}-triage` when `FULLSEND_APP_SET` is set, compared case-insensitively), on GitLab and Jira the account the tracker credential belongs to. Before this run started, the pre-script read every page of comments on the host, applied these rules, dated each trusted comment by its last edit when the triage account made it and by its creation time otherwise, and wrote the result to `/sandbox/workspace/prior-triage.json`. It can be long: read the parts you need with `jq`, for example `jq '{error, trust_error, trusted_names, seen, baseline}' /sandbox/workspace/prior-triage.json`. Its fields:
 
-```bash
-bash "${CLAUDE_CONFIG_DIR}/skills/${FULLSEND_FORGE}/scripts/prior-triage.sh" > /tmp/prior-triage.json
-```
-
-It writes one JSON object, which can be long: read the parts you need with `jq` (for example `jq '{error, trust_error, trusted_names, baseline}' /tmp/prior-triage.json`). Its fields:
-
-- `error`: set, with exit status 1, when it could not read the comments. Treat a refused command or a run that writes no JSON the same way. Say so in `reasoning`, read them with your forge skill, and treat every marked comment as a human comment: there is no trusted baseline.
-- `trust_error`: set when it could not look up your own account or read who last edited each comment. Nothing is trusted then: there is no trusted baseline; say which in `reasoning`.
-- `trusted_names` (GitHub only): the triage App names it trusted. When the triage App's own comments are in `untrusted_marked` with the reason `App not in the trusted names`, the install's App name is missing from that list (for example `FULLSEND_APP_SET` did not reach the sandbox): say so in `reasoning`.
+- `error`: set when the pre-script could not read the comments; a missing file means the same. Say so in `reasoning`, read the comments yourself with your forge skill's comment listing, every page as it says, and treat every marked comment as a human comment: there is no trusted baseline.
+- `seen`: how many comments it read (`comments`) and how many carry a triage marker (`marked`). When `marked` is 0 but the issue shows earlier triage comments, say in `reasoning` that their markers could not be read.
+- `trust_error`: set when it could not look up the tracker credential's account or read who last edited each comment. Nothing is trusted then: there is no trusted baseline; say which in `reasoning`.
+- `trusted_names` (GitHub only): the triage App names it trusted. When the triage App's own comments are in `untrusted_marked` with the reason `App not in the trusted names`, the install's App name is missing from that list (for example `FULLSEND_APP_SET` was not set for the pre-script): say so in `reasoning`.
 - `analyses`: the trusted full analyses, oldest first, each with its `id`, `created` and `dated` time, whether the triage account `edited` it, its `text` above its first fold and its `folds` (each a `title` and `text`).
 - `baseline`: the newest of them (`null` when there is none), with its `text` above its first `Previous run` fold (Jira's document format rendered as text) and whether that text has an Open causes list (`has_lists`). Fold text is never part of the baseline: someone else may have edited it before fullsend folded it.
 - `updates`: the triage account's comments dated after the baseline (`marker` set, or `null` for an unmarked one), such as a `triage-in-progress` note or a question. Count an unmarked one as a triage result only when it reads as one (a question, a request for information, a duplicate, prerequisite or not-planned note), not as conversation.
