@@ -1,0 +1,77 @@
+forge: github
+fixture:
+  type: issue
+  title: "Login returns 500 for some users"
+  body: |
+    Since last week a few users get an HTTP 500 when they submit the
+    login form. Most users can log in fine. The server log shows
+    `TypeError: expected string or bytes-like object` from `re.match` in
+    `validate_email` (`src/auth/validators.py`), called from
+    `login_handler`.
+
+    Steps to reproduce: POST the login form with a password and no
+    email field. Expected a validation message, got a 500.
+
+    Environment: current main, Python 3.12.
+  # Run 1 rules out three causes. Run 2 rules out twelve more and, to
+  # stay under 4000 characters, already folds run 1's three into one line
+  # of names. Every ruling holds in the fixture code. Run 2 is close to
+  # the limit, so the next analysis, with any text of its own, has to
+  # shorten or fold more entries and must keep all fifteen names ruled
+  # out.
+  comments:
+    - |
+      <!-- fullsend:triage-agent -->
+      `login_handler` passes `request.params.get("email")` straight to `validate_email`, so a form with no email field calls `re.match` on `None`.
+
+      **Open causes:**
+      - Missing email field reaches validate_email as None — login_handler passes request.params.get("email") without a check, and re.match raises TypeError.
+
+      **Ruled out:**
+      - validate_email rejects '+' in the local part — the pattern's local-part class `[a-zA-Z0-9._%+-]` includes '+'; the docstring's BUG note is stale.
+      - validate_email rejects uppercase letters — both the local-part and the domain classes include A-Z.
+      - validate_email rejects digits in the local part — the local-part class includes 0-9.
+
+      ---
+      **Next steps:**
+      - `/fs-code` — agent creates a PR to implement this issue
+      - `/fs-code <your instruction>` — agent implements with your specific guidance
+    - |
+      Do the 500s happen for any other inputs? Several users without a missing field also report them.
+    - |
+      <!-- fullsend:triage-agent -->
+      Re-checked every part of the pattern `^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$` and the handler against the reports of 500s for users who did send an email. The only other path to a 500 is the ValueError that validate_email raises for a malformed address: login_handler does not catch it. Everything else the reports suggested is ruled out below with the line of code that refutes it, so a fix only needs a None check and a ValueError handler in login_handler that return a 400 with the validation message. The reporters' sample addresses all validate when they are typed correctly, which also points at the two open causes rather than at the pattern. Severity stays medium: the 500s are limited to bad input, but they hide the validation message the user needs to correct it.
+
+      **Proposed test case:**
+      ```
+      POST /login with no email field      -> expect 400, not 500
+      POST /login with email "not-an-email" -> expect 400, not 500
+      POST /login with email "a+b@example.com" -> expect 200
+      POST /login with email "First_Last@mail.my-company.museum" -> expect 200
+      ```
+
+      **Open causes:**
+      - Missing email field reaches validate_email as None — login_handler passes request.params.get("email") without a check, and re.match raises TypeError.
+      - Malformed address raises an unhandled ValueError — validate_email raises ValueError("invalid email format") and login_handler has no try/except around the call, so a bad address is a 500 too.
+
+      **Ruled out:**
+      - Subdomains in the domain (mail.example.co.uk) — the domain class `[a-zA-Z0-9.-]` includes '.', so every extra label matches before the final `\.`; a user on a university subdomain suggested this, but the pattern accepts the address they gave.
+      - Hyphenated domains (my-company.com) — the domain class `[a-zA-Z0-9.-]` includes '-', so a hyphen anywhere in the domain matches; the address from the report validates.
+      - Long top-level domains (.museum, .technology) — the TLD part is `[a-zA-Z]{2,}`, which has a lower bound of two letters and no upper bound, so a TLD of any length validates.
+      - Underscores in the local part — the local-part class `[a-zA-Z0-9._%+-]` includes '_', so first_last@example.com validates.
+      - A percent sign in the local part — the local-part class includes '%', so the routed addresses one reporter uses (user%host@example.com) validate.
+      - Catastrophic regex backtracking timing out the request — the pattern has no nested quantifiers, so it cannot backtrack exponentially on a form-sized input, and the reported error is a TypeError, not a timeout.
+      - Missing password field — login_handler reads the password with request.params.get and never uses it (the line is marked noqa F841), so a missing password is None and nothing reads it, so it cannot raise.
+      - The authentication backend raising — nothing authenticates yet: after validate_email, login_handler only has a placeholder comment and returns {"status": "ok"}, so no backend call exists that could fail.
+      - A circular import between views.py and validators.py — validators.py imports only `re`, and views.py imports validate_email from it, so the import graph has no cycle.
+      - A dot at the start of the local part — the local-part class includes '.' at any position, so .user@example.com validates rather than raising, and none of the reported failing addresses starts with a dot.
+      - The handler normalizing the address before validating it — login_handler passes the raw request.params.get("email") value to validate_email with no lowercasing, stripping or Unicode normalization.
+      - A stale cached regex — validate_email passes the pattern string to re.match on every call, and Python's re cache is keyed by that string, so it cannot hold an older pattern.
+      - Earlier rulings (see the earlier analysis): '+' in the local part, uppercase letters, digits in the local part.
+
+      ---
+      **Next steps:**
+      - `/fs-code` — agent creates a PR to implement this issue
+      - `/fs-code <your instruction>` — agent implements with your specific guidance
+    - |
+      Still seeing these, a handful a day. Can this be picked up?

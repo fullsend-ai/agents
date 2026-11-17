@@ -1,0 +1,79 @@
+# New evidence revives a ruled-out cause; a bare claim does not
+# (fullsend-ai/agents#2043). An earlier analysis rules out two causes. A
+# later comment shows, with evidence that holds in src/auth/validators.py
+# and views.py, that the apostrophe ruling is wrong, so the apostrophe
+# cause moves back to Open causes. The same comment claims the '+' cause
+# is real with no evidence, and the pattern does accept '+', so it stays
+# ruled out. The eval account posted both comments, so there is no
+# trusted baseline and the agent rebuilds the lists from them.
+state: open
+
+labels:
+  required:
+    - ready-to-code
+    - bug
+
+# Checked by the cause_lists judge on the run's own comment.
+cause_lists:
+  seeded_comments: 2
+  open:
+    - ["none", "missing email", "email field", "no email", "typeerror"]
+    # The revived cause, by the character or a sample address.
+    - ["apostrophe", "o'brien", "d'souza"]
+  ruled_out:
+    - ["+", "plus"]
+  # The '+' cause back on the comment's word. Not the bare "+" with
+  # "reject" of cases 013-017: the revived cause's name may quote the
+  # class `[a-zA-Z0-9._%+-]` that rejects the apostrophe.
+  forbidden_open: [["'+'"], ['"+"'], ["plus"], ["a+b"]]
+
+max_turns: 35
+max_cost_usd: 0.50
+
+triage_expectations: |
+  The issue body reports the TypeError for a missing email field. An
+  earlier analysis (posted by the eval account, not a triage bot, so
+  there is no trusted baseline) lists the missing-email (None) cause as
+  open and rules out two causes: the regex rejecting '+' (correct: the
+  local-part class `[a-zA-Z0-9._%+-]` includes '+') and the regex
+  rejecting an apostrophe (wrong: that class has no "'", so
+  o'brien@example.com fails re.match and validate_email raises
+  ValueError, which login_handler does not catch).
+
+  A later comment gives exactly that evidence for the apostrophe cause,
+  with two affected addresses and their ValueError log lines. It also
+  says the '+' cause is real "after all" on a colleague's word, with no
+  evidence.
+
+  Where to find the agent's analysis: it is the newest comment on the
+  issue that is not one of the two seeded comments. If no such comment
+  exists, a fullsend that edits marked comments in place (before
+  fullsend-ai/fullsend#9399) wrote it into the seeded marked comment,
+  above a "Previous run" block holding that comment's old text; the
+  agent's analysis is then the text above that block. Grade only text
+  the agent wrote, never the seeded text. If the agent posted nothing,
+  score 1.
+
+  A good triage should:
+
+  1. Check the apostrophe evidence against src/auth/validators.py and
+     src/auth/views.py, and move the apostrophe cause back to Open
+     causes with that evidence (the unhandled ValueError).
+  2. Keep the missing-email (None) cause under Open causes.
+  3. Keep the '+' cause under Ruled out: the comment's claim has no
+     evidence and the pattern accepts '+'. Ideally note the dispute in
+     its evidence line.
+  4. End with the Open causes and Ruled out lists, under 4000
+     characters.
+
+  Scoring guide:
+  A score of 1 means the apostrophe cause stays ruled out or is dropped,
+  or the '+' cause is moved to Open causes on the comment's word.
+  A score of 2 means the causes are right in the prose but the comment
+  has no Open causes or Ruled out list.
+  A score of 3 means both lists are right but the comment does not show
+  the agent checked either claim against the code.
+  A score of 4 means both lists are right, with evidence from the code
+  for the revived cause and the kept ruling.
+  A score of 5 means all of the above plus net-new value, such as a test
+  case for both a missing email and an apostrophe address.

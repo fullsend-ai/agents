@@ -94,6 +94,84 @@ assert (len(SEEDS016) == SPEC016["seeded_comments"] and "authgw" in SEEDS016[0][
         and "authgw" not in ISSUE016.lower()
         and subprocess.run(["grep", "-rqi", "authgw", f"{sys.argv[2]}/016-retriage-keeps-unmentioned-cause/repo/"]).returncode == 1), "case 016 fixture drifted"
 
+CASES = sys.argv[2]
+REPO = f"{CASES}/013-retriage-keeps-ruled-out/repo/src/auth"
+import re
+# The fixture's pattern, read from the code the new cases' evidence cites.
+PATTERN = re.search(r'pattern = r"([^"]+)"', open(f"{REPO}/validators.py").read()).group(1)
+VIEWS = open(f"{REPO}/views.py").read()
+def issue_body(name):
+    return subprocess.run(["yq", "-r", ".fixture.body", f"{CASES}/{name}/input.yaml"],
+                          capture_output=True, text=True, check=True).stdout
+def in_repo(name, word):
+    return subprocess.run(["grep", "-rqi", word, f"{CASES}/{name}/repo/"]).returncode == 0
+
+# 018: the apostrophe evidence holds in the code (the class has no "'",
+# validate_email raises, login_handler catches nothing), and the '+'
+# ruling the bare claim disputes also holds.
+SPEC018 = case_spec("018-retriage-revives-ruled-out")
+SEEDS018 = case_seeds("018-retriage-revives-ruled-out")
+assert (len(SEEDS018) == SPEC018["seeded_comments"]
+        and MARKER in SEEDS018[0]["body"] and "apostrophe" in SEEDS018[0]["body"].split("**Ruled out:**")[1]
+        and MARKER not in SEEDS018[1]["body"] and "o'brien" in SEEDS018[1]["body"]
+        and "[a-zA-Z0-9._%+-]" in SEEDS018[1]["body"] and "[a-zA-Z0-9._%+-]" in PATTERN
+        and re.match(PATTERN, "o'brien@example.com") is None and re.match(PATTERN, "a+b@example.com")
+        and "except" not in VIEWS), "case 018 fixture drifted"
+
+# 019: run 2 is close to the 4000-character limit, and each ruled_out
+# group matches exactly one name the seeded analyses rule out (the folded
+# line split into its names), so a dropped name cannot pass on another's.
+SPEC019 = case_spec("019-retriage-folds-long-ruled-out")
+SEEDS019 = case_seeds("019-retriage-folds-long-ruled-out")
+def seeded_ruled(body):
+    sec = body.split("**Ruled out:**")[1].split("\n---")[0].lower()
+    out = []
+    for line in sec.splitlines():
+        line = line.strip().lstrip("- ")
+        if not line:
+            continue
+        head = re.split(r"\s[—–-]\s|—", line, maxsplit=1)[0]
+        out += head.split(":", 1)[1].split(", ") if head.startswith("earlier rulings") else [head]
+    return out
+RULED019 = seeded_ruled(SEEDS019[2]["body"])
+assert (len(SEEDS019) == SPEC019["seeded_comments"] and MARKER in SEEDS019[2]["body"]
+        and 3700 < len(SEEDS019[2]["body"].split("\n---")[0]) < 4000
+        and len(RULED019) == len(SPEC019["ruled_out"]) == 15
+        and all(sum(any(p.lower() in n for p in g) for n in RULED019) == 1 for g in SPEC019["ruled_out"])
+        and all(any(p.lower() in n for g in [SPEC019["ruled_out"][i]] for p in g)
+                for i, n in enumerate(seeded_ruled(SEEDS019[0]["body"])))
+        and PATTERN in SEEDS019[2]["body"]), "case 019 fixture drifted"
+
+# 020: authgw appears only in the comments, the question that rules it
+# out carries no marker, and the log lines it cites are on the issue.
+SPEC020 = case_spec("020-retriage-refutation-in-question")
+SEEDS020 = case_seeds("020-retriage-refutation-in-question")
+assert (len(SEEDS020) == SPEC020["seeded_comments"]
+        and [i for i, s in enumerate(SEEDS020) if MARKER in s["body"]] == [1]
+        and "authgw" in SEEDS020[1]["body"].split("**Open causes:**")[1].split("**Ruled out:**")[0]
+        and "via=direct" in SEEDS020[2]["body"] and "rule out the authgw" in SEEDS020[3]["body"]
+        and "authgw" not in issue_body("020-retriage-refutation-in-question").lower()
+        and not in_repo("020-retriage-refutation-in-question", "authgw")), "case 020 fixture drifted"
+
+# 021: the only marked comment holds exactly seeded_folds folds in the
+# shape internal/sticky writes, and authgw is named only inside the fold.
+SPEC021 = case_spec("021-retriage-fold-only-cause")
+SEEDS021 = case_seeds("021-retriage-fold-only-cause")
+STICKY_FOLD = re.compile(r"(?s)<details>\s*<summary>Previous [^<]*</summary>\s*<!-- sticky:history-start -->\s*(.*?)\s*<!-- sticky:history-end -->\s*</details>")
+FOLD021 = STICKY_FOLD.findall(SEEDS021[0]["body"])
+assert (len(SEEDS021) == SPEC021["seeded_comments"]
+        and SEEDS021[0]["body"].count("<!-- sticky:history-start -->") == SPEC021["seeded_folds"] == len(FOLD021)
+        and MARKER not in FOLD021[0] and "authgw" in FOLD021[0]
+        and "authgw" not in STICKY_FOLD.sub("", SEEDS021[0]["body"]).lower()
+        and "authgw" not in SEEDS021[1]["body"].lower()
+        and "authgw" not in issue_body("021-retriage-fold-only-cause").lower()
+        and not in_repo("021-retriage-fold-only-cause", "authgw")), "case 021 fixture drifted"
+
+ALL15 = ["'+' in the local part", "uppercase letters", "digits in the local part", "subdomains", "hyphenated domains",
+         "long top-level domains", "underscores", "a percent sign", "catastrophic backtracking", "missing password field",
+         "the authentication backend raising", "a circular import", "a leading dot", "normalizing the address", "a stale cached regex"]
+OPEN019 = ["None reaches validate_email — unchecked", "Malformed address raises an unhandled ValueError — not caught"]
+
 GOOD = analysis(["None reaches validate_email — unchecked"], ["regex rejects '+' — class includes '+'"])
 RESTORED = analysis(["None reaches validate_email", "regex rejects '+'"])
 NO_LISTS = MARKER + "\nThe None cause still holds." + FOOTER
@@ -193,6 +271,58 @@ cases = [
     ("a ruled-out cause reworded with plus is still caught",
      SEEDS + [c(analysis(["None reaches validate_email", "regex rejects plus addresses"], ["regex rejects '+' — class includes it"]))],
      SPEC013, False, "should stay ruled out"),
+    ("case 018 passes when the evidence revives the apostrophe cause and the bare claim does not",
+     SEEDS018 + [c(analysis(["None reaches validate_email — unchecked",
+                             "Apostrophe in the local part rejected by [a-zA-Z0-9._%+-] — ValueError is not caught"],
+                            ["regex rejects '+' — class includes '+'; a comment disputes it with no evidence"]))],
+     SPEC018, True, "match"),
+    ("case 018 fails when the apostrophe ruling is kept",
+     SEEDS018 + [c(analysis(["None reaches validate_email"],
+                            ["regex rejects '+' — class includes '+'", "regex rejects an apostrophe — RFC 5322 allows it"]))],
+     SPEC018, False, "Open causes lacks"),
+    ("case 018 fails when the bare claim revives the '+' cause",
+     SEEDS018 + [c(analysis(["None reaches validate_email", "o'brien@example.com raises ValueError",
+                             "plus addresses fail validation"], ["regex rejects '+' — class includes '+'"]))],
+     SPEC018, False, "should stay ruled out"),
+    ("case 019 passes when the oldest names fold into a plain line",
+     SEEDS019 + [c(analysis(OPEN019, ALL15[6:] ) .replace("**Ruled out:**\n", "**Ruled out:**\nAlso ruled out (see earlier analysis): " + ", ".join(ALL15[:6]) + "\n"))],
+     SPEC019, True, "match"),
+    ("case 019 passes when the oldest names fold into one list item",
+     SEEDS019 + [c(analysis(OPEN019, ["Earlier rulings: " + ", ".join(ALL15[:9]) + " — see earlier analysis"] + ALL15[9:]))],
+     SPEC019, True, "match"),
+    ("case 019 fails when the fold drops a name",
+     SEEDS019 + [c(analysis(OPEN019, ["Earlier rulings: " + ", ".join(ALL15[:9])] + ALL15[9:14]))],
+     SPEC019, False, "Ruled out lacks any of ['cache']"),
+    ("a plain line in Open causes is not a cause",
+     SEEDS + [c(MARKER + "\n\n**Open causes:**\nThe missing email cause still holds.\n\n**Ruled out:**\n- regex rejects '+' — class includes it" + FOOTER)],
+     SPEC, False, "Open causes lacks"),
+    ("case 020 passes when the question's refutation is carried",
+     SEEDS020 + [c(analysis(["batch-client sends no email, so None reaches validate_email — confirmed by the reporter"],
+                            ["authgw strips the email parameter — the failing requests came via=direct", "regex rejects '+' — class includes '+'"]))],
+     SPEC020, True, "match"),
+    ("case 020 fails when run 1's authgw cause is carried open",
+     SEEDS020 + [c(analysis(["None reaches validate_email", "authgw strips the email parameter (unverified)"],
+                            ["regex rejects '+' — class includes '+'"]))],
+     SPEC020, False, "Ruled out lacks any of ['authgw', 'gateway']"),
+    ("case 021 passes when the fold's cause is carried as unverified",
+     SEEDS021 + [c(analysis(["None reaches validate_email", "Malformed address raises an unhandled ValueError",
+                             "authgw strips the email parameter — only an earlier run claims it (unverified)"],
+                            ["regex rejects '+' — class includes '+'"]))],
+     SPEC021, True, "match"),
+    ("case 021 passes when the fold's cause is left out",
+     SEEDS021 + [c(analysis(["None reaches validate_email", "Malformed address raises an unhandled ValueError"],
+                            ["regex rejects '+' — class includes '+'"]))],
+     SPEC021, True, "match"),
+    ("case 021 fails when the fold's cause is carried as established",
+     SEEDS021 + [c(analysis(["None reaches validate_email", "Malformed address raises an unhandled ValueError",
+                             "authgw strips the email parameter — confirmed by the gateway log"],
+                            ["regex rejects '+' — class includes '+'"]))],
+     SPEC021, False, "may only be carried as unverified"),
+    ("case 021: the seeded fold alone is not this run's output", SEEDS021, SPEC021, False, "No triage analysis from this run"),
+    ("case 021: an in-place edit adds a second fold and is read above it",
+     [c(folded(analysis(["None reaches validate_email", "Malformed address raises an unhandled ValueError"],
+                        ["regex rejects '+' — class includes '+'"]), SEEDS021[0]["body"]))] + SEEDS021[1:],
+     SPEC021, True, "match"),
     ("an unmarked status comment after the run is ignored",
      SEEDS + [c(GOOD), c("🤖 Finished Triage")], SPEC, True, "match"),
     ("a fresh triage with no seeds passes on its lists",

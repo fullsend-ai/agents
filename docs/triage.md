@@ -451,7 +451,11 @@ If you use `base:` composition to override `harness/triage.yaml`:
   `scripts/post-triage-test.sh` and `scripts/pre-triage-test.sh` (mocked
   curl/`fullsend` calls, forge dispatch, label operations). End-to-end
   GitLab/Jira eval cases require a matching test fixture environment and
-  will be added as follow-up work.
+  will be added as follow-up work. The re-triage cases that check the
+  carried Open causes and Ruled out lists (013-021) seed their earlier
+  analyses as GitHub issue comments, so the GitLab note and Jira
+  comment-property read paths have no eval case (see
+  [eval/README.md](../eval/README.md#re-triage-coverage)).
 
 ## How the agent works
 

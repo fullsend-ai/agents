@@ -198,11 +198,15 @@ judges:
       # ones. A fullsend that edits in place (before fullsend#9399) writes
       # it into the first seeded marked comment instead, above the folded
       # "Previous run" history; only the text above that fold is this run's.
+      # A seeded comment may already hold Previous run folds
+      # (seeded_folds, default 0); it counts as edited only when it holds
+      # more, so the seeded text above its fold is never graded.
       appended = [b for b in comments[seeded:] if marker in b]
       if appended:
           text = appended[-1]
       else:
-          edited = [b for b in comments[:seeded] if "<!-- sticky:history-start -->" in b]
+          folds = int(spec.get("seeded_folds") or 0)
+          edited = [b for b in comments[:seeded] if b.count("<!-- sticky:history-start -->") > folds]
           if not edited:
               return False, "No triage analysis from this run: no new marked comment and no seeded comment edited in place"
           text = edited[0]
@@ -225,10 +229,17 @@ judges:
       # listing it. A colon is part of the name: cutting there would hide a
       # restored cause written "Cause: regex rejects '+'".
       item = re.compile(r"^\s*(?:[-*+]|\d+[.)])\s+(.*)$")
+      def name(line):
+          return re.split(r"\s[—–-]\s|—", line, maxsplit=1)[0]
       def names(s):
-          return [re.split(r"\s[—–-]\s|—", m.group(1), maxsplit=1)[0]
-                  for m in (item.match(line) for line in (s or "").splitlines()) if m]
-      open_n, ruled_n = names(open_s), names(ruled_s)
+          return [name(m.group(1)) for m in (item.match(line) for line in (s or "").splitlines()) if m]
+      open_n = names(open_s)
+      # In Ruled out, a line that is not a list item also counts: the size
+      # fold writes the oldest entries as one line of names, which keeps
+      # each name's ruling. Open causes stays items only, so prose there
+      # can never trip forbidden_open.
+      ruled_n = [name(line) for line in (ruled_s or "").splitlines()
+                 if line.strip() and not item.match(line)] + names(ruled_s)
       problems = []
       for group in spec.get("open") or []:
           if not any(p.lower() in n for p in group for n in open_n):
@@ -242,6 +253,14 @@ judges:
           parts = [p] if isinstance(p, str) else list(p)
           if any(all(q.lower() in n for q in parts) for n in open_n):
               problems.append(f"Open causes lists {p!r}, which should stay ruled out")
+      # An unverified_open group names a cause the run may carry only as a
+      # hypothesis (a cause found only in a Previous run fold): an Open
+      # causes item whose name matches it must say "unverified".
+      items = [m.group(1) for m in (item.match(line) for line in (open_s or "").splitlines()) if m]
+      for group in spec.get("unverified_open") or []:
+          for it in items:
+              if any(p.lower() in name(it) for p in group) and "unverified" not in it:
+                  problems.append(f"Open causes lists {name(it).strip()!r} as established; it may only be carried as unverified")
       if problems:
           return False, "; ".join(problems)
       return True, "Open causes and Ruled out lists match"
@@ -303,6 +322,6 @@ thresholds:
   expected_state:
     min_pass_rate: 0.9
   # cause_lists has no threshold yet, so it is scored in each run's summary
-  # but is not part of the nightly verdict, until cases 007 and 013-017 have
-  # run against a live model (fullsend-ai/agents#2043). It is scored only on
-  # cases that declare it.
+  # but is not part of the nightly verdict, until cases 007 and 013-021 have
+  # run against a live model three times, matching the nightly vote
+  # (fullsend-ai/agents#2043). It is scored only on cases that declare it.
