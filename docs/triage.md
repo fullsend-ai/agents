@@ -261,29 +261,6 @@ Re-running triage posts the result differently per tracker:
   earlier marked comment until fullsend-ai/fullsend#9399 lands, which is
   expected to make them post a new comment each run as well.
 
-A re-run treats an earlier marked comment as its own prior analysis only
-when the triage account wrote it and made its last edit; any other marked
-comment is read as a human comment, and so is the `Previous run` history
-fullsend folds into an edited comment. The agent identifies that account per
-tracker:
-
-- **GitHub:** a `Bot` author whose App is `$FULLSEND_SLUG`, `<owner>-triage`,
-  `fullsend-ai-triage` or, when `FULLSEND_APP_SET` is not empty, `${FULLSEND_APP_SET}-triage`.
-  `env/github/triage.env` passes `FULLSEND_APP_SET` into the sandbox.
-  fullsend's route-based `triage` job, which runs the built-in triage
-  agent, exports it since fullsend-ai/fullsend#9575, and the `harness-run`
-  job already did (both in fullsend's `.github/workflows/reusable-dispatch.yml`).
-  An install on a fullsend release before that change (v0.56.1 or earlier)
-  whose custom App set is not named after the repository owner, and whose
-  harness `slug` is not its triage App's slug, matches none of these names,
-  so its earlier analyses are read as human comments.
-- **GitLab:** the account `GET /api/v4/user` returns for `GITLAB_TOKEN`.
-- **Jira:** the account `GET /rest/api/3/myself` returns, which needs the
-  `read:jira-user` scope (or the granular `read:user:jira`) on
-  `FULLSEND_JIRA_TOKEN`. Without it, no marked comment counts as the agent's
-  own: their causes are read as hypotheses, and the agent says so in the
-  `reasoning` field of the run's result, which is not posted to the issue.
-
 ### Jira setup
 
 Jira triage requires the following env vars, mirroring the shape of the
