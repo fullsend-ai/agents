@@ -140,9 +140,9 @@ def job_repository(policy):
 def rs256_signature(pem, message):
     """RSASSA-PKCS1-v1_5 with SHA-256, from a PKCS#1 PEM key, standard library only.
 
-    The runner image has neither the openssl command nor a Python RSA library.
-    This signs one short-lived token request per run on the host; it is not a
-    general-purpose signer.
+    Standard library only, so it does not depend on an openssl command or an
+    RSA library being present on the runner. This signs one short-lived token
+    request per run on the host; it is not a general-purpose signer.
     """
     # The marker is split so secret scanners do not read it as a key.
     if b"-----BEGIN RSA " + b"PRIVATE KEY-----" not in pem:
