@@ -216,6 +216,11 @@ for_each_forge_and_overlay_location() {
     }
     while IFS= read -r platform; do
       [[ -z "${platform}" ]] && continue
+      # Validate forge key is alphanumeric/dash to prevent yq selector injection
+      if ! [[ "${platform}" =~ ^[a-zA-Z0-9_-]+$ ]]; then
+        echo "${harness_name}: forge key contains invalid characters: ${platform}"
+        return 1
+      fi
       "${callback}" "${harness}" ".forge.${platform}" "forge.${platform}" "$@" || rc=1
     done <<< "${platforms}"
   fi
@@ -349,6 +354,11 @@ _check_hardcoded_callback() {
   fi
 }
 
+_check_schema_callback() {
+  local h="$1" p="$2" loc="$3" root="$4"
+  check_schema_files_at_path "${h}" "${p}" "${loc}" "${root}" || return 1
+}
+
 # Helper: check schema file existence at a given validation_loop path
 # Resolves schema paths relative to the provided resolve_root (matching engine's ResolveRelativeTo)
 # Rejects relative paths that escape the bundle root via .. (enforcing containment)
@@ -437,10 +447,24 @@ check_schema_files_at_path() {
 
   # Reject relative paths that escape the bundle root directory via .. components
   # (engine's ResolveRelativeTo enforces containment for relative paths)
-  # Match .. only as a path component: (^|/)\.\.(/|$)
+  # Normalize the path and check if the target lies outside resolve_root
   if [[ "${schema_path}" != /* ]] && [[ "${schema_path}" =~ (^|/)\.\.(/|$) ]]; then
-    echo "${harness_name}: ${location} schema path escapes bundle root via ..: ${schema_path}"
-    return 1
+    # Normalize the relative path by computing the actual target
+    local resolve_dir="${resolve_root}"
+    if [[ -z "${resolve_dir}" ]]; then
+      resolve_dir="$(dirname "$(dirname "${harness}")")"
+    fi
+    # Resolve the path and check containment using real path operations
+    local normalized_path
+    normalized_path="$(cd "${resolve_dir}" 2>/dev/null && realpath -s "${schema_path}" 2>/dev/null || echo "")"
+    local resolve_root_real
+    resolve_root_real="$(cd "${resolve_dir}" 2>/dev/null && realpath -s . 2>/dev/null || echo "")"
+
+    # Only reject if the normalized path escapes the resolve root
+    if [[ -z "${normalized_path}" ]] || [[ -z "${resolve_root_real}" ]] || ! [[ "${normalized_path}" == "${resolve_root_real}"* ]]; then
+      echo "${harness_name}: ${location} schema path escapes bundle root via ..: ${schema_path}"
+      return 1
+    fi
   fi
 
   # Resolve relative to the provided root (matching engine's ResolveRelativeTo)
@@ -462,7 +486,7 @@ check_schema_files_at_path() {
     return 1
   fi
 
-  if ! jq -s -e 'length == 1' "${full_schema_path}"; then
+  if ! jq -s -e 'length == 1' "${full_schema_path}" >/dev/null; then
     echo "${harness_name}: ${location} schema file is not valid JSON: ${schema_path}"
     return 1
   fi
@@ -575,12 +599,6 @@ test_no_hardcoded_schema() {
   fi
 }
 
-# Helper: callback for checking schema files existence and validity
-_check_schema_callback() {
-  local h="$1" p="$2" loc="$3" root="$4"
-  check_schema_files_at_path "${h}" "${p}" "${loc}" "${root}" || return 1
-}
-
 # Test 3: All referenced schemas exist and are valid JSON
 test_schema_files_exist_and_valid() {
   local found_error=0
@@ -634,10 +652,7 @@ test_schema_files_exist_and_valid() {
   fi
 }
 
-# Schema file validation and YAML syntax checking
-# This script maintains 3 core checks: test_validation_loop_schema, test_no_hardcoded_schema, test_schema_files_exist_and_valid
-
-# Test 5: Verify negative fixtures fail (prove the checks can detect errors)
+# Test 4: Verify negative fixtures fail (prove the checks can detect errors)
 test_negative_fixtures() {
   setup_fixture_cleanup
   local found_error=0
@@ -759,7 +774,7 @@ test_negative_fixtures() {
   fi
 }
 
-# Test 6: Verify positive fixtures pass (prove the checks allow valid configs)
+# Test 5: Verify positive fixtures pass (prove the checks allow valid configs)
 test_positive_fixtures() {
   setup_fixture_cleanup
   local found_error=0
@@ -779,6 +794,7 @@ test_positive_fixtures() {
     "schema-with-env-var.yaml"
     "forge-empty-schema-inherits-top-level.yaml"
     "schema-with-consecutive-dots.yaml"
+    "schema-internal-dotdot-path.yaml"
   )
 
   for fixture_name in "${expected_passes[@]}"; do

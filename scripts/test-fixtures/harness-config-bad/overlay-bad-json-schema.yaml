@@ -5,4 +5,4 @@ validation_loop:
 overlays:
   - validation_loop:
       script: scripts/validate-output-schema.sh
-      schema: harness-config-bad/invalid-json-schema.json.txt
+      schema: harness-config-bad/invalid-json-schema.invalid.json
