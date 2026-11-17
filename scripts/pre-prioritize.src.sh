@@ -5,7 +5,7 @@
 #
 # Required env vars:
 #   ISSUE_URL      — HTML URL of the issue to score
-#   FULLSEND_FORGE — "github" or "gitlab"
+#   FULLSEND_FORGE — "github", "gitlab", or "jira"
 
 set -euo pipefail
 
