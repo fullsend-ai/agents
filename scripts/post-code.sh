@@ -204,7 +204,7 @@ forge_is_transient_error() {
   lower=$(printf '%s' "${text}" | tr '[:upper:]' '[:lower:]')
 
   if echo "${lower}" | grep -qE \
-    'jira api:[[:space:]]*5[0-9][0-9]([[:space:]]|$)|http[[:space:]]*5[0-9][0-9]|status([:]|[[:space:]]+code:?)[[:space:]]*5[0-9][0-9]|error:[[:space:]]*5[0-9][0-9]|\(http 5[0-9][0-9]\)'; then
+    'http[[:space:]]*5[0-9][0-9]|status([:]|[[:space:]]+code:?)[[:space:]]*5[0-9][0-9]|error:[[:space:]]*5[0-9][0-9]|\(http 5[0-9][0-9]\)'; then
     return 0
   fi
   if echo "${lower}" | grep -qE \
@@ -3692,6 +3692,9 @@ post_jira_code_comment() {
   # and FULLSEND_JIRA_CLIENT_SECRET, never through command-line flags,
   # keeping them out of the process list. The Jira site and API gateway
   # come from tracker.jira in FULLSEND_DIR's config.yaml.
+  # One CLI invocation: the Jira client owns HTTP retries, including for
+  # no-op and failure comments. A rerun after an ambiguous POST 5xx relies
+  # on the CLI's sticky-marker property lookup to find a created comment.
   printf '%s' "${body}" | jira_auth_fullsend "${_jira_fullsend_bin}" \
     "${_jira_token_saved}" "${_jira_email_saved:-}" \
     issues post-comment --tracker jira --fullsend-dir "${FULLSEND_DIR}" \
@@ -3969,7 +3972,7 @@ ${detail_block}
 Retry with \`/fs-code\` if appropriate."
 
   if [ "${EXTERNAL_WORK_ITEM}" = "true" ]; then
-    if ! forge_retry_transient post_jira_code_comment "${JIRA_OUTCOME_MARKER}" "${body}"; then
+    if ! post_jira_code_comment "${JIRA_OUTCOME_MARKER}" "${body}"; then
       gha_echo warning "Failed to post no-op comment to Jira issue ${WORK_ITEM_KEY}"
     fi
   elif ! forge_retry_transient forge_post_issue_comment "${body}"; then

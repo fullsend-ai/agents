@@ -407,9 +407,12 @@ vars. Key differences from single-forge setup:
   replace another author's commits. Retries update the matching comment;
   neither comment replaces the PR/MR link. A later successful run leaves
   earlier no-op or failure comments alongside its link. These writes are best-effort: a
-  failed write is a warning and the run keeps its exit code. No-op comments
-  retry transient 5xx and timeout failures with the same backoff as forge comments;
-  permanent errors return immediately. Every Jira
+  failed write is a warning and the run keeps its exit code. No-op and failure comments
+  each invoke the CLI once and rely on its HTTP retry policy: 429 responses
+  are retried for all methods; HTTP 500–504 and network failures are retried for
+  idempotent methods. There is no additional shell retry. A rerun after an
+  ambiguous comment POST failure relies on the sticky-marker property lookup
+  to find a comment the earlier request may have created. Every Jira
   write has the Jira token redacted from its text.
 - **Policy** is `policies/base.yaml` for all forges. Network access is
   provided by profiles (`fullsend-gitlab-code` for GitLab). Custom
