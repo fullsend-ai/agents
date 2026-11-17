@@ -886,6 +886,21 @@ fi
 
 # --- Apply deferred label (must be last label mutation) ---
 
+if [[ "${DEFERRED_LABEL}" == "ready-to-code" ]]; then
+  # Re-check skip labels (#2076): label_actions may have added one since the
+  # earlier guard ran. A skip label, or labels that cannot be read, withhold
+  # promotion; the issue still gets triaged.
+  skip_rc=0
+  SKIP_LABEL="$(triage_find_skip_label)" || skip_rc=$?
+  if [[ "${skip_rc}" -eq 0 ]]; then
+    echo "::notice::Issue carries skip label '$(_gha_sanitize "${SKIP_LABEL}")' after label_actions — not promoting to ready-to-code"
+    DEFERRED_LABEL="triaged"
+  elif [[ "${skip_rc}" -ne 1 ]]; then
+    echo "::warning::Cannot read the issue labels to re-check skip labels — not promoting to ready-to-code"
+    DEFERRED_LABEL="triaged"
+  fi
+fi
+
 if [[ -n "${DEFERRED_LABEL}" ]]; then
   echo "Applying deferred label '${DEFERRED_LABEL}'..."
   # forge_ensure_label creates the label via `gh` against REPO. On Jira, REPO

@@ -205,7 +205,10 @@ triage should still classify issues but must not flood the coding queue.
 The `skip-triage` label keeps an issue with a planning process, such as a
 top-level spec or decision map whose child issues are still being refined.
 `TRIAGE_SKIP_LABELS` adds more labels with the same behavior, for example
-`needs-design`, without changing the agent prompt or scripts.
+`needs-design`, without changing the agent prompt or scripts. Do not list
+labels that the triage pipeline manages itself, such as `needs-info`,
+`ready-to-code`, or `triaged`: a human `/fs-triage` resets those labels, and
+the skip check would then fight the pipeline.
 
 While an issue carries a skip label:
 
