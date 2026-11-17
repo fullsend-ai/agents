@@ -109,7 +109,8 @@ of the comment listing above with its properties, keeps the comments this
 credential's account posted and last edited, dates them, renders each body
 as text cut at its first `Previous run` fold, and prints the JSON that
 `scripts/prior-triage.jq` builds (the same file as in the github and gitlab
-forge skills). Step 2e says how to run it and what the JSON holds.
+forge skills). It keeps the credential in its own curl config file, never
+on a command line. Step 2e says how to run it and what the JSON holds.
 
 ## Searching for Duplicates and Related Issues
 

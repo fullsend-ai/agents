@@ -5,9 +5,13 @@
 # prints the JSON that prior-triage.jq builds. Reads ISSUE_URL,
 # FULLSEND_SLUG and FULLSEND_APP_SET. Exits 1, with "error" set, when the
 # comments cannot be read.
-set -u
+set -u -o pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
-fail() { jq -n --arg e "$1" '{forge: "github", error: $e}'; exit 1; }
+fail() {
+  jq -n --arg e "$1" '{forge: "github", error: $e, trust_error: null, trusted_names: null, analyses: [],
+    baseline: null, updates: [], untrusted_marked: [], dropped_cause_candidates: []}'
+  exit 1
+}
 
 REPO=$(printf '%s\n' "${ISSUE_URL:-}" | sed -nE 's|^https://github\.com/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/issues/[0-9]+$|\1|p')
 test -n "$REPO" || fail "ISSUE_URL is not a GitHub issue URL"
@@ -16,9 +20,10 @@ OWNER="${REPO%/*}"
 TMP=$(mktemp -d) || fail "cannot create a temporary directory"
 trap 'rm -rf "$TMP"' EXIT
 
-if ! gh api --paginate --slurp "repos/${REPO}/issues/${NUMBER}/comments?per_page=100" \
+# --paginate prints one array per page; --slurpfile below joins them.
+if ! gh api --paginate "repos/${REPO}/issues/${NUMBER}/comments?per_page=100" \
     > "$TMP/comments.json" 2> "$TMP/err" \
-  || ! jq -e 'type == "array"' "$TMP/comments.json" > /dev/null 2>&1; then
+  || ! jq -s -e 'all(type == "array")' "$TMP/comments.json" > /dev/null 2>&1; then
   fail "cannot list the issue comments: $(head -c 300 "$TMP/err")"
 fi
 
@@ -33,7 +38,7 @@ QUERY='query($owner: String!, $name: String!, $number: Int!, $after: String) {
 : > "$TMP/editors.jsonl"
 AFTER=""
 for _ in $(seq 1 100); do
-  set -- api graphql -F "owner=${OWNER}" -F "name=${REPO#*/}" -F "number=${NUMBER}" -f "query=${QUERY}"
+  set -- api graphql -f "owner=${OWNER}" -f "name=${REPO#*/}" -F "number=${NUMBER}" -f "query=${QUERY}"
   test -z "$AFTER" || set -- "$@" -f "after=${AFTER}"
   if ! gh "$@" > "$TMP/page.json" 2> "$TMP/err" \
     || ! jq -e '.data.repository.issue.comments.nodes | type == "array"' "$TMP/page.json" > /dev/null 2>&1; then
@@ -50,7 +55,7 @@ test -z "$AFTER" || test -n "$TRUST_ERROR" || TRUST_ERROR="editor query did not 
 # fullsend-ai-triage and, when set, the app set's triage App.
 NAMES=$(jq -nc --arg slug "${FULLSEND_SLUG:-}" --arg owner "$OWNER" --arg set "${FULLSEND_APP_SET:-}" \
   '[$slug, ($owner + "-triage"), "fullsend-ai-triage", (if $set == "" then "" else $set + "-triage" end)]
-   | map(ascii_downcase | select(. != ""))')
+   | map(ascii_downcase | select(. != "")) | unique')
 
 jq -n --slurpfile pages "$TMP/comments.json" --slurpfile editors "$TMP/editors.jsonl" \
   --argjson names "$NAMES" --arg trust_error "$TRUST_ERROR" '
@@ -58,15 +63,21 @@ jq -n --slurpfile pages "$TMP/comments.json" --slurpfile editors "$TMP/editors.j
   ($editors | map({key: (.databaseId | tostring), value: .}) | from_entries) as $ed
   | {forge: "github",
      trust_error: (if $trust_error == "" then null else $trust_error end),
-     records: [$pages[0] | add // [] | .[]
+     trusted_names: $names,
+     records: [$pages | add // [] | .[]
        | $ed[.id | tostring] as $e
        | {id: (.id | tostring), created: .created_at,
           edited_at: $e.lastEditedAt,
           author_ok: (.user.type == "Bot"
             and ((.performed_via_github_app.slug // .user.login // "") | triage_name)),
+          author_bot: (.user.type == "Bot"),
           edit: (if $e == null then "unknown"
                  elif $e.lastEditedAt == null then "none"
                  elif $e.editor == null then "unknown"
                  elif $e.editor.__typename == "Bot" and ($e.editor.login // "" | triage_name) then "own"
                  else "foreign" end),
-          body}]}' | jq -f "$HERE/prior-triage.jq"
+          body}]}' \
+  > "$TMP/in.json" 2> "$TMP/err" || fail "cannot read the comments: $(head -c 300 "$TMP/err")"
+jq -f "$HERE/prior-triage.jq" "$TMP/in.json" > "$TMP/out.json" 2> "$TMP/err" \
+  || fail "cannot build the result: $(head -c 300 "$TMP/err")"
+cat "$TMP/out.json"

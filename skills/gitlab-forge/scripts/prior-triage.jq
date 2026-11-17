@@ -2,11 +2,14 @@
 # The github, gitlab and jira forge skills each carry an identical copy
 # (scripts/prior-triage-test.sh checks that they match); each forge's
 # prior-triage.sh reads the comments and passes them in as
-#   {forge, trust_error, records: [{id, created, edited_at, author_ok,
-#    edit, marker?, body | text + folds}]}
+#   {forge, trust_error, trusted_names?, records: [{id, created, edited_at,
+#    author_ok, author_bot?, edit, marker?, status_note?,
+#    body | text + folds}]}
 # where edit is "none", "own" (last edited by the triage account),
-# "foreign" or "unknown" (edited, editor unreadable), and body is
-# markdown (github, gitlab) or text and folds are already rendered (jira).
+# "foreign" or "unknown" (edited, editor unreadable), author_bot marks a
+# GitHub App author, status_note a run-status comment the forge script
+# recognised (jira: by its comment property), and body is markdown
+# (github, gitlab) or text and folds are already rendered (jira).
 
 # An ISO 8601 time as epoch seconds: "Z", "+00:00" and "+0000" offsets,
 # with or without fractional seconds.
@@ -69,7 +72,7 @@ def cause_lists:
 | ($in.records
    | map(split_folds
      | .marker = (first((.marker // .text) | capture("<!-- fullsend:(?<m>triage-[a-z0-9-]+)").m) // null)
-     | .status_note = (.text | test("<!-- fullsend:agent-status"))
+     | .status_note = ((.status_note // false) or (.text | test("<!-- fullsend:agent-status")))
      | .trusted = ($in.trust_error == null and .author_ok and (.edit == "none" or .edit == "own"))
      | .dated = (if .edit == "own" then .edited_at else .created end)
      | .sort_key = [(.dated | epoch), (.created | epoch), (.id | tonumber? // 0)])
@@ -86,7 +89,7 @@ def cause_lists:
                | (.open[] | {list: "open", cause: .}), (.ruled_out[] | {list: "ruled_out", cause: .})
                | .source = $s) as $e ([];
          ($e.cause | cause_key) as $k
-         | if ($kept | index([$k])) != null then .
+         | if ($kept | any(. == $k)) then .
            else (map(.key) | index($k)) as $i
              | if $i == null then . + [{key: $k, cause: $e.cause, open_in: [], ruled_out_in: []}] else . end
              | (map(.key) | index($k)) as $j
@@ -98,17 +101,20 @@ def cause_lists:
     forge: $in.forge,
     error: null,
     trust_error: $in.trust_error,
-    analyses: [$analyses[] | {id, created, dated, edited: (.edit == "own")}],
+    trusted_names: $in.trusted_names,
+    analyses: [$analyses[] | {id, created, dated, edited: (.edit == "own"), text, folds}],
     baseline: (if $base == null then null else {id: $base.id, dated: $base.dated, has_lists: ($base.text | cause_lists | .found), text: $base.text} end),
     updates: (if $base == null then [] else
       [$all[] | select(.trusted and .marker != "triage-agent" and (.status_note | not)
                        and (.sort_key > $base.sort_key))
               | {id, dated, marker, text}] end),
     untrusted_marked: [$all[] | select(.marker != null and (.trusted | not))
-      | {id, marker,
+      | {id, created, marker,
          reason: (if $in.trust_error != null then "trust unknown: " + $in.trust_error
+                  elif (.author_ok | not) and .author_bot then "App not in the trusted names"
                   elif (.author_ok | not) then "not posted by the triage account"
                   elif .edit == "foreign" then "last edited by someone else"
-                  else "edited, editor unreadable" end)}],
+                  else "edited, editor unreadable" end),
+         text, folds}],
     dropped_cause_candidates: $dropped
   }
