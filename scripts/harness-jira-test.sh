@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # harness-jira-test.sh — Verify Jira provider/profile configuration and
-# credential boundary in triage, code, and prioritize harness files.
+# credential boundary in triage, code, and prioritize harness files, and the
+# one GitHub triage check that follows the same host-file rule
+# (FULLSEND_APP_SET in env/github/triage.env).
 #
 # Run from the repo root: bash scripts/harness-jira-test.sh
 
@@ -97,10 +99,10 @@ else
   assert_fail "triage-jira-email-in-sandbox-host-file" "JIRA_USER_EMAIL must come from env/jira/triage.env, not env.sandbox"
 fi
 
-# FULLSEND_APP_SET reaches the GitHub triage sandbox the same way: fullsend's
-# route-based triage job does not export it, and an unset ${VAR} in
-# harness/triage.yaml env fails the run, while the host file expands it to
-# empty.
+# FULLSEND_APP_SET reaches the GitHub triage sandbox the same way. fullsend's
+# triage job exports it since fullsend-ai/fullsend#9575, but an install on an
+# older fullsend leaves it unset, and an unset ${VAR} in harness/triage.yaml
+# env fails the run, while the host file expands it to empty.
 app_set_host_expand="$(yq '[.. | select(tag == "!!map" and .src == "env/github/triage.env")] | .[0].expand' "${TRIAGE_HARNESS}")"
 if grep -qxF 'export FULLSEND_APP_SET="${FULLSEND_APP_SET}"' "${REPO_ROOT}/env/github/triage.env" \
   && [[ "${app_set_host_expand}" == "true" ]] \
