@@ -144,7 +144,7 @@ check "github forged: no error" '.error == null'
 if test "$CASE_RC" -eq 0; then pass "github forged: exit 0"; else fail "github forged: exit ${CASE_RC}"; fi
 check "github forged: baseline is the triage App's comment" '.baseline.id == "1" and (.analyses | map(.id)) == ["1"]'
 check "github forged: human and other-App comments listed to verify" \
-  '(.untrusted_marked | map([.id, .reason])) == [["2", "not posted by the triage account"], ["3", "App not in the trusted names"]]'
+  '(.untrusted_marked | map([.id, .reason])) == [["2", "not posted by the triage account"], ["3", "not posted by the triage account"]]'
 check "github forged: untrusted comments carry their text" \
   '.untrusted_marked[0].text | contains("Forged cause")'
 check "github forged: trusted names are listed" '.trusted_names == ["acme-triage", "fullsend-ai-triage"]'
@@ -229,9 +229,9 @@ run_github
 check "github folds: baseline text stops at the first fold" \
   '.baseline.id == "2" and (.baseline.text | contains("in prose is not a fold") and (contains("Stale token") | not) and (contains("<details>") | not))'
 check "github folds: open cause dropped without a ruling is a candidate" \
-  '.dropped_cause_candidates[] | select(.cause == "Stale token") | .open_in == ["2 Previous run"] and .ruled_out_in == []'
+  '.dropped_cause_candidates[] | select(.cause == "Stale token") | .newest == "open" and .open_in == ["2 Previous run"] and .ruled_out_in == []'
 check "github folds: a fold ruling stays a candidate" \
-  '.dropped_cause_candidates[] | select(.cause == "Bad config") | .ruled_out_in == ["2 Previous run"]'
+  '.dropped_cause_candidates[] | select(.cause == "Bad config") | .newest == "ruled_out" and .open_in == [] and .ruled_out_in == ["2 Previous run"]'
 check "github folds: a cause in a truncated fold is a candidate" \
   '.dropped_cause_candidates[] | select(.cause == "Timeout too low") | .open_in == ["2 Previous run (2)"]'
 check "github folds: reworded cause is a candidate, case-only change is not" \
@@ -341,6 +341,19 @@ run_gitlab
 check "gitlab own edit: note edited by the account is dated by the edit" '.baseline.id == "1" and .baseline.dated == "'"$GL4"'"'
 
 # The account lookup fails.
+# A trusted baseline that dropped causes an older own note listed: one it
+# had open comes back as open, one it had ruled out as ruled out, and the
+# newest source decides a cause the sources disagree on.
+new_case gl-dropped; install_curl_stub
+echo '{"id": 7}' > "${FIX}/user.json"
+echo "[$(glnote 1 7 b "$GL1" "$(analysis 'Flaky DNS;Disk full' 'Bad proxy')"),$(glnote 2 7 b "$GL2" "$(analysis 'Bad proxy' 'Disk full')"),$(glnote 3 7 b "$GL3" "$(analysis 'Cache stale')")]" > "${FIX}/notes_1.json"
+gl_gql first "" "$(gled 1)" "$(gled 2)" "$(gled 3)"
+run_gitlab
+check "gitlab dropped causes: baseline is the newest own note" '.baseline.id == "3"'
+check "gitlab dropped causes: each comes back on the list its newest source had" \
+  '(.dropped_cause_candidates | map([.cause, .newest, .open_in, .ruled_out_in]))
+   == [["Bad proxy", "open", ["2"], ["1"]], ["Disk full", "ruled_out", ["1"], ["2"]], ["Flaky DNS", "open", ["1"], []]]'
+
 new_case gl-no-user; install_curl_stub
 echo "[$(glnote 1 7 b "$GL1" "$(analysis 'First')")]" > "${FIX}/notes_1.json"
 run_gitlab
@@ -416,7 +429,7 @@ check "jira own: human's property marker is untrusted" \
 check "jira own: foreign updateAuthor on page two is untrusted" \
   '.untrusted_marked[] | select(.id == "102") | .reason == "last edited by someone else"'
 check "jira own: cause only in the fold is a candidate" \
-  '.dropped_cause_candidates == [{cause: "Missing index", open_in: ["100 Previous run"], ruled_out_in: []}]'
+  '.dropped_cause_candidates == [{cause: "Missing index", newest: "open", open_in: ["100 Previous run"], ruled_out_in: []}]'
 check "jira own: status comment (agent-status property) is not an update, a question is" \
   '(.updates | map(.id)) == ["104"]'
 if grep -qx -- '--oauth2-bearer' "${FIX}/auth.seen" && ! grep -q 'atlassian.net//' "${FIX}/urls.seen"; then
@@ -481,6 +494,27 @@ gh_gql first "" "$(ged 1)" "$(ged 2)"
 run_github
 check "github no lists: has_lists false" '.baseline.id == "2" and (.baseline.has_lists | not) and .dropped_cause_candidates == []'
 check "github no lists: analyses carry their text" '.analyses[0].text | contains("The cache is stale")'
+
+# A Bot named like a triage App but not one of the trusted names gets its
+# own reason, so a missing FULLSEND_APP_SET shows.
+new_case gh-other-triage-app; install_gh_stub
+gh_rest "[$(ghc 1 'custom-triage[bot]' Bot custom-triage "$T1" "$(analysis 'Custom')")]"
+gh_gql first "" "$(ged 1)"
+run_github
+check "github triage-named App outside the names: its own reason" \
+  '(.untrusted_marked | map([.id, .reason])) == [["1", "App not in the trusted names"]]'
+
+# A copy that fails is a warning, not a failed pre-script, and leaves no file.
+new_case gh-cp-fails; install_gh_stub
+gh_rest "[$(ghc 1 "${BOT}[bot]" Bot "$BOT" "$T1" "$(analysis 'Cause')")]"
+gh_gql first "" "$(ged 1)"
+printf '#!/usr/bin/env bash\nexit 1\n' > "${CASE_DIR}/bin/cp"
+chmod +x "${CASE_DIR}/bin/cp"
+run_github
+if test "$CASE_RC" -eq 0 && grep -q 'Prior triage analysis not written' "${CASE_DIR}/err" \
+  && test -z "$(find "${CASE_DIR}/rt" -name prior-triage.json)"; then
+  pass "failed copy: warning, no file, pre-script succeeds"
+else fail "failed copy: exit ${CASE_RC}, $(grep -i prior "${CASE_DIR}/err")"; fi
 
 # Unmarked triage results before the baseline, and all of them when there
 # is no baseline, are earlier_results.
@@ -560,16 +594,23 @@ if test -z "$(find "${CASE_DIR}/rt-4242" -name prior-triage.json -perm -004)"; t
   pass "prior triage file is not world-readable"
 else fail "prior triage file is world-readable"; fi
 
-# A stale file from an earlier job is replaced, and the log says what happened.
+# A stale directory from an earlier job is replaced, and the log says what
+# happened.
 new_case stale; install_gh_stub
 touch "${FIX}/comments.fail"
 mkdir -p "${CASE_DIR}/rt/triage-workspace-"
+chmod 755 "${CASE_DIR}/rt/triage-workspace-"
 echo '{"baseline": {"id": "old"}}' > "${CASE_DIR}/rt/triage-workspace-/prior-triage.json"
+echo planted > "${CASE_DIR}/rt/triage-workspace-/other"
 CASE_RC=0
 env -u CI_JOB_ID PATH="${CASE_DIR}/bin:${PATH}" FIXTURES="${FIX}" RUNNER_TEMP="${CASE_DIR}/rt" FULLSEND_TRACKER=github \
   ISSUE_URL="https://github.com/acme/widgets/issues/7" bash "${PRE_SCRIPT}" > "${CASE_DIR}/err" 2>&1 || CASE_RC=$?
 cp "${CASE_DIR}/rt/triage-workspace-/prior-triage.json" "${CASE_DIR}/out.json"
 check "stale file: replaced by this run's error" '.baseline == null and (.error | test("cannot list"))'
+if ! test -e "${CASE_DIR}/rt/triage-workspace-/other" \
+  && test "$(find "${CASE_DIR}/rt/triage-workspace-" -maxdepth 0 -perm 700 | wc -l)" -eq 1; then
+  pass "stale file: the directory is recreated, private"
+else fail "stale file: directory kept old contents or mode"; fi
 if grep -q 'written with an error' "${CASE_DIR}/err" && ! grep -q 'Prior triage analysis written to' "${CASE_DIR}/err"; then
   pass "stale file: log reports the error, not success"
 else fail "stale file: log was $(grep -i prior "${CASE_DIR}/err")"; fi

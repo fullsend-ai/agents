@@ -66,8 +66,10 @@ curl --fail-with-body --silent "${JIRA_AUTH_FLAG}" "${JIRA_AUTH}" \
 # posted with a marker carries it as properties[] key "fullsend.sticky-marker",
 # value {"marker": "<!-- fullsend:... -->"}, not in the comment body (check the
 # body too if the property is missing). To read every comment, repeat with
-# &startAt=N, advancing N by the number of comments returned, until N
-# reaches the response's total. In a fullsend comment's body (Atlassian
+# &startAt=N, advancing N by the number of comments returned, until a page
+# is empty, N reaches the response's total, or (with no total) a page has
+# fewer comments than maxResults; stop after 100 pages and say the listing
+# is incomplete. In a fullsend comment's body (Atlassian
 # Document Format), a horizontal rule is a "rule" node and a folded "Previous
 # run" block is an "expand" node whose attrs.title starts with "Previous run".
 curl --fail-with-body --silent "${JIRA_AUTH_FLAG}" "${JIRA_AUTH}" \

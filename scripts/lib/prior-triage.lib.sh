@@ -32,24 +32,30 @@
 PRIOR_TRIAGE_SH_LOADED=1
 
 # prior_triage_write <file> — write the step 2e JSON to <file>.
-# Removes any earlier file first, so a failed write never leaves a stale
-# one for the harness to copy, and keeps the directory private to this
-# user.
+# The file's directory is this job's own: any earlier one is removed and a
+# new one is created private to this user, so a stale file, or a directory
+# another user made, is never copied into the sandbox. The caller runs
+# under set -e, so every step that can fail is checked here and ends in a
+# warning, never in a failed pre-script.
 prior_triage_write() {
-  local out="$1" work
-  rm -f "${out}" 2> /dev/null || true
-  if ! (umask 077 && mkdir -p "$(dirname "${out}")") || ! work=$(mktemp -d); then
-    echo "::warning::Prior triage analysis not written: cannot create $(_gha_sanitize "$(dirname "${out}")")"
+  local out="$1" dir work=""
+  dir=$(dirname "${out}")
+  rm -rf "${dir}" 2> /dev/null || true
+  if ! mkdir -p "$(dirname "${dir}")" 2> /dev/null || ! (umask 077 && mkdir "${dir}") 2> /dev/null \
+    || ! work=$(mktemp -d 2> /dev/null); then
+    echo "::warning::Prior triage analysis not written: cannot create $(_gha_sanitize "${dir}")"
     return 0
   fi
   if (_prior_triage_run "${work}") > "${work}/out.json" 2> "${work}/log" \
     && jq -e 'type == "object"' "${work}/out.json" > /dev/null 2>&1; then
-    (umask 077 && cp "${work}/out.json" "${out}")
+    (umask 077 && cp "${work}/out.json" "${out}") 2> /dev/null || rm -f "${out}" 2> /dev/null || true
   else
-    (umask 077 && _prior_triage_error "$(tail -n 3 "${work}/log" | tr '\n' ' ' | cut -c1-300)" > "${out}")
+    (umask 077 && _prior_triage_error "$(tail -n 3 "${work}/log" | tr '\n' ' ' | cut -c1-300)" > "${out}") 2> /dev/null \
+      || rm -f "${out}" 2> /dev/null || true
   fi
-  rm -rf "${work}"
-  if [[ ! -s "${out}" ]]; then
+  rm -rf "${work}" 2> /dev/null || true
+  if [[ ! -s "${out}" ]] || ! jq -e 'type == "object"' "${out}" > /dev/null 2>&1; then
+    rm -f "${out}" 2> /dev/null || true
     echo "::warning::Prior triage analysis not written to $(_gha_sanitize "${out}")"
   elif [[ "$(jq -r '.error // empty' "${out}")" != "" ]]; then
     echo "::warning::Prior triage analysis written with an error: $(_gha_sanitize "$(jq -r .error "${out}")")"
@@ -134,6 +140,7 @@ _prior_triage_github() {
             author_ok: (.user.type == "Bot"
               and ((.performed_via_github_app.slug // .user.login // "") | triage_name)),
             author_bot: (.user.type == "Bot"),
+            author_name: ((.performed_via_github_app.slug // .user.login // "") | sub("\\[bot\\]$"; "")),
             edit: (if $e == null then "unknown"
                    elif $e.lastEditedAt == null then "none"
                    elif $e.editor == null then "unknown"
@@ -367,7 +374,7 @@ def cause_lists:
                | .source = $s) as $e ({};
          ($e.cause | cause_key) as $k
          | if ($kept | any(. == $k)) then .
-           else .[$k] = ((.[$k] // {cause: $e.cause, open_in: [], ruled_out_in: []})
+           else .[$k] = ((.[$k] // {cause: $e.cause, newest: $e.list, open_in: [], ruled_out_in: []})
                          | .[$e.list + "_in"] += [$e.source])
            end)
      | [.[]]
@@ -390,7 +397,8 @@ def cause_lists:
     untrusted_marked: [$all[] | select(.marker != null and (.trusted | not))
       | {id, created, marker,
          reason: (if $in.trust_error != null then "trust unknown: " + $in.trust_error
-                  elif (.author_ok | not) and .author_bot then "App not in the trusted names"
+                  elif (.author_ok | not) and .author_bot and ((.author_name // "") | ascii_downcase | endswith("-triage"))
+                    then "App not in the trusted names"
                   elif (.author_ok | not) then "not posted by the triage account"
                   elif .edit == "foreign" then "last edited by someone else"
                   elif .date_bad then "date unreadable"
