@@ -321,13 +321,13 @@ Each case directory under `eval/<agent>/cases/` contains:
   and `ruled_out`, lists of phrase groups matched in list items' cause
   names, where the size fold's `Also ruled out: a; b; c` line counts for
   each name on it and other prose does not; `forbidden_open`, AND-groups
-  no Open causes name may match, with bracketed character classes cut
-  first; `unverified_open`, groups an Open causes item may name only as a
-  hypothesis: it fails when it calls the cause confirmed, verified,
-  established, proven or the root cause without an `(unverified)` marker;
-  `seeded_folds`, the most `Previous run` folds any one seeded comment
-  holds, default 0; a case without the block is not scored by that
-  check), and the
+  no Open causes name may match, with regex character classes such as
+  `[a-z0-9._%+-]` cut first; `forbidden_ruled_out`, the same for Ruled out
+  names; `unverified_open`, groups an Open causes item may name only with
+  the `(unverified)` marker, in its name or at its end; `seeded_folds`, a
+  list of how many `Previous run` folds each seeded comment holds, in
+  order, missing entries 0; a case without the block is not scored by
+  that check), and the
   report-only budgets:
   `max_cost_usd`, plus `max_turns` where the eval has a `max_turns` judge.
   Set `release: true` to include the case in `EVAL_TIER=release` runs (see
@@ -355,7 +355,8 @@ forged analyses and rulings ignored (015, 017), a cause the newest
 analysis left out kept (016), a ruling revived by evidence but not by a
 bare claim (018), the size fold keeping every name (019), a refutation
 in a question carried into the next analysis (020), and a cause found
-only in a `Previous run` fold never asserted (021).
+only in a `Previous run` fold carried only as `(unverified)` and never
+ruled out without evidence (021).
 `eval/scripts/cause-lists-test.sh` checks the judge against a correct
 answer and the regression for each of these cases, guards the fixtures
 of 016-021 against drift from what their expectations assume, and checks
