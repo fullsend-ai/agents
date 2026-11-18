@@ -280,8 +280,10 @@ On Jira the post-script posts the comment first, then sets the
 `fullsend.triage-state` property on it. Before fullsend-ai/fullsend#9399,
 fullsend edits the earlier comment in place, so a run cancelled after the
 edit but before the property write leaves the previous run's state attached
-to the new text. The next run starts from that older state; because step 2e
-re-checks every carried cause and reads newer trusted text as claims, the
+to the new text. The next run starts from that older state, and step 2e
+also reads the baseline comment's own current text: a cause it names that
+the state lacks, or a ruling it states that the state contradicts, is a
+claim the run checks, and every carried cause is re-checked, so the
 difference is caught. After #9399 each run posts a new comment, so this
 cannot happen. Two runs that overlap can also store the older run's state
 last; serializing runs on an issue is ADR 0106's job in fullsend. On GitHub

@@ -33,7 +33,9 @@ TRIAGE_STATE_READABLE_CAP=4000
 # state's UTF-8 bytes under 30000 for room to spare; only multibyte text can
 # come near it. TRIAGE_STATE_MAX_BYTES may lower the cap (tests do), never
 # raise it.
-if ! [[ "${TRIAGE_STATE_MAX_BYTES:-}" =~ ^[0-9]+$ ]] || (( TRIAGE_STATE_MAX_BYTES > 30000 )); then
+if [[ "${TRIAGE_STATE_MAX_BYTES:-}" =~ ^[0-9]{1,9}$ ]] && (( 10#${TRIAGE_STATE_MAX_BYTES} <= 30000 )); then
+  TRIAGE_STATE_MAX_BYTES=$((10#${TRIAGE_STATE_MAX_BYTES}))
+else
   TRIAGE_STATE_MAX_BYTES=30000
 fi
 # Footers other than "Next steps" (label and component reasons, unapplied
@@ -58,7 +60,7 @@ triage_state_json() {
       | map(select(type == "object")
             | {cause: (.cause | text(200)), evidence: (.evidence | text(300)), verified: (.verified == true)}
             | select(.cause != ""));
-    (.triage_summary // {}) as $s
+    (.triage_summary | if type == "object" then . else {} end) as $s
     | {open_causes: ($s.open_causes | causes | .[0:10]),
        ruled_out: ($s.ruled_out | causes | if length > 25 then .[(length - 25):] else . end)}
     | if (.open_causes | length) == 0 then empty else . end
@@ -89,7 +91,8 @@ triage_state_dropped() {
   jq -r --arg s "$2" '
     def n: if type == "array" then length else 0 end;
     (if $s == "" then {} else ($s | fromjson) end) as $state
-    | ((.triage_summary.open_causes | n) + (.triage_summary.ruled_out | n))
+    | (.triage_summary | if type == "object" then . else {} end) as $ts
+    | (($ts.open_causes | n) + ($ts.ruled_out | n))
     - (($state.open_causes | n) + ($state.ruled_out | n))
   ' "$1"
 }

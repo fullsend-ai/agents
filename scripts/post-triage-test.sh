@@ -2047,6 +2047,26 @@ else
   state_fail "state-multibyte-split-points" "expected a cut at a line end and the footer whole: ${mb_compose:0:200}"
 fi
 
+# A triage_summary that is not an object (the schema rejects it) is treated
+# as no state, with the warning, instead of aborting the post.
+run_state_case "state-github-summary-not-object" '{"action":"sufficient","reasoning":"r","clarity_scores":{"symptom":0.9,"cause":0.8,"reproduction":0.9,"impact":0.7,"overall":0.85},"triage_summary":"not an object","comment":"Short analysis."}'
+if [[ ${STATE_RC} -ne 0 ]] || [[ "$(posted_body "${GH_LOG}")" != *'Short analysis.'* ]] \
+  || ! grep -qF 'the result has no open cause with a name' "${TMPDIR}/stdout.log"; then
+  state_fail "state-github-summary-not-object" "expected the comment posted with the no-state warning (rc ${STATE_RC})"
+else
+  echo "PASS: state-github-summary-not-object"
+fi
+
+# TRIAGE_STATE_MAX_BYTES is read in base 10 (a leading zero is not octal),
+# and anything but digits, or above 30000, falls back to 30000.
+cap_of() { SCRIPT_DIR="${SCRIPT_DIR}" TRIAGE_STATE_MAX_BYTES="$1" bash -c 'source "${SCRIPT_DIR}/lib/triage-state.lib.sh"; echo "${TRIAGE_STATE_MAX_BYTES}"'; }
+if [[ "$(cap_of 0500)" == "500" && "$(cap_of 09)" == "9" && "$(cap_of 40000)" == "30000" \
+  && "$(cap_of 1e3)" == "30000" && "$(cap_of -5)" == "30000" && "$(cap_of 99999999999999999999)" == "30000" ]]; then
+  echo "PASS: state-max-bytes-base-ten"
+else
+  state_fail "state-max-bytes-base-ten" "got $(cap_of 0500) $(cap_of 09) $(cap_of 40000) $(cap_of 1e3) $(cap_of -5)"
+fi
+
 # Strings over the schema's limits are cut in the stored state.
 run_state_case "state-github-cuts-long-strings" "$(sufficient_with ",\"open_causes\":[{\"cause\":\"$(printf 'c%.0s' $(seq 1 250))\",\"evidence\":\"e\",\"verified\":true}],\"ruled_out\":[]" "Short.")"
 if [[ ${STATE_RC} -ne 0 ]] \
@@ -2940,6 +2960,18 @@ if [[ ${STATE_RC} -ne 0 ]] || ! grep -qF '/rest/api/3/comment/240/properties/ful
   tail -5 "${TMPDIR}/stdout.log"
 else
   echo "PASS: state-jira-long-issue-many-pages"
+fi
+
+# A page without "total" does not end the listing: paging goes on until a
+# page is shorter than its maxResults.
+jq -cn --arg m "${TA}" '{maxResults: 100, comments: [range(0; 100) | {id: "8\(.)", author: {accountId: "someone"}, created: "2026-11-01T08:00:00.000+0000", updated: "2026-11-17T09:00:00.000+0000", properties: [{key: "fullsend.sticky-marker", value: {marker: $m}}]}]}' > "${MOCK_JIRA_STATE_DIR}/page-0.json"
+jq -cn --argjson c "[$(jira_comment 310 bot-1 "${TA}" 2026-11-17T09:30:00.000+0000)]" '{maxResults: 100, comments: $c}' > "${MOCK_JIRA_STATE_DIR}/page-100.json"
+jira_state_case "state-jira-paging-without-total" "$(sufficient_with ",${OPEN_TWO},${RULED_ONE}" "Short analysis.")"
+rm -f "${MOCK_JIRA_STATE_DIR}/page-100.json"
+if [[ ${STATE_RC} -ne 0 ]] || ! grep -qF '/rest/api/3/comment/310/properties/fullsend.triage-state' "${JIRA_CURL_LOG}"; then
+  state_fail "state-jira-paging-without-total" "expected the state on comment 310 from the second page (rc ${STATE_RC})"
+else
+  echo "PASS: state-jira-paging-without-total"
 fi
 
 # A comment listing that fails fails the run, and nothing is stored.

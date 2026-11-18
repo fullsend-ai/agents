@@ -1315,18 +1315,32 @@ _jira_own_marked_comments() {
   fi
   # Pages are collected in a file, never passed as arguments: a long
   # issue's comments would overflow the argument size limit.
-  local pages page count total start_at=0
+  # Paging stops on an empty page, at "total" when the page gives one, and
+  # otherwise on a page shorter than its maxResults. More than 100 pages
+  # fails rather than reading part of the listing.
+  local pages page count total page_size start_at=0 n_pages=0
   pages=$(mktemp) || return 1
   while :; do
+    n_pages=$((n_pages + 1))
+    if [[ ${n_pages} -gt 100 ]]; then
+      echo "ERROR: the comment listing has more than 100 pages" >&2
+      rm -f "${pages}"
+      return 1
+    fi
     if ! page=$(_jira_api_with_status GET "/issue/${ISSUE_NUMBER}/comment?expand=properties&orderBy=-created&maxResults=100&startAt=${start_at}") \
       || ! printf '%s\n' "${page}" >> "${pages}" \
       || ! count=$(jq -r '.comments // [] | length' <<<"${page}") \
-      || ! total=$(jq -r '.total // 0' <<<"${page}"); then
+      || ! total=$(jq -r '.total // "" | tostring' <<<"${page}") \
+      || ! page_size=$(jq -r '.maxResults // 100' <<<"${page}"); then
       rm -f "${pages}"
       return 1
     fi
     start_at=$((start_at + count))
-    if [[ ${count} -eq 0 || ${start_at} -ge ${total} ]]; then
+    if [[ ${count} -eq 0 ]]; then
+      break
+    elif [[ "${total}" =~ ^[0-9]+$ ]]; then
+      [[ ${start_at} -lt ${total} ]] || break
+    elif [[ ${count} -lt ${page_size} ]]; then
       break
     fi
   done

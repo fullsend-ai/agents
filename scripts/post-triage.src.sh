@@ -434,7 +434,7 @@ ${FAILED_CREATES}"
 
     # Guard: reject sufficient results that contain information_gaps.
     # If the agent identified open questions, it should have used "insufficient".
-    GAP_COUNT=$(jq '.triage_summary.information_gaps // [] | length' "${RESULT_FILE}")
+    GAP_COUNT=$(jq '.triage_summary.information_gaps? // [] | length' "${RESULT_FILE}")
     if [[ "${GAP_COUNT}" -gt 0 ]]; then
       echo "ERROR: action is 'sufficient' but triage_summary contains ${GAP_COUNT} information_gaps — open questions must block triage" >&2
       exit 1
@@ -445,7 +445,7 @@ ${FAILED_CREATES}"
     # "documentation" should not apply an "enhancement" label). See #39.
     # Control labels are excluded — they are already handled by is_control_label().
     if [[ "$(jq 'has("label_actions")' "${RESULT_FILE}")" == "true" ]]; then
-      CATEGORY_CHECK=$(jq -r '.triage_summary.category // "unknown"' "${RESULT_FILE}")
+      CATEGORY_CHECK=$(jq -r '.triage_summary.category? // "unknown"' "${RESULT_FILE}")
       CONTRADICTING_LABELS=""
       case "${CATEGORY_CHECK}" in
         bug)           CONTRADICTING_LABELS="enhancement" ;;
@@ -526,12 +526,12 @@ ${FAILED_CREATES}"
     # modifying workflow files (.github/workflows/, .fullsend/.github/workflows/,
     # or shim workflows), skip ready-to-code regardless of category. The code
     # agent cannot modify workflow files under current permissions.
-    REQUIRES_WORKFLOW=$(jq -r '.triage_summary.requires_workflow_changes // false' "${RESULT_FILE}")
-    CATEGORY=$(jq -r '.triage_summary.category // "unknown"' "${RESULT_FILE}")
+    REQUIRES_WORKFLOW=$(jq -r '.triage_summary.requires_workflow_changes? // false' "${RESULT_FILE}")
+    CATEGORY=$(jq -r '.triage_summary.category? // "unknown"' "${RESULT_FILE}")
     echo "Category: ${CATEGORY}"
     # jq's // treats JSON false as missing, so omitted and false both become
     # the string "false" — the intended withhold default for discretionary mode.
-    PROMOTE=$(jq -r '.triage_summary.promote_to_ready_to_code // false' "${RESULT_FILE}")
+    PROMOTE=$(jq -r '.triage_summary.promote_to_ready_to_code? // false' "${RESULT_FILE}")
 
     AUTO_CODE="${TRIAGE_AUTO_CODE:-on}"
     AUTO_CODE="$(printf '%s' "${AUTO_CODE}" | tr '[:upper:]' '[:lower:]')"

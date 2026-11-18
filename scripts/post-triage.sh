@@ -1343,18 +1343,32 @@ _jira_own_marked_comments() {
   fi
   # Pages are collected in a file, never passed as arguments: a long
   # issue's comments would overflow the argument size limit.
-  local pages page count total start_at=0
+  # Paging stops on an empty page, at "total" when the page gives one, and
+  # otherwise on a page shorter than its maxResults. More than 100 pages
+  # fails rather than reading part of the listing.
+  local pages page count total page_size start_at=0 n_pages=0
   pages=$(mktemp) || return 1
   while :; do
+    n_pages=$((n_pages + 1))
+    if [[ ${n_pages} -gt 100 ]]; then
+      echo "ERROR: the comment listing has more than 100 pages" >&2
+      rm -f "${pages}"
+      return 1
+    fi
     if ! page=$(_jira_api_with_status GET "/issue/${ISSUE_NUMBER}/comment?expand=properties&orderBy=-created&maxResults=100&startAt=${start_at}") \
       || ! printf '%s\n' "${page}" >> "${pages}" \
       || ! count=$(jq -r '.comments // [] | length' <<<"${page}") \
-      || ! total=$(jq -r '.total // 0' <<<"${page}"); then
+      || ! total=$(jq -r '.total // "" | tostring' <<<"${page}") \
+      || ! page_size=$(jq -r '.maxResults // 100' <<<"${page}"); then
       rm -f "${pages}"
       return 1
     fi
     start_at=$((start_at + count))
-    if [[ ${count} -eq 0 || ${start_at} -ge ${total} ]]; then
+    if [[ ${count} -eq 0 ]]; then
+      break
+    elif [[ "${total}" =~ ^[0-9]+$ ]]; then
+      [[ ${start_at} -lt ${total} ]] || break
+    elif [[ ${count} -lt ${page_size} ]]; then
       break
     fi
   done
@@ -1638,7 +1652,9 @@ TRIAGE_STATE_READABLE_CAP=4000
 # state's UTF-8 bytes under 30000 for room to spare; only multibyte text can
 # come near it. TRIAGE_STATE_MAX_BYTES may lower the cap (tests do), never
 # raise it.
-if ! [[ "${TRIAGE_STATE_MAX_BYTES:-}" =~ ^[0-9]+$ ]] || (( TRIAGE_STATE_MAX_BYTES > 30000 )); then
+if [[ "${TRIAGE_STATE_MAX_BYTES:-}" =~ ^[0-9]{1,9}$ ]] && (( 10#${TRIAGE_STATE_MAX_BYTES} <= 30000 )); then
+  TRIAGE_STATE_MAX_BYTES=$((10#${TRIAGE_STATE_MAX_BYTES}))
+else
   TRIAGE_STATE_MAX_BYTES=30000
 fi
 # Footers other than "Next steps" (label and component reasons, unapplied
@@ -1663,7 +1679,7 @@ triage_state_json() {
       | map(select(type == "object")
             | {cause: (.cause | text(200)), evidence: (.evidence | text(300)), verified: (.verified == true)}
             | select(.cause != ""));
-    (.triage_summary // {}) as $s
+    (.triage_summary | if type == "object" then . else {} end) as $s
     | {open_causes: ($s.open_causes | causes | .[0:10]),
        ruled_out: ($s.ruled_out | causes | if length > 25 then .[(length - 25):] else . end)}
     | if (.open_causes | length) == 0 then empty else . end
@@ -1694,7 +1710,8 @@ triage_state_dropped() {
   jq -r --arg s "$2" '
     def n: if type == "array" then length else 0 end;
     (if $s == "" then {} else ($s | fromjson) end) as $state
-    | ((.triage_summary.open_causes | n) + (.triage_summary.ruled_out | n))
+    | (.triage_summary | if type == "object" then . else {} end) as $ts
+    | (($ts.open_causes | n) + ($ts.ruled_out | n))
     - (($state.open_causes | n) + ($state.ruled_out | n))
   ' "$1"
 }
@@ -2159,7 +2176,7 @@ ${FAILED_CREATES}"
 
     # Guard: reject sufficient results that contain information_gaps.
     # If the agent identified open questions, it should have used "insufficient".
-    GAP_COUNT=$(jq '.triage_summary.information_gaps // [] | length' "${RESULT_FILE}")
+    GAP_COUNT=$(jq '.triage_summary.information_gaps? // [] | length' "${RESULT_FILE}")
     if [[ "${GAP_COUNT}" -gt 0 ]]; then
       echo "ERROR: action is 'sufficient' but triage_summary contains ${GAP_COUNT} information_gaps — open questions must block triage" >&2
       exit 1
@@ -2170,7 +2187,7 @@ ${FAILED_CREATES}"
     # "documentation" should not apply an "enhancement" label). See #39.
     # Control labels are excluded — they are already handled by is_control_label().
     if [[ "$(jq 'has("label_actions")' "${RESULT_FILE}")" == "true" ]]; then
-      CATEGORY_CHECK=$(jq -r '.triage_summary.category // "unknown"' "${RESULT_FILE}")
+      CATEGORY_CHECK=$(jq -r '.triage_summary.category? // "unknown"' "${RESULT_FILE}")
       CONTRADICTING_LABELS=""
       case "${CATEGORY_CHECK}" in
         bug)           CONTRADICTING_LABELS="enhancement" ;;
@@ -2251,12 +2268,12 @@ ${FAILED_CREATES}"
     # modifying workflow files (.github/workflows/, .fullsend/.github/workflows/,
     # or shim workflows), skip ready-to-code regardless of category. The code
     # agent cannot modify workflow files under current permissions.
-    REQUIRES_WORKFLOW=$(jq -r '.triage_summary.requires_workflow_changes // false' "${RESULT_FILE}")
-    CATEGORY=$(jq -r '.triage_summary.category // "unknown"' "${RESULT_FILE}")
+    REQUIRES_WORKFLOW=$(jq -r '.triage_summary.requires_workflow_changes? // false' "${RESULT_FILE}")
+    CATEGORY=$(jq -r '.triage_summary.category? // "unknown"' "${RESULT_FILE}")
     echo "Category: ${CATEGORY}"
     # jq's // treats JSON false as missing, so omitted and false both become
     # the string "false" — the intended withhold default for discretionary mode.
-    PROMOTE=$(jq -r '.triage_summary.promote_to_ready_to_code // false' "${RESULT_FILE}")
+    PROMOTE=$(jq -r '.triage_summary.promote_to_ready_to_code? // false' "${RESULT_FILE}")
 
     AUTO_CODE="${TRIAGE_AUTO_CODE:-on}"
     AUTO_CODE="$(printf '%s' "${AUTO_CODE}" | tr '[:upper:]' '[:lower:]')"
