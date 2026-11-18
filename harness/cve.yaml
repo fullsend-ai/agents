@@ -51,16 +51,27 @@ validation_loop:
 # A person with write access comments /fs-cve-triage. The issue types are the
 # ones this workflow accepts; they are names on the Jira site, so an adopter
 # with other names restates the trigger in a harness that composes this one.
+# The base harness is triage, whose 10 minutes are sized for labelling an
+# issue. An assessment reads source and may run a bounded probe.
+timeout_minutes: 20
+
 trigger: >-
   event.source.system == "jira"
     && event.entity.kind == "work_item"
-    && event.actor.kind == "human"
-    && event.actor.role in ["write", "admin"]
-    && event.transition.kind == "comment_added"
-    && has(event.transition.comment.command)
-    && event.transition.comment.command == "/fs-cve-triage"
     && has(event.state.issue_type)
     && event.state.issue_type.name in ["Task", "Bug", "Vulnerability"]
+    && ((event.transition.kind == "comment_added"
+          && event.actor.kind == "human"
+          && event.actor.role in ["write", "admin"]
+          && has(event.transition.comment.command)
+          && event.transition.comment.command == "/fs-cve-triage")
+      || (event.transition.kind == "label_changed"
+          && event.transition.label.name == "fullsend-cve"
+          && event.transition.label.action == "added")
+      || (event.transition.kind == "opened"
+          && "fullsend-cve" in event.state.labels
+          && (event.actor.kind == "bot"
+            || event.actor.role in ["write", "admin"])))
 
 env:
   runner:
