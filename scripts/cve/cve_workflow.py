@@ -176,8 +176,11 @@ def rs256_signature(pem, message):
     return pow(int.from_bytes(padded, "big"), private_exponent, modulus).to_bytes(size, "big")
 
 
-def github_app_token(repository):
+def github_app_token(repository, permissions=None):
     """A short-lived installation token for one repository.
+
+    By default the token can write contents and pull requests, which the code
+    publisher needs. A caller that only reads passes narrower permissions.
 
     Stopgap until the token mint can serve this caller: the App's private key
     is a protected CI/CD variable. The key stays in memory, and the token is
@@ -202,7 +205,8 @@ def github_app_token(repository):
             data=json.dumps(
                 {
                     "repositories": [repository.split("/", 1)[1]],
-                    "permissions": {"contents": "write", "pull_requests": "write"},
+                    "permissions": permissions
+                    or {"contents": "write", "pull_requests": "write"},
                 }
             ).encode(),
             headers={

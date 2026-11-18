@@ -162,6 +162,78 @@ the pull request comes from a branch in the repository and not from a fork, and
 review and fix run on the pull request only if Fullsend is also installed on
 the GitHub repository.
 
+### Work items from Dependabot alerts
+
+DRAFT. `scripts/cve/cve_alerts.py` opens the work items the cve agent starts
+from, so that nobody has to write the intake record by hand. It runs on the
+host in two steps and calls no model:
+
+```sh
+python3 scripts/cve/cve_alerts.py collect --candidates candidates.json
+python3 scripts/cve/cve_alerts.py publish --candidates candidates.json
+```
+
+`collect` reads the open Dependabot alerts of the policy's `repository`. For
+each alert it takes every version in the release mapping whose `manifest` is
+the alert's manifest, reads that manifest at the head of the mapped branch and
+compares the required version with the advisory's vulnerable range. An alert
+is checked on each maintained branch, not only on the default branch that
+Dependabot reports on.
+
+| Result for an alert and a version | What happens |
+|---|---|
+| The required version is in the vulnerable range | A candidate |
+| The version cannot be compared, for example behind a `replace` to a local directory | A candidate, marked undetermined |
+| The version is outside the range, or the package is not required on that branch | Skipped, with the reason |
+| The manifest is not in the release mapping, or the advisory has no CVE identifier | Skipped, with the reason |
+| The public advisory database does not serve the advisory under that CVE | Skipped: the finding is not shown to be public |
+| An ecosystem with no reader | Skipped, with the reason |
+
+The only reader today is for Go modules (`manifest_format: go-module`). It
+reads `go.mod` and reports what the file requires. It does not say whether the
+vulnerable code is reachable; that is the cve agent's assessment.
+
+`publish` creates one Jira work item per vulnerability and maintained version.
+Each gets the policy's required labels, the `fullsend.cve.intake` record (set
+in the same request as the work item) and a description made only of public
+facts and what the host read. A candidate that already has a work item is
+skipped, and one run creates at most `max_new_work_items`. Creating the work
+item starts nothing: a person still comments `/fs-cve-triage`.
+
+The candidates file between the two steps is the place for an evidence tool. A
+step that investigates the candidates may remove entries before `publish`
+runs. `publish` builds every work item from the policy again, so an entry that
+names a repository, version or branch the policy does not map is refused.
+
+Optional settings, in the policy:
+
+```json
+{
+  "alerts": {
+    "issue_type": "Task",
+    "labels": ["team-queue"],
+    "assignee_account_id": "<Jira account id>",
+    "max_new_work_items": 5
+  }
+}
+```
+
+`labels` are added to every work item, for example the label the Jira poller's
+query selects. The cve gate refuses a work item without an assignee, so set
+`assignee_account_id` or assign each one by hand.
+
+`collect` needs a GitHub token that can read the repository's Dependabot
+alerts and contents. It uses `CVE_ALERTS_GITHUB_TOKEN` when that is set.
+Otherwise it mints a read-only token from the GitHub App described above,
+which then needs the "Dependabot alerts: read" permission. `publish` uses the
+same Jira variables as the agent's scripts.
+
+Known limits: nothing in Fullsend starts these steps, so an adopter runs them
+from its own job. Alerts in other ecosystems are skipped until a reader or an
+evidence tool covers them. Dependabot alerts exist only on GitHub. Jira's
+search can lag behind a work item that was just created, so two `publish` runs
+seconds apart can open the same work item twice.
+
 ### Variables
 
 | Variable | Set in | Meaning |
