@@ -113,7 +113,7 @@ triage_state_compose() {
   jq -rn --argjson state "$1" --arg agent "$2" --arg footer_in "$3" \
     --argjson cap "${TRIAGE_STATE_READABLE_CAP}" \
     --argjson extra_max "${TRIAGE_STATE_MAX_EXTRA_FOOTER}" '
-    def safe: gsub("<!--"; "&lt;!--");
+    def safe: gsub("<!--"; "&lt;!--") | gsub("(?i)<(?=details\\b[^>]*>\\s*<summary\\b[^>]*>\\s*previous run)"; "&lt;");
     def clip($n): if length > $n then .[0:($n - 1)] + "…" else . end;
     def line($full; $name_max):
       "- " + (.cause | clip($name_max) | safe)
@@ -145,7 +145,7 @@ triage_state_compose() {
     def open_fence:
       reduce (split("\n")[]) as $l (null;
         if . == null then ([$l | capture("^ {0,3}(?<f>`{3,}|~{3,})")] | .[0].f // null)
-        elif ($l | test("^ {0,3}" + .[0:1] + "{" + (length | tostring) + ",}\\s*$")) then null
+        elif (. as $f | $l | test("^ {0,3}" + $f[0:1] + "{" + ($f | length | tostring) + ",}\\s*$")) then null
         else . end);
     # The longest fence-opening run in this text, so a closing fence always
     # has room.
@@ -168,7 +168,10 @@ triage_state_compose() {
     | ($pre[$na_at:] | cutline($extra_max)) as $notice
     | (($pre[0:$na_at] | cutline($extra_max - ($notice | length))) + $notice) as $extra
     | ($extra + $footer_in[$ns_at:]) as $footer
-    | ($agent + "\n\n") as $head
+    # The agent comment with a code block it left open closed, so the lists
+    # after it render as Markdown even when nothing is cut.
+    | ($agent | open_fence) as $agent_fence
+    | ((if $agent_fence == null then $agent else $agent + "\n" + $agent_fence end) + "\n\n") as $head
     | ($cap - ($head | length) - ($footer | length)) as $budget
     | $state.open_causes as $o | $state.ruled_out as $r
     | ([ render($o; $r; true; true; 0; 200),
@@ -197,7 +200,10 @@ triage_state_marker() {
 
 # triage_state_neutralize TEXT — escape every state marker opener in TEXT
 # (any case, "<!--" with any number of extra dashes and any whitespace), so
-# the only live marker in a posted comment is the one the post-script adds.
+# the only live marker in a posted comment is the one the post-script adds,
+# and every <details> block whose <summary> starts with "Previous run", so
+# the next run does not take text above the marker for a history fold.
 triage_state_neutralize() {
-  jq -rn --arg t "$1" '$t | gsub("(?i)<(?=!--+\\s*triage-state)"; "&lt;")'
+  jq -rn --arg t "$1" '$t | gsub("(?i)<(?=!--+\\s*triage-state)"; "&lt;")
+    | gsub("(?i)<(?=details\\b[^>]*>\\s*<summary\\b[^>]*>\\s*previous run)"; "&lt;")'
 }

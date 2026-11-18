@@ -277,7 +277,11 @@ same lists as data for the next run (fullsend-ai/agents#2042):
   unparsable timestamp, or no such comment, fails the run.
 
 On Jira the post-script posts the comment first, then sets the
-`fullsend.triage-state` property on it. Before fullsend-ai/fullsend#9399,
+`fullsend.triage-state` property on it. Setting a property on a comment
+needs the "Edit own comments" project permission (or "Edit all comments"),
+which posting alone does not, so the triage account needs it. Without it
+the property write fails the run after the comment is posted; the next run
+reads that comment as claims (step 2e) on top of the older state. Before fullsend-ai/fullsend#9399,
 fullsend edits the earlier comment in place, so a run cancelled after the
 edit but before the property write leaves the previous run's state attached
 to the new text. The next run starts from that older state, and step 2e
@@ -332,7 +336,9 @@ unverified claim. The agent tells its own comments apart per tracker:
   releases only the first two names match.
 - **GitLab:** the account `GET /api/v4/user` returns for the token.
 - **Jira:** the account `GET /rest/api/3/myself` returns, which needs the
-  `read:jira-user` scope (or the granular `read:user:jira`).
+  `read:jira-user` scope, or with granular scopes all four of
+  `read:application-role:jira`, `read:group:jira`, `read:user:jira` and
+  `read:avatar:jira` (Atlassian's "Get current user" reference).
 
 The GitLab and Jira own-account check is an exact identity (pending
 confirmation in fullsend-ai/fullsend#9602). Comments from anyone else are
