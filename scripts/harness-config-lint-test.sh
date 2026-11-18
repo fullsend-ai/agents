@@ -777,9 +777,10 @@ test_negative_fixtures() {
         found_error=1
         continue
       }
-      # Set HARNESS_DIR to point to the bundle directory, and REPO_ROOT to its parent
-      # This makes the containment check work: resolve_root is parent_dir, normalized path tries to escape to example-other
-      output="$(HARNESS_DIR="${bundle_dir}" REPO_ROOT="${parent_dir}" ${test_func} 2>&1)" || exit_code=$?
+      # Set both HARNESS_DIR and REPO_ROOT to the bundle directory
+      # This makes the containment check work: resolve_root is bundle_dir, normalized path ../example-other/...
+      # resolves to parent_dir/example-other which shares the bundle prefix but violates the directory boundary
+      output="$(HARNESS_DIR="${bundle_dir}" REPO_ROOT="${bundle_dir}" ${test_func} 2>&1)" || exit_code=$?
     else
       # Run the test with HARNESS_DIR set to temp dir containing only this fixture
       # Use test_dir as both HARNESS_DIR and REPO_ROOT so resolve_root is the fixture directory
