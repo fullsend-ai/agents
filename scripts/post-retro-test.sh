@@ -151,7 +151,16 @@ done
 if [[ "${URL}" == *"atlassian.net/rest/api/3"* ]]; then
   case "${URL}" in
     */issue/createmeta/PROJ/issuetypes\?*)
-      echo '{"issueTypes":[{"id":"10001","name":"Task"}]}'
+      if [[ "${JIRA_MOCK_CREATEMETA_PAGES:-}" == "1" ]]; then
+        META_START=$(printf '%s' "$*" | sed -n 's/.*startAt=\([0-9][0-9]*\).*/\1/p')
+        if [[ "${META_START:-0}" == "0" ]]; then
+          echo '{"issueTypes":[{"id":"10000","name":"Other"}],"total":2,"isLast":false}'
+        else
+          echo '{"issueTypes":[{"id":"10001","name":"Task"}],"total":2,"isLast":true}'
+        fi
+      else
+        echo '{"issueTypes":[{"id":"10001","name":"Task"}]}'
+      fi
       ;;
     */issue/createmeta/PROJ/issuetypes/10001\?*)
       if [[ "${JIRA_MOCK_REQUIRED_FIELD:-}" == "1" ]]; then
@@ -164,9 +173,34 @@ if [[ "${URL}" == *"atlassian.net/rest/api/3"* ]]; then
         echo '{"fields":[{"fieldId":"summary","required":true,"hasDefaultValue":false},{"fieldId":"description","required":false,"hasDefaultValue":false},{"fieldId":"labels","required":false,"hasDefaultValue":false},{"fieldId":"reporter","required":true,"hasDefaultValue":true}]}'
       fi
       ;;
+    */issue/createmeta/OTHER/issuetypes\?*)
+      echo '{"issueTypes":[{"id":"10001","name":"Task"}]}'
+      ;;
+    */issue/createmeta/OTHER/issuetypes/10001\?*)
+      echo '{"fields":[{"fieldId":"summary","required":true,"hasDefaultValue":false},{"fieldId":"description","required":false,"hasDefaultValue":false},{"fieldId":"labels","required":false,"hasDefaultValue":false}]}'
+      ;;
+    */issue/createmeta/PROJ/issuetypes/10000\?*)
+      echo '{"fields":[{"fieldId":"summary","required":true,"hasDefaultValue":false},{"fieldId":"description","required":false,"hasDefaultValue":false},{"fieldId":"labels","required":false,"hasDefaultValue":false}]}'
+      ;;
     */search/jql)
       if [[ "${JIRA_MOCK_BAD_SEARCH:-}" == "html" ]]; then
         echo '<html>maintenance</html>'
+      elif [[ "${JIRA_MOCK_SEARCH_MISSING_TOKEN:-}" == "1" ]]; then
+        echo '{"issues":[],"isLast":false}'
+      elif [[ "${JIRA_MOCK_SEARCH_PAGE_CAP_DUP:-}" == "1" ]]; then
+        echo '{"issues":[{"key":"PROJ-7","fields":{"summary":"Improve error handling in widget service"}}],"nextPageToken":"page-next","isLast":false}'
+      elif [[ "${JIRA_MOCK_SEARCH_PAGE2_DUP:-}" == "1" ]]; then
+        if [[ "$*" == *'page-2'* ]]; then
+          echo '{"issues":[{"key":"PROJ-7","fields":{"summary":"Improve error handling in widget service"}}],"isLast":true}'
+        else
+          echo '{"issues":[],"nextPageToken":"page-2","isLast":false}'
+        fi
+      elif [[ "${JIRA_MOCK_SEARCH_ALWAYS_MORE:-}" == "1" ]]; then
+        echo '{"issues":[],"nextPageToken":"page-next","isLast":false}'
+      elif [[ "${JIRA_MOCK_DUP_PROJECT_ONLY:-}" == "1" ]]; then
+        echo '{"issues":[{"key":"PROJ-7","fields":{"summary":"a to be"}}],"isLast":true}'
+      elif [[ "${JIRA_MOCK_STOPWORD_DUP:-}" == "1" ]]; then
+        echo '{"issues":[{"key":"PROJ-7","fields":{"summary":"Fix this bug"}}],"isLast":true}'
       elif [[ "${JIRA_MOCK_DUP:-}" == "1" ]]; then
         echo '{"issues":[{"key":"PROJ-7","fields":{"summary":"Improve error handling in widget service"}}],"isLast":true}'
       else
@@ -2549,6 +2583,58 @@ else
 fi
 unset JIRA_MOCK_BAD_SEARCH
 
+# Duplicate search pagination fails closed on malformed continuation, checks
+# later pages, and respects the configured page cap.
+export JIRA_MOCK_SEARCH_PAGE2_DUP="1"
+run_test_stdout "jira/duplicate-search-page-two-match" \
+  "${FIXTURE_ONE_PROPOSAL}" \
+  "already exists in Jira: https://mock.atlassian.net/browse/PROJ-7"
+unset JIRA_MOCK_SEARCH_PAGE2_DUP
+export JIRA_MOCK_SEARCH_MISSING_TOKEN="1"
+run_test_stdout "jira/duplicate-search-missing-token-fails-closed" \
+  "${FIXTURE_ONE_PROPOSAL}" \
+  "Jira duplicate check failed"
+unset JIRA_MOCK_SEARCH_MISSING_TOKEN
+export JIRA_MOCK_SEARCH_ALWAYS_MORE="1" RETRO_JIRA_MAX_PAGES=1
+run_test_stdout "jira/duplicate-search-page-cap-fails-closed" \
+  "${FIXTURE_ONE_PROPOSAL}" \
+  "duplicate check was truncated"
+unset JIRA_MOCK_SEARCH_ALWAYS_MORE RETRO_JIRA_MAX_PAGES
+export JIRA_MOCK_SEARCH_PAGE_CAP_DUP="1" RETRO_JIRA_MAX_PAGES=1
+export JIRA_MOCK_DUP="1"
+run_test_stdout "jira/duplicate-search-page-cap-match-wins" \
+  "${FIXTURE_ONE_PROPOSAL}" \
+  "already exists in Jira: https://mock.atlassian.net/browse/PROJ-7"
+unset JIRA_MOCK_SEARCH_PAGE_CAP_DUP RETRO_JIRA_MAX_PAGES
+unset JIRA_MOCK_DUP
+
+# Stop words are excluded from duplicate terms and an empty term set uses a
+# project-only search, retaining the exact-summary check.
+JIRA_STOPWORD_TITLE_FIXTURE=$(printf '%s' "${FIXTURE_ONE_PROPOSAL}" | jq -c '.proposals[0].title = "Fix this bug"')
+export JIRA_MOCK_STOPWORD_DUP="1"
+run_test_stdout "jira/duplicate-stopword-title" \
+  "${JIRA_STOPWORD_TITLE_FIXTURE}" \
+  "already exists in Jira: https://mock.atlassian.net/browse/PROJ-7"
+if grep -qF 'project = ' "${CURL_LOG}" && ! grep -qF 'summary ~ "this"' "${CURL_LOG}"; then
+  echo "PASS: jira/duplicate-stopword-title-search"
+else
+  echo "FAIL: jira/duplicate-stopword-title-search — stop word required or no project fallback"
+  FAILURES=$((FAILURES + 1))
+fi
+unset JIRA_MOCK_STOPWORD_DUP
+JIRA_ALL_STOPWORDS_FIXTURE=$(printf '%s' "${FIXTURE_ONE_PROPOSAL}" | jq -c '.proposals[0].title = "a to be"')
+export JIRA_MOCK_DUP_PROJECT_ONLY="1"
+run_test_stdout "jira/duplicate-stopword-project-fallback" \
+  "${JIRA_ALL_STOPWORDS_FIXTURE}" \
+  "already exists in Jira: https://mock.atlassian.net/browse/PROJ-7"
+if grep -qF 'project = ' "${CURL_LOG}" && ! grep -qF 'summary ~ ' "${CURL_LOG}"; then
+  echo "PASS: jira/duplicate-stopword-project-fallback-query"
+else
+  echo "FAIL: jira/duplicate-stopword-project-fallback-query"
+  FAILURES=$((FAILURES + 1))
+fi
+unset JIRA_MOCK_DUP_PROJECT_ONLY
+
 # 5. Createmeta preflight check failure: required field missing reports proposal as not filed and posts summary
 export JIRA_MOCK_REQUIRED_FIELD="1"
 run_test_stdout "jira/createmeta-required-field-reported-not-filed" \
@@ -2576,6 +2662,13 @@ else
   FAILURES=$((FAILURES + 1))
 fi
 unset JIRA_MOCK_NO_DESCRIPTION
+
+# Createmeta must collect all pages before choosing the configured issue type.
+export JIRA_MOCK_CREATEMETA_PAGES="1"
+run_test_stdout "jira/createmeta-paginated-issue-type" \
+  "${FIXTURE_ONE_PROPOSAL}" \
+  "Created: https://mock.atlassian.net/browse/PROJ-100"
+unset JIRA_MOCK_CREATEMETA_PAGES
 
 # 7. Output mode: summary_only disables issue creation
 export RETRO_MODE="summary_only"
@@ -2707,14 +2800,16 @@ else
 fi
 unset JIRA_MOCK_LABEL_FAIL
 
-# 12. Allowlist: explicit empty projects list revokes access (fail closed)
+# 12. An explicit empty list denies other projects when the primary project differs.
 cat > "${JIRA_WORKSPACE}/config.yaml" <<CFGEOF
 version: "1"
 tracker:
   jira:
+    project: OTHER
     allowed_targets:
       projects: []
 CFGEOF
+export RETRO_JIRA_PROJECT="PROJ"
 run_test_stdout "jira/allowlist-explicit-empty-denies" \
   "${FIXTURE_ONE_PROPOSAL}" \
   "Skipping issue creation in Jira project 'PROJ' — not in tracker.jira.allowed_targets"
@@ -2726,7 +2821,7 @@ else
   FAILURES=$((FAILURES + 1))
 fi
 
-# 12b. Allowlist: primary project with explicit empty targets list revokes access (fail closed)
+# 12b. Explicit empty targets keep the primary project and exclude others.
 cat > "${JIRA_WORKSPACE}/config.yaml" <<CFGEOF
 version: "1"
 tracker:
@@ -2735,14 +2830,46 @@ tracker:
     allowed_targets:
       projects: []
 CFGEOF
-run_test_stdout "jira/allowlist-primary-with-empty-targets-denies" \
+run_test_stdout "jira/allowlist-empty-only-revokes-cross-project" \
   "${FIXTURE_ONE_PROPOSAL}" \
-  "Skipping issue creation in Jira project 'PROJ' — not in tracker.jira.allowed_targets"
+  "Created: https://mock.atlassian.net/browse/PROJ-100"
 
-if grep -qF "Proposals skipped (target repo not allowed)" "${GH_STDIN_LOG}" 2>/dev/null; then
-  echo "PASS: jira/allowlist-primary-with-empty-targets-summary"
+# Without an explicit cross-project list, RETRO_JIRA_PROJECT must be the
+# configured primary project; the CLI itself rejects any other project.
+cat > "${JIRA_WORKSPACE}/config.yaml" <<CFGEOF
+version: "1"
+tracker:
+  jira:
+    project: OTHER
+CFGEOF
+export RETRO_JIRA_PROJECT="PROJ"
+run_test_stdout "jira/allowlist-unlisted-primary-mismatch-denies" \
+  "${FIXTURE_ONE_PROPOSAL}" \
+  "Skipping issue creation in Jira project 'PROJ'"
+export RETRO_JIRA_PROJECT="PROJ"
+cat > "${JIRA_WORKSPACE}/config.yaml" <<CFGEOF
+version: "1"
+tracker:
+  jira:
+    project: PROJ
+CFGEOF
+
+cat > "${JIRA_WORKSPACE}/config.yaml" <<CFGEOF
+version: "1"
+tracker:
+  jira:
+    project: PROJ
+    allowed_targets:
+      projects:
+        - OTHER
+CFGEOF
+run_test_stdout "jira/allowlist-primary-with-other-targets-allows" \
+  "${FIXTURE_ONE_PROPOSAL}" \
+  "Created: https://mock.atlassian.net/browse/PROJ-100"
+if grep -qF 'fullsend issues create --tracker jira' "${FULLSEND_LOG}"; then
+  echo "PASS: jira/allowlist-primary-create-called"
 else
-  echo "FAIL: jira/allowlist-primary-with-empty-targets-summary — proposal missing from skipped section"
+  echo "FAIL: jira/allowlist-primary-create-not-called"
   FAILURES=$((FAILURES + 1))
 fi
 
@@ -2762,36 +2889,73 @@ tracker:
         - PROJ
 CFGEOF
 MOCK_NO_YQ_BIN="${TMPDIR}/bin-no-yq"
+MOCK_BIN_NO_YQ="${TMPDIR}/mock-bin-no-yq"
 mkdir -p "${MOCK_NO_YQ_BIN}"
-for tool in bash jq sed grep awk cat date mktemp rm tr tail curl dirname basename seq printf cut head sort uniq; do
+mkdir -p "${MOCK_BIN_NO_YQ}"
+for tool in bash jq sed grep awk cat date mktemp rm tr tail curl dirname basename seq printf cut head sort uniq env wc mkdir; do
   p=$(which "${tool}" 2>/dev/null || true)
   [[ -n "${p}" ]] && ln -sf "${p}" "${MOCK_NO_YQ_BIN}/${tool}"
+  if [[ -x "${MOCK_BIN}/${tool}" ]]; then
+    ln -sf "${MOCK_BIN}/${tool}" "${MOCK_BIN_NO_YQ}/${tool}"
+  elif [[ -n "${p}" ]]; then
+    ln -sf "${p}" "${MOCK_BIN_NO_YQ}/${tool}"
+  fi
 done
-(
-  export PATH="${MOCK_BIN}:${MOCK_NO_YQ_BIN}:/bin:/usr/bin"
-  run_test_stdout "jira/allowlist-missing-yq-denies" \
-    "${FIXTURE_ONE_PROPOSAL}" \
-    "yq not found"
-)
-rm -rf "${MOCK_NO_YQ_BIN}"
-
-# 15. Allowlist: unset config allows configured RETRO_JIRA_PROJECT
-rm -f "${JIRA_WORKSPACE}/config.yaml"
-run_test_stdout "jira/allowlist-unset-allows" \
+ln -sf "${MOCK_BIN}/gh" "${MOCK_BIN_NO_YQ}/gh"
+SAVED_PATH="${PATH}"
+SAVED_GITHUB_WORKSPACE="${GITHUB_WORKSPACE}"
+export PATH="${MOCK_BIN_NO_YQ}"
+export GITHUB_WORKSPACE="${JIRA_WORKSPACE}"
+run_test_stdout "jira/allowlist-missing-yq-denies" \
   "${FIXTURE_ONE_PROPOSAL}" \
-  "Created: https://mock.atlassian.net/browse/PROJ-100"
+  "yq not found"
+export PATH="${SAVED_PATH}"
+export GITHUB_WORKSPACE="${SAVED_GITHUB_WORKSPACE}"
+if grep -F 'fullsend issues create' "${FULLSEND_LOG}" 2>/dev/null | grep -qvF -- '--help'; then
+  echo "FAIL: jira/allowlist-missing-yq-no-creates — create called without yq"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: jira/allowlist-missing-yq-no-creates"
+fi
+rm -rf "${MOCK_NO_YQ_BIN}" "${MOCK_BIN_NO_YQ}"
+export PATH="${MOCK_BIN}:${SAVED_PATH}"
 
-# 15b. Allowlist: tracker.jira without allowed_targets allows configured RETRO_JIRA_PROJECT
+# 15. Allowlist: unset config denies issue creation
+rm -f "${JIRA_WORKSPACE}/config.yaml"
+rm -f "${JIRA_WORKSPACE}/config.base.yaml"
+run_test_stdout "jira/allowlist-unset-denies" \
+  "${FIXTURE_ONE_PROPOSAL}" \
+  "Skipping issue creation in Jira project 'PROJ'"
+
+# 15b. tracker.jira without allowed_targets only allows its configured primary project
 cat > "${JIRA_WORKSPACE}/config.yaml" <<CFGEOF
 version: "1"
 tracker:
   jira:
-    site: https://mock.atlassian.net
+    project: PROJ
 CFGEOF
 run_test_stdout "jira/allowlist-no-allowed-targets-allows" \
   "${FIXTURE_ONE_PROPOSAL}" \
   "Created: https://mock.atlassian.net/browse/PROJ-100"
 
+cat > "${JIRA_WORKSPACE}/config.yaml" <<CFGEOF
+version: "1"
+tracker:
+  jira:
+    project: OTHER
+CFGEOF
+run_test_stdout "jira/allowlist-no-policy-primary-mismatch-denies" \
+  "${FIXTURE_ONE_PROPOSAL}" \
+  "Skipping issue creation in Jira project 'PROJ'"
+cat > "${JIRA_WORKSPACE}/config.yaml" <<CFGEOF
+version: "1"
+tracker:
+  jira:
+    project: PROJ
+    allowed_targets:
+      projects:
+        - PROJ
+CFGEOF
 # Restore valid config.yaml
 cat > "${JIRA_WORKSPACE}/config.yaml" <<CFGEOF
 version: "1"
@@ -2845,20 +3009,89 @@ run_test_stdout "jira/allowlist-primary-project-allows" \
   "${FIXTURE_ONE_PROPOSAL}" \
   "Created: https://mock.atlassian.net/browse/PROJ-100"
 
+# A case-insensitive explicit target is admitted by the pre-create gate.
+cat > "${JIRA_WORKSPACE}/config.yaml" <<CFGEOF
+version: "1"
+tracker:
+  jira:
+    project: PROJ
+    allowed_targets:
+      projects:
+        - other
+CFGEOF
+export RETRO_JIRA_PROJECT="OTHER"
+run_test_stdout "jira/allowlist-explicit-target-case-insensitive" \
+  "${FIXTURE_ONE_PROPOSAL}" \
+  "Filing issue in Jira OTHER"
+export RETRO_JIRA_PROJECT="PROJ"
+cat > "${JIRA_WORKSPACE}/config.yaml" <<CFGEOF
+version: "1"
+tracker:
+  jira:
+    project: PROJ
+    allowed_targets:
+      projects:
+        - PROJ
+CFGEOF
+
 # 19. Issues_only mode exits non-zero if proposals are skipped due to allowlist
 cat > "${JIRA_WORKSPACE}/config.yaml" <<CFGEOF
 version: "1"
 tracker:
   jira:
+    project: OTHER
     allowed_targets:
       projects: []
 CFGEOF
+export RETRO_JIRA_PROJECT="PROJ"
 export RETRO_MODE="issues_only"
 run_test_stdout "jira/issues-only-skipped-exits-error" \
   "${FIXTURE_ONE_PROPOSAL}" \
   "issues_only mode encountered proposal failures or skipped targets" \
   "true"
 export RETRO_MODE="all"
+
+# RETRO_JIRA_LABELS is the applied-label allowlist; it can replace or suppress
+# the default ready-for-triage label for Jira without changing forge labels.
+export RETRO_JIRA_LABELS="retro"
+cat > "${JIRA_WORKSPACE}/config.yaml" <<CFGEOF
+version: "1"
+tracker:
+  jira:
+    project: PROJ
+    allowed_targets:
+      projects:
+        - PROJ
+CFGEOF
+run_test_stdout "jira/custom-label-policy-applied" \
+  "${FIXTURE_ONE_PROPOSAL}" \
+  "Created: https://mock.atlassian.net/browse/PROJ-100"
+if grep -qF 'retro' "${CURL_LOG}" && grep -qF '/issue/PROJ-100' "${CURL_LOG}"; then
+  echo "PASS: jira/custom-label-policy-label-sent"
+else
+  echo "FAIL: jira/custom-label-policy-label-sent"
+  FAILURES=$((FAILURES + 1))
+fi
+export RETRO_JIRA_LABELS=""
+run_test_stdout "jira/empty-label-policy-no-labels" \
+  "${FIXTURE_ONE_PROPOSAL}" \
+  "Created: https://mock.atlassian.net/browse/PROJ-100"
+if grep -qF 'curl ' "${CURL_LOG}" && grep -qF '/issue/PROJ-100' "${CURL_LOG}"; then
+  echo "FAIL: jira/empty-label-policy-put — label update was sent"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: jira/empty-label-policy-no-label-update"
+fi
+unset RETRO_JIRA_LABELS
+cat > "${JIRA_WORKSPACE}/config.yaml" <<CFGEOF
+version: "1"
+tracker:
+  jira:
+    project: PROJ
+    allowed_targets:
+      projects:
+        - PROJ
+CFGEOF
 
 # Restore valid config.yaml
 cat > "${JIRA_WORKSPACE}/config.yaml" <<CFGEOF

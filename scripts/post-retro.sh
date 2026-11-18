@@ -808,7 +808,10 @@ if [[ -n "${RETRO_JIRA_PROJECT}" && ! "${RETRO_JIRA_PROJECT}" =~ ^[A-Z][A-Z0-9_]
 fi
 
 RETRO_JIRA_ISSUE_TYPE="${RETRO_JIRA_ISSUE_TYPE:-Task}"
-RETRO_JIRA_LABELS="${RETRO_JIRA_LABELS:-ready-for-triage}"
+RETRO_JIRA_LABELS="${RETRO_JIRA_LABELS-ready-for-triage}"
+if [[ -z "${RETRO_JIRA_LABELS}" ]]; then
+  echo "INFO: RETRO_JIRA_LABELS is empty — Jira issues will be created without labels" >&2
+fi
 RETRO_JIRA_MAX_PAGES="${RETRO_JIRA_MAX_PAGES:-50}"
 
 _retro_jira_api() {
@@ -904,7 +907,7 @@ _retro_jira_filter_labels() {
   local raw="$1"
   jq -cn \
     --arg raw "${raw}" \
-    --arg allowlist "${RETRO_JIRA_LABELS:-ready-for-triage}" '
+    --arg allowlist "${RETRO_JIRA_LABELS}" '
     def parse_list:
       if (type == "array") then .
       elif (type == "string") then [split(",")[] | gsub("^\\s+|\\s+$"; "")]
@@ -928,6 +931,9 @@ _retro_jira_add_labels() {
   local labels_json ops
   labels_json=$(_retro_jira_filter_labels "${labels}")
   if [[ "$(printf '%s' "${labels_json}" | jq 'length')" -eq 0 ]]; then
+    if [[ -n "${labels}" && -n "${RETRO_JIRA_LABELS}" ]]; then
+      echo "WARNING: no requested Jira labels are allowed by RETRO_JIRA_LABELS; issue will be created without labels" >&2
+    fi
     return 0
   fi
   ops=$(printf '%s' "${labels_json}" | jq '{update:{labels:[.[] | {add:.}]}}')
@@ -1008,10 +1014,11 @@ tracker_validate_create() {
 
 tracker_find_existing_issue() {
   local title="$1" raw_file jql terms match rc=0
-  terms=$(printf '%s' "${title}" | jq -Rr '[scan("[\\p{L}\\p{N}]+")] | unique | sort_by(-length) | .[0:3]') || return 1
+  # Drop Jira text-search stop words so they cannot exclude an exact summary.
+  # With no usable terms, search the project and compare summaries client-side.
+  terms=$(printf '%s' "${title}" | jq -Rs '[scan("[\\p{L}\\p{N}]+") | ascii_downcase] | unique | map(select(length > 2 and (.[0:1] | IN("a", "an", "and", "are", "as", "at", "be", "but", "by", "for", "if", "in", "into", "is", "it", "no", "not", "of", "on", "or", "such", "that", "the", "their", "then", "there", "these", "they", "this", "to", "was", "will", "with") | not))) | sort_by(-length) | .[0:3]') || return 1
   if [[ "$(printf '%s' "${terms}" | jq 'length')" -eq 0 ]]; then
-    echo "ERROR: Jira duplicate check has no searchable terms in the issue title" >&2
-    return 1
+    terms='[]'
   fi
   raw_file=$(mktemp)
   jql=$(printf '%s' "${terms}" | jq -r --arg proj "$(_retro_jql_quote "${RETRO_JIRA_PROJECT}")" '
@@ -1151,6 +1158,7 @@ _retro_jira_post_comment() {
     echo "ERROR: JIRA_TOKEN must be set to post comments to Jira" >&2
     return 1
   fi
+  # Jira issue keys are <PROJECT>-<NUMBER>; fullsend's --number expects the numeric suffix.
   local num="${number##*-}"
   printf '%s' "${body}" | jira_auth_fullsend fullsend "${JIRA_TOKEN}" "${JIRA_USER_EMAIL:-}" \
     issues post-comment --tracker jira --fullsend-dir "${FULLSEND_DIR}" \
@@ -1356,14 +1364,11 @@ if command -v yq &>/dev/null; then
     (if type == "object" then . else {} end) as $t
     | [("github", "gitlab", "jira") | select($t[.] != null)] as $providers
     | if $provider == "jira" then
-      if $providers == [$provider] and (.jira | type == "object") and (.jira.allowed_targets | type == "object") and (.jira.allowed_targets.projects | type == "array") then
-        .jira.allowed_targets.projects
-      elif (type == "object" and has("jira") and (.jira | type == "object") and (.jira | has("project")) and (.jira.project | type == "string")) then
-        [.jira.project]
-      else
-        []
-      end
-      | map(strings) | unique | .[]
+        if $providers == [$provider] and (.jira | type == "object") then
+          ([.jira.project] + (if (.jira.allowed_targets.projects | type) == "array" then .jira.allowed_targets.projects else [] end) | map(select(type == "string")) | map(ascii_upcase) | unique)
+        else
+          []
+        end | .[]
     else
       (if $providers == [$provider] then (($t[$provider].allowed_targets // {}).repos // []) else [] end)
       | if type == "array" then .[] | strings else empty end
@@ -1396,7 +1401,11 @@ if command -v yq &>/dev/null; then
         JIRA_ALLOWLIST_STATE="configured"
       elif [[ "${projects_status}" == "failed" ]]; then
         JIRA_ALLOWLIST_STATE="failed"
+      else
+        JIRA_ALLOWLIST_STATE="unset"
       fi
+    else
+      JIRA_ALLOWLIST_STATE="failed"
     fi
   fi
 fi
@@ -1412,13 +1421,21 @@ is_target_allowed() {
         return 1
         ;;
       configured)
-        if [[ -n "${ALLOWED_REPOS}" ]] && echo "${ALLOWED_REPOS}" | grep -qFx "${target_repo}"; then
+        if [[ -n "${ALLOWED_REPOS}" ]] && echo "${ALLOWED_REPOS}" | grep -qiFx "${target_repo}"; then
           return 0
         fi
         return 1
         ;;
       unset)
-        return 0
+        if [[ ! -f "${CONFIG_FILE}" && ! -f "${BASE_CONFIG_FILE}" ]]; then
+          return 1
+        fi
+        local primary_project
+        primary_project=$(yq -r '.tracker.jira.project // empty' "${CONFIG_FILE}" 2>/dev/null || true)
+        if [[ -z "${primary_project}" && -f "${BASE_CONFIG_FILE}" ]]; then
+          primary_project=$(yq -r '.tracker.jira.project // empty' "${BASE_CONFIG_FILE}" 2>/dev/null || true)
+        fi
+        [[ -n "${primary_project}" && "${primary_project,,}" == "${target_repo,,}" ]]
         ;;
     esac
   fi
@@ -1616,8 +1633,10 @@ if [[ "${PROPOSAL_COUNT}" -gt 0 ]]; then
     # Ensure the label exists in the target repo before applying it.
     # Follows the same pattern as post-review.sh for ready-for-merge.
     # --force / idempotent creation makes this safe to repeat.
-    forge_create_label "${TARGET_REPO}" "ready-for-triage" \
-      "Triggers triage agent dispatch" "0E8A16"
+    if [[ "${FULLSEND_TRACKER}" != "jira" || ",${RETRO_JIRA_LABELS:-ready-for-triage}," == *,ready-for-triage,* ]]; then
+      forge_create_label "${TARGET_REPO}" "ready-for-triage" \
+        "Triggers triage agent dispatch" "0E8A16"
+    fi
 
     SAFE_TITLE=$(_gha_sanitize "${TITLE}")
     if [[ "${FULLSEND_TRACKER}" == "jira" ]]; then
@@ -1629,7 +1648,12 @@ if [[ "${PROPOSAL_COUNT}" -gt 0 ]]; then
     # A failed creation is non-fatal: record it, keep filing the remaining
     # proposals, and report it in the summary comment.
     CREATE_RC=0
-    ISSUE_URL=$(forge_create_issue "${TARGET_REPO}" "${TITLE}" "${BODY}" "ready-for-triage") || CREATE_RC=$?
+    if [[ "${FULLSEND_TRACKER}" == "jira" ]]; then
+      ISSUE_LABELS="${RETRO_JIRA_LABELS-ready-for-triage}"
+    else
+      ISSUE_LABELS="ready-for-triage"
+    fi
+    ISSUE_URL=$(forge_create_issue "${TARGET_REPO}" "${TITLE}" "${BODY}" "${ISSUE_LABELS}") || CREATE_RC=$?
     if [[ ${CREATE_RC} -ne 0 ]] && ! [[ "${FULLSEND_TRACKER}" == "jira" && ${CREATE_RC} -eq 2 ]]; then
       SAFE_OUTPUT=$(_gha_sanitize "${ISSUE_URL}")
       if [[ "${FULLSEND_TRACKER}" == "jira" ]]; then
