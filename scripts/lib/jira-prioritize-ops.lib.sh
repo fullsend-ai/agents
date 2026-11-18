@@ -238,8 +238,8 @@ forge_parse_issue_url() {
 }
 
 # Resolve a custom field by exact name and schema type. Another field may
-# share the name with a different type (Red Hat Cloud has a site-wide
-# Impact select next to the AISDLC Impact number). Uniqueness is among
+# share the name with a different type (some JIRA instances have a site-wide
+# Impact select next to a different Impact number). Uniqueness is among
 # matches of the expected type. Never Rank, Priority, or system fields.
 _jira_custom_field_id() {
   local fields_json="$1"

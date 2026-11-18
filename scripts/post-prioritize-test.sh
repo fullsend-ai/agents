@@ -1675,7 +1675,7 @@ echo '[{"id":"customfield_10105","name":"RICE Score","schema":{"type":"number"}}
 run_jira_test_stdout "jira-duplicate-field-fails" "not found or not unique (matches=2)" "true"
 assert_jira_no_writes "jira-duplicate-field"
 
-# A site-wide Impact select next to the AISDLC Impact number is not
+# A site-wide Impact select next to another Impact number field is not
 # ambiguous: write the unique number field.
 echo "${DEFAULT_JIRA_FIELDS}" | jq '. + [{"id":"customfield_10004","name":"Impact","schema":{"type":"option"}}]' > "${MOCK_FIELDS_FILE}"
 run_jira_test "jira-impact-number-amid-site-select"
