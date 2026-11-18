@@ -464,7 +464,10 @@ tracker_store_triage_state() {
     return 1
   fi
   _jira_api_with_status PUT "/comment/${comment_id}/properties/fullsend.triage-state" \
-    --data "${state}" > /dev/null || return 1
+    --data "${state}" > /dev/null || {
+    echo "ERROR: cannot store the triage state on comment ${comment_id}; setting a comment property needs the \"Edit own comments\" project permission" >&2
+    return 1
+  }
   echo "Stored the triage state on comment ${comment_id}"
 }
 

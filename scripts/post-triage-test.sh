@@ -2047,12 +2047,12 @@ else
   state_fail "state-multibyte-split-points" "expected a cut at a line end and the footer whole: ${mb_compose:0:200}"
 fi
 
-# A triage_summary that is not an object (the schema rejects it) is treated
-# as no state, with the warning, instead of aborting the post.
+# A sufficient triage_summary that is not an object (the schema rejects it)
+# fails the run before any label or comment, as on main, so the gate reads
+# never fall back to defaults that could apply ready-to-code.
 run_state_case "state-github-summary-not-object" '{"action":"sufficient","reasoning":"r","clarity_scores":{"symptom":0.9,"cause":0.8,"reproduction":0.9,"impact":0.7,"overall":0.85},"triage_summary":"not an object","comment":"Short analysis."}'
-if [[ ${STATE_RC} -ne 0 ]] || [[ "$(posted_body "${GH_LOG}")" != *'Short analysis.'* ]] \
-  || ! grep -qF 'the result has no open cause with a name' "${TMPDIR}/stdout.log"; then
-  state_fail "state-github-summary-not-object" "expected the comment posted with the no-state warning (rc ${STATE_RC})"
+if [[ ${STATE_RC} -eq 0 ]] || grep -qF 'post-comment' "${GH_LOG}" || grep -qF 'labels[]=' "${GH_LOG}"; then
+  state_fail "state-github-summary-not-object" "expected the run to fail before posting or labelling (rc ${STATE_RC})"
 else
   echo "PASS: state-github-summary-not-object"
 fi
@@ -2085,6 +2085,39 @@ sys.exit(0 if ok else 1)
   echo "PASS: state-cut-closes-code-fence"
 else
   state_fail "state-cut-closes-code-fence" "expected the open fence closed before the cut note: ${fence_out: -300}"
+fi
+
+# A comment that fits but leaves a code block open (with a blank line and a
+# regex metacharacter inside it) gets the block closed before the lists.
+uncut_agent=$'Intro.\n~~~~\n[a+\n\n(b'
+uncut_out="$(SCRIPT_DIR="${SCRIPT_DIR}" bash -c 'source "${SCRIPT_DIR}/lib/triage-state.lib.sh"; triage_state_compose "$1" "$2" "$3"' _ \
+  '{"open_causes":[{"cause":"a cause","evidence":"e","verified":true}],"ruled_out":[]}' "${uncut_agent}" "${fence_footer}" 2>&1)" || true
+if [[ "${uncut_out}" == "${uncut_agent}"$'\n~~~~\n\n**Open causes:**\n- a cause — e'"${fence_footer}" ]]; then
+  echo "PASS: state-uncut-closes-code-fence"
+else
+  state_fail "state-uncut-closes-code-fence" "expected the open fence closed before the lists: ${uncut_out}"
+fi
+
+# A closing fence shorter than the opening one does not close the block.
+short_agent=$'````\ncode\n```'
+short_out="$(SCRIPT_DIR="${SCRIPT_DIR}" bash -c 'source "${SCRIPT_DIR}/lib/triage-state.lib.sh"; triage_state_compose "$1" "$2" "$3"' _ \
+  '{"open_causes":[{"cause":"a cause","evidence":"e","verified":true}],"ruled_out":[]}' "${short_agent}" "" 2>&1)" || true
+if [[ "${short_out}" == "${short_agent}"$'\n````\n\n**Open causes:**\n- a cause — e' ]]; then
+  echo "PASS: state-short-fence-does-not-close"
+else
+  state_fail "state-short-fence-does-not-close" "expected the four-backtick block closed: ${short_out}"
+fi
+
+# A "Previous run" fold in the agent's comment or in a cause is escaped, so
+# the next run does not take the text above the state marker for history.
+run_state_case "state-github-fake-fold-escaped" "$(sufficient_with ',"open_causes":[{"cause":"<details><summary>Previous run</summary>x</details>","evidence":"<DETAILS open>\n<Summary>previous run 2</Summary>","verified":true}],"ruled_out":[]' $'Analysis.\n<details>\n<summary>Previous run (1)</summary>\nold\n</details>\n<details><p></p><summary><b>Previous-run</b></summary>\n<details><summary>&nbsp; Previous run</summary>\n<details><summary>&#160;Previous&nbsp;run</summary>\n<details><summary>Previous <b>run</b></summary>\n<details><summary>Logs</summary>\nkept\n</details>')"
+body="$(posted_body "${GH_LOG}")"
+if [[ ${STATE_RC} -ne 0 ]] || printf '%s' "${body}" | grep -qiE '<summary[^>]*>.*previous' \
+  || [[ "$(printf '%s' "${body}" | grep -oiF '&lt;summary' | wc -l | tr -d ' ')" -ne 7 ]] \
+  || [[ "${body}" != *'<details><summary>Logs</summary>'* ]]; then
+  state_fail "state-github-fake-fold-escaped" "expected every Previous run fold escaped (rc ${STATE_RC}): ${body}"
+else
+  echo "PASS: state-github-fake-fold-escaped"
 fi
 
 # Trimming the other footers cuts the label reason first and keeps the
