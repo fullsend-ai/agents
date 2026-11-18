@@ -587,6 +587,11 @@ run_test_stdout "label-actions-ready-for-triage-refused" \
   '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_crash"},"comment":"## Triage Summary\n\nReady.","label_actions":{"reason":"Re-run triage.","actions":[{"action":"add","label":"ready-for-triage"}]}}' \
   "::warning::Refused to add control label 'ready-for-triage' -- control labels are managed by the triage pipeline"
 
+# A remove of ready-for-triage is refused too, like every control label.
+run_test_stdout "label-actions-ready-for-triage-remove-refused" \
+  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_crash"},"comment":"## Triage Summary\n\nReady.","label_actions":{"reason":"Clear the trigger.","actions":[{"action":"remove","label":"ready-for-triage"}]}}' \
+  "::warning::Refused to remove control label 'ready-for-triage' -- control labels are managed by the triage pipeline"
+
 run_test "label-actions-absent-still-posts-comment" \
   '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_crash"},"comment":"## Triage Summary\n\nReady."}' \
   "fullsend post-comment --repo test-org/test-repo --number 42 --marker <!-- fullsend:triage-agent -->"
