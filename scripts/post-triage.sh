@@ -1664,6 +1664,13 @@ fi
 # Jira updates) are cut to this many characters, so "Next steps" always fits.
 TRIAGE_STATE_MAX_EXTRA_FOOTER=1000
 
+# The opener of a <summary> whose text starts with "Previous run" (any case,
+# after whitespace, &nbsp; or inline tags), which is what makes a <details>
+# block a history fold to step 2e. Agent text has it escaped, so the next
+# run never takes text above the state marker for history; the post-script's
+# own <details> blocks (prerequisites, split) keep working.
+TRIAGE_STATE_FOLD_RE='(?i)<(?=summary\b[^>]*>(?:\s|&nbsp;|<[^>]*>)*previous[\s-]*run)'
+
 # triage_state_json RESULT_FILE — print the state as compact JSON, bounded
 # to the schema's limits (whitespace runs folded to one space, strings and
 # lists cut, ruled_out keeping its newest entries), or nothing when the
@@ -1733,9 +1740,10 @@ triage_state_dropped() {
 # every entry.
 triage_state_compose() {
   jq -rn --argjson state "$1" --arg agent "$2" --arg footer_in "$3" \
+    --arg fold_re "${TRIAGE_STATE_FOLD_RE}" \
     --argjson cap "${TRIAGE_STATE_READABLE_CAP}" \
     --argjson extra_max "${TRIAGE_STATE_MAX_EXTRA_FOOTER}" '
-    def safe: gsub("<!--"; "&lt;!--") | gsub("(?i)<(?=details\\b[^>]*>\\s*<summary\\b[^>]*>\\s*previous run)"; "&lt;");
+    def safe: gsub("<!--"; "&lt;!--") | gsub($fold_re; "&lt;");
     def clip($n): if length > $n then .[0:($n - 1)] + "…" else . end;
     def line($full; $name_max):
       "- " + (.cause | clip($name_max) | safe)
@@ -1823,11 +1831,10 @@ triage_state_marker() {
 # triage_state_neutralize TEXT — escape every state marker opener in TEXT
 # (any case, "<!--" with any number of extra dashes and any whitespace), so
 # the only live marker in a posted comment is the one the post-script adds,
-# and every <details> block whose <summary> starts with "Previous run", so
-# the next run does not take text above the marker for a history fold.
+# and every "Previous run" fold summary (TRIAGE_STATE_FOLD_RE).
 triage_state_neutralize() {
-  jq -rn --arg t "$1" '$t | gsub("(?i)<(?=!--+\\s*triage-state)"; "&lt;")
-    | gsub("(?i)<(?=details\\b[^>]*>\\s*<summary\\b[^>]*>\\s*previous run)"; "&lt;")'
+  jq -rn --arg t "$1" --arg fold_re "${TRIAGE_STATE_FOLD_RE}" \
+    '$t | gsub("(?i)<(?=!--+\\s*triage-state)"; "&lt;") | gsub($fold_re; "&lt;")'
 }
 # END bundled: lib/triage-state.lib.sh
 
