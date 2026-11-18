@@ -82,7 +82,7 @@ forge_parse_originating_url() {
 _forge_mask_token() {
   # ::add-mask:: is GHA-only; on non-GHA runners the echo would leak the token.
   if [[ -n "${GITHUB_ACTIONS:-}" && -n "${GITLAB_TOKEN:-}" ]]; then
-    echo "::add-mask::${GITLAB_TOKEN}"
+    _gha_mask "${GITLAB_TOKEN}"
   fi
 }
 forge_mask_token() {

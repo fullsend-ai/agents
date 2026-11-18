@@ -1017,7 +1017,7 @@ _jira_auth_mint_now() {
   token="$(printf '%s' "${body}" | jq -r '.access_token // empty' 2>/dev/null)" || token=""
   expires_in="$(printf '%s' "${body}" | jq -r '.expires_in // empty' 2>/dev/null)" || expires_in=""
   # Atlassian access tokens are JWTs. Anything outside this charset could
-  # break or inject into the ::add-mask:: line, so it is refused unprinted.
+  # break or inject into the workflow command, so it is refused unprinted.
   if [[ ! "${token}" =~ ^[A-Za-z0-9._~+/=-]+$ ]]; then
     echo "ERROR: Jira OAuth token response has no usable access_token" >&2
     return 1
@@ -1029,12 +1029,12 @@ _jira_auth_mint_now() {
   # means the caller redirected stdout around the call.
   local main_out="/proc/$$/fd/1"
   if (( BASH_SUBSHELL == 0 )); then
-    printf '::add-mask::%s\n' "${token}"
+    _gha_mask "${token}"
   elif [[ -w "${main_out}" ]] && [[ -p "${main_out}" || -c "${main_out}" ]] \
     && ! [[ "${main_out}" -ef /dev/null ]]; then
-    printf '::add-mask::%s\n' "${token}" >> "${main_out}"
+    _gha_mask "${token}" >> "${main_out}"
   else
-    printf '::add-mask::%s\n' "${token}" >&2
+    _gha_mask "${token}" >&2
   fi
   [[ "${expires_in}" =~ ^[0-9]+$ ]] || expires_in=3600
   _JIRA_AUTH_ACCESS_TOKEN="${token}"

@@ -18,7 +18,9 @@
 #
 # Expected env vars:
 #   JIRA_BASE_URL          — Jira Cloud base URL (https://<site>.atlassian.net)
-#   JIRA_TOKEN             — Jira API token
+#   JIRA_TOKEN             — Jira API token. Or, instead of it:
+#   FULLSEND_JIRA_CLIENT_ID and FULLSEND_JIRA_CLIENT_SECRET — OAuth client
+#                            credentials, mutually exclusive with JIRA_TOKEN
 #   FULLSEND_DIR           — .fullsend directory whose config.yaml holds
 #                            tracker.jira, for fullsend issues shell-outs
 #   RETRO_JIRA_PROJECT     — Jira project key for proposal issues (e.g. "PROJ")
@@ -27,7 +29,8 @@
 #   JIRA_USER_EMAIL        — bot-user email. When set, requests use Basic
 #                            auth with email and token; when unset or empty,
 #                            Bearer auth with a service-account token.
-#   JIRA_API_URL           — REST API gateway base URL. Falls back to JIRA_BASE_URL.
+#   JIRA_API_URL           — REST API gateway base URL (trusted Atlassian
+#                            gateway or the configured Jira tenant URL).
 #   RETRO_JIRA_ISSUE_TYPE  — issue type name for created issues (default: "Task")
 #   RETRO_JIRA_LABELS      — comma-separated allowlist of labels that retro may
 #                            apply to Jira issues (default: "ready-for-triage")
@@ -40,13 +43,21 @@ JIRA_RETRO_OPS_SH_LOADED=1
 RETRO_JIRA_PROJECT="${RETRO_JIRA_PROJECT:-${JIRA_PROJECT:-}}"
 RETRO_MODE="${RETRO_MODE:-all}"
 if [[ "${RETRO_MODE}" != "summary_only" ]]; then
-  : "${JIRA_TOKEN:?JIRA_TOKEN must be set}"
   : "${JIRA_BASE_URL:?JIRA_BASE_URL must be set}"
   : "${RETRO_JIRA_PROJECT:?RETRO_JIRA_PROJECT must be set}"
 fi
 
 # shellcheck source=jira-auth.lib.sh
 source "${SCRIPT_DIR}/lib/jira-auth.lib.sh"
+jira_auth_select "${JIRA_TOKEN:-}" FULLSEND_JIRA_CLIENT_ID FULLSEND_JIRA_CLIENT_SECRET || exit 1
+
+if [[ "${RETRO_MODE}" != "summary_only" ]]; then
+  if [[ "${JIRA_AUTH_MODE}" == "none" ]]; then
+    echo "ERROR: JIRA_TOKEN must be set, or FULLSEND_JIRA_CLIENT_ID and FULLSEND_JIRA_CLIENT_SECRET" >&2
+    exit 1
+  fi
+  jira_auth_require_api_url || exit 1
+fi
 
 if [[ -n "${JIRA_BASE_URL:-}" ]]; then
   while [[ "${JIRA_BASE_URL}" == */ ]]; do
@@ -63,10 +74,46 @@ if [[ -n "${RETRO_JIRA_API_BASE}" ]]; then
   while [[ "${RETRO_JIRA_API_BASE}" == */ ]]; do
     RETRO_JIRA_API_BASE="${RETRO_JIRA_API_BASE%/}"
   done
-  if [[ "${RETRO_JIRA_API_BASE}" != https://* ]]; then
-    echo "ERROR: JIRA_API_URL must start with https://" >&2
+  if [[ ! "${RETRO_JIRA_API_BASE}" =~ ^https://api\.atlassian\.com/ex/jira/[A-Za-z0-9-]+$ && "${RETRO_JIRA_API_BASE}" != "${JIRA_BASE_URL:-}" ]]; then
+    echo "ERROR: JIRA_API_URL must match JIRA_BASE_URL or the Atlassian API gateway URL (https://api.atlassian.com/ex/jira/<cloudId>)" >&2
     exit 1
   fi
+fi
+
+if [[ "${RETRO_MODE}" != "summary_only" ]]; then
+  [[ -n "${FULLSEND_DIR:-}" ]] || {
+    echo "ERROR: FULLSEND_DIR must be set when FULLSEND_TRACKER=jira" >&2
+    exit 1
+  }
+  config_file="${FULLSEND_DIR}/config.yaml"
+  if [[ ! -f "${config_file}" && -f "${FULLSEND_DIR}/config.base.yaml" ]]; then
+    config_file="${FULLSEND_DIR}/config.base.yaml"
+  fi
+  if [[ -f "${config_file}" ]] && command -v yq >/dev/null 2>&1; then
+    config_base=$(yq -r '.tracker.jira.base_url // empty' "${config_file}" 2>/dev/null || true)
+    config_api=$(yq -r '.tracker.jira.api_url // empty' "${config_file}" 2>/dev/null || true)
+    for variable in config_base config_api; do
+      while [[ -n "${!variable}" && "${!variable}" == */ ]]; do
+        printf -v "${variable}" '%s' "${!variable%/}"
+      done
+    done
+    if [[ -n "${config_base}" && "${config_base}" != "${JIRA_BASE_URL}" ]]; then
+      echo "ERROR: JIRA_BASE_URL must match tracker.jira.base_url in ${config_file}" >&2
+      exit 1
+    fi
+    if [[ -n "${config_api}" && "${config_api}" != "${RETRO_JIRA_API_BASE}" ]]; then
+      echo "ERROR: JIRA_API_URL must match tracker.jira.api_url in ${config_file}" >&2
+      exit 1
+    fi
+    if [[ -n "${config_base}" && -z "${config_api}" && "${RETRO_JIRA_API_BASE}" != "${JIRA_BASE_URL}" ]]; then
+      echo "ERROR: JIRA_API_URL must match tracker.jira.base_url when tracker.jira.api_url is unset" >&2
+      exit 1
+    fi
+  fi
+fi
+
+if [[ "${RETRO_MODE}" != "summary_only" && "${JIRA_AUTH_MODE}" == "client" ]]; then
+  jira_auth_mint || exit 1
 fi
 
 if [[ -n "${RETRO_JIRA_PROJECT}" && ! "${RETRO_JIRA_PROJECT}" =~ ^[A-Z][A-Z0-9_]*$ ]]; then
@@ -76,6 +123,7 @@ fi
 
 RETRO_JIRA_ISSUE_TYPE="${RETRO_JIRA_ISSUE_TYPE:-Task}"
 RETRO_JIRA_LABELS="${RETRO_JIRA_LABELS-ready-for-triage}"
+RETRO_JIRA_LABELS_CONFIGURED="${RETRO_JIRA_LABELS}"
 if [[ -z "${RETRO_JIRA_LABELS}" ]]; then
   echo "INFO: RETRO_JIRA_LABELS is empty — Jira issues will be created without labels" >&2
 fi
@@ -86,7 +134,7 @@ _retro_jira_api() {
   shift
   local endpoint="$1"
   shift
-  jira_auth_curl "${JIRA_TOKEN}" "${JIRA_USER_EMAIL:-}" \
+  jira_auth_curl "${JIRA_TOKEN:-}" "${JIRA_USER_EMAIL:-}" \
     --fail --silent --show-error \
     --connect-timeout 10 --max-time 30 \
     --header "Content-Type: application/json" \
@@ -103,7 +151,7 @@ _retro_jira_api_with_status() {
   shift
   local err_file raw http_code body
   err_file=$(mktemp)
-  raw=$(jira_auth_curl "${JIRA_TOKEN}" "${JIRA_USER_EMAIL:-}" \
+  raw=$(jira_auth_curl "${JIRA_TOKEN:-}" "${JIRA_USER_EMAIL:-}" \
     --silent --show-error \
     --connect-timeout 10 --max-time 30 \
     --header "Content-Type: application/json" \
@@ -174,7 +222,7 @@ _retro_jira_filter_labels() {
   local raw="$1"
   jq -cn \
     --arg raw "${raw}" \
-    --arg allowlist "${RETRO_JIRA_LABELS}" '
+    --arg allowlist "${RETRO_JIRA_LABELS_CONFIGURED}" '
     def parse_list:
       if (type == "array") then .
       elif (type == "string") then [split(",")[] | gsub("^\\s+|\\s+$"; "")]
@@ -182,7 +230,7 @@ _retro_jira_filter_labels() {
     def parse_raw:
       ($raw | try fromjson catch $raw) | parse_list;
     def parse_allowlist:
-      $allowlist | split(",") | map(gsub("^\\s+|\\s+$"; "") | select(test("^[A-Za-z0-9._-]{1,64}$")));
+      if $allowlist == "" then [] else $allowlist | split(",") | map(gsub("^\\s+|\\s+$"; "") | select(test("^[A-Za-z0-9._-]{1,64}$"))) end;
     (parse_allowlist) as $allowed |
     [parse_raw[]?
       | select(type == "string")
@@ -196,6 +244,9 @@ _retro_jira_filter_labels() {
 _retro_jira_add_labels() {
   local key="$1" labels="$2"
   local labels_json ops
+  if [[ "${RETRO_JIRA_LABELS_CONFIGURED}" == "" ]]; then
+    return 0
+  fi
   labels_json=$(_retro_jira_filter_labels "${labels}")
   if [[ "$(printf '%s' "${labels_json}" | jq 'length')" -eq 0 ]]; then
     if [[ -n "${labels}" && -n "${RETRO_JIRA_LABELS}" ]]; then
@@ -241,8 +292,12 @@ _retro_jira_createmeta_all() {
 
 tracker_validate_create() {
   local types type_id meta missing
-  if ! fullsend issues create --help >/dev/null 2>&1; then
-    echo "ERROR: 'fullsend issues create' is not available — upgrade fullsend to a version that includes the config-backed Jira commands (fullsend#9078)" >&2
+  local help_text
+  if ! help_text=$(fullsend issues create --help 2>&1) \
+    || { [[ "${help_text}" == *"Usage: fullsend issues create"* ]] \
+      && [[ "${help_text}" != *"--fullsend-dir"* ]] \
+      && [[ "${help_text}" != *"--tracker"* ]]; }; then
+    echo "ERROR: installed fullsend does not support 'issues create --tracker jira --fullsend-dir'; upgrade to a version with config-backed Jira issue creation (fullsend#7083 / fullsend#9078)" >&2
     return 1
   fi
   types=$(_retro_jira_createmeta_all "/issue/createmeta/${RETRO_JIRA_PROJECT}/issuetypes") || {
@@ -283,7 +338,7 @@ tracker_find_existing_issue() {
   local title="$1" raw_file jql terms match rc=0
   # Drop Jira text-search stop words so they cannot exclude an exact summary.
   # With no usable terms, search the project and compare summaries client-side.
-  terms=$(printf '%s' "${title}" | jq -Rs '[scan("[\\p{L}\\p{N}]+") | ascii_downcase] | unique | map(select(length > 2 and (.[0:1] | IN("a", "an", "and", "are", "as", "at", "be", "but", "by", "for", "if", "in", "into", "is", "it", "no", "not", "of", "on", "or", "such", "that", "the", "their", "then", "there", "these", "they", "this", "to", "was", "will", "with") | not))) | sort_by(-length) | .[0:3]') || return 1
+  terms=$(printf '%s' "${title}" | jq -Rs '[scan("[\\p{L}\\p{N}]+") | ascii_downcase] | unique | map(select(length > 2 and (. as $word | (["a", "an", "and", "are", "as", "at", "be", "but", "by", "for", "if", "in", "into", "is", "it", "no", "not", "of", "on", "or", "such", "that", "the", "their", "then", "there", "these", "they", "this", "to", "was", "will", "with"] | index($word) | not)))) | sort_by(-length) | .[0:3]') || return 1
   if [[ "$(printf '%s' "${terms}" | jq 'length')" -eq 0 ]]; then
     terms='[]'
   fi
@@ -320,7 +375,7 @@ forge_create_issue() {
     return 1
   fi
   local response key url
-  response=$(printf '%s' "${body}" | jira_auth_fullsend fullsend "${JIRA_TOKEN}" "${JIRA_USER_EMAIL:-}" \
+  response=$(printf '%s' "${body}" | jira_auth_fullsend fullsend "${JIRA_TOKEN:-}" "${JIRA_USER_EMAIL:-}" \
     issues create \
     --tracker jira \
     --fullsend-dir "${FULLSEND_DIR}" \
@@ -421,13 +476,13 @@ _retro_jira_post_comment() {
     echo "ERROR: FULLSEND_DIR is not set; the fullsend CLI needs it for the tracker.jira settings" >&2
     return 1
   fi
-  if [[ -z "${JIRA_TOKEN:-}" ]]; then
-    echo "ERROR: JIRA_TOKEN must be set to post comments to Jira" >&2
+  if [[ "${JIRA_AUTH_MODE}" == "none" ]]; then
+    echo "ERROR: Jira credentials must be set to post comments to Jira" >&2
     return 1
   fi
   # Jira issue keys are <PROJECT>-<NUMBER>; fullsend's --number expects the numeric suffix.
   local num="${number##*-}"
-  printf '%s' "${body}" | jira_auth_fullsend fullsend "${JIRA_TOKEN}" "${JIRA_USER_EMAIL:-}" \
+  printf '%s' "${body}" | jira_auth_fullsend fullsend "${JIRA_TOKEN:-}" "${JIRA_USER_EMAIL:-}" \
     issues post-comment --tracker jira --fullsend-dir "${FULLSEND_DIR}" \
     --project "${repo}" --number "${num}" \
     --marker "<!-- fullsend:retro-agent -->" --result - 2>&1
@@ -451,7 +506,10 @@ forge_require_token() {
     jira_origin="true"
   fi
   if [[ "${RETRO_MODE}" != "summary_only" || "${jira_origin}" == "true" ]]; then
-    : "${JIRA_TOKEN:?JIRA_TOKEN must be set}"
+    if [[ "${JIRA_AUTH_MODE}" == "none" ]]; then
+      echo "ERROR: JIRA_TOKEN must be set, or FULLSEND_JIRA_CLIENT_ID and FULLSEND_JIRA_CLIENT_SECRET" >&2
+      return 1
+    fi
   fi
   if [[ "${jira_origin}" == "true" ]]; then
     return 0
@@ -470,7 +528,7 @@ forge_mask_token() {
     _forge_mask_token
   fi
   if [[ -n "${GITHUB_ACTIONS:-}" && -n "${JIRA_TOKEN:-}" ]]; then
-    printf '::add-mask::%s\n' "$(printf '%s' "${JIRA_TOKEN}" | tr -d '\n\r')"
+    _gha_mask "${JIRA_TOKEN}"
   fi
 }
 

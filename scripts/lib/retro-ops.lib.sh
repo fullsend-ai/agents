@@ -10,6 +10,14 @@ RETRO_OPS_SH_LOADED=1
 
 _gha_sanitize() { printf '%s' "$1" | tr -d '\n\r' | sed 's/\x1b\[[0-9;]*[a-zA-Z]//g; s/%/%25/g; s/::/%3A%3A/g'; }
 
+_gha_mask() {
+  local value="$1"
+  value="${value//%/%25}"
+  value="${value//$'\r'/%0D}"
+  value="${value//$'\n'/%0A}"
+  printf '::add-mask::%s\n' "${value}"
+}
+
 case "${FULLSEND_FORGE:-}" in
   github)
     source "${SCRIPT_DIR}/lib/github-retro-ops.lib.sh"

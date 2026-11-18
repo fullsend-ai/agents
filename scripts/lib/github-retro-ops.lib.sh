@@ -47,7 +47,7 @@ forge_parse_originating_url() {
 
 _forge_mask_token() {
   if [[ -n "${GITHUB_ACTIONS:-}" && -n "${GH_TOKEN:-}" ]]; then
-    echo "::add-mask::${GH_TOKEN}"
+    _gha_mask "${GH_TOKEN}"
   fi
 }
 forge_mask_token() {
