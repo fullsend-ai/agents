@@ -158,12 +158,105 @@ run_test "jira-label-not-stripped-fails" \
 echo '[]' > "${MOCK_LABELS_FILE}"
 
 # An unexpected response shape must fail loudly, not read as "no labels left".
+# The override skips the skip-label read, which would fail first.
 echo 'null' > "${MOCK_LABELS_FILE}"
+export TRIAGE_SKIP_LABEL_OVERRIDE="true"
 run_test "jira-label-verify-malformed-response-fails" \
   "https://test.atlassian.net/browse/TESTPROJ-42" \
   "cannot verify label state" \
   "true"
+unset TRIAGE_SKIP_LABEL_OVERRIDE
+
+# The same response fails the skip-label read, before any label change.
+run_test "jira-skip-label-read-malformed-response-fails" \
+  "https://test.atlassian.net/browse/TESTPROJ-42" \
+  "Cannot read the issue labels" \
+  "true"
+if grep -qF -- "--request PUT" "${CURL_LOG}"; then
+  echo "FAIL: jira-skip-label-read-failure-no-mutation — labels changed after a failed read"
+  cat "${CURL_LOG}"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: jira-skip-label-read-failure-no-mutation"
+fi
 echo '[]' > "${MOCK_LABELS_FILE}"
+
+# --- Skip labels (#2076) ---
+# A skip label stops the run through the pre-script output protocol before
+# any label change; a human /fs-triage (TRIAGE_SKIP_LABEL_OVERRIDE) runs.
+PRESCRIPT_OUT="${TMPDIR}/prescript-output"
+
+# run_skip_test NAME ISSUE_URL WANT MUTATION_PATTERN — run pre-triage with
+# FULLSEND_PRESCRIPT_OUTPUT set. WANT is "skip" (exit 0, skipped=true, no
+# call matching MUTATION_PATTERN) or "run" (exit 0, no skip, a call matching
+# MUTATION_PATTERN).
+run_skip_test() {
+  local test_name="$1" issue_url="$2" want="$3" mutation_pattern="$4"
+  : > "${CURL_LOG}"
+  : > "${PRESCRIPT_OUT}"
+  local exit_code=0
+  (ISSUE_URL="${issue_url}" FULLSEND_PRESCRIPT_OUTPUT="${PRESCRIPT_OUT}" bash "${PRE_SCRIPT}") \
+    > "${TMPDIR}/stdout.log" 2>&1 || exit_code=$?
+  if [[ ${exit_code} -ne 0 ]]; then
+    echo "FAIL: ${test_name} — exit code ${exit_code}"
+    cat "${TMPDIR}/stdout.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  if [[ "${want}" == "skip" ]]; then
+    if ! grep -qx "skipped=true" "${PRESCRIPT_OUT}" || ! grep -q "^reason=.*skip label" "${PRESCRIPT_OUT}"; then
+      echo "FAIL: ${test_name} — expected skipped=true and a reason"
+      cat "${PRESCRIPT_OUT}" "${TMPDIR}/stdout.log"
+      FAILURES=$((FAILURES + 1))
+      return
+    fi
+    if grep -qF -- "${mutation_pattern}" "${CURL_LOG}"; then
+      echo "FAIL: ${test_name} — skipped run changed labels"
+      cat "${CURL_LOG}"
+      FAILURES=$((FAILURES + 1))
+      return
+    fi
+  else
+    if [[ -s "${PRESCRIPT_OUT}" ]]; then
+      echo "FAIL: ${test_name} — expected no skip"
+      cat "${PRESCRIPT_OUT}"
+      FAILURES=$((FAILURES + 1))
+      return
+    fi
+    if ! grep -qF -- "${mutation_pattern}" "${CURL_LOG}"; then
+      echo "FAIL: ${test_name} — expected the label reset"
+      cat "${CURL_LOG}"
+      FAILURES=$((FAILURES + 1))
+      return
+    fi
+  fi
+  echo "PASS: ${test_name}"
+}
+
+JIRA_TEST_URL="https://test.atlassian.net/browse/TESTPROJ-42"
+
+echo '["skip-triage"]' > "${MOCK_LABELS_FILE}"
+run_skip_test "jira-skip-triage-label-skips" "${JIRA_TEST_URL}" skip "--request PUT"
+
+echo '["area/api","needs-design"]' > "${MOCK_LABELS_FILE}"
+export TRIAGE_SKIP_LABELS=" other-label , needs-design"
+run_skip_test "jira-configured-skip-label-skips" "${JIRA_TEST_URL}" skip "--request PUT"
+unset TRIAGE_SKIP_LABELS
+run_skip_test "jira-unconfigured-label-runs" "${JIRA_TEST_URL}" run '"remove":"needs-info"'
+
+echo '["skip-triage"]' > "${MOCK_LABELS_FILE}"
+export TRIAGE_SKIP_LABEL_OVERRIDE="true"
+run_skip_test "jira-fs-triage-override-runs" "${JIRA_TEST_URL}" run '"remove":"needs-info"'
+unset TRIAGE_SKIP_LABEL_OVERRIDE
+
+# An empty TRIAGE_SKIP_LABELS entry must not match every label.
+echo '["bug"]' > "${MOCK_LABELS_FILE}"
+export TRIAGE_SKIP_LABELS=","
+run_skip_test "jira-empty-configured-label-runs" "${JIRA_TEST_URL}" run '"remove":"needs-info"'
+unset TRIAGE_SKIP_LABELS
+
+echo '[]' > "${MOCK_LABELS_FILE}"
+run_skip_test "jira-no-skip-label-runs" "${JIRA_TEST_URL}" run '"remove":"needs-info"'
 
 # JIRA_BASE_URL with trailing slash should still match the parsed URL.
 export JIRA_BASE_URL="https://test.atlassian.net/"
@@ -439,6 +532,19 @@ run_test "gitlab-com-no-ci-server-url-ok" \
   "https://gitlab.com/group/project/-/issues/42" \
   "https://gitlab.com/api/v4/projects/group%2Fproject/issues/42"
 
+# A skip label on a GitLab issue (#2076) skips before any label change.
+printf '#!/usr/bin/env bash\necho "curl $*" >> %s\n' "${CURL_LOG}" > "${MOCK_BIN}/curl"
+cat >> "${MOCK_BIN}/curl" <<'CURLMOCK'
+echo '{"labels":["skip-triage"]}'
+exit 0
+CURLMOCK
+run_skip_test "gitlab-skip-triage-label-skips" \
+  "https://gitlab.com/group/project/-/issues/42" skip "remove_labels="
+export TRIAGE_SKIP_LABEL_OVERRIDE="true"
+run_skip_test "gitlab-fs-triage-override-runs" \
+  "https://gitlab.com/group/project/-/issues/42" run "remove_labels=needs-info"
+unset TRIAGE_SKIP_LABEL_OVERRIDE
+
 unset CI_SERVER_HOST GITLAB_TOKEN
 
 # --- GitHub host validation (#1865) ---
@@ -498,8 +604,40 @@ run_test "github-non-https-server-url-fails" \
   "http://ghe.example.com/acme/widgets/issues/79" \
   "GITHUB_SERVER_URL is not an HTTPS origin" \
   "true" "true"
+unset GITHUB_SERVER_URL
 
-unset GITHUB_SERVER_URL GH_TOKEN
+# Skip labels on a GitHub issue (#2076): the issue labels list (--jq
+# '.[].name') reports the labels in MOCK_GH_ISSUE_LABELS.
+MOCK_GH_ISSUE_LABELS="${TMPDIR}/mock-gh-issue-labels"
+printf '#!/usr/bin/env bash\necho "gh $*" >> %s\n' "${CURL_LOG}" > "${MOCK_BIN}/gh"
+cat >> "${MOCK_BIN}/gh" <<GHMOCK
+if [[ "\$2" == */issues/*/labels && "\$*" == *--paginate* ]]; then
+  cat "${MOCK_GH_ISSUE_LABELS}"
+  exit 0
+fi
+echo '[]'
+exit 0
+GHMOCK
+chmod +x "${MOCK_BIN}/gh"
+
+printf '%s\n' "kind/feature" "skip-triage" > "${MOCK_GH_ISSUE_LABELS}"
+run_skip_test "github-skip-triage-label-skips" \
+  "https://github.com/test-org/test-repo/issues/42" skip "-X DELETE"
+
+printf '%s\n' "needs-design" > "${MOCK_GH_ISSUE_LABELS}"
+export TRIAGE_SKIP_LABELS="needs-design"
+run_skip_test "github-configured-skip-label-skips" \
+  "https://github.com/test-org/test-repo/issues/42" skip "-X DELETE"
+export TRIAGE_SKIP_LABEL_OVERRIDE="true"
+run_skip_test "github-fs-triage-override-runs" \
+  "https://github.com/test-org/test-repo/issues/42" run "labels/needs-info -X DELETE"
+unset TRIAGE_SKIP_LABELS TRIAGE_SKIP_LABEL_OVERRIDE
+
+printf '%s\n' "bug" > "${MOCK_GH_ISSUE_LABELS}"
+run_skip_test "github-no-skip-label-runs" \
+  "https://github.com/test-org/test-repo/issues/42" run "labels/needs-info -X DELETE"
+
+unset GH_TOKEN
 
 # --- Summary ---
 
