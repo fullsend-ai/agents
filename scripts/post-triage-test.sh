@@ -28,7 +28,7 @@ cat > "${MOCK_BIN}/gh" <<MOCKEOF
 # the label-existence guard in post-triage.sh allows them through.
 if [[ "\$1" == "api" ]] && [[ "\$2" == *"/labels" ]] && [[ "\$*" == *"--paginate"* ]] && [[ "\$*" != *"-f "* ]] && [[ "\$*" != *"-X "* ]]; then
   # Return labels used by the test fixtures, one per line (--jq '.[].name').
-  printf '%s\n' "area/api" "area/cli" "priority/high" "component/parser" "enhancement" "bug" "documentation" "pr-open"
+  printf '%s\n' "area/api" "area/cli" "priority/high" "component/parser" "enhancement" "bug" "documentation" "pr-open" "ready-for-triage"
   exit 0
 fi
 # For issue create, return a fake URL on stdout so callers can capture it.
@@ -1863,7 +1863,7 @@ fi
 # Return labels list for the project (only page 1).
 if [[ "${URL}" =~ /labels\? ]] && [[ "${METHOD}" == "GET" ]]; then
   if [[ "${URL}" =~ page=1(&|$) ]] || [[ ! "${URL}" =~ page=[0-9] ]]; then
-    echo '[{"name":"area/api"},{"name":"area/cli"},{"name":"priority/high"},{"name":"component/parser"},{"name":"enhancement"},{"name":"bug"},{"name":"documentation"},{"name":"pr-open"}]'
+    echo '[{"name":"area/api"},{"name":"area/cli"},{"name":"priority/high"},{"name":"component/parser"},{"name":"enhancement"},{"name":"bug"},{"name":"documentation"},{"name":"pr-open"},{"name":"ready-for-triage"}]'
   else
     echo '[]'
   fi
