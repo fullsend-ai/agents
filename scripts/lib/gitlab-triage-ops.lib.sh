@@ -171,6 +171,13 @@ tracker_verify_labels_stripped() {
   fi
 }
 
+# Print the issue's labels, one per line. Fails when they cannot be read.
+tracker_list_issue_labels() {
+  local issue
+  issue=$(_gitlab_api GET "/projects/${REPO_ENCODED}/issues/${ISSUE_NUMBER}") || return 1
+  printf '%s' "${issue}" | jq -r '.labels[]'
+}
+
 tracker_list_repo_labels() {
   local page=1 max_pages=50
   while [[ "${page}" -le "${max_pages}" ]]; do
