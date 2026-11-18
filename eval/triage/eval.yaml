@@ -294,6 +294,6 @@ thresholds:
   expected_state:
     min_pass_rate: 0.9
   # cause_lists has no threshold yet, so it is scored in each run's summary
-  # but is not part of the nightly verdict, until cases 007 and 013-017 have
-  # run against a live model (fullsend-ai/agents#2043). It is scored only on
-  # cases that declare it.
+  # but is not part of the nightly verdict, until cases 007 and 013-021 have
+  # run three times against a live model, matching the nightly vote
+  # (fullsend-ai/agents#2043). It is scored only on cases that declare it.

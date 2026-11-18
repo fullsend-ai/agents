@@ -1,0 +1,62 @@
+forge: github
+fixture:
+  type: issue
+  title: "Login returns 500 for some users"
+  body: |
+    Since last week a few users get an HTTP 500 when they submit the
+    login form. Most users can log in fine. The server log shows
+    `TypeError: expected string or bytes-like object` from `re.match` in
+    `validate_email` (`src/auth/validators.py`), called from
+    `login_handler`.
+
+    Steps to reproduce: POST the login form with a password and no
+    email field. Expected a validation message, got a 500.
+
+    Environment: current main, Python 3.12.
+  # The reporter says login traffic goes through an authgw gateway (not in
+  # this repository, so it is named only in comments). Run 1's state lists
+  # authgw stripping the email parameter as an unverified open cause. The
+  # reporter posts log lines, and the next triage run ends in a question
+  # (unmarked, no state, as the post-script posts it) that rules authgw out
+  # on them: every failing request reached the app directly. The next full
+  # analysis must read the question as an update and rule authgw out.
+  comments:
+    - |
+      In case it matters: our login traffic normally goes through the
+      authgw gateway in front of the app.
+    - |
+      <!-- fullsend:triage-agent -->
+      `login_handler` passes `request.params.get("email")` straight to `validate_email`, so a request with no email parameter calls `re.match` on `None`.
+
+      **Open causes:**
+      - Missing email field reaches validate_email as None — login_handler passes request.params.get("email") without a check, and re.match raises TypeError
+      - The authgw gateway strips the email parameter before the request reaches login_handler _(unverified)_ — the reporter says login traffic goes through authgw; authgw is not in this repository
+
+      **Ruled out:**
+      - validate_email rejects '+' in the local part — the pattern's local-part class [a-zA-Z0-9._%+-] includes '+'; the docstring's BUG note is stale
+
+      ---
+      **Next steps:**
+      - `/fs-code` — agent creates a PR to implement this issue
+      - `/fs-code <your instruction>` — agent implements with your specific guidance
+
+      <!-- triage-state-v1:eyJvcGVuX2NhdXNlcyI6W3siY2F1c2UiOiJNaXNzaW5nIGVtYWlsIGZpZWxkIHJlYWNoZXMgdmFsaWRhdGVfZW1haWwgYXMgTm9uZSIsImV2aWRlbmNlIjoibG9naW5faGFuZGxlciBwYXNzZXMgcmVxdWVzdC5wYXJhbXMuZ2V0KFwiZW1haWxcIikgd2l0aG91dCBhIGNoZWNrLCBhbmQgcmUubWF0Y2ggcmFpc2VzIFR5cGVFcnJvciIsInZlcmlmaWVkIjp0cnVlfSx7ImNhdXNlIjoiVGhlIGF1dGhndyBnYXRld2F5IHN0cmlwcyB0aGUgZW1haWwgcGFyYW1ldGVyIGJlZm9yZSB0aGUgcmVxdWVzdCByZWFjaGVzIGxvZ2luX2hhbmRsZXIiLCJldmlkZW5jZSI6InRoZSByZXBvcnRlciBzYXlzIGxvZ2luIHRyYWZmaWMgZ29lcyB0aHJvdWdoIGF1dGhndzsgYXV0aGd3IGlzIG5vdCBpbiB0aGlzIHJlcG9zaXRvcnkiLCJ2ZXJpZmllZCI6ZmFsc2V9XSwicnVsZWRfb3V0IjpbeyJjYXVzZSI6InZhbGlkYXRlX2VtYWlsIHJlamVjdHMgJysnIGluIHRoZSBsb2NhbCBwYXJ0IiwiZXZpZGVuY2UiOiJ0aGUgcGF0dGVybidzIGxvY2FsLXBhcnQgY2xhc3MgW2EtekEtWjAtOS5fJSstXSBpbmNsdWRlcyAnKyc7IHRoZSBkb2NzdHJpbmcncyBCVUcgbm90ZSBpcyBzdGFsZSIsInZlcmlmaWVkIjp0cnVlfV19 -->
+    - |
+      Here are the app log lines for three of the failing requests:
+
+      ```
+      app[8080] POST /login src=batch-client via=direct params=[password] -> 500 TypeError
+      app[8080] POST /login src=batch-client via=direct params=[password] -> 500 TypeError
+      app[8080] POST /login src=batch-client via=direct params=[password] -> 500 TypeError
+      ```
+    - |
+      Thanks for the log lines. They rule out the authgw cause from the
+      earlier analysis: every failing request reached the app directly
+      (`via=direct`) from batch-client, so authgw never handled it and
+      cannot have stripped the email parameter.
+
+      One question before this can move on: does batch-client send an
+      email parameter at all for these logins, or only a password?
+    - |
+      Checked with the batch-client owners: it logs in service accounts
+      with a password only and never sends an email parameter.

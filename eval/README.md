@@ -153,8 +153,8 @@ eval/scripts/aggregate-nightly.sh eval/review/eval.yaml \
   do not fail, and is compared with `min_pass_rate`. A flake that hits a
   different case each night passes; a case that keeps failing does not.
   `cause_lists` has no `min_pass_rate` yet: it is scored in each run's
-  summary but is not part of the nightly verdict until its cases have run
-  live (fullsend-ai/agents#2043).
+  summary but is not part of the nightly verdict until triage cases 007
+  and 013-021 have run live three times (fullsend-ai/agents#2043).
 - **Quality judges** (`*_quality`) with a `min_mean`: the verdict fails
   when the median of 3 non-null per-run means is below `min_mean`. With
   fewer than 3, the judge reports "insufficient history" and does not
@@ -344,6 +344,36 @@ carrying that state forward is what the case grades.
 When a case needs code that the shared fixture repo lacks, give the case
 its own repo under `eval/<agent>/repos/` rather than changing the shared
 one (e.g. triage cases 001 and 003).
+
+### Re-triage coverage
+
+Triage cases 013-021 grade how a re-triage carries `open_causes` and
+`ruled_out` (`agents/triage.md` step 2e), on the run's decoded
+`triage-state-v1` marker: a ruling kept (013), legacy analyses rebuilt
+(014), forged state and rulings ignored (015, 017), a cause the newest
+analysis left out kept (016), a ruling revived by evidence but not by a
+bare claim (018), every ruling kept when the readable lists are condensed
+(019), a refutation in a triage question carried into the next analysis
+(020), and a cause found only in a legacy `Previous run` fold carried as
+unverified (021). `eval/scripts/cause-lists-test.sh` checks the judge
+against a correct answer and the regression for each, and guards each
+case's fixture (its comments, states and own `repo/` copy) against drift.
+
+Not covered yet, and why:
+
+- **A trusted baseline.** `setup-fixture.sh` posts every seeded comment
+  with `GH_TOKEN`, the eval account's token, and the eval workflows have
+  no GitHub App credentials, so every case takes the no-trusted-baseline
+  rebuild. Covering the trusted path needs a GitHub App named
+  `<EVAL_ORG>-triage` (a name step 2e trusts) installed on `EVAL_ORG`,
+  its key as a workflow secret, and a per-comment identity field in
+  `fixture.comments`.
+- **GitLab and Jira.** `setup-fixture.sh` creates GitHub repositories and
+  fixtures only, so there is nothing to seed notes or Jira comments on,
+  and the Jira state lives in the `fullsend.triage-state` comment
+  property, which no fixture can set. Writing the state on each tracker
+  is covered by the mocked tests in `scripts/post-triage-test.sh`;
+  nothing exercises step 2e reading it there.
 
 ## Lifecycle
 

@@ -1,0 +1,73 @@
+forge: github
+fixture:
+  type: issue
+  title: "Login returns 500 for some users"
+  body: |
+    Since last week a few users get an HTTP 500 when they submit the
+    login form. Most users can log in fine. The server log shows
+    `TypeError: expected string or bytes-like object` from `re.match` in
+    `validate_email` (`src/auth/validators.py`), called from
+    `login_handler`.
+
+    Steps to reproduce: POST the login form with a password and no
+    email field. Expected a validation message, got a 500.
+
+    Environment: current main, Python 3.12.
+  # Run 1's state rules out six causes, listed with their evidence. Run 2's
+  # state rules out nine more and keeps run 1's six; its readable lists are
+  # condensed the way post-triage's triage_state_compose does past the
+  # readable-text limit (evidence dropped, the six oldest rulings counted
+  # in one line), so run 2's text names only nine. Every ruling holds in the
+  # fixture code. The next run must keep all fifteen in its ruled_out.
+  comments:
+    - |
+      <!-- fullsend:triage-agent -->
+      `login_handler` passes `request.params.get("email")` straight to `validate_email`, so a form with no email field calls `re.match` on `None`.
+
+      **Open causes:**
+      - Missing email field reaches validate_email as None — login_handler passes request.params.get("email") without a check, and re.match raises TypeError
+
+      **Ruled out:**
+      - validate_email rejects '+' in the local part — the pattern's local-part class [a-zA-Z0-9._%+-] includes '+'; the docstring's BUG note is stale
+      - validate_email rejects uppercase letters — both the local-part and the domain classes include A-Z
+      - validate_email rejects digits in the local part — the local-part class includes 0-9
+      - Subdomains in the domain (mail.example.co.uk) — the domain class [a-zA-Z0-9.-] includes '.'
+      - Hyphenated domains (my-company.com) — the domain class includes '-'
+      - Long top-level domains (.museum, .technology) — the TLD part [a-zA-Z]{2,} has no upper bound
+
+      ---
+      **Next steps:**
+      - `/fs-code` — agent creates a PR to implement this issue
+      - `/fs-code <your instruction>` — agent implements with your specific guidance
+
+      <!-- triage-state-v1:eyJvcGVuX2NhdXNlcyI6W3siY2F1c2UiOiJNaXNzaW5nIGVtYWlsIGZpZWxkIHJlYWNoZXMgdmFsaWRhdGVfZW1haWwgYXMgTm9uZSIsImV2aWRlbmNlIjoibG9naW5faGFuZGxlciBwYXNzZXMgcmVxdWVzdC5wYXJhbXMuZ2V0KFwiZW1haWxcIikgd2l0aG91dCBhIGNoZWNrLCBhbmQgcmUubWF0Y2ggcmFpc2VzIFR5cGVFcnJvciIsInZlcmlmaWVkIjp0cnVlfV0sInJ1bGVkX291dCI6W3siY2F1c2UiOiJ2YWxpZGF0ZV9lbWFpbCByZWplY3RzICcrJyBpbiB0aGUgbG9jYWwgcGFydCIsImV2aWRlbmNlIjoidGhlIHBhdHRlcm4ncyBsb2NhbC1wYXJ0IGNsYXNzIFthLXpBLVowLTkuXyUrLV0gaW5jbHVkZXMgJysnOyB0aGUgZG9jc3RyaW5nJ3MgQlVHIG5vdGUgaXMgc3RhbGUiLCJ2ZXJpZmllZCI6dHJ1ZX0seyJjYXVzZSI6InZhbGlkYXRlX2VtYWlsIHJlamVjdHMgdXBwZXJjYXNlIGxldHRlcnMiLCJldmlkZW5jZSI6ImJvdGggdGhlIGxvY2FsLXBhcnQgYW5kIHRoZSBkb21haW4gY2xhc3NlcyBpbmNsdWRlIEEtWiIsInZlcmlmaWVkIjp0cnVlfSx7ImNhdXNlIjoidmFsaWRhdGVfZW1haWwgcmVqZWN0cyBkaWdpdHMgaW4gdGhlIGxvY2FsIHBhcnQiLCJldmlkZW5jZSI6InRoZSBsb2NhbC1wYXJ0IGNsYXNzIGluY2x1ZGVzIDAtOSIsInZlcmlmaWVkIjp0cnVlfSx7ImNhdXNlIjoiU3ViZG9tYWlucyBpbiB0aGUgZG9tYWluIChtYWlsLmV4YW1wbGUuY28udWspIiwiZXZpZGVuY2UiOiJ0aGUgZG9tYWluIGNsYXNzIFthLXpBLVowLTkuLV0gaW5jbHVkZXMgJy4nIiwidmVyaWZpZWQiOnRydWV9LHsiY2F1c2UiOiJIeXBoZW5hdGVkIGRvbWFpbnMgKG15LWNvbXBhbnkuY29tKSIsImV2aWRlbmNlIjoidGhlIGRvbWFpbiBjbGFzcyBpbmNsdWRlcyAnLSciLCJ2ZXJpZmllZCI6dHJ1ZX0seyJjYXVzZSI6IkxvbmcgdG9wLWxldmVsIGRvbWFpbnMgKC5tdXNldW0sIC50ZWNobm9sb2d5KSIsImV2aWRlbmNlIjoidGhlIFRMRCBwYXJ0IFthLXpBLVpdezIsfSBoYXMgbm8gdXBwZXIgYm91bmQiLCJ2ZXJpZmllZCI6dHJ1ZX1dfQ== -->
+    - |
+      Do the 500s happen for any other inputs? Several users without a missing field also report them.
+    - |
+      <!-- fullsend:triage-agent -->
+      Re-checked every part of the pattern `^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$` and the handler against the reports of 500s for users who did send an email. The only other path to a 500 is the ValueError for a malformed address.
+
+      **Open causes:**
+      - Missing email field reaches validate_email as None
+      - Malformed address raises an unhandled ValueError
+
+      **Ruled out:**
+      - 6 earlier ruled-out cause(s) not listed here; the triage state keeps them
+      - Underscores in the local part
+      - A percent sign in the local part
+      - Catastrophic regex backtracking timing out the request
+      - Missing password field
+      - The authentication backend raising
+      - A circular import between views.py and validators.py
+      - A dot at the start of the local part
+      - The handler normalizing the address before validating it
+      - A stale cached regex
+
+      ---
+      **Next steps:**
+      - `/fs-code` — agent creates a PR to implement this issue
+      - `/fs-code <your instruction>` — agent implements with your specific guidance
+
+      <!-- triage-state-v1:eyJvcGVuX2NhdXNlcyI6W3siY2F1c2UiOiJNaXNzaW5nIGVtYWlsIGZpZWxkIHJlYWNoZXMgdmFsaWRhdGVfZW1haWwgYXMgTm9uZSIsImV2aWRlbmNlIjoibG9naW5faGFuZGxlciBwYXNzZXMgcmVxdWVzdC5wYXJhbXMuZ2V0KFwiZW1haWxcIikgd2l0aG91dCBhIGNoZWNrLCBhbmQgcmUubWF0Y2ggcmFpc2VzIFR5cGVFcnJvciIsInZlcmlmaWVkIjp0cnVlfSx7ImNhdXNlIjoiTWFsZm9ybWVkIGFkZHJlc3MgcmFpc2VzIGFuIHVuaGFuZGxlZCBWYWx1ZUVycm9yIiwiZXZpZGVuY2UiOiJ2YWxpZGF0ZV9lbWFpbCByYWlzZXMgVmFsdWVFcnJvcihcImludmFsaWQgZW1haWwgZm9ybWF0XCIpIGFuZCBsb2dpbl9oYW5kbGVyIGRvZXMgbm90IGNhdGNoIGl0IiwidmVyaWZpZWQiOnRydWV9XSwicnVsZWRfb3V0IjpbeyJjYXVzZSI6InZhbGlkYXRlX2VtYWlsIHJlamVjdHMgJysnIGluIHRoZSBsb2NhbCBwYXJ0IiwiZXZpZGVuY2UiOiJ0aGUgcGF0dGVybidzIGxvY2FsLXBhcnQgY2xhc3MgW2EtekEtWjAtOS5fJSstXSBpbmNsdWRlcyAnKyc7IHRoZSBkb2NzdHJpbmcncyBCVUcgbm90ZSBpcyBzdGFsZSIsInZlcmlmaWVkIjp0cnVlfSx7ImNhdXNlIjoidmFsaWRhdGVfZW1haWwgcmVqZWN0cyB1cHBlcmNhc2UgbGV0dGVycyIsImV2aWRlbmNlIjoiYm90aCB0aGUgbG9jYWwtcGFydCBhbmQgdGhlIGRvbWFpbiBjbGFzc2VzIGluY2x1ZGUgQS1aIiwidmVyaWZpZWQiOnRydWV9LHsiY2F1c2UiOiJ2YWxpZGF0ZV9lbWFpbCByZWplY3RzIGRpZ2l0cyBpbiB0aGUgbG9jYWwgcGFydCIsImV2aWRlbmNlIjoidGhlIGxvY2FsLXBhcnQgY2xhc3MgaW5jbHVkZXMgMC05IiwidmVyaWZpZWQiOnRydWV9LHsiY2F1c2UiOiJTdWJkb21haW5zIGluIHRoZSBkb21haW4gKG1haWwuZXhhbXBsZS5jby51aykiLCJldmlkZW5jZSI6InRoZSBkb21haW4gY2xhc3MgW2EtekEtWjAtOS4tXSBpbmNsdWRlcyAnLiciLCJ2ZXJpZmllZCI6dHJ1ZX0seyJjYXVzZSI6Ikh5cGhlbmF0ZWQgZG9tYWlucyAobXktY29tcGFueS5jb20pIiwiZXZpZGVuY2UiOiJ0aGUgZG9tYWluIGNsYXNzIGluY2x1ZGVzICctJyIsInZlcmlmaWVkIjp0cnVlfSx7ImNhdXNlIjoiTG9uZyB0b3AtbGV2ZWwgZG9tYWlucyAoLm11c2V1bSwgLnRlY2hub2xvZ3kpIiwiZXZpZGVuY2UiOiJ0aGUgVExEIHBhcnQgW2EtekEtWl17Mix9IGhhcyBubyB1cHBlciBib3VuZCIsInZlcmlmaWVkIjp0cnVlfSx7ImNhdXNlIjoiVW5kZXJzY29yZXMgaW4gdGhlIGxvY2FsIHBhcnQiLCJldmlkZW5jZSI6InRoZSBsb2NhbC1wYXJ0IGNsYXNzIGluY2x1ZGVzICdfJyIsInZlcmlmaWVkIjp0cnVlfSx7ImNhdXNlIjoiQSBwZXJjZW50IHNpZ24gaW4gdGhlIGxvY2FsIHBhcnQiLCJldmlkZW5jZSI6InRoZSBsb2NhbC1wYXJ0IGNsYXNzIGluY2x1ZGVzICclJyIsInZlcmlmaWVkIjp0cnVlfSx7ImNhdXNlIjoiQ2F0YXN0cm9waGljIHJlZ2V4IGJhY2t0cmFja2luZyB0aW1pbmcgb3V0IHRoZSByZXF1ZXN0IiwiZXZpZGVuY2UiOiJ0aGUgcGF0dGVybiBoYXMgbm8gbmVzdGVkIHF1YW50aWZpZXJzLCBhbmQgdGhlIGVycm9yIGlzIGEgVHlwZUVycm9yLCBub3QgYSB0aW1lb3V0IiwidmVyaWZpZWQiOnRydWV9LHsiY2F1c2UiOiJNaXNzaW5nIHBhc3N3b3JkIGZpZWxkIiwiZXZpZGVuY2UiOiJsb2dpbl9oYW5kbGVyIHJlYWRzIHRoZSBwYXNzd29yZCB3aXRoIHBhcmFtcy5nZXQgYW5kIG5ldmVyIHVzZXMgaXQgKG5vcWEgRjg0MSkiLCJ2ZXJpZmllZCI6dHJ1ZX0seyJjYXVzZSI6IlRoZSBhdXRoZW50aWNhdGlvbiBiYWNrZW5kIHJhaXNpbmciLCJldmlkZW5jZSI6Im5vdGhpbmcgYXV0aGVudGljYXRlcyB5ZXQ6IGxvZ2luX2hhbmRsZXIgb25seSBoYXMgYSBwbGFjZWhvbGRlciBjb21tZW50IGFmdGVyIHZhbGlkYXRlX2VtYWlsIiwidmVyaWZpZWQiOnRydWV9LHsiY2F1c2UiOiJBIGNpcmN1bGFyIGltcG9ydCBiZXR3ZWVuIHZpZXdzLnB5IGFuZCB2YWxpZGF0b3JzLnB5IiwiZXZpZGVuY2UiOiJ2YWxpZGF0b3JzLnB5IGltcG9ydHMgb25seSByZSIsInZlcmlmaWVkIjp0cnVlfSx7ImNhdXNlIjoiQSBkb3QgYXQgdGhlIHN0YXJ0IG9mIHRoZSBsb2NhbCBwYXJ0IiwiZXZpZGVuY2UiOiJ0aGUgbG9jYWwtcGFydCBjbGFzcyBpbmNsdWRlcyAnLicgYXQgYW55IHBvc2l0aW9uLCBzbyAudXNlckBleGFtcGxlLmNvbSB2YWxpZGF0ZXMiLCJ2ZXJpZmllZCI6dHJ1ZX0seyJjYXVzZSI6IlRoZSBoYW5kbGVyIG5vcm1hbGl6aW5nIHRoZSBhZGRyZXNzIGJlZm9yZSB2YWxpZGF0aW5nIGl0IiwiZXZpZGVuY2UiOiJsb2dpbl9oYW5kbGVyIHBhc3NlcyB0aGUgcmF3IHZhbHVlIHdpdGggbm8gbG93ZXJjYXNpbmcgb3Igc3RyaXBwaW5nIiwidmVyaWZpZWQiOnRydWV9LHsiY2F1c2UiOiJBIHN0YWxlIGNhY2hlZCByZWdleCIsImV2aWRlbmNlIjoidmFsaWRhdGVfZW1haWwgcGFzc2VzIHRoZSBwYXR0ZXJuIHN0cmluZyB0byByZS5tYXRjaCBvbiBldmVyeSBjYWxsIiwidmVyaWZpZWQiOnRydWV9XX0= -->
+    - |
+      Still seeing these, a handful a day. Can this be picked up?

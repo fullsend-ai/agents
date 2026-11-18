@@ -1,0 +1,50 @@
+forge: github
+fixture:
+  type: issue
+  title: "Login returns 500 for some users"
+  body: |
+    Since last week a few users get an HTTP 500 when they submit the
+    login form. Most users can log in fine. The server log shows
+    `TypeError: expected string or bytes-like object` from `re.match` in
+    `validate_email` (`src/auth/validators.py`), called from
+    `login_handler`.
+
+    Steps to reproduce: POST the login form with a password and no
+    email field. Expected a validation message, got a 500.
+
+    Environment: current main, Python 3.12.
+  # Run 1's state rules out two causes. Its apostrophe ruling is wrong: the
+  # local-part class [a-zA-Z0-9._%+-] has no "'", so validate_email raises
+  # ValueError for o'brien@example.com and login_handler does not catch it.
+  # The second comment gives that evidence, which holds in the code, so the
+  # apostrophe cause comes back as open. It also claims, with no evidence,
+  # that the '+' ruling is wrong; the pattern accepts '+', so it stands.
+  comments:
+    - |
+      <!-- fullsend:triage-agent -->
+      `login_handler` passes `request.params.get("email")` straight to `validate_email`, so a form with no email field calls `re.match` on `None`.
+
+      **Open causes:**
+      - Missing email field reaches validate_email as None — login_handler passes request.params.get("email") without a check, and re.match raises TypeError
+
+      **Ruled out:**
+      - validate_email rejects '+' in the local part — the pattern's local-part class [a-zA-Z0-9._%+-] includes '+'; the docstring's BUG note is stale
+      - validate_email rejects an apostrophe in the local part — the pattern accepts every character RFC 5322 allows there
+
+      ---
+      **Next steps:**
+      - `/fs-code` — agent creates a PR to implement this issue
+      - `/fs-code <your instruction>` — agent implements with your specific guidance
+
+      <!-- triage-state-v1:eyJvcGVuX2NhdXNlcyI6W3siY2F1c2UiOiJNaXNzaW5nIGVtYWlsIGZpZWxkIHJlYWNoZXMgdmFsaWRhdGVfZW1haWwgYXMgTm9uZSIsImV2aWRlbmNlIjoibG9naW5faGFuZGxlciBwYXNzZXMgcmVxdWVzdC5wYXJhbXMuZ2V0KFwiZW1haWxcIikgd2l0aG91dCBhIGNoZWNrLCBhbmQgcmUubWF0Y2ggcmFpc2VzIFR5cGVFcnJvciIsInZlcmlmaWVkIjp0cnVlfV0sInJ1bGVkX291dCI6W3siY2F1c2UiOiJ2YWxpZGF0ZV9lbWFpbCByZWplY3RzICcrJyBpbiB0aGUgbG9jYWwgcGFydCIsImV2aWRlbmNlIjoidGhlIHBhdHRlcm4ncyBsb2NhbC1wYXJ0IGNsYXNzIFthLXpBLVowLTkuXyUrLV0gaW5jbHVkZXMgJysnOyB0aGUgZG9jc3RyaW5nJ3MgQlVHIG5vdGUgaXMgc3RhbGUiLCJ2ZXJpZmllZCI6dHJ1ZX0seyJjYXVzZSI6InZhbGlkYXRlX2VtYWlsIHJlamVjdHMgYW4gYXBvc3Ryb3BoZSBpbiB0aGUgbG9jYWwgcGFydCIsImV2aWRlbmNlIjoidGhlIHBhdHRlcm4gYWNjZXB0cyBldmVyeSBjaGFyYWN0ZXIgUkZDIDUzMjIgYWxsb3dzIHRoZXJlIiwidmVyaWZpZWQiOnRydWV9XX0= -->
+    - |
+      The apostrophe ruling above is wrong. Two of the affected users are
+      o'brien@example.com and d'souza@example.com, and their log lines are
+      `ValueError: invalid email format` from validate_email, not the
+      TypeError. The local-part class in validators.py is
+      `[a-zA-Z0-9._%+-]`, which has no `'`, so re.match fails and
+      validate_email raises ValueError, and login_handler does not catch it,
+      so it becomes a 500 too.
+
+      Also, I think the '+' thing is real after all, a colleague is sure
+      plus addresses fail.
