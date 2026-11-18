@@ -1670,10 +1670,26 @@ echo '[{"id":"customfield_10101","name":"RICE Reach","schema":{"type":"number"}}
 run_jira_test_stdout "jira-legacy-field-names-not-accepted" "Jira field 'RICE Score' not found" "true"
 assert_jira_no_writes "jira-legacy-field-names"
 
-# Duplicate field name: ambiguous, so fail closed.
+# Duplicate field name of the same schema type: ambiguous, so fail closed.
 echo '[{"id":"customfield_10105","name":"RICE Score","schema":{"type":"number"}},{"id":"customfield_10106","name":"RICE Score","schema":{"type":"number"}}]' > "${MOCK_FIELDS_FILE}"
 run_jira_test_stdout "jira-duplicate-field-fails" "not found or not unique (matches=2)" "true"
 assert_jira_no_writes "jira-duplicate-field"
+
+# A site-wide Impact select next to the AISDLC Impact number is not
+# ambiguous: write the unique number field.
+echo "${DEFAULT_JIRA_FIELDS}" | jq '. + [{"id":"customfield_10004","name":"Impact","schema":{"type":"option"}}]' > "${MOCK_FIELDS_FILE}"
+run_jira_test "jira-impact-number-amid-site-select"
+if [[ ! -f "${CURL_DATA_FILE}" ]]; then
+  echo "FAIL: jira-impact-number-amid-site-select — no PUT body captured"
+  FAILURES=$((FAILURES + 1))
+elif jq -e '.fields.customfield_10836 == 2 and (.fields | has("customfield_10004") | not)' "${CURL_DATA_FILE}" >/dev/null; then
+  echo "PASS: jira-impact-number-amid-site-select"
+else
+  echo "FAIL: jira-impact-number-amid-site-select — expected number Impact customfield_10836"
+  cat "${CURL_DATA_FILE}"
+  FAILURES=$((FAILURES + 1))
+fi
+echo "${DEFAULT_JIRA_FIELDS}" > "${MOCK_FIELDS_FILE}"
 
 # A system field that happens to be named "RICE Score" must not be written.
 echo '[{"id":"priority","name":"RICE Score","schema":{"type":"priority"}}]' > "${MOCK_FIELDS_FILE}"
