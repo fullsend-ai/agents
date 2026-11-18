@@ -956,14 +956,9 @@ fi
 
 echo "Posting comment..."
 if [[ "${ACTION}" == "sufficient" ]]; then
-  # On Jira the state lives beside the text: clear it from the comment an
-  # edit in place would rewrite before posting, then store the new state
-  # (and restore the cleared one if the post created a new comment).
-  if [[ "${FULLSEND_TRACKER}" == "jira" ]]; then
-    tracker_clear_triage_state "${TRIAGE_MARKER}"
-  fi
   tracker_post_sticky_comment "${COMMENT}" "${TRIAGE_MARKER}"
-  if [[ "${FULLSEND_TRACKER}" == "jira" ]]; then
+  # On Jira the state is a property of the comment, set after it is posted.
+  if [[ -n "${TRIAGE_STATE}" && "${FULLSEND_TRACKER}" == "jira" ]]; then
     tracker_store_triage_state "${TRIAGE_STATE}" "${TRIAGE_MARKER}"
   fi
 elif [[ "${ACTION}" == "in-progress" ]]; then

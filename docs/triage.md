@@ -276,22 +276,17 @@ same lists as data for the next run (fullsend-ai/agents#2042):
   RFC 3339 `Z` / `+00:00`), with ties going to the highest comment id. An
   unparsable timestamp, or no such comment, fails the run.
 
-On Jira the state is written around the post. Before posting, the
-post-script deletes `fullsend.triage-state` from the one comment an edit in
-place would rewrite: fullsend v0.56.1 lists comments oldest first and edits
-the account's oldest comment with the triage marker. After posting it sets
-the new state on the comment updated last. If that is a different comment,
-the post created a new one (fullsend-ai/fullsend#9399), and the deleted
-state goes back on the old comment, whose text did not change. Without the
-delete, an in-place edit cancelled before the last step, or a run with no
-state, would leave the previous run's state on the new text. A run cancelled
-after the delete leaves that comment without a state (fullsend's workflows
-still cancel a running job when a newer event arrives; ADR 0106's coalescing
-isn't in place yet); the next run starts from an older comment's state, or
-rebuilds the lists from the comment text as unverified claims. Two runs that
-overlap can also store the older run's state last; serializing runs on an
-issue is ADR 0106's job in fullsend. On GitHub and GitLab the state is part
-of the comment body, so it is posted in the same call.
+On Jira the post-script posts the comment first, then sets the
+`fullsend.triage-state` property on it. Before fullsend-ai/fullsend#9399,
+fullsend edits the earlier comment in place, so a run cancelled after the
+edit but before the property write leaves the previous run's state attached
+to the new text. The next run starts from that older state; because step 2e
+re-checks every carried cause and reads newer trusted text as claims, the
+difference is caught. After #9399 each run posts a new comment, so this
+cannot happen. Two runs that overlap can also store the older run's state
+last; serializing runs on an issue is ADR 0106's job in fullsend. On GitHub
+and GitLab the state is part of the comment body, so it is posted in the
+same call.
 
 On Jira a user with the "Edit all comments" permission can set a comment's
 `fullsend.triage-state` property without changing its `updated` time or
