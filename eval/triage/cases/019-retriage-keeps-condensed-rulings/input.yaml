@@ -14,11 +14,12 @@ fixture:
 
     Environment: current main, Python 3.12.
   # Run 1's state rules out six causes, listed with their evidence. Run 2's
-  # state rules out nine more and keeps run 1's six; its readable lists are
-  # condensed the way post-triage's triage_state_compose does past the
-  # readable-text limit (evidence dropped, the six oldest rulings counted
-  # in one line), so run 2's text names only nine. Every ruling holds in the
-  # fixture code. The next run must keep all fifteen in its ruled_out.
+  # state rules out nine more and keeps run 1's six. Both comments are what
+  # post-triage's triage_state_compose and triage_state_marker produce for
+  # them (scripts/lib/triage-state.lib.sh); run 2's analysis is long enough
+  # that compose drops the evidence and counts the six oldest rulings in one
+  # line, so its text names only nine. Every ruling holds in the fixture
+  # code. The next run must keep all fifteen in its ruled_out.
   comments:
     - |
       <!-- fullsend:triage-agent -->
@@ -45,7 +46,29 @@ fixture:
       Do the 500s happen for any other inputs? Several users without a missing field also report them.
     - |
       <!-- fullsend:triage-agent -->
-      Re-checked every part of the pattern `^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$` and the handler against the reports of 500s for users who did send an email. The only other path to a 500 is the ValueError for a malformed address.
+      Re-checked every part of the pattern `^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$` and `login_handler` against the reports of 500s from users who did send an email address. Several reporters guessed at the pattern, so each guess is checked against the code below and in the lists.
+
+      **What the pattern accepts.** The local-part class `[a-zA-Z0-9._%+-]` takes upper- and lower-case letters, digits, dots at any position, underscores, percent signs, plus signs and hyphens. The domain class `[a-zA-Z0-9.-]` takes letters, digits, dots and hyphens, so `mail.example.co.uk` and `my-company.com` both match before the final `\.`. The TLD part `[a-zA-Z]{2,}` has a lower bound of two letters and no upper bound, so `.museum` and `.technology` validate. None of the sample addresses the reporters gave fails the pattern when it is typed correctly.
+
+      **What the handler does.** `login_handler` reads `email` and `password` with `request.params.get`, passes the raw email to `validate_email` with no lowercasing, stripping or normalization, and never uses the password (the line is marked `noqa: F841`). After `validate_email` it only has a placeholder comment and returns `{"status": "ok"}`, so no authentication backend is called yet. `validators.py` imports only `re` and calls `re.match` with the pattern string on every call, so there is no import cycle and no cached pattern that could go stale. The pattern has no nested quantifiers, so it cannot backtrack exponentially on a form-sized input.
+
+      **The two real paths to a 500.** A request without an email field passes `None` to `re.match`, which raises `TypeError` (the reported trace). A request with a malformed address makes `validate_email` raise `ValueError("invalid email format")`, and `login_handler` has no `try`/`except` around the call, so that is a 500 too instead of a 400 with the validation message.
+
+      **Proposed test case:**
+      ```
+      POST /login with no email field                        -> expect 400, not 500
+      POST /login with email "not-an-email"                  -> expect 400, not 500
+      POST /login with email "a+b@example.com"               -> expect 200
+      POST /login with email "First_Last@mail.my-company.museum" -> expect 200
+      POST /login with email "user%host@example.com"         -> expect 200
+      POST /login with email ".user@example.com"             -> expect 200
+      ```
+
+      **Suggested fix.** In `login_handler`, return a 400 with a validation message when the email is missing, and catch `ValueError` from `validate_email` and return a 400 with its message. The pattern itself needs no change; the docstring's BUG note about '+' is stale and can go.
+
+      **Severity.** Medium: the 500s are limited to bad input, but they hide the validation message the user needs to fix their input, and they show up as server errors in monitoring. Both paths are covered by the test case above, and neither needs a schema or API change.
+
+      **Related.** No other open issue or pull request in this repository touches `validate_email` or `login_handler`, so this can be fixed on its own. Both changes stay inside `src/auth/views.py`, and the existing behaviour for valid addresses does not change. A reporter who still sees a 500 after the fix should attach the request's parameters.
 
       **Open causes:**
       - Missing email field reaches validate_email as None

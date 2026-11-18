@@ -16,8 +16,10 @@ fixture:
   # One legacy analysis (written before triage-state-v1, so no state marker)
   # that fullsend edited in place: its current text, then a "Previous run"
   # fold holding the run before it, in the shape BuildUpdatedBody in
-  # fullsend's internal/sticky/sticky.go writes (the old text's own marker
-  # cut, sentinel comments around it). The fold calls the authgw gateway
+  # fullsend's internal/sticky/sticky.go writes at v0.56.1-rc.1 (the version
+  # go.mod pins): it cuts the comment's own leading marker from the old text,
+  # escapes any other fullsend marker in it, and wraps it in the
+  # sticky:history-start and -end sentinels. The fold calls the authgw gateway
   # stripping the email parameter "confirmed"; the current text leaves it
   # out without a ruling, and nothing else names it. With no state, step 2e
   # rebuilds from every comment, fold copies included, as claims: authgw

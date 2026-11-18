@@ -322,7 +322,9 @@ Each case directory under `eval/<agent>/cases/` contains:
   `cause_lists` block checked against the `triage-state-v1` marker of the
   run's own comment (`seeded_comments`, required: how many
   `fixture.comments` precede the run, 0 for none; `open` and `ruled_out`,
-  lists of phrase groups matched in the cause names; `forbidden_open`;
+  lists of phrase groups matched in the cause names; `forbidden_open` and
+  `forbidden_ruled_out`, phrases (or groups that must all be in one name)
+  no open or ruled-out cause may match;
   `verified_open` and `unverified_open`, groups whose open cause must or
   must not be verified; a case without the block is not scored by that
   check), and the
@@ -356,8 +358,11 @@ bare claim (018), every ruling kept when the readable lists are condensed
 (019), a refutation in a triage question carried into the next analysis
 (020), and a cause found only in a legacy `Previous run` fold carried as
 unverified (021). `eval/scripts/cause-lists-test.sh` checks the judge
-against a correct answer and the regression for each, and guards each
-case's fixture (its comments, states and own `repo/` copy) against drift.
+against a correct answer and its regressions for 013, 016 and 018-021,
+and guards the fixtures of 013-021 against drift: their comments and
+states (each seeded state's text for 018-020 must be what
+`triage_state_compose` posts for it), and the code in the shared
+`python-webapp` repo their `repo/` symlinks point at.
 
 Not covered yet, and why:
 

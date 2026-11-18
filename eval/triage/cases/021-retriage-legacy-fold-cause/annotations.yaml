@@ -23,8 +23,12 @@ cause_lists:
     - ["+", "plus"]
   verified_open:
     - ["none", "missing email", "email field", "no email", "typeerror"]
+    - ["valueerror", "malformed", "invalid email", "invalid format"]
   unverified_open:
     - ["authgw", "gateway"]
+  # Nothing here refutes authgw, so it is never ruled out, even beside an
+  # open copy.
+  forbidden_ruled_out: [["authgw"], ["gateway", "strip"]]
   forbidden_open: [["+", "reject"], ["plus", "reject"]]
 
 max_turns: 35

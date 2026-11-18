@@ -36,6 +36,7 @@ cause_lists:
     - ["cache"]
   verified_open:
     - ["none", "missing email", "email field", "no email", "typeerror"]
+    - ["valueerror", "malformed", "invalid email", "invalid format"]
   # Any ruling back as open: the regex ones with a rejection claim (a
   # correct cause may name such an address), the rest by their own phrase.
   forbidden_open:

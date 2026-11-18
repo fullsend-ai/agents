@@ -233,6 +233,11 @@ judges:
           parts = [p] if isinstance(p, str) else list(p)
           if any(all(q.lower() in n for q in parts) for n, _ in open_c):
               problems.append(f"open_causes lists {p!r}, which should stay ruled out")
+      # The same for ruled_out: a cause the run must not rule out.
+      for p in spec.get("forbidden_ruled_out") or []:
+          parts = [p] if isinstance(p, str) else list(p)
+          if any(all(q.lower() in n for q in parts) for n, _ in ruled_c):
+              problems.append(f"ruled_out lists {p!r}, which nothing here refutes")
       if problems:
           return False, "; ".join(problems)
       return True, "The run's state has the expected causes"

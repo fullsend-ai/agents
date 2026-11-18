@@ -27,6 +27,8 @@ cause_lists:
   # The '+' cause back on the colleague's word, quoted, unquoted or as a
   # plus address.
   forbidden_open: [["'+'"], ['"+"'], ["+", "@"], ["+ in"], ["plus", "reject"], ["plus", "fail"]]
+  # The revived cause must leave ruled_out, not sit in both lists.
+  forbidden_ruled_out: [["apostrophe"], ["o'brien"]]
 
 max_turns: 35
 max_cost_usd: 0.50
