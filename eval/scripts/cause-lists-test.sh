@@ -168,7 +168,8 @@ for name in (C018, C019, C020):
 # 018: the apostrophe evidence holds in the case's code (no "'" in the
 # class, ValueError not caught), and so does the '+' ruling the bare claim
 # disputes; run 1's state rules both out.
-pat018 = re.search(r'pattern = r"([^"]+)"', repo_file(C018, "src/auth/validators.py")).group(1)
+pm018 = re.search(r'pattern = r"([^"]+)"', repo_file(C018, "src/auth/validators.py"))
+pat018 = pm018.group(1) if pm018 else "(?!)"
 s018 = seeds(C018)
 r018 = states_in(s018[0])[0]["ruled_out"] if states_in(s018[0]) else []
 if not (re.match(pat018, "o'brien@example.com") is None and re.match(pat018, "a+b@example.com")
@@ -182,7 +183,10 @@ if not (re.match(pat018, "o'brien@example.com") is None and re.match(pat018, "a+
 s019 = seeds(C019)
 st019 = states_in(s019[2]) if len(s019) > 2 else []
 names019 = [x["cause"].lower() for x in st019[0].get("ruled_out", [])] if st019 else []
-pat019 = re.search(r'pattern = r"([^"]+)"', repo_file(C019, "src/auth/validators.py")).group(1)
+pm019 = re.search(r'pattern = r"([^"]+)"', repo_file(C019, "src/auth/validators.py"))
+if not pm019:
+    problems.append("019 drifted: validators.py no longer defines pattern = r\"...\"")
+pat019 = pm019.group(1) if pm019 else "(?!)"
 val019, views019 = repo_file(C019, "src/auth/validators.py"), repo_file(C019, "src/auth/views.py")
 m019 = lambda a: re.match(pat019, a) is not None
 ruled_text019 = s019[2].split("**Ruled out:**", 1)[1].lower() if len(s019) > 2 and "**Ruled out:**" in s019[2] else ""
@@ -301,6 +305,10 @@ cases = [
     ("case 021: authgw ruled out fails",
      S021 + [c(analysis([NONE, VALUE], [PLUS, cause("authgw strips the email parameter")]))], SPEC021, False, "lacks any of ['authgw'"),
     ("case 021: the legacy seeded comment is not graded", S021, SPEC021, False, "No triage-state-v1 marker"),
+    ("forbidden_ruled_out: a ruled-out name matching every phrase of a group fails",
+     SEEDS + [c(GOOD)], dict(SPEC, forbidden_ruled_out=[["regex", "'+'"]]), False, "ruled_out lists ['regex', \"'+'\"]"),
+    ("forbidden_ruled_out: a ruled-out name matching only some phrases of a group passes",
+     SEEDS + [c(GOOD)], dict(SPEC, forbidden_ruled_out=[["regex", "authgw"]]), True, "expected causes"),
     ("forbidden_ruled_out ignores a phrase found only in an open cause",
      SEEDS + [c(GOOD)], dict(SPEC, forbidden_ruled_out=[["none"]]), True, "expected causes"),
     ("forbidden_ruled_out fails on a ruled-out name, bare-string form",

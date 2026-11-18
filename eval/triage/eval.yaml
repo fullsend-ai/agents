@@ -237,7 +237,7 @@ judges:
       for p in spec.get("forbidden_ruled_out") or []:
           parts = [p] if isinstance(p, str) else list(p)
           if any(all(q.lower() in n for q in parts) for n, _ in ruled_c):
-              problems.append(f"ruled_out lists {p!r}, which nothing here refutes")
+              problems.append(f"ruled_out lists {p!r}, which should not be ruled out")
       if problems:
           return False, "; ".join(problems)
       return True, "The run's state has the expected causes"
