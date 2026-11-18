@@ -143,7 +143,9 @@ if [[ "${ACTION}" == "sufficient" ]]; then
     exit 1
   fi
   TRIAGE_DROPPED=$(triage_state_dropped "${RESULT_FILE}" "${TRIAGE_STATE}") || exit 1
-  if [[ "${TRIAGE_DROPPED}" -gt 0 ]]; then
+  if [[ -z "${TRIAGE_STATE}" ]]; then
+    echo "::warning::the result has no open cause with a name — posting without a triage state"
+  elif [[ "${TRIAGE_DROPPED}" -gt 0 ]]; then
     echo "::warning::${TRIAGE_DROPPED} cause(s) in the result were not stored: an empty name, or past the 10 open / 25 ruled-out limits"
   fi
 fi
@@ -493,9 +495,6 @@ ${FAILED_CREATES}"
     # schema rejects, is posted without a state, and the next run rebuilds
     # it from the comments.
     AGENT_COMMENT="${COMMENT}"
-    if [[ -z "${TRIAGE_STATE}" ]]; then
-      echo "::warning::sufficient result has no triage_summary.open_causes — posting without a triage state"
-    fi
 
     tracker_remove_label "blocked"
     tracker_remove_label "needs-info"

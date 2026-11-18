@@ -2896,6 +2896,31 @@ else
   echo "PASS: state-jira-no-state-sets-nothing"
 fi
 
+# A long issue: 250 comments of about 5 KB over three pages (over 1 MB in
+# all) are read without passing them as arguments; the own comment is on
+# the last page.
+big_page() { # start count total own_id
+  jq -cn --argjson start "$1" --argjson n "$2" --argjson total "$3" --arg own "$4" --arg m "${TA}" '
+    {total: $total, comments: [range($start; $start + $n) | tostring as $id
+      | {id: (if $id == $own then $id else "9\($id)" end),
+         author: {accountId: (if $id == $own then "bot-1" else "someone" end)},
+         created: "2026-11-01T08:00:00.000+0000", updated: "2026-11-17T09:00:00.000+0000",
+         body: {type: "doc", version: 1, content: [{type: "paragraph", content: [{type: "text", text: ("x" * 5000)}]}]},
+         properties: [{key: "fullsend.sticky-marker", value: {marker: $m}}]}]}'
+}
+big_page 0 100 250 none > "${MOCK_JIRA_STATE_DIR}/page-0.json"
+big_page 100 100 250 none > "${MOCK_JIRA_STATE_DIR}/page-100.json"
+big_page 200 50 250 240 > "${MOCK_JIRA_STATE_DIR}/page-200.json"
+jira_state_case "state-jira-long-issue-many-pages" "$(sufficient_with ",${OPEN_TWO},${RULED_ONE}" "Short analysis.")"
+rm -f "${MOCK_JIRA_STATE_DIR}/page-100.json" "${MOCK_JIRA_STATE_DIR}/page-200.json"
+if [[ ${STATE_RC} -ne 0 ]] || ! grep -qF '/rest/api/3/comment/240/properties/fullsend.triage-state' "${JIRA_CURL_LOG}" \
+  || ! grep -qF 'startAt=200' "${JIRA_CURL_LOG}"; then
+  state_fail "state-jira-long-issue-many-pages" "expected the state on comment 240 from the third page (rc ${STATE_RC})"
+  tail -5 "${TMPDIR}/stdout.log"
+else
+  echo "PASS: state-jira-long-issue-many-pages"
+fi
+
 # A comment listing that fails fails the run, and nothing is stored.
 export MOCK_JIRA_LIST_FAIL=1
 jira_state_case "state-jira-listing-failure-fails-closed" "$(sufficient_with ",${OPEN_TWO},${RULED_ONE}" "Short analysis.")"

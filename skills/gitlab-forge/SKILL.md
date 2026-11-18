@@ -92,9 +92,11 @@ run the setup command again.
 curl -K /tmp/gitlab-api.curlrc \
   "https://<GITLAB_HOST>/api/v4/projects/<REPO_ENCODED>/issues/<ISSUE_NUMBER>"
 
-# List issue comments (notes)
+# List issue comments (notes), oldest first, 100 per page. To read every
+# note, repeat with &page=N (2, 3, ...) until a page returns fewer than 100
+# notes or the X-Next-Page response header (curl -i shows it) is empty.
 curl -K /tmp/gitlab-api.curlrc \
-  "https://<GITLAB_HOST>/api/v4/projects/<REPO_ENCODED>/issues/<ISSUE_NUMBER>/notes?per_page=100&sort=asc"
+  "https://<GITLAB_HOST>/api/v4/projects/<REPO_ENCODED>/issues/<ISSUE_NUMBER>/notes?per_page=100&sort=asc&page=1"
 
 # The account this token belongs to: the one fullsend posts results as.
 # Compare its id with a note's author.id to tell fullsend's own notes

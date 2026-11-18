@@ -1313,18 +1313,24 @@ _jira_own_marked_comments() {
     echo "ERROR: GET /myself returned no accountId" >&2
     return 1
   fi
-  local comments="[]" page count total start_at=0
+  # Pages are collected in a file, never passed as arguments: a long
+  # issue's comments would overflow the argument size limit.
+  local pages page count total start_at=0
+  pages=$(mktemp) || return 1
   while :; do
-    page=$(_jira_api_with_status GET "/issue/${ISSUE_NUMBER}/comment?expand=properties&orderBy=-created&maxResults=100&startAt=${start_at}") || return 1
-    comments=$(jq -c --argjson acc "${comments}" '$acc + (.comments // [])' <<<"${page}") || return 1
-    count=$(jq -r '.comments // [] | length' <<<"${page}") || return 1
-    total=$(jq -r '.total // 0' <<<"${page}") || return 1
+    if ! page=$(_jira_api_with_status GET "/issue/${ISSUE_NUMBER}/comment?expand=properties&orderBy=-created&maxResults=100&startAt=${start_at}") \
+      || ! printf '%s\n' "${page}" >> "${pages}" \
+      || ! count=$(jq -r '.comments // [] | length' <<<"${page}") \
+      || ! total=$(jq -r '.total // 0' <<<"${page}"); then
+      rm -f "${pages}"
+      return 1
+    fi
     start_at=$((start_at + count))
     if [[ ${count} -eq 0 || ${start_at} -ge ${total} ]]; then
       break
     fi
   done
-  jq -c --arg self "${self}" --arg marker "${marker}" '
+  jq -cs --arg self "${self}" --arg marker "${marker}" '
     def utc_key:
       . as $t
       | (capture("^(?<d>[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2})(\\.(?<f>[0-9]{1,9}))?(?<z>Z|(?<s>[+-])(?<h>[0-9]{2}):?(?<m>[0-9]{2}))$")
@@ -1333,11 +1339,12 @@ _jira_own_marked_comments() {
           - (if .z == "Z" then 0
              else (if .s == "+" then 1 else -1 end) * ((.h | tonumber) * 3600 + (.m | tonumber) * 60) end),
           (((.f // "") + "000000000")[0:9] | tonumber) ];
-    [ .[] | select(.author.accountId == $self)
+    [ .[] | .comments // [] | .[] | select(.author.accountId == $self)
       | select(any(.properties[]?; .key == "fullsend.sticky-marker" and (.value.marker? == $marker)))
       | (.id | tostring | tonumber? // 0) as $n
       | . + {_updated: (((.updated // .created // "") | utc_key) + [$n])} ]
-  ' <<<"${comments}"
+  ' "${pages}" || { rm -f "${pages}"; return 1; }
+  rm -f "${pages}"
 }
 
 # tracker_store_triage_state STATE_JSON MARKER — after the post, store the
