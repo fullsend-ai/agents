@@ -1294,12 +1294,17 @@ _jira_post_comment() {
 
 # _jira_own_marked_comments MARKER — print, as a JSON array, every comment
 # on the issue (all pages) that the posting account (GET /myself) wrote
-# with the comment property fullsend.sticky-marker = {"marker": MARKER}.
-# `fullsend issues post-comment` sets that property on the comment it
-# posts: in fullsend v0.56.1-rc.1 (pinned in go.mod) and v0.56.1 it edits
-# that comment in place, and on fullsend-ai/fullsend#9399 (head 5150c261)
-# every run creates a new comment with it (internal/tracker/jira_client.go,
-# CreateCommentWithMarker; internal/cli/issues.go, postJiraStickyComment).
+# with the comment property fullsend.sticky-marker = {"marker": MARKER},
+# each with a "_created" and "_updated" sort key ([UTC seconds,
+# nanoseconds, numeric id]). `fullsend issues post-comment` sets that
+# property on the comment it posts: in fullsend v0.56.1-rc.1 (pinned in
+# go.mod) and v0.56.1 it edits that comment in place, and on
+# fullsend-ai/fullsend#9399 (head 5150c261) every run creates a new comment
+# with it (internal/tracker/jira_client.go, CreateCommentWithMarker;
+# internal/cli/issues.go, postJiraStickyComment). Jira writes times as
+# "2026-11-17T10:00:00.000+0100"; RFC 3339 "Z" and "+01:00" forms, with or
+# without fractional seconds, are accepted too (fullsend's
+# jiraTimestampFormats). A time that does not parse is an error.
 _jira_own_marked_comments() {
   local marker="$1"
   local self
@@ -1312,63 +1317,14 @@ _jira_own_marked_comments() {
   while :; do
     page=$(_jira_api_with_status GET "/issue/${ISSUE_NUMBER}/comment?expand=properties&orderBy=-created&maxResults=100&startAt=${start_at}") || return 1
     comments=$(jq -c --argjson acc "${comments}" '$acc + (.comments // [])' <<<"${page}") || return 1
-    count=$(jq -r '.comments // [] | length' <<<"${page}")
-    total=$(jq -r '.total // 0' <<<"${page}")
+    count=$(jq -r '.comments // [] | length' <<<"${page}") || return 1
+    total=$(jq -r '.total // 0' <<<"${page}") || return 1
     start_at=$((start_at + count))
     if [[ ${count} -eq 0 || ${start_at} -ge ${total} ]]; then
       break
     fi
   done
   jq -c --arg self "${self}" --arg marker "${marker}" '
-    [ .[] | select(.author.accountId == $self)
-      | select(any(.properties[]?; .key == "fullsend.sticky-marker" and (.value.marker? == $marker))) ]
-  ' <<<"${comments}"
-}
-
-# tracker_clear_triage_state MARKER — delete the fullsend.triage-state
-# property from every own comment with MARKER, before a run posts. Before
-# fullsend-ai/fullsend#9399 the post edits that comment in place, so a run
-# cancelled before tracker_store_triage_state, or one without a state,
-# would otherwise leave the previous run's state on the new text. After
-# #9399 only the newest such comment carries a state, and a cancelled run
-# leaves none: the next run rebuilds from the comment text.
-tracker_clear_triage_state() {
-  local marker="$1"
-  _jira_require_vars || return 1
-  local comments id
-  comments=$(_jira_own_marked_comments "${marker}") || {
-    echo "ERROR: cannot clear the previous triage state" >&2
-    return 1
-  }
-  for id in $(jq -r '.[] | select(any(.properties[]?; .key == "fullsend.triage-state")) | .id' <<<"${comments}"); do
-    _jira_api_with_status DELETE "/comment/${id}/properties/fullsend.triage-state" > /dev/null || return 1
-    echo "Cleared the previous triage state from comment ${id}"
-  done
-}
-
-# tracker_store_triage_state STATE_JSON MARKER — store the triage state on
-# the comment just posted with MARKER, as its entity property
-# fullsend.triage-state (ADF has no hidden text). `fullsend issues
-# post-comment` prints no comment id, so the comment is the own one with
-# MARKER (see _jira_own_marked_comments) updated last; a tie goes to the
-# highest comment id. A timestamp that does not parse, or no matching
-# comment, fails the run, like every other Jira write.
-tracker_store_triage_state() {
-  local state="$1"
-  local marker="$2"
-  _jira_require_vars || return 1
-  local comments
-  comments=$(_jira_own_marked_comments "${marker}") || {
-    echo "ERROR: cannot store the triage state" >&2
-    return 1
-  }
-  # Jira writes times as "2026-11-17T10:00:00.000+0100"; RFC 3339 forms
-  # ("Z", "+01:00", with or without fractional seconds) are accepted too
-  # (fullsend's jiraTimestampFormats). Each is compared in UTC, as
-  # [seconds, nanoseconds, comment id], so offsets, sub-second order and
-  # ties are all exact.
-  local comment_id
-  comment_id=$(jq -r '
     def utc_key:
       . as $t
       | (capture("^(?<d>[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2})(\\.(?<f>[0-9]{1,9}))?(?<z>Z|(?<s>[+-])(?<h>[0-9]{2}):?(?<m>[0-9]{2}))$")
@@ -1377,17 +1333,79 @@ tracker_store_triage_state() {
           - (if .z == "Z" then 0
              else (if .s == "+" then 1 else -1 end) * ((.h | tonumber) * 3600 + (.m | tonumber) * 60) end),
           (((.f // "") + "000000000")[0:9] | tonumber) ];
-    [ .[]
-      | {id, key: (((.updated // .created // "") | utc_key) + [(.id | tostring | tonumber? // 0)])} ]
-    | max_by(.key) | .id // empty
-  ' <<<"${comments}") || {
-    echo "ERROR: cannot store the triage state: a matching comment has a timestamp it cannot parse, or the listing is not JSON" >&2
+    [ .[] | select(.author.accountId == $self)
+      | select(any(.properties[]?; .key == "fullsend.sticky-marker" and (.value.marker? == $marker)))
+      | (.id | tostring | tonumber? // 0) as $n
+      | . + {_created: (((.created // "") | utc_key) + [$n]),
+             _updated: (((.updated // .created // "") | utc_key) + [$n])} ]
+  ' <<<"${comments}"
+}
+
+# The comment whose state tracker_clear_triage_state removed, and that
+# state, so tracker_store_triage_state can put it back when the post turned
+# out to create a new comment instead of editing that one.
+_TRIAGE_CLEARED_ID=""
+_TRIAGE_CLEARED_STATE=""
+
+# tracker_clear_triage_state MARKER — before a run posts, delete the
+# fullsend.triage-state property from the one comment an edit in place
+# would rewrite: fullsend v0.56.1-rc.1 lists comments oldest first
+# (internal/forge/jira/client.go, ListComments, orderBy=created) and edits
+# the first own one with MARKER (FindCommentByMarkerProperty), so the
+# oldest. Without this, a run cancelled before tracker_store_triage_state,
+# or one with no state, would leave the previous state on the new text.
+# Other comments keep their states: after fullsend-ai/fullsend#9399 the
+# post creates a new comment and every earlier state stays valid.
+tracker_clear_triage_state() {
+  local marker="$1"
+  _jira_require_vars || return 1
+  local comments target
+  comments=$(_jira_own_marked_comments "${marker}") || {
+    echo "ERROR: cannot clear the previous triage state" >&2
     return 1
   }
+  target=$(jq -c 'min_by(._created) // empty' <<<"${comments}") || return 1
+  [[ -n "${target}" ]] || return 0
+  _TRIAGE_CLEARED_STATE=$(jq -c 'first(.properties[]? | select(.key == "fullsend.triage-state") | .value) // empty' <<<"${target}") || return 1
+  [[ -n "${_TRIAGE_CLEARED_STATE}" ]] || return 0
+  _TRIAGE_CLEARED_ID=$(jq -r '.id' <<<"${target}") || return 1
+  _jira_api_with_status DELETE "/comment/${_TRIAGE_CLEARED_ID}/properties/fullsend.triage-state" > /dev/null || return 1
+  echo "Cleared the previous triage state from comment ${_TRIAGE_CLEARED_ID}"
+}
+
+# tracker_store_triage_state STATE_JSON MARKER — after the post, store the
+# triage state (when there is one) on the comment just posted with MARKER,
+# as its entity property fullsend.triage-state (ADF has no hidden text).
+# `fullsend issues post-comment` prints no comment id, so the comment is
+# the own one with MARKER updated last; a tie goes to the highest comment
+# id. If that is not the comment tracker_clear_triage_state cleared, the
+# post created a new comment, and the cleared state goes back where it was.
+# A time that does not parse, or no matching comment, fails the run, like
+# every other Jira write.
+tracker_store_triage_state() {
+  local state="$1"
+  local marker="$2"
+  _jira_require_vars || return 1
+  # No state to store and nothing cleared to restore.
+  if [[ -z "${state}" && -z "${_TRIAGE_CLEARED_ID}" ]]; then
+    return 0
+  fi
+  local comments comment_id
+  comments=$(_jira_own_marked_comments "${marker}") || {
+    echo "ERROR: cannot store the triage state: the comment listing or a timestamp in it could not be read" >&2
+    return 1
+  }
+  comment_id=$(jq -r 'max_by(._updated) | .id // empty' <<<"${comments}") || return 1
   if [[ -z "${comment_id}" ]]; then
     echo "ERROR: cannot store the triage state: no comment by this account carries ${marker}" >&2
     return 1
   fi
+  if [[ -n "${_TRIAGE_CLEARED_ID}" && "${_TRIAGE_CLEARED_ID}" != "${comment_id}" ]]; then
+    _jira_api_with_status PUT "/comment/${_TRIAGE_CLEARED_ID}/properties/fullsend.triage-state" \
+      --data "${_TRIAGE_CLEARED_STATE}" > /dev/null || return 1
+    echo "Restored the triage state on comment ${_TRIAGE_CLEARED_ID} (this run posted a new comment)"
+  fi
+  [[ -n "${state}" ]] || return 0
   _jira_api_with_status PUT "/comment/${comment_id}/properties/fullsend.triage-state" \
     --data "${state}" > /dev/null || return 1
   echo "Stored the triage state on comment ${comment_id}"

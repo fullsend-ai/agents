@@ -29,10 +29,16 @@ TRIAGE_STATE_SH_LOADED=1
 # posted except the hidden state marker: the agent's comment, the lists and
 # the footers (see triage_state_compose).
 TRIAGE_STATE_READABLE_CAP=4000
-# Jira caps an entity property value at 32768 (Atlassian documents it as
-# characters; capping UTF-8 bytes is safe either way). Keep the state under
-# it with room to spare; only multibyte text can come near it.
-TRIAGE_STATE_MAX_BYTES=30000
+# Jira caps an entity property value at 32768 bytes of stored JSON. Keep the
+# state's UTF-8 bytes under 30000 for room to spare; only multibyte text can
+# come near it. TRIAGE_STATE_MAX_BYTES may lower the cap (tests do), never
+# raise it.
+if ! [[ "${TRIAGE_STATE_MAX_BYTES:-}" =~ ^[0-9]+$ ]] || (( TRIAGE_STATE_MAX_BYTES > 30000 )); then
+  TRIAGE_STATE_MAX_BYTES=30000
+fi
+# Footers other than "Next steps" (label and component reasons, unapplied
+# Jira updates) are cut to this many characters, so "Next steps" always fits.
+TRIAGE_STATE_MAX_EXTRA_FOOTER=1000
 
 # triage_state_json RESULT_FILE — print the state as compact JSON, bounded
 # to the schema's limits (whitespace runs folded to one space, strings and
@@ -76,6 +82,18 @@ triage_state_json() {
   ' --argjson max_bytes "${TRIAGE_STATE_MAX_BYTES}" "$1"
 }
 
+# triage_state_dropped RESULT_FILE STATE_JSON — print how many causes the
+# result listed that the state does not keep: entries that are not objects
+# or have an empty name, and entries past the 10 open / 25 ruled-out limits.
+triage_state_dropped() {
+  jq -r --arg s "$2" '
+    def n: if type == "array" then length else 0 end;
+    (if $s == "" then {} else ($s | fromjson) end) as $state
+    | ((.triage_summary.open_causes | n) + (.triage_summary.ruled_out | n))
+    - (($state.open_causes | n) + ($state.ruled_out | n))
+  ' "$1"
+}
+
 # triage_state_compose STATE_JSON AGENT_COMMENT FOOTER — print the readable
 # comment that is posted: AGENT_COMMENT, the lists, then FOOTER (the labels,
 # components and next-steps sections the post-script appended), within
@@ -84,11 +102,14 @@ triage_state_json() {
 # does not fit, the lists are condensed in this order: ruled-out evidence,
 # all evidence, the oldest ruled-out lines (counted in one line), then the
 # open cause names are cut to 80 characters. If it still does not fit, the
-# agent's comment is cut, and as a last resort the whole text, each with a
-# note saying so. The stored state always keeps every entry.
+# agent's comment is cut at a line end with a note saying so. Footers other
+# than "Next steps" are first held to TRIAGE_STATE_MAX_EXTRA_FOOTER
+# characters, so "Next steps" is never cut. The stored state always keeps
+# every entry.
 triage_state_compose() {
-  jq -rn --argjson state "$1" --arg agent "$2" --arg footer "$3" \
-    --argjson cap "${TRIAGE_STATE_READABLE_CAP}" '
+  jq -rn --argjson state "$1" --arg agent "$2" --arg footer_in "$3" \
+    --argjson cap "${TRIAGE_STATE_READABLE_CAP}" \
+    --argjson extra_max "${TRIAGE_STATE_MAX_EXTRA_FOOTER}" '
     def safe: gsub("<!--"; "&lt;!--");
     def clip($n): if length > $n then .[0:($n - 1)] + "…" else . end;
     def line($full; $name_max):
@@ -103,7 +124,17 @@ triage_state_compose() {
               + ($r | map(line($full_ruled; $name_max))) | join("\n"))
          else "" end);
     def note: "\n\n_(Cut to fit the comment limit; the triage state keeps every cause.)_";
-    ($agent + "\n\n") as $head
+    # Cut to $n characters, at a line end when one is in the second half.
+    def cutline($n):
+      if length <= $n then .
+      elif $n <= 0 then ""
+      else .[0:($n - 1)] | (if (rindex("\n") // 0) > $n / 2 then .[0:rindex("\n")] else . end) + "…"
+      end;
+    ("\n\n---\n**Next steps:**") as $ns_head
+    | ($footer_in | (rindex($ns_head) // length)) as $ns_at
+    | ($footer_in[0:$ns_at] | cutline($extra_max)) as $extra
+    | ($extra + $footer_in[$ns_at:]) as $footer
+    | ($agent + "\n\n") as $head
     | ($cap - ($head | length) - ($footer | length)) as $budget
     | $state.open_causes as $o | $state.ruled_out as $r
     | ([ render($o; $r; true; true; 0; 200),
@@ -115,12 +146,10 @@ triage_state_compose() {
     | ($head + $lists + $footer) as $all
     | if ($all | length) <= $cap then $all
       else
+        # The lists (at most about 1200 characters) and the bounded footers
+        # leave room for the agent comment, so only it is cut.
         ($cap - ($lists | length) - ($footer | length) - 2 - (note | length)) as $keep
-        # Cut at a line end when one is in the second half, not mid-line.
-        | ($agent[0:$keep] | if (rindex("\n") // 0) > $keep / 2 then .[0:rindex("\n")] else . end) as $cut
-        | if $keep >= 0 then $cut + note + "\n\n" + $lists + $footer
-          else $all[0:($cap - (note | length))] + note
-          end
+        | ($agent | cutline($keep)) + note + "\n\n" + $lists + $footer
       end
   '
 }
@@ -132,8 +161,9 @@ triage_state_marker() {
   printf '<!-- triage-state-v1:%s -->' "${encoded}"
 }
 
-# triage_state_neutralize TEXT — escape every state marker opener in TEXT, so
+# triage_state_neutralize TEXT — escape every state marker opener in TEXT
+# (any case, "<!--" with any number of extra dashes and any whitespace), so
 # the only live marker in a posted comment is the one the post-script adds.
 triage_state_neutralize() {
-  jq -rn --arg t "$1" '$t | gsub("(?i)<(?=!--\\s*triage-state)"; "&lt;")'
+  jq -rn --arg t "$1" '$t | gsub("(?i)<(?=!--+\\s*triage-state)"; "&lt;")'
 }

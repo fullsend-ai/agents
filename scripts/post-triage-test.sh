@@ -1975,6 +1975,62 @@ else
   echo "PASS: state-byte-cut-keeps-every-cause"
 fi
 
+# A state that cannot be stored fails the run before the issue is touched.
+export TRIAGE_STATE_MAX_BYTES=500
+run_state_case "state-too-large-fails-closed" "$(sufficient_with ",${OPEN_TWO},\"ruled_out\":${many_ruled}" "Short analysis.")"
+unset TRIAGE_STATE_MAX_BYTES
+if [[ ${STATE_RC} -eq 0 ]] || [[ -s "${GH_LOG}" ]] \
+  || ! grep -qF '::error::the triage state cannot be stored' "${TMPDIR}/stdout.log"; then
+  state_fail "state-too-large-fails-closed" "expected a failure with no gh or fullsend call (rc ${STATE_RC})"
+else
+  echo "PASS: state-too-large-fails-closed"
+fi
+
+# Glob characters in the agent's comment do not move the lists: the split
+# between the comment and the footers is literal.
+glob_comment='auth* mismatch [repro?] a]b[c \* ?'
+run_state_case "state-github-glob-chars-in-comment" "$(sufficient_with ",${OPEN_TWO},${RULED_ONE}" "${glob_comment}")"
+body="$(posted_body "${GH_LOG}")"
+if [[ ${STATE_RC} -ne 0 ]] || [[ "${body}" != "${glob_comment}"$'\n\n**Open causes:**\n'* ]] \
+  || [[ "${body}" != *$'regex rejects + — the local-part class includes +\n\n---\n**Next steps:**'* ]]; then
+  state_fail "state-github-glob-chars-in-comment" "expected the comment, then the lists, then the footer (rc ${STATE_RC})"
+else
+  echo "PASS: state-github-glob-chars-in-comment"
+fi
+
+# Marker variants (extra dashes, case, spacing) are escaped too.
+variants=$'<!--- triage-state-v1:e30= -->\n<!--  TRIAGE-STATE-v1:e30= -->\n<!----\ttriage-state-v1:e30= -->'
+run_state_case "state-github-marker-variants-escaped" "$(sufficient_with ",${OPEN_TWO},${RULED_ONE}" "Analysis."$'\n'"${variants}")"
+body="$(posted_body "${GH_LOG}")"
+if [[ ${STATE_RC} -ne 0 ]] || [[ "$(printf '%s' "${body}" | grep -ciE '<!--+[[:space:]]*triage-state')" != "1" ]] \
+  || [[ "$(printf '%s' "${body}" | grep -cF '&lt;!--')" != "3" ]]; then
+  state_fail "state-github-marker-variants-escaped" "expected the three variants escaped and one live marker"
+else
+  echo "PASS: state-github-marker-variants-escaped"
+fi
+
+# Footers alone over the cap: the label reason is cut at a line end, and
+# "Next steps" is kept whole.
+long_reason="$(printf 'Label reason sentence that keeps going on and on. %.0s' $(seq 1 90))"
+footer_json="$(sufficient_with ",${OPEN_TWO},${RULED_ONE}" "Short analysis." | jq -c --arg r "${long_reason}" '. + {label_actions: {reason: $r, actions: [{action: "add", label: "area/api"}]}}')"
+run_state_case "state-github-long-footer-keeps-next-steps" "${footer_json}"
+body="$(posted_body "${GH_LOG}")"
+if [[ ${STATE_RC} -ne 0 ]] || [[ ${#long_reason} -lt 4000 ]] || [[ $(readable_len "${body}") -gt 4000 ]] \
+  || [[ "${body}" != *$'**Next steps:**\n- `/fs-code` — agent creates a PR to implement this issue\n- `/fs-code <your instruction>` — agent implements with your specific guidance'* ]] \
+  || [[ "${body}" != *'**Labels:** Label reason'*'…'* ]] || [[ "${body}" != *'- None reaches validate_email'* ]]; then
+  state_fail "state-github-long-footer-keeps-next-steps" "readable text $(readable_len "${body}") characters (rc ${STATE_RC})"
+else
+  echo "PASS: state-github-long-footer-keeps-next-steps"
+fi
+
+# A cause the state cannot keep (an empty name) is reported.
+run_state_case "state-github-dropped-cause-warns" "$(sufficient_with ",\"open_causes\":[{\"cause\":\"   \",\"evidence\":\"e\",\"verified\":true},{\"cause\":\"real\",\"evidence\":\"e\",\"verified\":true}],\"ruled_out\":[]" "Short.")"
+if [[ ${STATE_RC} -ne 0 ]] || ! grep -qF '::warning::1 cause(s) in the result were not stored' "${TMPDIR}/stdout.log"; then
+  state_fail "state-github-dropped-cause-warns" "expected a warning for the empty name (rc ${STATE_RC})"
+else
+  echo "PASS: state-github-dropped-cause-warns"
+fi
+
 # Strings over the schema's limits are cut in the stored state.
 run_state_case "state-github-cuts-long-strings" "$(sufficient_with ",\"open_causes\":[{\"cause\":\"$(printf 'c%.0s' $(seq 1 250))\",\"evidence\":\"e\",\"verified\":true}],\"ruled_out\":[]" "Short.")"
 if [[ ${STATE_RC} -ne 0 ]] \
@@ -2862,6 +2918,42 @@ if [[ ${STATE_RC} -eq 0 ]] \
 else
   echo "PASS: state-jira-cancelled-after-clear-leaves-none"
 fi
+# Only the comment an edit in place would rewrite (the oldest own one, as
+# fullsend v0.56.1-rc.1 picks it) is cleared. Edited in place: the new
+# state goes on that comment, and the other comment keeps its state.
+jira_full_comment() { # id created updated with_state
+  jq -cn --arg id "$1" --arg c "$2" --arg u "$3" --arg st "$4" --arg m "${TA}" \
+    '{id: $id, author: {accountId: "bot-1"}, created: $c, updated: $u,
+      properties: ([{key: "fullsend.sticky-marker", value: {marker: $m}}]
+        + (if $st == "" then [] else [{key: "fullsend.triage-state", value: ($st | fromjson)}] end))}'
+}
+OLD_STATE='{"open_causes":[{"cause":"old","evidence":"e","verified":true}],"ruled_out":[]}'
+jq -cn --argjson c "[$(jira_full_comment 100 2026-11-01T08:00:00.000+0000 2026-11-17T11:00:00.000+0000 "${OLD_STATE}"),$(jira_full_comment 104 2026-11-01T09:00:00.000+0000 2026-11-17T09:00:00.000+0000 "${OLD_STATE}")]" '{comments: $c, total: 2}' > "${MOCK_JIRA_STATE_DIR}/page-0.json"
+jira_state_case "state-jira-clears-only-edited-comment" "$(sufficient_with ",${OPEN_TWO},${RULED_ONE}" "Short analysis.")"
+props="$(grep -F '/properties/fullsend.triage-state' "${JIRA_CURL_LOG}" || true)"
+if [[ ${STATE_RC} -ne 0 ]] \
+  || [[ "$(grep -c -- '--request DELETE' <<<"${props}")" != "1" ]] || ! grep -- '--request DELETE' <<<"${props}" | grep -qF '/comment/100/' \
+  || [[ "$(grep -c -- '--request PUT' <<<"${props}")" != "1" ]] || ! grep -- '--request PUT' <<<"${props}" | grep -qF "/comment/100/properties/fullsend.triage-state --data ${want}" \
+  || grep -qF '/comment/104/' <<<"${props}"; then
+  state_fail "state-jira-clears-only-edited-comment" "expected one DELETE and one PUT, both on comment 100: ${props}"
+else
+  echo "PASS: state-jira-clears-only-edited-comment"
+fi
+
+# New comment (fullsend-ai/fullsend#9399): the post created 105, so the
+# state cleared from 100 is restored and the new state goes on 105.
+jq -cn --argjson c "[$(jira_full_comment 100 2026-11-01T08:00:00.000+0000 2026-11-01T08:00:00.000+0000 "${OLD_STATE}"),$(jira_full_comment 105 2026-11-17T10:00:00.000+0000 2026-11-17T10:00:00.000+0000 "")]" '{comments: $c, total: 2}' > "${MOCK_JIRA_STATE_DIR}/page-0.json"
+jira_state_case "state-jira-new-comment-restores-old-state" "$(sufficient_with ",${OPEN_TWO},${RULED_ONE}" "Short analysis.")"
+props="$(grep -F '/properties/fullsend.triage-state' "${JIRA_CURL_LOG}" || true)"
+if [[ ${STATE_RC} -ne 0 ]] \
+  || ! grep -- '--request DELETE' <<<"${props}" | grep -qF '/comment/100/' \
+  || ! grep -- '--request PUT' <<<"${props}" | grep -qF "/comment/100/properties/fullsend.triage-state --data ${OLD_STATE}" \
+  || ! grep -- '--request PUT' <<<"${props}" | grep -qF "/comment/105/properties/fullsend.triage-state --data ${want}"; then
+  state_fail "state-jira-new-comment-restores-old-state" "expected the old state back on 100 and the new one on 105: ${props}"
+else
+  echo "PASS: state-jira-new-comment-restores-old-state"
+fi
+
 unset MOCK_JIRA_STATE_DIR
 
 # --- JIRA_API_URL routing (#1876) ---

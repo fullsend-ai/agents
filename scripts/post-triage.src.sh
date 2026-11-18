@@ -135,10 +135,17 @@ is_control_label() {
 TRIAGE_STATE=""
 AGENT_COMMENT=""
 TRIAGE_MARKER="<!-- fullsend:triage-agent -->"
-# Built before anything is written, so a state that cannot be stored fails
-# the run with no label or comment changed.
+# Built before any label, comment or property on the issue is changed, so a
+# state that cannot be stored fails the run with the issue untouched.
 if [[ "${ACTION}" == "sufficient" ]]; then
-  TRIAGE_STATE=$(triage_state_json "${RESULT_FILE}")
+  if ! TRIAGE_STATE=$(triage_state_json "${RESULT_FILE}"); then
+    echo "::error::the triage state cannot be stored (see above); nothing was posted"
+    exit 1
+  fi
+  TRIAGE_DROPPED=$(triage_state_dropped "${RESULT_FILE}" "${TRIAGE_STATE}") || exit 1
+  if [[ "${TRIAGE_DROPPED}" -gt 0 ]]; then
+    echo "::warning::${TRIAGE_DROPPED} cause(s) in the result were not stored: an empty name, or past the 10 open / 25 ruled-out limits"
+  fi
 fi
 
 # Deferred label: when set, applied after label_actions so it fires last.
@@ -929,28 +936,34 @@ fi
 # With a state, everything after the agent's comment is the footers: the
 # lists go between the two, and the readable text is held to the cap.
 if [[ -n "${TRIAGE_STATE}" ]]; then
-  FOOTER="${COMMENT#"${AGENT_COMMENT}"}"
-  COMMENT=$(triage_state_compose "${TRIAGE_STATE}" \
-    "$(triage_state_neutralize "${AGENT_COMMENT}")" "$(triage_state_neutralize "${FOOTER}")")
+  # A literal split by length: the agent's text is never used as a pattern.
+  if [[ "${COMMENT:0:${#AGENT_COMMENT}}" != "${AGENT_COMMENT}" ]]; then
+    echo "::error::the comment no longer starts with the agent's comment; cannot place the cause lists"
+    exit 1
+  fi
+  FOOTER="${COMMENT:${#AGENT_COMMENT}}"
+  NEUTRAL_AGENT=$(triage_state_neutralize "${AGENT_COMMENT}") || exit 1
+  NEUTRAL_FOOTER=$(triage_state_neutralize "${FOOTER}") || exit 1
+  COMMENT=$(triage_state_compose "${TRIAGE_STATE}" "${NEUTRAL_AGENT}" "${NEUTRAL_FOOTER}") || exit 1
   if [[ "${FULLSEND_TRACKER}" != "jira" ]]; then
     COMMENT="${COMMENT}
 
 $(triage_state_marker "${TRIAGE_STATE}")"
   fi
 else
-  COMMENT=$(triage_state_neutralize "${COMMENT}")
+  COMMENT=$(triage_state_neutralize "${COMMENT}") || exit 1
 fi
 
 echo "Posting comment..."
 if [[ "${ACTION}" == "sufficient" ]]; then
-  # On Jira the state lives beside the text: clear the old one before the
-  # comment is posted (an edit in place would otherwise keep the previous
-  # run's state on the new text), and set the new one after.
+  # On Jira the state lives beside the text: clear it from the comment an
+  # edit in place would rewrite before posting, then store the new state
+  # (and restore the cleared one if the post created a new comment).
   if [[ "${FULLSEND_TRACKER}" == "jira" ]]; then
     tracker_clear_triage_state "${TRIAGE_MARKER}"
   fi
   tracker_post_sticky_comment "${COMMENT}" "${TRIAGE_MARKER}"
-  if [[ -n "${TRIAGE_STATE}" && "${FULLSEND_TRACKER}" == "jira" ]]; then
+  if [[ "${FULLSEND_TRACKER}" == "jira" ]]; then
     tracker_store_triage_state "${TRIAGE_STATE}" "${TRIAGE_MARKER}"
   fi
 elif [[ "${ACTION}" == "in-progress" ]]; then

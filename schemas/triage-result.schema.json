@@ -241,7 +241,7 @@
       "type": "object",
       "required": ["cause", "evidence", "verified"],
       "properties": {
-        "cause": { "type": "string", "minLength": 1, "maxLength": 200, "description": "The cause, as one short phrase. Line breaks are folded to spaces when stored." },
+        "cause": { "type": "string", "minLength": 1, "maxLength": 200, "pattern": "\\S", "description": "The cause, as one short phrase. Line breaks are folded to spaces when stored." },
         "evidence": { "type": "string", "minLength": 1, "maxLength": 300, "description": "What supports it (open) or refutes it (ruled out), or who claimed it when unverified. Line breaks are folded to spaces when stored." },
         "verified": { "type": "boolean", "description": "True only when this run checked the evidence itself." }
       },
