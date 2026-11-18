@@ -171,14 +171,11 @@ if command -v yq &>/dev/null; then
     (if type == "object" then . else {} end) as $t
     | [("github", "gitlab", "jira") | select($t[.] != null)] as $providers
     | if $provider == "jira" then
-      if $providers == [$provider] and (.jira | type == "object") and (.jira.allowed_targets | type == "object") and (.jira.allowed_targets.projects | type == "array") then
-        .jira.allowed_targets.projects
-      elif (type == "object" and has("jira") and (.jira | type == "object") and (.jira | has("project")) and (.jira.project | type == "string")) then
-        [.jira.project]
-      else
-        []
-      end
-      | map(strings) | unique | .[]
+        if $providers == [$provider] and (.jira | type == "object") then
+          ([.jira.project] + (if (.jira.allowed_targets.projects | type) == "array" then .jira.allowed_targets.projects else [] end) | map(select(type == "string")) | map(ascii_upcase) | unique)
+        else
+          []
+        end | .[]
     else
       (if $providers == [$provider] then (($t[$provider].allowed_targets // {}).repos // []) else [] end)
       | if type == "array" then .[] | strings else empty end
@@ -211,7 +208,11 @@ if command -v yq &>/dev/null; then
         JIRA_ALLOWLIST_STATE="configured"
       elif [[ "${projects_status}" == "failed" ]]; then
         JIRA_ALLOWLIST_STATE="failed"
+      else
+        JIRA_ALLOWLIST_STATE="unset"
       fi
+    else
+      JIRA_ALLOWLIST_STATE="failed"
     fi
   fi
 fi
@@ -227,13 +228,21 @@ is_target_allowed() {
         return 1
         ;;
       configured)
-        if [[ -n "${ALLOWED_REPOS}" ]] && echo "${ALLOWED_REPOS}" | grep -qFx "${target_repo}"; then
+        if [[ -n "${ALLOWED_REPOS}" ]] && echo "${ALLOWED_REPOS}" | grep -qiFx "${target_repo}"; then
           return 0
         fi
         return 1
         ;;
       unset)
-        return 0
+        if [[ ! -f "${CONFIG_FILE}" && ! -f "${BASE_CONFIG_FILE}" ]]; then
+          return 1
+        fi
+        local primary_project
+        primary_project=$(yq -r '.tracker.jira.project // empty' "${CONFIG_FILE}" 2>/dev/null || true)
+        if [[ -z "${primary_project}" && -f "${BASE_CONFIG_FILE}" ]]; then
+          primary_project=$(yq -r '.tracker.jira.project // empty' "${BASE_CONFIG_FILE}" 2>/dev/null || true)
+        fi
+        [[ -n "${primary_project}" && "${primary_project,,}" == "${target_repo,,}" ]]
         ;;
     esac
   fi
@@ -431,8 +440,10 @@ if [[ "${PROPOSAL_COUNT}" -gt 0 ]]; then
     # Ensure the label exists in the target repo before applying it.
     # Follows the same pattern as post-review.sh for ready-for-merge.
     # --force / idempotent creation makes this safe to repeat.
-    forge_create_label "${TARGET_REPO}" "ready-for-triage" \
-      "Triggers triage agent dispatch" "0E8A16"
+    if [[ "${FULLSEND_TRACKER}" != "jira" || ",${RETRO_JIRA_LABELS:-ready-for-triage}," == *,ready-for-triage,* ]]; then
+      forge_create_label "${TARGET_REPO}" "ready-for-triage" \
+        "Triggers triage agent dispatch" "0E8A16"
+    fi
 
     SAFE_TITLE=$(_gha_sanitize "${TITLE}")
     if [[ "${FULLSEND_TRACKER}" == "jira" ]]; then
@@ -444,7 +455,12 @@ if [[ "${PROPOSAL_COUNT}" -gt 0 ]]; then
     # A failed creation is non-fatal: record it, keep filing the remaining
     # proposals, and report it in the summary comment.
     CREATE_RC=0
-    ISSUE_URL=$(forge_create_issue "${TARGET_REPO}" "${TITLE}" "${BODY}" "ready-for-triage") || CREATE_RC=$?
+    if [[ "${FULLSEND_TRACKER}" == "jira" ]]; then
+      ISSUE_LABELS="${RETRO_JIRA_LABELS-ready-for-triage}"
+    else
+      ISSUE_LABELS="ready-for-triage"
+    fi
+    ISSUE_URL=$(forge_create_issue "${TARGET_REPO}" "${TITLE}" "${BODY}" "${ISSUE_LABELS}") || CREATE_RC=$?
     if [[ ${CREATE_RC} -ne 0 ]] && ! [[ "${FULLSEND_TRACKER}" == "jira" && ${CREATE_RC} -eq 2 ]]; then
       SAFE_OUTPUT=$(_gha_sanitize "${ISSUE_URL}")
       if [[ "${FULLSEND_TRACKER}" == "jira" ]]; then
