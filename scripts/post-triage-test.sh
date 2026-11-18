@@ -2026,6 +2026,27 @@ else
   echo "PASS: state-github-dropped-cause-warns"
 fi
 
+# Multibyte text before the split points: the comment is cut at a line end
+# and the footer is split before Next steps by character offsets (jq 1.6
+# counts bytes in rindex, so the lib does not use it).
+mb_lines="$(for i in $(seq 1 60); do printf '行%02d %s\n' "${i}" "$(printf '漢%.0s' $(seq 1 60))"; done)"
+mb_footer=$'\n\n---\n**Labels:** '"$(printf 'ラベル%.0s' $(seq 1 100))"$'\n\n---\n**Next steps:**\n- one\n- two'
+mb_compose="$(SCRIPT_DIR="${SCRIPT_DIR}" bash -c 'source "${SCRIPT_DIR}/lib/triage-state.lib.sh"; triage_state_compose "$1" "$2" "$3"' _ \
+  '{"open_causes":[{"cause":"原因","evidence":"証拠","verified":true}],"ruled_out":[]}' "${mb_lines}" "${mb_footer}" 2>&1)" || true
+if python3 -c '
+import sys
+out, lines, footer = sys.argv[1], sys.argv[2].split("\n"), sys.argv[3]
+note = "…\n\n_(Cut to fit the comment limit; the triage state keeps every cause.)_"
+head = out.split(note)[0] if note in out else None
+ok = (len(out) <= 4000 and out.endswith(footer) and head is not None
+      and any(head == "\n".join(lines[:k]) for k in range(1, len(lines))))
+sys.exit(0 if ok else 1)
+' "${mb_compose}" "${mb_lines}" "${mb_footer}"; then
+  echo "PASS: state-multibyte-split-points"
+else
+  state_fail "state-multibyte-split-points" "expected a cut at a line end and the footer whole: ${mb_compose:0:200}"
+fi
+
 # Strings over the schema's limits are cut in the stored state.
 run_state_case "state-github-cuts-long-strings" "$(sufficient_with ",\"open_causes\":[{\"cause\":\"$(printf 'c%.0s' $(seq 1 250))\",\"evidence\":\"e\",\"verified\":true}],\"ruled_out\":[]" "Short.")"
 if [[ ${STATE_RC} -ne 0 ]] \

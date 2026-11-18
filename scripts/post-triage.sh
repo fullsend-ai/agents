@@ -1729,14 +1729,21 @@ triage_state_compose() {
               + ($r | map(line($full_ruled; $name_max))) | join("\n"))
          else "" end);
     def note: "\n\n_(Cut to fit the comment limit; the triage state keeps every cause.)_";
+    # The character offset of the last $d, or null. jq 1.6 rindex counts
+    # bytes while slices count characters, so it is not used.
+    def last_at($d):
+      split($d) as $p
+      | if ($p | length) < 2 then null else ($p[:-1] | join($d) | length) end;
     # Cut to $n characters, at a line end when one is in the second half.
     def cutline($n):
       if length <= $n then .
       elif $n <= 0 then ""
-      else .[0:($n - 1)] | (if (rindex("\n") // 0) > $n / 2 then .[0:rindex("\n")] else . end) + "…"
+      else .[0:($n - 1)] as $c
+        | ($c | last_at("\n")) as $i
+        | (if ($i // 0) > $n / 2 then $c[0:$i] else $c end) + "…"
       end;
     ("\n\n---\n**Next steps:**") as $ns_head
-    | ($footer_in | (rindex($ns_head) // length)) as $ns_at
+    | ($footer_in | (last_at($ns_head) // length)) as $ns_at
     | ($footer_in[0:$ns_at] | cutline($extra_max)) as $extra
     | ($extra + $footer_in[$ns_at:]) as $footer
     | ($agent + "\n\n") as $head
