@@ -1,18 +1,21 @@
 #!/usr/bin/env python3
 """Open CVE work items from a repository's Dependabot alerts. DRAFT.
 
-Two host-side steps, with no model in either:
+Host-side steps, with no model in any of them:
 
-  collect   read the open alerts of the policy's GitHub repository, check each
-            one against every maintained version in the release mapping, and
-            write the candidates to a file
-  publish   create one Jira work item per candidate, with the labels and the
-            fullsend.cve.intake record the cve agent's gates require
+  collect      read the open alerts of the policy's GitHub repository, check
+               each one against every maintained version in the release
+               mapping, and write the candidates to a file
+  investigate  optional: ask an evidence tool about each candidate and record
+               its answer in the file
+  publish      create one Jira work item per candidate, with the labels and
+               the fullsend.cve.intake record the cve agent's gates require
 
-The file between the two steps is where an evidence tool can sit: a step that
-investigates the candidates may remove entries before publish runs. publish
-checks every entry against the policy again, so that file can take work away
-but cannot add a target the policy does not map.
+The file between the steps is where an evidence tool sits. investigate runs a
+command the operator chose, once per candidate. publish checks every entry
+against the policy again, so that file can take work away but cannot add a
+target the policy does not map, and it keeps only the expected fields of what
+a tool answered.
 
 A work item opened here starts nothing by itself. A person still asks for the
 assessment, and the cve agent gives the verdict for that branch.
@@ -25,6 +28,8 @@ import json
 import os
 from pathlib import Path
 import re
+import shlex
+import subprocess
 import sys
 import urllib.error
 import urllib.parse
@@ -41,6 +46,11 @@ MAX_MANIFEST_BYTES = 1024 * 1024
 CVE_PATTERN = r"CVE-[0-9]{4}-[0-9]{4,}"
 GHSA_PATTERN = r"GHSA-[23456789cfghjmpqrvwx]{4}-[23456789cfghjmpqrvwx]{4}-[23456789cfghjmpqrvwx]{4}"
 LABEL_PATTERN = r"[A-Za-z0-9._:+-]{1,128}"
+EVIDENCE_REQUEST_VERSION = 1
+EVIDENCE_OUTCOMES = ("in_vulnerable_range", "outside_vulnerable_range", "not_found", "undetermined")
+EVIDENCE_COVERAGE = ("complete", "partial", "unknown")
+EVIDENCE_TIMEOUT_SECONDS = 180
+SENTENCE_PATTERN = r"[A-Za-z0-9 .,;:()'/_<>=+-]{1,200}"
 DEFAULT_SETTINGS = {
     "issue_type": "Task",
     "labels": [],
@@ -332,13 +342,20 @@ def intake_for(candidate, policy):
     }
 
 
-def collect(policy, github):
-    """Check every open alert against every maintained version it can concern."""
+def collect(policy, github, only=None):
+    """Check every open alert against every maintained version it can concern.
+
+    only, when given, is the set of alert numbers to look at; every other
+    alert is left alone and counted, so a run can be kept to one alert.
+    """
     repository = policy["repository"]
     targets = workflow.repository_targets(policy.get("release_mappings", []), repository)
     if not targets:
         raise GateError("release mapping has no target for the policy's repository")
     alerts = [normalize_alert(raw) for raw in github.alerts()]
+    alerts_read = len(alerts)
+    if only is not None:
+        alerts = [alert for alert in alerts if alert["number"] in only]
     commits, manifests, advisories = {}, {}, {}
     candidates, skipped = [], []
 
@@ -433,7 +450,8 @@ def collect(policy, github):
     return {
         "schema_version": CANDIDATES_VERSION,
         "repository": repository,
-        "alerts_read": len(alerts),
+        "alerts_read": alerts_read,
+        "alerts_selected": len(alerts),
         "candidates": candidates,
         "skipped": skipped,
     }
@@ -477,11 +495,105 @@ def checked_candidate(entry, policy):
     observed = entry.get("observed") if isinstance(entry.get("observed"), dict) else {}
     candidate["observed_version"] = text_field(observed.get("version"), r"[0-9A-Za-z.+-]{1,128}")
     candidate["observed_module"] = text_field(observed.get("module"), workflow.IDENTITY_PATTERN)
+    candidate["ecosystem"] = text_field(entry.get("ecosystem"), r"[a-z]{1,32}")
+    number = entry.get("alert")
+    candidate["alert"] = number if isinstance(number, int) and not isinstance(number, bool) and number > 0 else 0
+    candidate["evidence"] = checked_evidence(entry.get("evidence"))
     if candidate["branch"] != target["branch"]:
         return None
     candidate["key"] = candidate_key(candidate)
     candidate["intake"] = intake
     return candidate
+
+
+def checked_evidence(value):
+    """The expected, bounded fields of an evidence tool's answer; None if it is not one."""
+    if not isinstance(value, dict) or value.get("outcome") not in EVIDENCE_OUTCOMES:
+        return None
+    observed = value.get("observed") if isinstance(value.get("observed"), dict) else {}
+    gaps = value.get("gaps") if isinstance(value.get("gaps"), list) else []
+    return {
+        "tool": text_field(value.get("tool"), r"[A-Za-z0-9 ._()+-]{1,64}"),
+        "outcome": value["outcome"],
+        "coverage": value["coverage"] if value.get("coverage") in EVIDENCE_COVERAGE else "unknown",
+        "gaps": [gap for gap in gaps if text_field(gap, SENTENCE_PATTERN)][:8],
+        "observed": {
+            "module": text_field(observed.get("module"), workflow.IDENTITY_PATTERN),
+            "version": text_field(observed.get("version"), r"[0-9A-Za-z.+-]{1,128}"),
+            "direct": observed.get("direct") if isinstance(observed.get("direct"), bool) else None,
+        },
+        "evidence_sha256": text_field(value.get("evidence_sha256"), r"[0-9a-f]{64}"),
+    }
+
+
+def cleared_by_evidence(candidate):
+    """Complete evidence that the version in use is outside the vulnerable range.
+
+    Nothing else clears a candidate: a tool that did not find the package, or
+    whose evidence has gaps, has not shown that the branch is unaffected.
+    """
+    evidence = candidate["evidence"]
+    return bool(evidence) and evidence["outcome"] == "outside_vulnerable_range" and evidence["coverage"] == "complete"
+
+
+def investigate(policy, document, tool, workdir, run=subprocess.run):
+    """Ask the evidence tool about each candidate and record its answer in the document.
+
+    The tool is run as `TOOL REQUEST RESULT`: it reads the request file and
+    writes its answer to the result path. A candidate the tool fails on, or
+    answers in another shape, carries no evidence and is published as it would
+    be without the tool.
+    """
+    candidates_document(policy, document)
+    workdir = Path(workdir)
+    workdir.mkdir(parents=True, exist_ok=True)
+    report = {"asked": 0, "answered": 0, "failed": 0}
+    for index, entry in enumerate(document["candidates"]):
+        candidate = checked_candidate(entry, policy)
+        if candidate is None:
+            continue
+        entry.pop("evidence", None)
+        request_path, result_path = workdir / f"request-{index}.json", workdir / f"result-{index}.json"
+        request_path.write_text(
+            json.dumps(
+                {
+                    "schema_version": EVIDENCE_REQUEST_VERSION,
+                    "repository": candidate["repository"],
+                    "branch": candidate["branch"],
+                    "commit": candidate["commit"],
+                    "manifest": candidate["manifest"],
+                    "ecosystem": candidate["ecosystem"],
+                    "package": candidate["package"],
+                    "module": candidate["observed_module"] or candidate["package"],
+                    "cve": candidate["cve"],
+                    "ghsa": candidate["ghsa"],
+                    "alert_number": candidate["alert"],
+                    "vulnerable_range": candidate["vulnerable_range"],
+                    "first_patched_version": candidate["first_patched"] or None,
+                }
+            )
+            + "\n"
+        )
+        result_path.unlink(missing_ok=True)
+        report["asked"] += 1
+        evidence = None
+        try:
+            completed = run(
+                [*tool, str(request_path), str(result_path)],
+                stdin=subprocess.DEVNULL,
+                timeout=EVIDENCE_TIMEOUT_SECONDS,
+                check=False,
+            )
+            if completed.returncode == 0 and result_path.is_file() and result_path.stat().st_size <= 65536:
+                evidence = checked_evidence(json.loads(result_path.read_text()))
+        except (OSError, ValueError, subprocess.SubprocessError):
+            evidence = None
+        if evidence is None:
+            report["failed"] += 1
+            continue
+        entry["evidence"] = evidence
+        report["answered"] += 1
+    return report
 
 
 def work_item_text(group):
@@ -520,6 +632,26 @@ def work_item_text(group):
             )
         if candidate["outcome"] == "undetermined":
             lines.append("The version in use could not be compared with the vulnerable range.")
+        evidence = candidate["evidence"]
+        if evidence:
+            observed = evidence["observed"]
+            found = {
+                "in_vulnerable_range": "the version in use is in the vulnerable range",
+                "outside_vulnerable_range": "the version in use is outside the vulnerable range",
+                "not_found": "the package was not found",
+                "undetermined": "the version in use could not be determined",
+            }[evidence["outcome"]]
+            line = f"Evidence tool ({evidence['tool'] or 'unnamed'}): {found}"
+            if observed["module"] and observed["version"]:
+                line += f"; {observed['module']} {observed['version']}"
+                if observed["direct"] is not None:
+                    line += " is a direct requirement" if observed["direct"] else " is an indirect requirement"
+            line += f". Evidence coverage: {evidence['coverage']}."
+            if evidence["gaps"]:
+                line += " Not shown by the evidence: " + "; ".join(evidence["gaps"]) + "."
+            if evidence["evidence_sha256"]:
+                line += " Evidence record: sha256 " + evidence["evidence_sha256"][:16] + "."
+            lines.append(line)
     lines.append("To assess this branch, comment /fs-cve-triage.")
     return summary[:255], "\n".join(lines)
 
@@ -534,9 +666,7 @@ def existing_work_item(jira, policy, label):
     return (issues[0].get("key") or "existing") if issues else ""
 
 
-def publish(policy, document, jira, dry_run=False):
-    """Create a work item for each candidate that fits the policy and has none yet."""
-    settings = alert_settings(policy)
+def candidates_document(policy, document):
     if (
         not isinstance(document, dict)
         or document.get("schema_version") != CANDIDATES_VERSION
@@ -544,12 +674,21 @@ def publish(policy, document, jira, dry_run=False):
         or not isinstance(document.get("candidates"), list)
     ):
         raise GateError("candidates file does not match this policy")
-    report = {"created": [], "existing": [], "refused": 0, "over_limit": 0}
+
+
+def publish(policy, document, jira, dry_run=False):
+    """Create a work item for each candidate that fits the policy and has none yet."""
+    settings = alert_settings(policy)
+    candidates_document(policy, document)
+    report = {"created": [], "existing": [], "refused": 0, "cleared": 0, "over_limit": 0}
     groups = {}
     for entry in document["candidates"]:
         candidate = checked_candidate(entry, policy)
         if candidate is None:
             report["refused"] += 1
+            continue
+        if cleared_by_evidence(candidate):
+            report["cleared"] += 1
             continue
         groups.setdefault(candidate["key"], []).append(candidate)
     for identity, group in groups.items():
@@ -606,8 +745,16 @@ def github_from_env(policy):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=["collect", "publish"])
+    parser.add_argument("action", choices=["collect", "investigate", "publish"])
     parser.add_argument("--candidates", required=True, help="the candidates file to write or read")
+    parser.add_argument(
+        "--alert",
+        type=int,
+        action="append",
+        help="collect: look only at this alert number; may be given more than once",
+    )
+    parser.add_argument("--tool", help="investigate: the evidence tool's command line")
+    parser.add_argument("--workdir", help="investigate: where request and result files are written")
     parser.add_argument("--dry-run", action="store_true", help="publish: create nothing")
     args = parser.parse_args()
     path = os.environ.get("CVE_POLICY_FILE")
@@ -616,9 +763,13 @@ def main():
     policy = workflow.read_policy_file(path)
     alert_settings(policy)
     if args.action == "collect":
-        document = collect(policy, github_from_env(policy))
+        if args.alert is not None and any(number < 1 for number in args.alert):
+            raise GateError("--alert takes a positive alert number")
+        only = None if args.alert is None else set(args.alert)
+        document = collect(policy, github_from_env(policy), only=only)
         Path(args.candidates).write_text(json.dumps(document, indent=2) + "\n")
-        print(f"{document['alerts_read']} open alerts read; {len(document['candidates'])} candidates")
+        selected = "" if only is None else f"{document['alerts_selected']} selected; "
+        print(f"{document['alerts_read']} open alerts read; {selected}{len(document['candidates'])} candidates")
         for candidate in document["candidates"]:
             print(
                 f"  candidate: alert {candidate['alert']} {candidate['cve']} {candidate['package']} "
@@ -631,6 +782,21 @@ def main():
             print(f"  skipped {count}: {reason}")
         return
     document = workflow.read_json(args.candidates)
+    if args.action == "investigate":
+        tool = shlex.split(args.tool or "")
+        if not tool or not args.workdir:
+            raise GateError("investigate needs --tool and --workdir")
+        report = investigate(policy, document, tool, args.workdir)
+        Path(args.candidates).write_text(json.dumps(document, indent=2) + "\n")
+        print(f"evidence tool asked about {report['asked']} candidates; {report['answered']} answered, {report['failed']} failed")
+        for entry in document["candidates"]:
+            evidence = entry.get("evidence") if isinstance(entry, dict) else None
+            if evidence:
+                print(
+                    f"  alert {entry.get('alert')} {entry.get('cve')} -> {entry.get('product')} {entry.get('release')}: "
+                    f"{evidence['outcome']} (coverage {evidence['coverage']})"
+                )
+        return
     report = publish(policy, document, workflow.jira_from_env(), dry_run=args.dry_run)
     for entry in report["created"]:
         print(f"created {entry['key']}: {entry['summary']}")
@@ -638,6 +804,8 @@ def main():
         print(f"already open {entry['key']}: {entry['summary']}")
     if report["refused"]:
         print(f"refused {report['refused']} entries that do not fit the policy")
+    if report["cleared"]:
+        print(f"left out {report['cleared']} candidates the evidence tool showed to be outside the vulnerable range")
     if report["over_limit"]:
         print(f"left {report['over_limit']} work items for a later run (max_new_work_items)")
 

@@ -166,10 +166,12 @@ the GitHub repository.
 
 DRAFT. `scripts/cve/cve_alerts.py` opens the work items the cve agent starts
 from, so that nobody has to write the intake record by hand. It runs on the
-host in two steps and calls no model:
+host in steps and calls no model:
 
 ```sh
 python3 scripts/cve/cve_alerts.py collect --candidates candidates.json
+python3 scripts/cve/cve_alerts.py investigate --candidates candidates.json \
+  --workdir evidence --tool "<evidence tool command>"   # optional
 python3 scripts/cve/cve_alerts.py publish --candidates candidates.json
 ```
 
@@ -180,6 +182,10 @@ compares the required version with the advisory's vulnerable range. An alert
 is checked on each maintained branch, not only on the default branch that
 Dependabot reports on.
 
+`collect --alert N` looks only at alert number N and leaves every other alert
+alone; give it more than once for several alerts. Use it to bring the step up
+one alert at a time.
+
 | Result for an alert and a version | What happens |
 |---|---|
 | The required version is in the vulnerable range | A candidate |
@@ -189,9 +195,10 @@ Dependabot reports on.
 | The public advisory database does not serve the advisory under that CVE | Skipped: the finding is not shown to be public |
 | An ecosystem with no reader | Skipped, with the reason |
 
-The only reader today is for Go modules (`manifest_format: go-module`). It
-reads `go.mod` and reports what the file requires. It does not say whether the
-vulnerable code is reachable; that is the cve agent's assessment.
+The only built-in reader today is for Go modules (`manifest_format:
+go-module`). It reads `go.mod` and reports what the file requires. It does not
+say whether the vulnerable code is reachable; that is the cve agent's
+assessment.
 
 `publish` creates one Jira work item per vulnerability and maintained version.
 Each gets the policy's required labels, the `fullsend.cve.intake` record (set
@@ -200,10 +207,60 @@ facts and what the host read. A candidate that already has a work item is
 skipped, and one run creates at most `max_new_work_items`. Creating the work
 item starts nothing: a person still comments `/fs-cve-triage`.
 
-The candidates file between the two steps is the place for an evidence tool. A
-step that investigates the candidates may remove entries before `publish`
-runs. `publish` builds every work item from the policy again, so an entry that
-names a repository, version or branch the policy does not map is refused.
+The candidates file between the steps is the place for an evidence tool.
+`publish` builds every work item from the policy again, so an entry that names
+a repository, version or branch the policy does not map is refused.
+
+`investigate` asks an evidence tool about each candidate. The tool is a
+command the operator chose, for example a wrapper around a runtime extension's
+evidence collection. It is run once per candidate as `TOOL REQUEST RESULT`. The
+request file holds the candidate's public facts:
+
+```json
+{
+  "schema_version": 1,
+  "repository": "example-org/service",
+  "branch": "release-1.4",
+  "commit": "<40 hex>",
+  "manifest": "go.mod",
+  "ecosystem": "go",
+  "package": "example.com/web/v5",
+  "module": "example.com/web/v5",
+  "cve": "CVE-2026-10001",
+  "ghsa": "GHSA-xxxx-xxxx-xxxx",
+  "alert_number": 7,
+  "vulnerable_range": "< 5.2.2",
+  "first_patched_version": "5.2.2"
+}
+```
+
+The tool gets the source itself; `investigate` passes no checkout and no
+credential. It writes its answer to the result path:
+
+```json
+{
+  "schema_version": 1,
+  "tool": "example-evidence 1.0",
+  "outcome": "in_vulnerable_range",
+  "coverage": "partial",
+  "gaps": ["Requesters of indirect modules are not recorded"],
+  "observed": {"module": "example.com/web/v5", "version": "v5.2.1", "direct": true},
+  "evidence_sha256": "<64 hex>"
+}
+```
+
+| Field | Values |
+|---|---|
+| `outcome` | `in_vulnerable_range`, `outside_vulnerable_range`, `not_found`, `undetermined` |
+| `coverage` | `complete`, `partial`, `unknown` |
+| `gaps` | What the evidence does not show, as short sentences |
+| `evidence_sha256` | The digest of the tool's own evidence record, if it keeps one |
+
+`publish` keeps only these fields, each bounded, and writes them into the work
+item. It leaves a candidate out only when the tool reports complete evidence
+that the version in use is outside the vulnerable range. A tool that did not
+find the package, reports gaps, fails or answers in another shape clears
+nothing: that candidate is published as it would be without the tool.
 
 Optional settings, in the policy:
 

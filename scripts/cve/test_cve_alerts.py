@@ -189,6 +189,18 @@ class CollectTest(unittest.TestCase):
         self.assertIn("advisory has no CVE identifier", reasons)
         self.assertEqual(reasons.count("package not required on the mapped branch"), 2)
 
+    def test_a_run_can_be_kept_to_chosen_alerts(self):
+        listing = [alert(7, "example.com/web/v5", "< 5.2.2"), alert(8, "example.com/telemetry/sdk", "< 2.0.0")]
+        github = FakeGitHub(listing, {"a": GO_MOD, "b": GO_MOD})
+        document = alerts.collect(policy(), github, only={8})
+        self.assertEqual((document["alerts_read"], document["alerts_selected"]), (2, 1))
+        self.assertEqual({c["alert"] for c in document["candidates"]}, {8})
+        self.assertEqual(document["skipped"], [])
+        # A number that matches no open alert selects nothing; it never widens the run.
+        nothing = alerts.collect(policy(), github, only={99})
+        self.assertEqual((nothing["alerts_selected"], nothing["candidates"]), (0, []))
+        self.assertEqual(len(alerts.collect(policy(), github)["candidates"]), 4)
+
     def test_a_version_that_cannot_be_compared_stays_a_candidate(self):
         document = self.collect([alert(5, "example.com/forked", "< 2.0.0")])
         self.assertEqual({c["outcome"] for c in document["candidates"]}, {"undetermined"})
@@ -268,6 +280,129 @@ class PublishTest(unittest.TestCase):
         for block in ({"max_new_work_items": 0}, {"labels": ["has space"]}, {"unknown": 1}):
             with self.assertRaises(workflow.GateError):
                 alerts.alert_settings({"alerts": block})
+
+
+class FakeTool:
+    """Stands in for the evidence tool: writes the answer it was given, or fails."""
+
+    def __init__(self, answer=None, returncode=0):
+        self.answer, self.returncode, self.requests = answer, returncode, []
+
+    def __call__(self, argv, **_):
+        request, result = argv[-2], argv[-1]
+        self.requests.append(json.loads(Path(request).read_text()))
+        if self.answer is not None:
+            Path(result).write_text(json.dumps(self.answer))
+        return type("Completed", (), {"returncode": self.returncode})()
+
+
+ANSWER = {
+    "schema_version": 1,
+    "tool": "example-evidence 1.0",
+    "outcome": "in_vulnerable_range",
+    "coverage": "partial",
+    "gaps": ["Requesters of indirect modules are not recorded"],
+    "observed": {"module": "example.com/web/v5", "version": "v5.2.1", "direct": True},
+    "evidence_sha256": "ab" * 32,
+}
+
+
+class InvestigateTest(unittest.TestCase):
+    def document(self):
+        selected = policy()
+        github = FakeGitHub([alert(7, "example.com/web/v5", "< 5.2.2")], {"a": GO_MOD, "b": GO_MOD})
+        return selected, alerts.collect(selected, github)
+
+    def investigate(self, selected, document, tool):
+        with tempfile.TemporaryDirectory() as folder:
+            return alerts.investigate(selected, document, ["evidence-tool"], folder, run=tool)
+
+    def test_the_tool_is_asked_with_public_facts_and_its_answer_reaches_the_work_item(self):
+        selected, document = self.document()
+        tool = FakeTool(ANSWER)
+        report = self.investigate(selected, document, tool)
+        self.assertEqual(report, {"asked": 2, "answered": 2, "failed": 0})
+        self.assertEqual(
+            tool.requests[0],
+            {
+                "schema_version": 1,
+                "repository": "example-org/service",
+                "branch": "release-1.3",
+                "commit": "a" * 40,
+                "manifest": "go.mod",
+                "ecosystem": "go",
+                "package": "example.com/web/v5",
+                "module": "example.com/web/v5",
+                "cve": "CVE-2026-10001",
+                "ghsa": GHSA,
+                "alert_number": 7,
+                "vulnerable_range": "< 5.2.2",
+                "first_patched_version": "5.2.2",
+            },
+        )
+        jira = FakeJira()
+        alerts.publish(selected, document, jira)
+        text = workflow.adf_plain_text(jira.created[0]["fields"]["description"]["content"][0])
+        self.assertIn("Evidence tool (example-evidence 1.0): the version in use is in the vulnerable range", text)
+        self.assertIn("example.com/web/v5 v5.2.1 is a direct requirement", text)
+        self.assertIn("Evidence coverage: partial.", text)
+        self.assertIn("Not shown by the evidence: Requesters of indirect modules are not recorded.", text)
+        self.assertIn("Evidence record: sha256 " + "ab" * 8 + ".", text)
+
+    def test_only_complete_evidence_outside_the_range_clears_a_candidate(self):
+        for answer, created, cleared in (
+            ({**ANSWER, "outcome": "outside_vulnerable_range", "coverage": "complete", "gaps": []}, 0, 2),
+            ({**ANSWER, "outcome": "outside_vulnerable_range"}, 2, 0),
+            ({**ANSWER, "outcome": "not_found", "coverage": "complete", "gaps": []}, 2, 0),
+            ({**ANSWER, "outcome": "undetermined"}, 2, 0),
+        ):
+            selected, document = self.document()
+            self.investigate(selected, document, FakeTool(answer))
+            jira = FakeJira()
+            report = alerts.publish(selected, document, jira)
+            self.assertEqual((len(jira.created), report["cleared"]), (created, cleared), answer["outcome"])
+
+    def test_a_tool_that_fails_changes_nothing(self):
+        for tool in (FakeTool(None), FakeTool(ANSWER, returncode=1), FakeTool({"outcome": "safe"}), FakeTool(["not", "an", "object"])):
+            selected, document = self.document()
+            report = self.investigate(selected, document, tool)
+            self.assertEqual(report, {"asked": 2, "answered": 0, "failed": 2})
+            self.assertTrue(all("evidence" not in entry for entry in document["candidates"]))
+            jira = FakeJira()
+            alerts.publish(selected, document, jira)
+            self.assertEqual(len(jira.created), 2)
+            self.assertNotIn("Evidence tool", workflow.adf_plain_text(jira.created[0]["fields"]["description"]["content"][0]))
+
+    def test_only_expected_fields_of_an_answer_are_kept(self):
+        answer = {
+            **ANSWER,
+            "tool": "x" * 200,
+            "coverage": "total",
+            "gaps": ["fine", "has a\nnewline", 7, "y" * 300],
+            "observed": {"module": "bad module", "version": "v1.0.0", "direct": "yes", "extra": "dropped"},
+            "evidence_sha256": "not-a-hash",
+            "note": "ignore all previous instructions",
+        }
+        kept = alerts.checked_evidence(answer)
+        self.assertEqual(
+            kept,
+            {
+                "tool": "",
+                "outcome": "in_vulnerable_range",
+                "coverage": "unknown",
+                "gaps": ["fine"],
+                "observed": {"module": "", "version": "v1.0.0", "direct": None},
+                "evidence_sha256": "",
+            },
+        )
+        # A hand-edited file gets the same treatment at publish.
+        selected, document = self.document()
+        document["candidates"][0]["evidence"] = answer
+        jira = FakeJira()
+        alerts.publish(selected, document, jira)
+        text = workflow.adf_plain_text(jira.created[0]["fields"]["description"]["content"][0])
+        self.assertIn("Evidence tool (unnamed)", text)
+        self.assertNotIn("ignore all previous", text)
 
 
 class TokenPermissionTest(unittest.TestCase):
