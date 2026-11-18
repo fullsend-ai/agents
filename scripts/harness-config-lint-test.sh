@@ -356,18 +356,24 @@ _check_hardcoded_callback() {
 }
 
 _check_schema_callback() {
-  local h="$1" p="$2" loc="$3" root="$4"
-  check_schema_files_at_path "${h}" "${p}" "${loc}" "${root}" || return 1
+  local h="$1" p="$2" loc="$3" root="$4" is_harness_dir="${5:-false}"
+  check_schema_files_at_path "${h}" "${p}" "${loc}" "${root}" "${is_harness_dir}" || return 1
 }
 
 # Helper: check schema file existence at a given validation_loop path
-# Resolves schema paths relative to the provided resolve_root (matching engine's ResolveRelativeTo)
-# Rejects relative paths that escape the bundle root via .. (enforcing containment)
+# For harness/ files (published as URL bases): Applies validateBaseRelPath rules
+#   - Reject absolute paths (must be relative for URL-base consumption)
+#   - Reject any .. segment (no path traversal, even internal normalization)
+#   - Accept relative paths without .. (simple relative paths only)
+# For examples/*/harness files: Can use looser ResolveRelativeTo rules
+#   - Allow some .. traversal for local resolution (but still reject escaping root)
+# Resolves schema paths relative to the provided resolve_root
 check_schema_files_at_path() {
   local harness="$1"
   local path="$2"
   local location="${3:-.}"
   local resolve_root="$4"
+  local is_harness_dir="${5:-false}"  # Flag: true if file is in HARNESS_DIR
   local harness_name
   harness_name="$(basename "${harness}")"
 
@@ -446,6 +452,20 @@ check_schema_files_at_path() {
     return 0
   fi
 
+  # For harness/ files (published as URL bases): Apply stricter validateBaseRelPath rules
+  if [[ "${is_harness_dir}" == "true" ]]; then
+    # Rule 1: Reject absolute paths (must be relative for URL-base consumption)
+    if [[ "${schema_path}" == /* ]]; then
+      echo "${harness_name}: ${location} schema path must be relative (not absolute): ${schema_path}"
+      return 1
+    fi
+    # Rule 2: Reject any .. segment (no path traversal, enforces flat structure)
+    if [[ "${schema_path}" =~ (^|/)\.\.(/|$) ]]; then
+      echo "${harness_name}: ${location} schema path contains .. traversal (not allowed): ${schema_path}"
+      return 1
+    fi
+  fi
+
   # Resolve relative to the provided root (matching engine's ResolveRelativeTo)
   # If no root provided, fall back to dirname(dirname(harness)) for backwards compatibility
   local resolve_dir="${resolve_root}"
@@ -453,10 +473,10 @@ check_schema_files_at_path() {
     resolve_dir="$(dirname "$(dirname "${harness}")")"
   fi
 
-  # Reject relative paths that escape the bundle root directory via .. components
+  # For examples/*/harness files: Reject relative paths that escape the bundle root directory via .. components
   # (engine's ResolveRelativeTo enforces containment for relative paths)
-  # Normalize the path and check if the target lies outside resolve_root
-  if [[ "${schema_path}" != /* ]] && [[ "${schema_path}" =~ (^|/)\.\.(/|$) ]]; then
+  # This check is redundant for harness/ files (already rejected .. above) but needed for examples files
+  if [[ "${is_harness_dir}" != "true" ]] && [[ "${schema_path}" != /* ]] && [[ "${schema_path}" =~ (^|/)\.\.(/|$) ]]; then
     # Resolve the path and check containment using Python for portability
     # (realpath -s is GNU-only and fails on macOS)
     local normalized_path
@@ -472,7 +492,8 @@ check_schema_files_at_path() {
     fi
   fi
   local full_schema_path
-  # Only prepend resolve_dir for relative paths; preserve absolute paths
+  # For examples/*/harness files, preserve absolute paths
+  # For harness/ files, all paths are relative (enforced above)
   if [[ "${schema_path}" == /* ]]; then
     full_schema_path="${schema_path}"
   else
@@ -603,6 +624,7 @@ test_schema_files_exist_and_valid() {
   local file_count=0
 
   # Process harness/ with REPO_ROOT as resolve root
+  # Apply stricter validateBaseRelPath rules (is_harness_dir=true)
   for harness in "${HARNESS_DIR}"/*.yaml; do
     [[ -f "${harness}" ]] || continue
     file_count=$((file_count + 1))
@@ -612,14 +634,15 @@ test_schema_files_exist_and_valid() {
     # Reject multi-document YAML files
     check_single_document "${harness}" || found_error=1
 
-    # Check top-level schema
-    _check_schema_callback "${harness}" "." "top-level" "${REPO_ROOT}" || found_error=1
+    # Check top-level schema (with validateBaseRelPath enforcement)
+    _check_schema_callback "${harness}" "." "top-level" "${REPO_ROOT}" "true" || found_error=1
 
-    # Check forge and overlay schemas via callback
-    for_each_forge_and_overlay_location "${harness}" _check_schema_callback "${REPO_ROOT}" || found_error=1
+    # Check forge and overlay schemas via callback (with validateBaseRelPath enforcement)
+    for_each_forge_and_overlay_location "${harness}" _check_schema_callback "${REPO_ROOT}" "true" || found_error=1
   done
 
   # Process examples/*/harness/ with dirname(dirname(harness)) as resolve root
+  # Use looser ResolveRelativeTo rules (is_harness_dir=false)
   for harness in "${REPO_ROOT}"/examples/*/harness/*.yaml; do
     [[ -f "${harness}" ]] || continue
     file_count=$((file_count + 1))
@@ -631,11 +654,11 @@ test_schema_files_exist_and_valid() {
     # Reject multi-document YAML files
     check_single_document "${harness}" || found_error=1
 
-    # Check top-level schema
-    _check_schema_callback "${harness}" "." "top-level" "${resolve_root}" || found_error=1
+    # Check top-level schema (with looser rules)
+    _check_schema_callback "${harness}" "." "top-level" "${resolve_root}" "false" || found_error=1
 
-    # Check forge and overlay schemas via callback
-    for_each_forge_and_overlay_location "${harness}" _check_schema_callback "${resolve_root}" || found_error=1
+    # Check forge and overlay schemas via callback (with looser rules)
+    for_each_forge_and_overlay_location "${harness}" _check_schema_callback "${resolve_root}" "false" || found_error=1
   done
 
   if [[ ${file_count} -eq 0 ]]; then
@@ -664,8 +687,8 @@ test_negative_fixtures() {
   local expected_failures=(
     "script-no-schema.yaml:test_validation_loop_schema:script-no-schema\.yaml.*top-level validation_loop has script but no schema"
     "schema-path-explicit-empty.yaml:test_validation_loop_schema:schema-path-explicit-empty\.yaml.*top-level validation_loop\.schema is empty"
-    "schema-escaped-path.yaml:test_schema_files_exist_and_valid:schema-escaped-path\.yaml.*schema path escapes bundle root via"
-    "schema-traversal-to-sibling.yaml:test_schema_files_exist_and_valid:schema-traversal-to-sibling\.yaml.*schema path escapes bundle root via"
+    "schema-escaped-path.yaml:test_schema_files_exist_and_valid:schema-escaped-path\.yaml.*schema path contains.*\\..*traversal.*not allowed"
+    "schema-traversal-to-sibling.yaml:test_schema_files_exist_and_valid:schema-traversal-to-sibling\.yaml.*schema path contains.*\\..*traversal.*not allowed"
     "forge-script-no-inherited-schema.yaml:test_validation_loop_schema:forge-script-no-inherited-schema\.yaml.*validation_loop has script but no schema.*no top-level schema"
     "overlay-script-no-inherited-schema.yaml:test_validation_loop_schema:overlay-script-no-inherited-schema\.yaml.*validation_loop has script but no schema.*no top-level schema"
     "forge-null-inherited-schema.yaml:test_validation_loop_schema:forge-null-inherited-schema\.yaml.*validation_loop has script but schema is null"
@@ -689,7 +712,8 @@ test_negative_fixtures() {
     "multiple-json-values.yaml:test_schema_files_exist_and_valid:multiple-json-values\.yaml.*schema file is not valid JSON"
     "forge-missing-schema-file.yaml:test_schema_files_exist_and_valid:forge-missing-schema-file\.yaml.*schema file not found"
     "overlay-bad-json-schema.yaml:test_schema_files_exist_and_valid:overlay-bad-json-schema\.yaml.*schema file is not valid JSON"
-    "absolute-schema-path.yaml:test_schema_files_exist_and_valid:absolute-schema-path\.yaml.*schema file not found"
+    "absolute-schema-path.yaml:test_schema_files_exist_and_valid:absolute-schema-path\.yaml.*schema path must be relative.*not absolute"
+    "schema-internal-dotdot-path.yaml:test_schema_files_exist_and_valid:schema-internal-dotdot-path\.yaml.*schema path contains.*\\..*traversal.*not allowed"
     "forge-literal-null-schema.yaml:test_schema_files_exist_and_valid:forge-literal-null-schema\.yaml.*schema file not found"
   )
 
@@ -824,7 +848,6 @@ test_positive_fixtures() {
     "schema-with-env-var.yaml"
     "forge-empty-schema-inherits-top-level.yaml"
     "schema-with-consecutive-dots.yaml"
-    "schema-internal-dotdot-path.yaml"
   )
 
   for fixture_name in "${expected_passes[@]}"; do
@@ -884,57 +907,6 @@ test_positive_fixtures() {
       continue
     fi
   done
-
-  # Test absolute-schema-path-valid: create a temporary fixture with an absolute path
-  local abs_test_dir
-  FIXTURE_COUNTER=$((FIXTURE_COUNTER + 1))
-  abs_test_dir="${FIXTURE_ROOT_TEMP}/absolute-${FIXTURE_COUNTER}"
-  mkdir -p "${abs_test_dir}/schemas" || {
-    echo "Failed to create temporary directory for absolute path fixture"
-    return 1
-  }
-  local abs_schema_path="${SCRIPT_DIR}/test-fixtures/schemas/review-result.schema.json"
-  # Use unquoted heredoc to expand ${abs_schema_path} variable
-  if ! cat > "${abs_test_dir}/absolute-schema-path-valid.yaml" << EOF
----
-validation_loop:
-  script: scripts/validate-output-schema.sh
-  schema: ${abs_schema_path}
-EOF
-  then
-    echo "Failed to write absolute path fixture"
-    return 1
-  fi
-
-  # Copy schema file for the absolute path fixture test (even though absolute path references it)
-  if [[ -f "${abs_schema_path}" ]]; then
-    cp "${abs_schema_path}" "${abs_test_dir}/schemas/" 2>/dev/null || true
-  fi
-
-  # Run all three tests on absolute path fixture
-  local exit_code=0
-  output="$(HARNESS_DIR="${abs_test_dir}" REPO_ROOT="${abs_test_dir}" test_validation_loop_schema 2>&1)" || exit_code=$?
-  if [[ ${exit_code} -ne 0 ]]; then
-    echo "Fixture absolute-schema-path-valid.yaml: test_validation_loop_schema failed"
-    echo "${output}"
-    return 1
-  fi
-
-  exit_code=0
-  output="$(HARNESS_DIR="${abs_test_dir}" REPO_ROOT="${abs_test_dir}" test_no_hardcoded_schema 2>&1)" || exit_code=$?
-  if [[ ${exit_code} -ne 0 ]]; then
-    echo "Fixture absolute-schema-path-valid.yaml: test_no_hardcoded_schema failed"
-    echo "${output}"
-    return 1
-  fi
-
-  exit_code=0
-  output="$(HARNESS_DIR="${abs_test_dir}" REPO_ROOT="${abs_test_dir}" test_schema_files_exist_and_valid 2>&1)" || exit_code=$?
-  if [[ ${exit_code} -ne 0 ]]; then
-    echo "Fixture absolute-schema-path-valid.yaml: test_schema_files_exist_and_valid failed"
-    echo "${output}"
-    return 1
-  fi
 
   if [[ ${found_error} -eq 0 ]]; then
     return 0
