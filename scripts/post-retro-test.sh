@@ -113,6 +113,8 @@ echo "token=\${FULLSEND_JIRA_TOKEN-unset} email=\${FULLSEND_JIRA_EMAIL-unset}" >
 if [[ "\$1" == "issues" ]] && [[ "\$2" == "create" ]]; then
   if [[ "\$3" == "--help" ]]; then
     echo "Usage: fullsend issues create [flags]"
+    echo "--fullsend-dir"
+    echo "--tracker"
     exit 0
   fi
   if [[ -n "\${FULLSEND_MOCK_FAIL_TITLE:-}" ]] && [[ "\$*" == *"--title \${FULLSEND_MOCK_FAIL_TITLE}"* ]]; then
@@ -201,6 +203,8 @@ if [[ "${URL}" == *"atlassian.net/rest/api/3"* ]]; then
         echo '{"issues":[{"key":"PROJ-7","fields":{"summary":"a to be"}}],"isLast":true}'
       elif [[ "${JIRA_MOCK_STOPWORD_DUP:-}" == "1" ]]; then
         echo '{"issues":[{"key":"PROJ-7","fields":{"summary":"Fix this bug"}}],"isLast":true}'
+      elif [[ "${JIRA_MOCK_MULTILINE_DUP:-}" == "1" ]]; then
+        echo '{"issues":[{"key":"PROJ-7","fields":{"summary":"Fix Jira API search"}}],"isLast":true}'
       elif [[ "${JIRA_MOCK_DUP:-}" == "1" ]]; then
         echo '{"issues":[{"key":"PROJ-7","fields":{"summary":"Improve error handling in widget service"}}],"isLast":true}'
       else
@@ -2475,9 +2479,19 @@ export GH_TOKEN="fake-token"
 export ORIGINATING_URL="https://github.com/test-org/test-repo/pull/10"
 export FULLSEND_TRACKER="jira"
 export JIRA_BASE_URL="https://mock.atlassian.net"
+export JIRA_API_URL="https://mock.atlassian.net"
+mkdir -p "${TMPDIR}/dot-fullsend"
+cat > "${TMPDIR}/dot-fullsend/config.yaml" <<CFGEOF
+tracker:
+  jira:
+    base_url: https://mock.atlassian.net
+CFGEOF
 export JIRA_USER_EMAIL="bot@mock.example"
 export JIRA_TOKEN="fake-jira-token"
 export FULLSEND_DIR="${TMPDIR}/dot-fullsend"
+export JIRA_API_URL="https://mock.atlassian.net"
+export FULLSEND_JIRA_CLIENT_ID=""
+export FULLSEND_JIRA_CLIENT_SECRET=""
 export RETRO_JIRA_PROJECT="PROJ"
 export RETRO_MODE="all"
 
@@ -2608,20 +2622,27 @@ run_test_stdout "jira/duplicate-search-page-cap-match-wins" \
 unset JIRA_MOCK_SEARCH_PAGE_CAP_DUP RETRO_JIRA_MAX_PAGES
 unset JIRA_MOCK_DUP
 
-# Stop words are excluded from duplicate terms and an empty term set uses a
-# project-only search, retaining the exact-summary check.
+# Stop words are excluded from duplicate terms, title tokenization builds a
+# single candidate query, and an empty term set uses project-only search.
 JIRA_STOPWORD_TITLE_FIXTURE=$(printf '%s' "${FIXTURE_ONE_PROPOSAL}" | jq -c '.proposals[0].title = "Fix this bug"')
 export JIRA_MOCK_STOPWORD_DUP="1"
 run_test_stdout "jira/duplicate-stopword-title" \
   "${JIRA_STOPWORD_TITLE_FIXTURE}" \
   "already exists in Jira: https://mock.atlassian.net/browse/PROJ-7"
-if grep -qF 'project = ' "${CURL_LOG}" && ! grep -qF 'summary ~ "this"' "${CURL_LOG}"; then
+if grep -qF 'project = ' "${CURL_LOG}" && ! grep -qF 'summary ~ "this"' "${CURL_LOG}" \
+  && ! grep -qF 'summary ~ "the"' "${CURL_LOG}"; then
   echo "PASS: jira/duplicate-stopword-title-search"
 else
   echo "FAIL: jira/duplicate-stopword-title-search — stop word required or no project fallback"
   FAILURES=$((FAILURES + 1))
 fi
 unset JIRA_MOCK_STOPWORD_DUP
+JIRA_MULTILINE_TITLE_FIXTURE=$(printf '%s' "${FIXTURE_ONE_PROPOSAL}" | jq -c '.proposals[0].title = "Fix Jira API search"')
+export JIRA_MOCK_MULTILINE_DUP="1"
+run_test_stdout "jira/duplicate-multiline-title" \
+  "${JIRA_MULTILINE_TITLE_FIXTURE}" \
+  "already exists in Jira: https://mock.atlassian.net/browse/PROJ-7"
+unset JIRA_MOCK_MULTILINE_DUP
 JIRA_ALL_STOPWORDS_FIXTURE=$(printf '%s' "${FIXTURE_ONE_PROPOSAL}" | jq -c '.proposals[0].title = "a to be"')
 export JIRA_MOCK_DUP_PROJECT_ONLY="1"
 run_test_stdout "jira/duplicate-stopword-project-fallback" \
@@ -2773,9 +2794,16 @@ export GH_TOKEN="fake-token"
 export ORIGINATING_URL="https://github.com/test-org/test-repo/pull/10"
 export FULLSEND_TRACKER="jira"
 export JIRA_BASE_URL="https://mock.atlassian.net"
+export JIRA_API_URL="https://mock.atlassian.net"
 export JIRA_USER_EMAIL="bot@mock.example"
 export JIRA_TOKEN="fake-jira-token"
 export FULLSEND_DIR="${TMPDIR}/dot-fullsend"
+mkdir -p "${FULLSEND_DIR}"
+cat > "${FULLSEND_DIR}/config.yaml" <<CFGEOF
+tracker:
+  jira:
+    base_url: https://mock.atlassian.net
+CFGEOF
 export RETRO_JIRA_PROJECT="PROJ"
 export RETRO_MODE="all"
 export GITHUB_WORKSPACE="${JIRA_WORKSPACE}"
@@ -2927,16 +2955,23 @@ run_test_stdout "jira/allowlist-unset-denies" \
   "${FIXTURE_ONE_PROPOSAL}" \
   "Skipping issue creation in Jira project 'PROJ'"
 
-# 15b. tracker.jira without allowed_targets only allows its configured primary project
+# 15b. A missing or empty policy object does not inherit forge allowlist grants.
+mkdir -p "${JIRA_WORKSPACE}/.fullsend"
 cat > "${JIRA_WORKSPACE}/config.yaml" <<CFGEOF
 version: "1"
 tracker:
+  jira: {}
+CFGEOF
+cat > "${FULLSEND_DIR}/config.yaml" <<CFGEOF
+tracker:
   jira:
+    base_url: https://mock.atlassian.net
     project: PROJ
 CFGEOF
-run_test_stdout "jira/allowlist-no-allowed-targets-allows" \
+cp "${JIRA_WORKSPACE}/config.yaml" "${JIRA_WORKSPACE}/.fullsend/config.yaml"
+run_test_stdout "jira/allowlist-no-allowed-targets-denies" \
   "${FIXTURE_ONE_PROPOSAL}" \
-  "Created: https://mock.atlassian.net/browse/PROJ-100"
+  "Skipping issue creation in Jira project 'PROJ'"
 
 cat > "${JIRA_WORKSPACE}/config.yaml" <<CFGEOF
 version: "1"
@@ -2996,18 +3031,34 @@ else
   FAILURES=$((FAILURES + 1))
 fi
 export RETRO_MODE="all"
+cat > "${FULLSEND_DIR}/config.yaml" <<CFGEOF
+tracker:
+  jira:
+    base_url: https://mock.atlassian.net
+    project: PROJ
+CFGEOF
 
-# 18. Allowlist: tracker.jira with primary project and no allowed_targets allows project
+# 18. An explicit empty list revokes the configured primary project.
+mkdir -p "${JIRA_WORKSPACE}/.fullsend"
 cat > "${JIRA_WORKSPACE}/config.yaml" <<CFGEOF
 version: "1"
 tracker:
   jira:
+    project: OTHER
+    allowed_targets:
+      projects: []
+CFGEOF
+cat > "${FULLSEND_DIR}/config.yaml" <<CFGEOF
+tracker:
+  jira:
+    base_url: https://mock.atlassian.net
     project: PROJ
 CFGEOF
+cp "${JIRA_WORKSPACE}/config.yaml" "${JIRA_WORKSPACE}/.fullsend/config.yaml"
 export RETRO_JIRA_PROJECT="PROJ"
-run_test_stdout "jira/allowlist-primary-project-allows" \
+run_test_stdout "jira/allowlist-primary-project-revoked-by-empty-targets" \
   "${FIXTURE_ONE_PROPOSAL}" \
-  "Created: https://mock.atlassian.net/browse/PROJ-100"
+  "Skipping issue creation in Jira project 'PROJ'"
 
 # A case-insensitive explicit target is admitted by the pre-create gate.
 cat > "${JIRA_WORKSPACE}/config.yaml" <<CFGEOF

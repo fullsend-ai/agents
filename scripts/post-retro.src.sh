@@ -108,6 +108,8 @@ ALLOW_TARGETS_KEY="tracker.${TRACKER_PROVIDER}.allowed_targets"
 # ALLOWED_SCOPES holds GitHub orgs or GitLab groups (a scope admits every
 # repository under it, including GitLab subgroups); ALLOWED_REPOS holds
 # repositories allowed by exact path (or Jira project keys when FULLSEND_TRACKER=jira).
+# Jira's CLI accepts its primary project plus explicit additional target
+# projects. Match that same policy here before invoking the CLI.
 ALLOWED_SCOPES=""
 ALLOWED_REPOS=""
 JIRA_ALLOWLIST_STATE="unset"
@@ -231,6 +233,12 @@ is_target_allowed() {
         if [[ -n "${ALLOWED_REPOS}" ]] && echo "${ALLOWED_REPOS}" | grep -qiFx "${target_repo}"; then
           return 0
         fi
+        local primary_project
+        primary_project=$(yq -r '.tracker.jira.project // empty' "${CONFIG_FILE}" 2>/dev/null || true)
+        if [[ -z "${primary_project}" && -f "${BASE_CONFIG_FILE}" ]]; then
+          primary_project=$(yq -r '.tracker.jira.project // empty' "${BASE_CONFIG_FILE}" 2>/dev/null || true)
+        fi
+        [[ -n "${primary_project}" && "${primary_project,,}" == "${target_repo,,}" ]] && return 0
         return 1
         ;;
       unset)
@@ -243,6 +251,10 @@ is_target_allowed() {
           primary_project=$(yq -r '.tracker.jira.project // empty' "${BASE_CONFIG_FILE}" 2>/dev/null || true)
         fi
         [[ -n "${primary_project}" && "${primary_project,,}" == "${target_repo,,}" ]]
+        return $?
+        ;;
+      *)
+        return 1
         ;;
     esac
   fi
