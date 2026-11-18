@@ -2424,6 +2424,12 @@ run_jira_test "jira-split-closes-via-transition" \
   '{"action":"split","reasoning":"bundles two independent features","sub_issues":[{"title":"Feature A","body":"Do A"},{"title":"Feature B","body":"Do B"}],"comment":"Splitting into two sub-issues."}' \
   '{"transition":{"id":"51"}}'
 
+# Jira: ready-for-triage in label_actions is refused like on GitHub and
+# GitLab (#2082); the split's own sub-issue label (below) is unaffected.
+run_jira_test_stdout "jira-ready-for-triage-refused" \
+  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_crash"},"comment":"## Triage Summary\n\nReady.","label_actions":{"reason":"Re-run triage.","actions":[{"action":"add","label":"ready-for-triage"}]}}' \
+  "::warning::Refused to add control label 'ready-for-triage' -- control labels are managed by the triage pipeline"
+
 # Jira split: triage dispatch adds ready-for-triage label to created sub-issues (#1123).
 run_jira_test "jira-split-dispatches-triage" \
   '{"action":"split","reasoning":"bundles two independent features","sub_issues":[{"title":"Feature A","body":"Do A"},{"title":"Feature B","body":"Do B"}],"comment":"Splitting into two sub-issues."}' \
