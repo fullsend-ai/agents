@@ -42,12 +42,13 @@ fi
 # Jira updates) are cut to this many characters, so "Next steps" always fits.
 TRIAGE_STATE_MAX_EXTRA_FOOTER=1000
 
-# The opener of a <summary> whose text starts with "Previous run" (any case,
-# after whitespace, &nbsp; or inline tags), which is what makes a <details>
-# block a history fold to step 2e. Agent text has it escaped, so the next
-# run never takes text above the state marker for history; the post-script's
-# own <details> blocks (prerequisites, split) keep working.
-TRIAGE_STATE_FOLD_RE='(?i)<(?=summary\b[^>]*>(?:\s|&nbsp;|<[^>]*>)*previous[\s-]*run)'
+# The opener of a <summary> whose text reads "Previous run" (any case, with
+# whitespace, a hyphen, &nbsp;, a numeric entity or inline tags before or
+# between the words), which is what makes a <details> block a history fold
+# to step 2e. Agent text has it escaped, so the next run never takes text
+# above the state marker for history; the post-script's own <details>
+# blocks (prerequisites, split) keep working.
+TRIAGE_STATE_FOLD_RE='(?i)<(?=summary\b[^>]*>(?:\s|&nbsp;|&#x?[0-9a-f]+;|<[^>]*>)*previous(?:\s|-|&nbsp;|&#x?[0-9a-f]+;|<[^>]*>)*run)'
 
 # triage_state_json RESULT_FILE — print the state as compact JSON, bounded
 # to the schema's limits (whitespace runs folded to one space, strings and

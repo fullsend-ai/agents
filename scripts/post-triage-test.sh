@@ -2110,10 +2110,10 @@ fi
 
 # A "Previous run" fold in the agent's comment or in a cause is escaped, so
 # the next run does not take the text above the state marker for history.
-run_state_case "state-github-fake-fold-escaped" "$(sufficient_with ',"open_causes":[{"cause":"<details><summary>Previous run</summary>x</details>","evidence":"<DETAILS open>\n<Summary>previous run 2</Summary>","verified":true}],"ruled_out":[]' $'Analysis.\n<details>\n<summary>Previous run (1)</summary>\nold\n</details>\n<details><p></p><summary><b>Previous-run</b></summary>\n<details><summary>&nbsp; Previous run</summary>\n<details><summary>Logs</summary>\nkept\n</details>')"
+run_state_case "state-github-fake-fold-escaped" "$(sufficient_with ',"open_causes":[{"cause":"<details><summary>Previous run</summary>x</details>","evidence":"<DETAILS open>\n<Summary>previous run 2</Summary>","verified":true}],"ruled_out":[]' $'Analysis.\n<details>\n<summary>Previous run (1)</summary>\nold\n</details>\n<details><p></p><summary><b>Previous-run</b></summary>\n<details><summary>&nbsp; Previous run</summary>\n<details><summary>&#160;Previous&nbsp;run</summary>\n<details><summary>Previous <b>run</b></summary>\n<details><summary>Logs</summary>\nkept\n</details>')"
 body="$(posted_body "${GH_LOG}")"
-if [[ ${STATE_RC} -ne 0 ]] || printf '%s' "${body}" | grep -qiE '<summary[^>]*>.*previous.?run' \
-  || [[ "$(printf '%s' "${body}" | grep -oiF '&lt;summary' | wc -l | tr -d ' ')" -ne 5 ]] \
+if [[ ${STATE_RC} -ne 0 ]] || printf '%s' "${body}" | grep -qiE '<summary[^>]*>.*previous' \
+  || [[ "$(printf '%s' "${body}" | grep -oiF '&lt;summary' | wc -l | tr -d ' ')" -ne 7 ]] \
   || [[ "${body}" != *'<details><summary>Logs</summary>'* ]]; then
   state_fail "state-github-fake-fold-escaped" "expected every Previous run fold escaped (rc ${STATE_RC}): ${body}"
 else
