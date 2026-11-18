@@ -512,14 +512,18 @@ for _mc_i in $(seq 1 12); do
   ${MC_REAL_GIT} -C "${_mc_repo}" commit -q -am "fix(#42): padding commit ${_mc_i} ${_mc_pad}"
 done
 
+# Runs the extracted COMMIT_SUBJECT= line in a subshell. That line reads
+# MERGE_BASE and assigns COMMIT_SUBJECT through eval, which the linter cannot
+# see. PATH is scoped to the eval with a prefix assignment, so it does not
+# leak into this subshell or into later tests.
 _eval_commit_subject_pipefail() {
   (
     set -eo pipefail
     cd "${_mc_repo}"
-    # shellcheck disable=SC2030,SC2034,SC2153
+    # shellcheck disable=SC2034
     MERGE_BASE="${_mc_merge_base}"
-    PATH="$(dirname "${MC_REAL_GIT}"):${PATH}"
-    eval "$1" || exit $?
+    PATH="$(dirname "${MC_REAL_GIT}"):${PATH}" eval "$1" || exit $?
+    # shellcheck disable=SC2153
     printf '%s' "${COMMIT_SUBJECT}"
   )
 }
