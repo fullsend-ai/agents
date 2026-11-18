@@ -1,0 +1,8 @@
+---
+# Positive fixture: examples/*/harness allows internal .. normalization
+# (looser than harness/ which rejects any ..)
+# Path: schemas/../schemas/test-schema.json contains .. but normalizes within bundle
+# and stays within examples/test-harness, so it's allowed
+validation_loop:
+  script: scripts/validate-output-schema.sh
+  schema: schemas/../schemas/test-schema.json

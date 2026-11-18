@@ -1,0 +1,7 @@
+---
+# Positive fixture: examples/*/harness allows absolute schema paths
+# (looser than harness/ which rejects absolute paths)
+# This fixture uses a placeholder absolute path that will be created during testing
+validation_loop:
+  script: scripts/validate-output-schema.sh
+  schema: /tmp/shared/schemas/test-schema.json

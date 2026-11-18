@@ -715,6 +715,7 @@ test_negative_fixtures() {
     "absolute-schema-path.yaml:test_schema_files_exist_and_valid:absolute-schema-path\.yaml.*schema path must be relative.*not absolute"
     "schema-internal-dotdot-path.yaml:test_schema_files_exist_and_valid:schema-internal-dotdot-path\.yaml.*schema path contains.*\\..*traversal.*not allowed"
     "forge-literal-null-schema.yaml:test_schema_files_exist_and_valid:forge-literal-null-schema\.yaml.*schema file not found"
+    "examples-harness-negative/schema-traversal-to-sibling-example.yaml:test_schema_files_exist_and_valid:schema-traversal-to-sibling-example\.yaml.*schema path escapes bundle root via"
   )
 
   for fixture_spec in "${expected_failures[@]}"; do
@@ -805,6 +806,36 @@ test_negative_fixtures() {
       # This makes the containment check work: resolve_root is bundle_dir, normalized path ../example-other/...
       # resolves to parent_dir/example-other which shares the bundle prefix but violates the directory boundary
       output="$(HARNESS_DIR="${bundle_dir}" REPO_ROOT="${bundle_dir}" ${test_func} 2>&1)" || exit_code=$?
+    # Special handling for examples-harness-negative fixtures to test examples/*/harness validation
+    elif [[ "${fixture_name}" == *"-example.yaml" ]] && [[ "${fixture_file}" == *"examples-harness-negative"* ]]; then
+      # This is an examples/*/harness negative fixture
+      # Create examples/test-example/ and examples/test-example-other/ structures
+      local parent_dir="${test_dir}/examples"
+      local test_example_dir="${parent_dir}/test-example"
+      local test_example_other_dir="${parent_dir}/test-example-other"
+      mkdir -p "${test_example_dir}/harness" "${test_example_other_dir}/schemas" || {
+        echo "Failed to create examples directory structure for ${fixture_name}"
+        found_error=1
+        continue
+      }
+      # The fixture was copied with its subdirectory path (e.g., examples-harness-negative/file.yaml)
+      # Extract just the base filename for the target
+      local base_fixture_name
+      base_fixture_name="$(basename "${fixture_name}")"
+      # Move the fixture to the test-example/harness directory
+      mv "${test_dir}/${fixture_name}" "${test_example_dir}/harness/${base_fixture_name}" || {
+        echo "Failed to move examples fixture to test-example/harness directory"
+        found_error=1
+        continue
+      }
+      # Create a valid schema file in the sibling directory to prove it exists
+      printf '{"type": "object"}\n' > "${test_example_other_dir}/schemas/schema.json" || {
+        echo "Failed to create sibling schema file for examples fixture"
+        found_error=1
+        continue
+      }
+      # Run test with test_dir as REPO_ROOT (so examples/ is scanned)
+      output="$(HARNESS_DIR="${test_dir}" REPO_ROOT="${test_dir}" ${test_func} 2>&1)" || exit_code=$?
     else
       # Run the test with HARNESS_DIR set to temp dir containing only this fixture
       # Use test_dir as both HARNESS_DIR and REPO_ROOT so resolve_root is the fixture directory
@@ -849,6 +880,68 @@ test_positive_fixtures() {
     "forge-empty-schema-inherits-top-level.yaml"
     "schema-with-consecutive-dots.yaml"
   )
+
+  # Test positive examples/*/harness fixtures with looser validation rules
+  local examples_fixtures_dir="${REPO_ROOT}/examples/test-harness/harness"
+  if [[ -d "${examples_fixtures_dir}" ]]; then
+    for fixture_file in "${examples_fixtures_dir}"/*.yaml; do
+      [[ -f "${fixture_file}" ]] || continue
+      local fixture_name
+      fixture_name="$(basename "${fixture_file}")"
+
+      local output
+      local exit_code=0
+      # Create a temporary subdirectory under root temp for this fixture (auto-cleaned via EXIT trap)
+      local test_dir
+      FIXTURE_COUNTER=$((FIXTURE_COUNTER + 1))
+      test_dir="${FIXTURE_ROOT_TEMP}/positive-${FIXTURE_COUNTER}-${fixture_name%.*}"
+      mkdir -p "${test_dir}/examples/test-harness/harness" "${test_dir}/examples/test-harness/schemas" || {
+        echo "Failed to create temporary directory for examples fixture ${fixture_name}"
+        found_error=1
+        continue
+      }
+      cp "${fixture_file}" "${test_dir}/examples/test-harness/harness/" || {
+        echo "Failed to copy examples fixture ${fixture_name} to temporary directory"
+        found_error=1
+        continue
+      }
+      # Copy schema files from examples/test-harness/schemas
+      if [[ -d "${examples_fixtures_dir}/../schemas" ]]; then
+        cp -r "${examples_fixtures_dir}/../schemas"/* "${test_dir}/examples/test-harness/schemas/" 2>/dev/null || true
+      fi
+
+      # Run all three tests on this fixture
+      # For examples files, we need to set REPO_ROOT to the directory containing examples/
+      local repo_root
+      repo_root="${test_dir}"
+
+      output="$(HARNESS_DIR="${test_dir}" REPO_ROOT="${repo_root}" test_validation_loop_schema 2>&1)" || exit_code=$?
+      if [[ ${exit_code} -ne 0 ]]; then
+        echo "Examples fixture ${fixture_name}: test_validation_loop_schema failed"
+        echo "${output}"
+        found_error=1
+        continue
+      fi
+
+      exit_code=0
+      output="$(HARNESS_DIR="${test_dir}" REPO_ROOT="${repo_root}" test_no_hardcoded_schema 2>&1)" || exit_code=$?
+      if [[ ${exit_code} -ne 0 ]]; then
+        echo "Examples fixture ${fixture_name}: test_no_hardcoded_schema failed"
+        echo "${output}"
+        found_error=1
+        continue
+      fi
+
+      exit_code=0
+      output="$(HARNESS_DIR="${test_dir}" REPO_ROOT="${repo_root}" test_schema_files_exist_and_valid 2>&1)" || exit_code=$?
+      if [[ ${exit_code} -ne 0 ]]; then
+        echo "Examples fixture ${fixture_name}: test_schema_files_exist_and_valid failed"
+        echo "${output}"
+        found_error=1
+        continue
+      fi
+    done
+  fi
 
   for fixture_name in "${expected_passes[@]}"; do
     local fixture_file="${fixtures_dir}/${fixture_name}"
