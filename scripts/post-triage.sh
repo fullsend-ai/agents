@@ -1738,13 +1738,18 @@ triage_state_dropped() {
 # agent's comment is cut at a line end with a note saying so. Footers other
 # than "Next steps" are first held to TRIAGE_STATE_MAX_EXTRA_FOOTER
 # characters, so "Next steps" is never cut. The stored state always keeps
-# every entry.
+# every entry. Every <summary> opener in the agent's comment, the footers
+# and the cause lists is escaped: this comment carries the state, and step
+# 2e reads a <details> block whose summary reads "Previous run" as history,
+# so no spelling of one may appear above the marker. None of this text
+# holds a <details> block of the post-script's own.
 triage_state_compose() {
-  jq -rn --argjson state "$1" --arg agent "$2" --arg footer_in "$3" \
-    --arg fold_re "${TRIAGE_STATE_FOLD_RE}" \
+  jq -rn --argjson state "$1" --arg agent_in "$2" --arg footer_raw "$3" \
     --argjson cap "${TRIAGE_STATE_READABLE_CAP}" \
     --argjson extra_max "${TRIAGE_STATE_MAX_EXTRA_FOOTER}" '
-    def safe: gsub("<!--"; "&lt;!--") | gsub($fold_re; "&lt;");
+    def nofold: gsub("(?i)<(?=summary\\b)"; "&lt;");
+    ($agent_in | nofold) as $agent | ($footer_raw | nofold) as $footer_in |
+    def safe: gsub("<!--"; "&lt;!--") | nofold;
     def clip($n): if length > $n then .[0:($n - 1)] + "…" else . end;
     def line($full; $name_max):
       "- " + (.cause | clip($name_max) | safe)
@@ -1758,8 +1763,10 @@ triage_state_compose() {
               + ($r | map(line($full_ruled; $name_max))) | join("\n"))
          else "" end);
     def note: "\n\n_(Cut to fit the comment limit; the triage state keeps every cause.)_";
-    # The character offset of the last $d, or null. jq 1.6 rindex counts
-    # bytes while slices count characters, so it is not used.
+    # The character offset of the last $d, or null. jq before 1.8.0
+    # (1.7.1, the default runner image, included) returns byte offsets from
+    # index/rindex while slices count characters (jq #3065), so they are
+    # not used.
     def last_at($d):
       split($d) as $p
       | if ($p | length) < 2 then null else ($p[:-1] | join($d) | length) end;
