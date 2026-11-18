@@ -3038,7 +3038,8 @@ tracker:
     project: PROJ
 CFGEOF
 
-# 18. An explicit empty list revokes the configured primary project.
+# 18. An explicit empty list denies issue creation and does not fall through
+# to the Jira-originating project's generic forge allowance.
 mkdir -p "${JIRA_WORKSPACE}/.fullsend"
 cat > "${JIRA_WORKSPACE}/config.yaml" <<CFGEOF
 version: "1"
