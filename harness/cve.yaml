@@ -70,8 +70,8 @@ trigger: >-
           && event.transition.label.action == "added")
       || (event.transition.kind == "opened"
           && "fullsend-cve" in event.state.labels
-          && (event.actor.kind == "bot"
-            || event.actor.role in ["write", "admin"])))
+          && event.actor.kind == "human"
+          && event.actor.role in ["write", "admin"]))
 
 env:
   runner:

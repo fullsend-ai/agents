@@ -17,8 +17,9 @@ against the policy again, so that file can take work away but cannot add a
 target the policy does not map, and it keeps only the expected fields of what
 a tool answered.
 
-The cve agent's trigger starts an assessment for each work item opened here,
-and that assessment gives the verdict for the branch.
+A work item opened here starts nothing by itself: the Jira poller drops events
+from automation accounts. A person asks for the assessment, and the cve agent
+gives the verdict for that branch.
 """
 
 import argparse
@@ -652,7 +653,7 @@ def work_item_text(group):
             if evidence["evidence_sha256"]:
                 line += " Evidence record: sha256 " + evidence["evidence_sha256"][:16] + "."
             lines.append(line)
-    lines.append("The cve agent assesses this branch when it sees the new work item. To assess it again, comment /fs-cve-triage.")
+    lines.append("To assess this branch, comment /fs-cve-triage.")
     return summary[:255], "\n".join(lines)
 
 

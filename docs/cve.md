@@ -34,15 +34,15 @@ only that plan, on that branch, in the planned files.
 | Event | Who | Starts |
 |---|---|---|
 | `/fs-cve-triage` comment on a Jira Task, Bug or Vulnerability | a person with write access | the cve agent |
-| `fullsend-cve` label added to a Jira Task, Bug or Vulnerability | anyone who may edit the work item | the cve agent |
-| A Jira Task, Bug or Vulnerability opened with the `fullsend-cve` label | an automation account, or a person with write access | the cve agent |
+| `fullsend-cve` label added to a Jira Task, Bug or Vulnerability | a person who may edit the work item | the cve agent |
+| A Jira Task, Bug or Vulnerability opened with the `fullsend-cve` label | a person with write access | the cve agent |
 | `/fs-code` comment on a work item labelled `fullsend-cve` | a person with write access | the code agent, behind the cve gate |
 
-The last row is how a work item from the alert steps below starts its own
-assessment: those steps open it with the label already set. The trigger does
-not tell one automation account from another, so any of them that can open a
-labelled work item can start a run. The run is read-only, and the host gate
-still refuses a work item without a valid intake record.
+A work item opened or labelled by an automation account starts nothing.
+Fullsend's Jira poller drops every event from a bot account, its own included,
+before any trigger is evaluated, so that a change Fullsend makes cannot start
+an agent again. A work item from the alert steps below is opened by such an
+account and waits for a person.
 
 Write access comes from the installation's `authorization` setting. The issue
 types are names on the Jira site, so an adopter whose site names them
@@ -212,9 +212,8 @@ assessment.
 Each gets the policy's required labels, the `fullsend.cve.intake` record (set
 in the same request as the work item) and a description made only of public
 facts and what the host read. A candidate that already has a work item is
-skipped, and one run creates at most `max_new_work_items`. The cve agent
-starts on each new work item when the Jira poller next sees it (see Triggers),
-so `max_new_work_items` is also the number of assessments a run can start.
+skipped, and one run creates at most `max_new_work_items`. Creating the work
+item starts nothing (see Triggers): a person comments `/fs-cve-triage`.
 
 The candidates file between the steps is the place for an evidence tool.
 `publish` builds every work item from the policy again, so an entry that names
