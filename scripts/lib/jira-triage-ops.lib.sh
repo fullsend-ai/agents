@@ -261,6 +261,13 @@ tracker_verify_labels_stripped() {
   fi
 }
 
+# Print the issue's labels, one per line. Fails when they cannot be read.
+tracker_list_issue_labels() {
+  local issue
+  issue=$(_jira_api GET "/issue/${ISSUE_NUMBER}?fields=labels") || return 1
+  printf '%s' "${issue}" | jq -r '.fields.labels[]'
+}
+
 # Jira has no per-project label registry like GitHub/GitLab — any string is
 # a valid label with no creation step. As the closest analog to "labels the
 # maintainers already established" (which the "will not auto-create" guard

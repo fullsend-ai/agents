@@ -541,6 +541,22 @@ ${FAILED_CREATES}"
       AUTO_CODE_ALLOWED=false
     fi
 
+    # Skip-label guard (#2076): an issue that carries skip-triage, or a label
+    # listed in TRIAGE_SKIP_LABELS, stays with its planning process. A human
+    # /fs-triage may still triage it, but triage never promotes it to
+    # ready-to-code. Labels that cannot be read also withhold promotion.
+    if [[ "${AUTO_CODE_ALLOWED}" == "true" ]]; then
+      skip_rc=0
+      SKIP_LABEL="$(triage_find_skip_label)" || skip_rc=$?
+      if [[ "${skip_rc}" -eq 0 ]]; then
+        echo "::notice::Issue carries skip label '$(_gha_sanitize "${SKIP_LABEL}")' — not promoting to ready-to-code"
+        AUTO_CODE_ALLOWED=false
+      elif [[ "${skip_rc}" -ne 1 ]]; then
+        echo "::warning::Cannot read the issue labels to check for skip labels — not promoting to ready-to-code"
+        AUTO_CODE_ALLOWED=false
+      fi
+    fi
+
     # Workflow-change guard: if triage detected workflow file changes, always
     # log the (#325) warning for operational visibility. Only block auto-
     # promotion (apply triaged early) when the category would otherwise
@@ -869,6 +885,21 @@ if [[ "${HAS_COMPONENT_ACTIONS}" == "true" ]]; then
 fi
 
 # --- Apply deferred label (must be last label mutation) ---
+
+if [[ "${DEFERRED_LABEL}" == "ready-to-code" ]]; then
+  # Re-check skip labels (#2076): label_actions may have added one since the
+  # earlier guard ran. A skip label, or labels that cannot be read, withhold
+  # promotion; the issue still gets triaged.
+  skip_rc=0
+  SKIP_LABEL="$(triage_find_skip_label)" || skip_rc=$?
+  if [[ "${skip_rc}" -eq 0 ]]; then
+    echo "::notice::Issue carries skip label '$(_gha_sanitize "${SKIP_LABEL}")' after label_actions — not promoting to ready-to-code"
+    DEFERRED_LABEL="triaged"
+  elif [[ "${skip_rc}" -ne 1 ]]; then
+    echo "::warning::Cannot read the issue labels to re-check skip labels — not promoting to ready-to-code"
+    DEFERRED_LABEL="triaged"
+  fi
+fi
 
 if [[ -n "${DEFERRED_LABEL}" ]]; then
   echo "Applying deferred label '${DEFERRED_LABEL}'..."
