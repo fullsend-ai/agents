@@ -140,9 +140,33 @@ triage_state_compose() {
         | ($c | last_at("\n")) as $i
         | (if ($i // 0) > $n / 2 then $c[0:$i] else $c end) + "…"
       end;
+    # The fence a Markdown code block opened in this text and did not close
+    # (``` or ~~~, up to three spaces in), or null.
+    def open_fence:
+      reduce (split("\n")[]) as $l (null;
+        if . == null then ([$l | capture("^ {0,3}(?<f>`{3,}|~{3,})")] | .[0].f // null)
+        elif ($l | test("^ {0,3}" + .[0:1] + "{" + (length | tostring) + ",}\\s*$")) then null
+        else . end);
+    # The longest fence-opening run in this text, so a closing fence always
+    # has room.
+    def fence_room:
+      [split("\n")[] | capture("^ {0,3}(?<f>`{3,}|~{3,})") | .f | length] | (max // 0) + 1;
+    # Cut to $n characters like cutline, then close a code block the cut
+    # left open, so the lists after it render as Markdown.
+    def cut_closed($n):
+      fence_room as $room
+      | cutline($n - $room) as $c
+      | ($c | open_fence) as $f
+      | if $f == null then $c else $c + "\n" + $f end;
     ("\n\n---\n**Next steps:**") as $ns_head
+    | ("\n\n---\n**Not applied in Jira:**") as $na_head
     | ($footer_in | (last_at($ns_head) // length)) as $ns_at
-    | ($footer_in[0:$ns_at] | cutline($extra_max)) as $extra
+    # The other footers keep "Not applied in Jira" whole where they can, and
+    # cut the label and component reasons first.
+    | ($footer_in[0:$ns_at]) as $pre
+    | ($pre | (last_at($na_head) // length)) as $na_at
+    | ($pre[$na_at:] | cutline($extra_max)) as $notice
+    | (($pre[0:$na_at] | cutline($extra_max - ($notice | length))) + $notice) as $extra
     | ($extra + $footer_in[$ns_at:]) as $footer
     | ($agent + "\n\n") as $head
     | ($cap - ($head | length) - ($footer | length)) as $budget
@@ -159,7 +183,7 @@ triage_state_compose() {
         # The lists (at most about 1200 characters) and the bounded footers
         # leave room for the agent comment, so only it is cut.
         ($cap - ($lists | length) - ($footer | length) - 2 - (note | length)) as $keep
-        | ($agent | cutline($keep)) + note + "\n\n" + $lists + $footer
+        | ($agent | cut_closed($keep)) + note + "\n\n" + $lists + $footer
       end
   '
 }

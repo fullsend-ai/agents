@@ -2067,6 +2067,37 @@ else
   state_fail "state-max-bytes-base-ten" "got $(cap_of 0500) $(cap_of 09) $(cap_of 40000) $(cap_of 1e3) $(cap_of -5)"
 fi
 
+# A cut inside a fenced code block closes the block before the cut note,
+# so the lists after it render as Markdown, and the cap still holds.
+fence_agent="Intro."$'\n''```python'$'\n'"$(for i in $(seq 1 200); do echo "print('line ${i} of a long code block')"; done)"$'\n''```'$'\n'"After."
+fence_footer=$'\n\n---\n**Next steps:**\n- one\n- two'
+fence_out="$(SCRIPT_DIR="${SCRIPT_DIR}" bash -c 'source "${SCRIPT_DIR}/lib/triage-state.lib.sh"; triage_state_compose "$1" "$2" "$3"' _ \
+  '{"open_causes":[{"cause":"a cause","evidence":"e","verified":true}],"ruled_out":[]}' "${fence_agent}" "${fence_footer}" 2>&1)" || true
+if python3 -c '
+import sys
+out = sys.argv[1]
+head = out.split("\n\n_(Cut to fit")[0]
+fences = [l for l in head.split("\n") if l.lstrip(" ").startswith("```")]
+ok = (len(out) <= 4000 and "_(Cut to fit" in out and len(fences) % 2 == 0
+      and head.endswith("\n```") and "\n**Open causes:**\n- a cause" in out and out.endswith(sys.argv[2]))
+sys.exit(0 if ok else 1)
+' "${fence_out}" "${fence_footer}"; then
+  echo "PASS: state-cut-closes-code-fence"
+else
+  state_fail "state-cut-closes-code-fence" "expected the open fence closed before the cut note: ${fence_out: -300}"
+fi
+
+# Trimming the other footers cuts the label reason first and keeps the
+# "Not applied in Jira" notice whole.
+na_footer=$'\n\n---\n**Labels:** '"$(printf 'reason %.0s' $(seq 1 400))"$'\n\n---\n**Not applied in Jira:**\n- Label `x` was not added.\n\n---\n**Next steps:**\n- one'
+na_out="$(SCRIPT_DIR="${SCRIPT_DIR}" bash -c 'source "${SCRIPT_DIR}/lib/triage-state.lib.sh"; triage_state_compose "$1" "$2" "$3"' _ \
+  '{"open_causes":[{"cause":"a cause","evidence":"e","verified":true}],"ruled_out":[]}' "Short." "${na_footer}" 2>&1)" || true
+if [[ "${na_out}" == *$'…\n\n---\n**Not applied in Jira:**\n- Label `x` was not added.\n\n---\n**Next steps:**\n- one' ]]; then
+  echo "PASS: state-footer-keeps-jira-notice"
+else
+  state_fail "state-footer-keeps-jira-notice" "expected the label reason cut and the notice whole: ${na_out: -300}"
+fi
+
 # Strings over the schema's limits are cut in the stored state.
 run_state_case "state-github-cuts-long-strings" "$(sufficient_with ",\"open_causes\":[{\"cause\":\"$(printf 'c%.0s' $(seq 1 250))\",\"evidence\":\"e\",\"verified\":true}],\"ruled_out\":[]" "Short.")"
 if [[ ${STATE_RC} -ne 0 ]] \
