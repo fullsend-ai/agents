@@ -124,16 +124,17 @@ triage_state_dropped() {
 # agent's comment is cut at a line end with a note saying so. Footers other
 # than "Next steps" are first held to TRIAGE_STATE_MAX_EXTRA_FOOTER
 # characters, so "Next steps" is never cut. The stored state always keeps
-# every entry. Every <summary> opener in the agent's comment, the footers
-# and the cause lists is escaped: this comment carries the state, and step
-# 2e reads a <details> block whose summary reads "Previous run" as history,
-# so no spelling of one may appear above the marker. None of this text
-# holds a <details> block of the post-script's own.
+# every entry. Every <summary> and <details> opener in the agent's comment,
+# the footers and the cause lists is escaped: this comment carries the
+# state, and step 2e reads a <details> block whose summary reads "Previous
+# run" as history, so no spelling of one may appear above the marker; and a
+# <details> left open would fold the lists and "Next steps" out of sight.
+# None of this text holds a <details> block of the post-script's own.
 triage_state_compose() {
   jq -rn --argjson state "$1" --arg agent_in "$2" --arg footer_raw "$3" \
     --argjson cap "${TRIAGE_STATE_READABLE_CAP}" \
     --argjson extra_max "${TRIAGE_STATE_MAX_EXTRA_FOOTER}" '
-    def nofold: gsub("(?i)<(?=summary\\b)"; "&lt;");
+    def nofold: gsub("(?i)<(?=(summary|details)\\b)"; "&lt;");
     ($agent_in | nofold) as $agent | ($footer_raw | nofold) as $footer_in |
     def safe: gsub("<!--"; "&lt;!--") | nofold;
     def clip($n): if length > $n then .[0:($n - 1)] + "…" else . end;

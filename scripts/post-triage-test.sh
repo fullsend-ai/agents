@@ -2140,6 +2140,18 @@ else
   echo "PASS: state-github-fake-fold-escaped"
 fi
 
+# An unclosed <details> in the agent's comment, a cause or its evidence would
+# fold the lists and "Next steps" out of sight: every opener is escaped.
+run_state_case "state-github-unclosed-details-escaped" "$(sufficient_with ',"open_causes":[{"cause":"<Details open>a cause","evidence":"<details >more","verified":true}],"ruled_out":[]' $'Analysis.\n<details>\nstack trace')"
+body="$(posted_body "${GH_LOG}")"
+if [[ ${STATE_RC} -ne 0 ]] || printf '%s' "${body}" | grep -qiE '<details' \
+  || [[ "$(printf '%s' "${body}" | grep -oiF '&lt;details' | wc -l | tr -d ' ')" -ne 3 ]] \
+  || [[ "${body}" != *'**Open causes:**'* || "${body}" != *'**Next steps:**'* ]]; then
+  state_fail "state-github-unclosed-details-escaped" "expected every <details> opener escaped on the state comment (rc ${STATE_RC}): ${body}"
+else
+  echo "PASS: state-github-unclosed-details-escaped"
+fi
+
 # Off the state path, neutralize escapes only a "Previous run" fold summary,
 # so the post-script's own <details> blocks (prerequisites, split) still
 # render.
