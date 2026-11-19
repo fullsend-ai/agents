@@ -16,7 +16,7 @@ No additional setup is required beyond the standard fullsend configuration.
 
 ## Triggers
 
-The retro agent runs automatically when a PR is closed (merged or not), including after a merge. On GitLab, the equivalent merge-request close event triggers it as well. The Jira integration below changes where the retro's proposals are filed; it does not change the trigger. For example, with `FULLSEND_TRACKER=jira`, closing a PR or MR starts the retrospective and its validated proposals are filed in the configured Jira project — once dispatch supplies Jira credentials to forge-originated runs, which is tracked in [fullsend-ai/fullsend#2267](https://github.com/fullsend-ai/fullsend/issues/2267) and still open ([Jira integration](#jira-integration) covers what happens until then). Jira-originated runs are not automatically dispatched or polled: a manually dispatched run may use a Jira issue URL (`https://<site>.atlassian.net/browse/PROJ-123`) as `ORIGINATING_URL`. In that case, the retrospective summary comment is posted directly back to the Jira issue via `fullsend issues post-comment --tracker jira`, and forge credentials are not required.
+The retro agent runs automatically when a PR is closed (merged or not), including after a merge. On GitLab, the equivalent merge-request close event triggers it as well. The Jira integration below changes where the retro's proposals are filed; it does not change the trigger. For example, with `FULLSEND_TRACKER=jira`, closing a PR or MR starts the retrospective and its validated proposals are filed in the configured Jira project — once dispatch supplies Jira credentials to forge-originated runs, which is tracked in [fullsend-ai/fullsend#2267](https://github.com/fullsend-ai/fullsend/issues/2267) and still open ([Jira integration](#jira-integration) covers what happens until then). Jira-originated runs are not dispatched or polled at all: only a local `fullsend run` started by hand can pass a Jira issue URL (`https://<site>.atlassian.net/browse/PROJ-123`) as `ORIGINATING_URL`. In that case, the retrospective summary comment is posted directly back to the Jira issue via `fullsend issues post-comment --tracker jira`; the script needs no forge credentials, but the harness still declares `GH_TOKEN` (`GITLAB_TOKEN` on GitLab) in `env.runner`, so that variable must be exported for the run to start.
 
 It can also be triggered manually with the `/fs-retro` command.
 
@@ -62,7 +62,7 @@ See [Customizing with AGENTS.md](https://fullsend.sh/docs/guides/user/customizin
 | `JIRA_BASE_URL` | Jira Cloud base URL (`https://<site>.atlassian.net`). Required when `FULLSEND_TRACKER=jira` (except forge summary-only runs). | none | Jira Cloud URL (`https://<site>.atlassian.net`) |
 | `JIRA_TOKEN` | Jira API token. Required when `FULLSEND_TRACKER=jira` (except forge summary-only runs), unless using OAuth client credentials. | none | Secret string |
 | `FULLSEND_JIRA_CLIENT_ID` / `FULLSEND_JIRA_CLIENT_SECRET` | OAuth client credentials alternative to `JIRA_TOKEN`. The access token they mint is sent through the Atlassian API gateway (`tracker.jira.api_url`). | none | Secret credentials |
-| `FULLSEND_DIR` | Directory containing `.fullsend/config.yaml` for CLI issue operations and the `tracker.jira` policy. Required when `FULLSEND_TRACKER=jira` (except forge summary-only runs). | none | Directory path |
+| `FULLSEND_DIR` | The `.fullsend` directory itself (the directory that holds `config.yaml`), used for CLI issue operations and the `tracker.jira` policy. Required when `FULLSEND_TRACKER=jira` (except forge summary-only runs). | none | Directory path |
 | `JIRA_USER_EMAIL` | Bot-user email. When set, uses Basic auth with email and token; when unset or empty, uses Bearer auth. | none | Email address |
 | `RETRO_JIRA_MAX_PAGES` | Maximum pages fetched per paginated Jira read. | `50` | Positive integer |
 
@@ -130,8 +130,11 @@ env.runner[JIRA_TOKEN])`. No retro runs at all, so that run produces neither
 Jira issues nor a forge summary. `${JIRA_BASE_URL}` resolves only when the
 repository sets the `JIRA_BASE_URL` variable that dispatch forwards; otherwise
 set the site URL literally in the overlay, since `action.yml` does not export
-it. Jira-originated runs receive the credentials from dispatch and are not
-affected. Treat forge-originated Jira filing as unverified until
+it. Jira-originated runs are not reached by dispatch at all: no route hands
+retro a Jira event, a Jira URL or Jira credentials, and the harness still
+declares `GH_TOKEN` (`GITLAB_TOKEN` on GitLab) in `env.runner`, so fullsend
+requires a forge token before the pre-script runs. Treat forge-originated Jira
+filing as unverified until
 fullsend-ai/fullsend#2267 lands and this path has run once against a test
 repository.
 
