@@ -2980,6 +2980,9 @@ run_push_rebase_conflicting_replay_test() {
   local test_name="$1"
   local instruction="$2"
   local expect="$3"
+  # Optional: "advance-target" pushes another commit to main after the agent
+  # rebased, so origin/main no longer sits under local HEAD.
+  local advance_target="${4:-}"
   local base="${PUSH_REBASE_TMPDIR}/${test_name}"
   mkdir -p "${base}"
 
@@ -3013,6 +3016,13 @@ run_push_rebase_conflicting_replay_test() {
   echo "pr-a resolved" > "${base}/repo/file.txt"
   git -C "${base}/repo" add file.txt
   git -C "${base}/repo" commit -q -m "real A (rebased)"
+
+  if [ "${advance_target}" = "advance-target" ]; then
+    echo "later" > "${base}/seed/later.txt"
+    git -C "${base}/seed" add later.txt
+    git -C "${base}/seed" commit -q -m "main advances after the agent rebase"
+    git -C "${base}/seed" push -q origin main
+  fi
 
   mkdir -p "${base}/iteration-1/output"
   cat > "${base}/iteration-1/output/agent-result.json" <<'JSONEOF'
@@ -4972,6 +4982,8 @@ run_push_rebase_conflicting_replay_test "push-rebase-conflict-typo-request-skips
   "resolve the merge confilcts" "skip"
 run_push_rebase_conflicting_replay_test "push-rebase-unauthorized-rebase-fails-fast" \
   "please update the branch" "fail-fast"
+run_push_rebase_conflicting_replay_test "push-rebase-unauthorized-rebase-target-advanced-fails-fast" \
+  "please update the branch" "fail-fast" "advance-target"
 run_push_rebase_preserves_agent_rebase_after_validation_retry_test
 run_push_history_rewrite_preserves_squash_test
 run_push_history_rewrite_refuses_partial_squash_test
