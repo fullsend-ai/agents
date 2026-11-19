@@ -232,9 +232,11 @@ Write exactly one JSON object to `$FULLSEND_OUTPUT_DIR/agent-result.json`:
   backticks than its longest backtick run, with a space inside each end, so it
   cannot close the span and turn the rest of the line into Markdown.
   When `status` is `ok` the post-script posts nothing unless an earlier run
-  left a findings comment on this pull request, in which case it replaces
-  that comment's text with `comment`, so the pull request no longer shows a
-  fixed problem. So
+  left a comment on this pull request, in which case it posts `comment` as a
+  new all-clear comment after it (a runner on an older fullsend updates the
+  earlier comment in place instead, and one whose fullsend lacks
+  `--only-if-exists` posts nothing), so a fixed problem does not look
+  unanswered. So
   `comment` is still required — a single line such as
   `All added documentation links resolve.` is fine.
 

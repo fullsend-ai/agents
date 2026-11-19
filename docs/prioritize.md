@@ -2,9 +2,11 @@
 
 ![Prioritize agent icon](icons/prioritize.png)
 
-Scores an issue using the RICE framework (Reach, Impact, Confidence, Effort) and produces scores with reasoning for project board ranking. Supports both GitHub and GitLab forges.
+Scores an issue using the RICE framework (Reach, Impact, Confidence, Effort) and produces scores with reasoning for project board ranking. Supports GitHub and GitLab forges. A Jira Cloud forge exists in the harness but is **dark**: it is not dispatched, does not change `/fs-prioritize` on GitHub or GitLab, and is used only when `FULLSEND_FORGE=jira`.
 
 On GitHub, scores are written to Projects V2 custom fields and posted as a reasoning comment. On GitLab, scores are posted as a sticky issue comment. GitLab custom fields API integration is deferred — the Issues API silently ignores unknown keys, and the correct Custom Fields API requires Premium/Ultimate with runtime field ID resolution.
+
+On Jira, when that forge is explicitly selected, five custom fields on the `Prioritization` tab are written, resolved by exact name: `Reach`, `Impact`, `Effort`, and `RICE Score` (number/float) and `Confidence` (a shared select list: `50% (Low)`, `75% (Medium)`, `100% (High)`). Jira admins keep Confidence as that select; it cannot become a number without breaking other projects. The agent Confidence float is used as-is in `RICE Score = (Reach × Impact × Confidence) / Effort`. The same float is mapped onto those three options only for the Confidence field (`< 0.4` → Low, `< 0.7` → Medium, otherwise High). The sticky comment still prints the unmapped floats, the formula, and reasoning. Rank, Priority, and other Jira fields are never written. GitHub and GitLab `/fs-prioritize` are unchanged. The post-script fails closed if any of the five fields is missing, duplicated among the expected schema type, not a custom field, or the wrong schema type. A second field with the same name but a different type is ignored.
 
 ## Setup
 
@@ -20,7 +22,7 @@ No additional setup is required beyond the standard fullsend configuration.
 
 On GitHub, the prioritize agent runs on a schedule, polling the project board for unscored or stale issues. On GitLab, it is triggered manually.
 
-It can also be triggered manually on either forge with the `/fs-prioritize` command.
+It can also be triggered manually on GitHub or GitLab with the `/fs-prioritize` command. Jira has no `/fs-prioritize` dispatch in this release.
 
 The harness also declares a CEL `trigger:` for fullsend's harness dispatch that matches `/fs-prioritize` from a human on an issue, a PR or an MR. The scheduled path does not use it. Dispatch does not evaluate it for the built-in prioritize agent yet, so the routing above is what runs today.
 
@@ -41,7 +43,10 @@ skill data.
 The prioritize agent does not apply or consume control labels. It reads the
 issue content and produces a score. On GitHub, the project board is updated
 directly via Projects V2 custom fields. On GitLab, scores are posted as
-a sticky comment on the issue.
+a sticky comment on the issue. On Jira (opt-in forge only), the five
+RICE custom fields are updated (Confidence mapped onto the shared select)
+and the sticky comment carries the unmapped floats; Rank and Priority
+are not written.
 
 ## Configuration
 
@@ -70,11 +75,24 @@ about it" (Reach 2.0), instead of guessing from the issue text alone.
 
 | Variable | Description | Default | Valid values |
 |----------|-------------|---------|--------------|
-| `FULLSEND_FORGE` | Forge platform. Set automatically by the harness `forge.<platform>.env` section. | (set by harness) | `"github"`, `"gitlab"` |
+| `FULLSEND_FORGE` | Forge platform. Set automatically by the harness `forge.<platform>.env` section. | (set by harness) | `"github"`, `"gitlab"`, `"jira"` (jira is dark / not dispatched) |
+
+The following apply **only** when `FULLSEND_FORGE=jira`. GitHub and GitLab `/fs-prioritize` ignore them. Nothing in this repo dispatches the Jira forge yet.
+
+| Variable | Description |
+|----------|-------------|
+| `FULLSEND_JIRA_TOKEN` | Repository secret. The harness maps it to runner `JIRA_TOKEN` for post-script field writes and sticky comments. The sandbox never gets the real token; it receives the builtin `jira` provider's opaque placeholder. Required unless client credentials are used. |
+| `FULLSEND_JIRA_CLIENT_ID`, `FULLSEND_JIRA_CLIENT_SECRET` | Optional repository secrets, the OAuth 2.0 client-credentials alternative to `FULLSEND_JIRA_TOKEN`. Runner only. `post-prioritize.sh` selects the mode with `jira_auth_select`, mints a Bearer access token on the runner, and uses it for the field write; the `fullsend issues post-comment` CLI mints for itself. Set both or neither; setting a token together with client credentials, or only one of the two, fails closed before any Jira call. |
+| `FULLSEND_JIRA_EMAIL` | Optional. Bot-user email. When set, requests use Basic auth (email + token); when unset or empty (service account), Bearer auth with the token. The harness maps it to runner `JIRA_USER_EMAIL`; the sandbox gets `JIRA_USER_EMAIL` through `env/jira/prioritize.env`. |
+| `JIRA_API_URL` | Optional, sandbox only. `fullsend run` sets it to the Atlassian API gateway URL for the site (`https://api.atlassian.com/ex/jira/<cloudId>`), and the sandbox receives it via `env/jira/prioritize.env` for the read-only skills. Host-side `post-prioritize.sh` does **not** read it. |
+| `JIRA_BASE_URL` | Jira Cloud site URL (e.g. `https://<site>.atlassian.net`). Used for browse links and as the site for cloud-ID discovery. Derived from `ISSUE_URL` when unset, and must match the `ISSUE_URL` host. |
+| `FULLSEND_DIR` | The `.fullsend` directory. The post-script passes it to `fullsend issues post-comment --fullsend-dir`, which reads `tracker.jira` from its `config.yaml`, and reads `tracker.jira.api_url` and `tracker.jira.base_url` from the same file for the field write. Required for the sticky comment on Jira. |
+
+Host-side Jira REST routing mirrors fullsend's Jira `Scoped` client. `tracker.jira.api_url` is the gateway base (default `https://api.atlassian.com`) and must be a plain `https` URL. The cloud ID is discovered, without credentials, from `<base_url>/_edge/tenant_info`, where `base_url` is `tracker.jira.base_url` (which must match the `ISSUE_URL` host) or else the `ISSUE_URL` site, and it must be a UUID. Every REST call then goes to `{api_url}/ex/jira/<cloudId>/rest/api/3/...`; `/rest/api/3` is never appended directly to `api_url`. A mismatched tenant, a non-`https` or malformed gateway, or an invalid cloud ID fails closed before any write.
 
 ## How the agent works
 
-The prioritize agent fetches the issue and all its context, then evaluates it across the four RICE dimensions. It can invoke customer-research skills to gather additional signal about reach and impact. The output is a structured JSON result with per-dimension scores and written reasoning, which the post-script uses to update scores on the forge (GitHub Projects V2 fields or GitLab issue comment).
+The prioritize agent fetches the issue and all its context, then evaluates it across the four RICE dimensions. It can invoke customer-research skills to gather additional signal about reach and impact. The output is a structured JSON result with per-dimension scores and written reasoning, which the post-script uses to update scores on the forge (GitHub Projects V2 fields, GitLab issue comment, or the five Jira RICE custom fields when that forge is selected).
 
 ### Migration notes for custom harness overrides
 
@@ -95,8 +113,9 @@ If you use `base:` composition to override `harness/prioritize.yaml`:
   board update is skipped and scores are posted as a comment only.
 - **`providers`, `openshell`, `skills`, and `host_files` live in forge sections**: This
   harness defines providers, openshell profiles, skills, and the forge-specific
-  env file (`env/github/prioritize.env` / `env/gitlab/prioritize.env`) under
-  `forge.<platform>` rather than at the top level.
+  env file (`env/github/prioritize.env` / `env/gitlab/prioritize.env` /
+  `env/jira/prioritize.env`) under `forge.<platform>` rather than at the top
+  level. The Jira section is unused unless `FULLSEND_FORGE=jira`.
 
 ### GitLab host validation
 

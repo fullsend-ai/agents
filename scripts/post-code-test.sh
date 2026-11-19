@@ -16,6 +16,15 @@ parse_script_test_args "$@"
 
 FAILURES=0
 
+# /proc exposes initial parent environments on Linux; macOS has no equivalent
+# fixture here. Both platforms still check inherited child environments and
+# restoration for trusted Jira calls below.
+JIRA_EXPECTED_PROC_LEAK=no
+if [[ "$(uname -s)" != Linux ]]; then
+  JIRA_EXPECTED_PROC_LEAK=unavailable
+  echo 'SKIP: Jira parent /proc environment inspection (non-Linux host)'
+fi
+
 POST_SCRIPT="$(resolve_agent_script post-code "${SCRIPT_DIR}")"
 if ! grep -q 'gha_echo' "${POST_SCRIPT}" || ! grep -q 'post_fail_to_issue' "${POST_SCRIPT}"; then
   echo "FAIL: bundled-script-has-failure-reporting"
@@ -471,6 +480,7 @@ ${MC_REAL_GIT} -C "${_mc_repo}" checkout -q -b agent/42-test
 echo "feature" > "${_mc_repo}/feature.txt"
 ${MC_REAL_GIT} -C "${_mc_repo}" add feature.txt
 ${MC_REAL_GIT} -C "${_mc_repo}" commit -q -m "feat(#42): add primary feature"
+_mc_first_commit="$(${MC_REAL_GIT} -C "${_mc_repo}" rev-parse HEAD)"
 echo "fix" > "${_mc_repo}/fix.txt"
 ${MC_REAL_GIT} -C "${_mc_repo}" add fix.txt
 ${MC_REAL_GIT} -C "${_mc_repo}" commit -q -m "fix(#42): suppress lint warning"
@@ -478,7 +488,7 @@ ${MC_REAL_GIT} -C "${_mc_repo}" commit -q -m "fix(#42): suppress lint warning"
 # Reimplement the multi-commit title selection from post-code.src.sh
 _mc_count="$(${MC_REAL_GIT} -C "${_mc_repo}" rev-list --count "${_mc_merge_base}..HEAD")"
 if [ "${_mc_count}" -gt 1 ]; then
-  _mc_subject="$(${MC_REAL_GIT} -C "${_mc_repo}" log --format='%s' --reverse "${_mc_merge_base}..HEAD" | head -1)"
+  _mc_subject="$(${MC_REAL_GIT} -C "${_mc_repo}" log --format='%s' --reverse "${_mc_merge_base}..HEAD" | sed -n '1p')"
 else
   _mc_subject="$(${MC_REAL_GIT} -C "${_mc_repo}" log -1 --format='%s' HEAD)"
 fi
@@ -493,11 +503,73 @@ else
   FAILURES=$((FAILURES + 1))
 fi
 
-# Single-commit case: rewind to one commit and verify
-${MC_REAL_GIT} -C "${_mc_repo}" reset -q --hard HEAD~1
+# Verify post-code.src.sh and bundled post-code.sh actually use sed -n '1p' (not head -).
+for _mc_script in "${SCRIPT_DIR}/post-code.src.sh" "${SCRIPT_DIR}/post-code.sh"; do
+  if ! grep -qE "COMMIT_SUBJECT=.*sed -n '1p'" "${_mc_script}" || grep -qE "COMMIT_SUBJECT=.*head -" "${_mc_script}"; then
+    echo "FAIL: multi-commit-script-uses-sed (${_mc_script})"
+    FAILURES=$((FAILURES + 1))
+  else
+    echo "PASS: multi-commit-script-uses-sed (${_mc_script##*/})"
+  fi
+done
+
+# Multi-commit pipefail regression test — exercise the exact COMMIT_SUBJECT= pipeline
+# from POST_SCRIPT against >64KB of commit subject output to prove sed drains the stream without SIGPIPE 141.
+_mc_pad="$(printf 'x%.0s' {1..8192})"
+for _mc_i in $(seq 1 12); do
+  echo "pad ${_mc_i}" >> "${_mc_repo}/fix.txt"
+  ${MC_REAL_GIT} -C "${_mc_repo}" commit -q -am "fix(#42): padding commit ${_mc_i} ${_mc_pad}"
+done
+
+# Runs the extracted COMMIT_SUBJECT= line in a subshell. That line reads
+# MERGE_BASE and assigns COMMIT_SUBJECT through eval, which the linter cannot
+# see. PATH is scoped to the eval with a prefix assignment, so it does not
+# leak into this subshell or into later tests.
+_eval_commit_subject_pipefail() {
+  (
+    set -eo pipefail
+    cd "${_mc_repo}"
+    # shellcheck disable=SC2034
+    MERGE_BASE="${_mc_merge_base}"
+    PATH="$(dirname "${MC_REAL_GIT}"):${PATH}" eval "$1" || exit $?
+    # shellcheck disable=SC2153
+    printf '%s' "${COMMIT_SUBJECT}"
+  )
+}
+
+_mc_pipefail_line="$(grep -m1 -E "COMMIT_SUBJECT=.*sed -n '1p'" "${POST_SCRIPT}" || true)"
+if [ -z "${_mc_pipefail_line}" ]; then
+  echo "FAIL: multi-commit-git-integration-pipefail-safe (COMMIT_SUBJECT pipeline not found)"
+  FAILURES=$((FAILURES + 1))
+else
+  _mc_pipefail_exit=0
+  _mc_pipefail_subject="$(_eval_commit_subject_pipefail "${_mc_pipefail_line}")" || _mc_pipefail_exit=$?
+
+  if [ "${_mc_pipefail_exit}" -eq 0 ] && [ "${_mc_pipefail_subject}" = "feat(#42): add primary feature" ]; then
+    echo "PASS: multi-commit-git-integration-pipefail-safe"
+  else
+    echo "FAIL: multi-commit-git-integration-pipefail-safe (exit=${_mc_pipefail_exit}, subject='${_mc_pipefail_subject}')"
+    FAILURES=$((FAILURES + 1))
+  fi
+
+  _mc_sed_pat="sed -n '1p'"
+  _mc_control_line="${_mc_pipefail_line//"${_mc_sed_pat}"/head -1}"
+  _mc_control_exit=0
+  _mc_control_subject="$(_eval_commit_subject_pipefail "${_mc_control_line}")" || _mc_control_exit=$?
+
+  if [ "${_mc_control_exit}" -eq 141 ]; then
+    echo "PASS: multi-commit-git-integration-control-head-sigpipe"
+  else
+    echo "FAIL: multi-commit-git-integration-control-head-sigpipe (expected exit=141, got exit=${_mc_control_exit}, subject='${_mc_control_subject}')"
+    FAILURES=$((FAILURES + 1))
+  fi
+fi
+
+# Single-commit case: rewind to initial feature commit and verify
+${MC_REAL_GIT} -C "${_mc_repo}" reset -q --hard "${_mc_first_commit}"
 _mc_count_single="$(${MC_REAL_GIT} -C "${_mc_repo}" rev-list --count "${_mc_merge_base}..HEAD")"
 if [ "${_mc_count_single}" -gt 1 ]; then
-  _mc_subject_single="$(${MC_REAL_GIT} -C "${_mc_repo}" log --format='%s' --reverse "${_mc_merge_base}..HEAD" | head -1)"
+  _mc_subject_single="$(${MC_REAL_GIT} -C "${_mc_repo}" log --format='%s' --reverse "${_mc_merge_base}..HEAD" | sed -n '1p')"
 else
   _mc_subject_single="$(${MC_REAL_GIT} -C "${_mc_repo}" log -1 --format='%s' HEAD)"
 fi
@@ -3681,7 +3753,18 @@ case "\$1 \$2" in
   "api -X")      echo "unexpected Git Data API call: \$*" >&2; exit 99 ;;
   "api repos/"*) echo "main"; exit 0 ;;
   "pr list")     if [[ -n "\${MOCK_EXISTING_PR:-}" ]]; then echo "7"; fi; exit 0 ;;
-  "pr view")     echo "https://github.com/test-org/test-repo/pull/7"; exit 0 ;;
+  "pr view")
+    if [[ " \$* " == *" state,isDraft "* ]]; then
+      if [[ -n "\${MOCK_READINESS_FAIL:-}" ]]; then exit 1; fi
+      if [[ -n "\${MOCK_PR_DETAILS:-}" ]]; then
+        echo "\${MOCK_PR_DETAILS}"
+      else
+        echo '{"state":"OPEN","isDraft":false}'
+      fi
+    else
+      echo "https://github.com/test-org/test-repo/pull/7"
+    fi
+    exit 0 ;;
   "pr create")   echo "https://github.com/test-org/test-repo/pull/1"; exit 0 ;;
   *)             exit 0 ;;
 esac
@@ -3705,8 +3788,20 @@ for arg in "\$@"; do
   prev="\${arg}"
 done
 case "\${method} \${url}" in
-  *merge_requests\?state=opened*) echo '[]' ;;
+  *merge_requests\?state=opened*)
+    if [[ -n "\${MOCK_EXISTING_PR:-}" ]]; then
+      echo '[{"iid":7,"source_project_id":1}]'
+    else
+      echo '[]'
+    fi ;;
   POST*merge_requests) echo '{"iid":1,"web_url":"https://gitlab.com/test-group/test-project/-/merge_requests/1"}' ;;
+  GET*merge_requests/*)
+    if [[ -n "\${MOCK_READINESS_FAIL:-}" ]]; then exit 1; fi
+    if [[ -n "\${MOCK_PR_DETAILS:-}" ]]; then
+      echo "\${MOCK_PR_DETAILS}"
+    else
+      echo '{"state":"opened","draft":false,"web_url":"https://gitlab.com/test-group/test-project/-/merge_requests/7","description":"Related to https://test.atlassian.net/browse/TESTPROJ-42"}'
+    fi ;;
   *projects/*) echo '{"id":1,"default_branch":"main","merge_method":"merge"}' ;;
   *users*) echo '[]' ;;
   *) echo '{}' ;;
@@ -3734,6 +3829,10 @@ done
 echo "fullsend \$* env-token=\${FULLSEND_JIRA_TOKEN:-unset} env-email=\${FULLSEND_JIRA_EMAIL-unset} env-client-id=\${FULLSEND_JIRA_CLIENT_ID-unset} env-client-secret=\${FULLSEND_JIRA_CLIENT_SECRET:+set} <<BODY:\${BODY}:BODY>>" >> "${JIRA_INT_FULLSEND_LOG}"
 if [[ -n "\${MOCK_FULLSEND_FAIL:-}" ]]; then
   echo "Error: Jira API returned 401" >&2
+  exit 1
+fi
+if [[ "\$1 \$2" == "issues transition" && -n "\${MOCK_TRANSITION_FAIL:-}" ]]; then
+  echo "Error: transition failed \${FULLSEND_JIRA_TOKEN:-} \${FULLSEND_JIRA_CLIENT_SECRET:-}" >&2
   exit 1
 fi
 MOCKEOF
@@ -3789,13 +3888,16 @@ write_jira_int_hook() {
 #!/usr/bin/env bash
 # The reference-transaction hook reads its stdin; drain it.
 cat > /dev/null
-read -r _ _ _ gp _ < "/proc/\${PPID}/stat"
-leak=no
-for pid in "\${PPID}" "\${gp}"; do
-  if tr '\\0' '\\n' < "/proc/\${pid}/environ" 2>/dev/null | grep -qE '^(JIRA_TOKEN|JIRA_USER_EMAIL|FULLSEND_JIRA_TOKEN|FULLSEND_JIRA_EMAIL|FULLSEND_JIRA_CLIENT_ID|FULLSEND_JIRA_CLIENT_SECRET)=.'; then
-    leak=yes
-  fi
-done
+leak=unavailable
+if [[ "\$(uname -s)" == Linux ]]; then
+  leak=no
+  read -r _ _ _ gp _ < "/proc/\${PPID}/stat"
+  for pid in "\${PPID}" "\${gp}"; do
+    if tr '\\0' '\\n' < "/proc/\${pid}/environ" 2>/dev/null | grep -qE '^(JIRA_TOKEN|JIRA_USER_EMAIL|FULLSEND_JIRA_TOKEN|FULLSEND_JIRA_EMAIL|FULLSEND_JIRA_CLIENT_ID|FULLSEND_JIRA_CLIENT_SECRET)=.'; then
+      leak=yes
+    fi
+  done
+fi
 echo "${hook_name} jira-token=\${JIRA_TOKEN:-unset} jira-email=\${JIRA_USER_EMAIL:-unset} fullsend-token=\${FULLSEND_JIRA_TOKEN:-unset} fullsend-email=\${FULLSEND_JIRA_EMAIL:-unset} proc-environ-leak=\${leak} client-id=\${FULLSEND_JIRA_CLIENT_ID:-unset} client-secret=\${FULLSEND_JIRA_CLIENT_SECRET:+set}" >> "${log_path}"
 exit 0
 HOOKEOF
@@ -3818,7 +3920,7 @@ run_jira_int() {
   # shellcheck disable=SC2030,SC2031
   (
     cd "${run_dir}"
-    unset GITLAB_HOST CI_SERVER_URL GH_TOKEN GITLAB_TOKEN
+    unset GITLAB_HOST CI_SERVER_URL GH_TOKEN GITLAB_TOKEN CODE_JIRA_PR_READY_TRANSITION
     export HOME="${JIRA_INT_TMPDIR}"
     export PATH="${JIRA_INT_MOCK_BIN}:${PATH}"
     export PUSH_TOKEN="fake-token"
@@ -3849,7 +3951,8 @@ run_jira_int() {
     for kv in "$@"; do
       export "${kv?}"
     done
-    # JIRA_INT_XTRACE=1 traces the script and its re-exec via SHELLOPTS.
+    # JIRA_INT_XTRACE=1 starts the script traced via SHELLOPTS; the script's
+    # credential re-exec then re-applies -x to its own child.
     if [ -n "${JIRA_INT_XTRACE:-}" ]; then
       env SHELLOPTS=xtrace bash "${POST_SCRIPT}"
     else
@@ -3901,7 +4004,7 @@ fi
 for _jira_email_case in "empty|" "blank|  "; do
   _jira_email_name="${_jira_email_case%%|*}"
   run_jira_int "jira-service-account-${_jira_email_name}" github \
-    "JIRA_USER_EMAIL=${_jira_email_case#*|}" FULLSEND_JIRA_EMAIL=inherited@example.com
+    "JIRA_USER_EMAIL=${_jira_email_case#*|}" FULLSEND_JIRA_EMAIL=inherited@example.com CODE_JIRA_PR_READY_TRANSITION=Review
   if [ "${JIRA_INT_RC}" -ne 0 ]; then
     jira_int_fail "jira-service-account-${_jira_email_name}-email" "post-code failed"
   elif ! grep -qF "env-token=fake-jira-token env-email=unset" "${JIRA_INT_FULLSEND_LOG}" \
@@ -3915,7 +4018,7 @@ done
 # Jira credentials are withheld from pre-commit hooks (repo-controlled code)
 # but still reach the Jira stage update afterwards.
 : > "${JIRA_INT_PRECOMMIT_LOG}"
-JIRA_INT_WITH_PRECOMMIT=1 run_jira_int "jira-precommit-hidden" github
+JIRA_INT_WITH_PRECOMMIT=1 run_jira_int "jira-precommit-hidden" github CODE_JIRA_PR_READY_TRANSITION=Review
 if [ "${JIRA_INT_RC}" -ne 0 ]; then
   jira_int_fail "jira-token-hidden-from-precommit" "post-code failed"
 elif ! grep -q "^pre-commit " "${JIRA_INT_PRECOMMIT_LOG}"; then
@@ -3949,7 +4052,7 @@ if [ "${JIRA_INT_RC}" -ne 0 ]; then
   jira_int_fail "jira-token-hidden-from-prepush-hook" "post-code failed"
 elif ! grep -q "^pre-push " "${JIRA_INT_PREPUSH_LOG}"; then
   jira_int_fail "jira-token-hidden-from-prepush-hook" "pre-push hook did not run"
-elif ! grep -qF "pre-push jira-token=unset jira-email=unset fullsend-token=unset fullsend-email=unset proc-environ-leak=no" "${JIRA_INT_PREPUSH_LOG}"; then
+elif ! grep -qF "pre-push jira-token=unset jira-email=unset fullsend-token=unset fullsend-email=unset proc-environ-leak=${JIRA_EXPECTED_PROC_LEAK}" "${JIRA_INT_PREPUSH_LOG}"; then
   jira_int_fail "jira-token-hidden-from-prepush-hook" "Jira credentials visible to a pre-push hook"
 elif [ -s "${JIRA_INT_SHADOW_LOG}" ]; then
   jira_int_fail "jira-path-shadowed-fullsend-not-used" "a binary from the repo-controlled PATH entry received the Jira write"
@@ -3968,13 +4071,13 @@ fi
 JIRA_INT_REFTX_LOG="${JIRA_INT_TMPDIR}/reftx.log"
 : > "${JIRA_INT_REFTX_LOG}"
 JIRA_INT_BRANCH="feature/rename-me" JIRA_INT_REFTX_HOOK="${JIRA_INT_REFTX_LOG}" \
-  run_jira_int "jira-rename-hook-hidden" github
+  run_jira_int "jira-rename-hook-hidden" github CODE_JIRA_PR_READY_TRANSITION=Review
 if [ "${JIRA_INT_RC}" -ne 0 ]; then
   jira_int_fail "jira-token-hidden-from-rename-hook" "post-code failed"
 elif ! grep -qF "Renaming agent branch 'feature/rename-me' to 'agent/TESTPROJ-42-rename-me'" "${JIRA_INT_OUT}"; then
   jira_int_fail "jira-token-hidden-from-rename-hook" "agent branch was not renamed"
 elif grep -q "^reference-transaction " "${JIRA_INT_REFTX_LOG}" \
-     && ! grep -qF "reference-transaction jira-token=unset jira-email=unset fullsend-token=unset fullsend-email=unset proc-environ-leak=no" "${JIRA_INT_REFTX_LOG}"; then
+     && ! grep -qF "reference-transaction jira-token=unset jira-email=unset fullsend-token=unset fullsend-email=unset proc-environ-leak=${JIRA_EXPECTED_PROC_LEAK}" "${JIRA_INT_REFTX_LOG}"; then
   jira_int_fail "jira-token-hidden-from-rename-hook" "Jira credentials visible to a hook during the branch rename"
 elif grep -qF "proc-environ-leak=yes" "${JIRA_INT_REFTX_LOG}"; then
   jira_int_fail "jira-token-hidden-from-rename-hook" "Jira credentials readable from a parent's /proc environ"
@@ -4067,7 +4170,7 @@ elif ! grep -qF "env-token=unset env-email=unset env-client-id=client-id-1 env-c
   jira_int_fail "jira-client-credentials-stage-update" "the CLI did not get the client variables alone"
 elif ! grep -qF "client-id=unset client-secret=" "${JIRA_INT_PRECOMMIT_LOG}" \
      || grep -qF "client-secret=set" "${JIRA_INT_PRECOMMIT_LOG}" \
-     || ! grep -qF "proc-environ-leak=no client-id=unset client-secret=" "${JIRA_INT_PREPUSH_LOG}" \
+     || ! grep -qF "proc-environ-leak=${JIRA_EXPECTED_PROC_LEAK} client-id=unset client-secret=" "${JIRA_INT_PREPUSH_LOG}" \
      || grep -qF "client-secret=set" "${JIRA_INT_PREPUSH_LOG}"; then
   jira_int_fail "jira-client-credentials-stage-update" "client credentials visible to pre-commit or a pre-push hook"
 elif grep -qF "${JIRA_CLIENT_SECRET_VALUE}" "${JIRA_INT_OUT}" "${JIRA_INT_FULLSEND_LOG}" "${JIRA_INT_FORGE_LOG}"; then
@@ -4077,18 +4180,43 @@ else
 fi
 
 # Under xtrace, the client secret must not appear on any traced line.
-JIRA_XTRACE_SECRET_VALUE="xtrace-secret-Q7Zk9wPv"
+JIRA_XTRACE_SECRET_VALUE="xtrace-secret-Q7Zk9wPv" # gitleaks:allow -- synthetic test credential
 JIRA_INT_XTRACE=1 run_jira_int "jira-client-credentials-xtrace" github \
   "${JIRA_CLIENT_ENV[@]}" "FULLSEND_JIRA_CLIENT_SECRET=${JIRA_XTRACE_SECRET_VALUE}"
 if [ "${JIRA_INT_RC}" -ne 0 ]; then
   jira_int_fail "jira-client-credentials-xtrace-no-secret" "post-code failed"
-elif ! grep -q '^+' "${JIRA_INT_OUT}"; then
+elif ! grep -q '^+ SCRIPT_DIR_POST=' "${JIRA_INT_OUT}"; then
   jira_int_fail "jira-client-credentials-xtrace-no-secret" "no xtrace output"
 elif grep -qF "${JIRA_XTRACE_SECRET_VALUE}" "${JIRA_INT_OUT}" "${JIRA_INT_FULLSEND_LOG}" "${JIRA_INT_FORGE_LOG}"; then
   grep -nF "${JIRA_XTRACE_SECRET_VALUE}" "${JIRA_INT_OUT}" | head -5 || true
   jira_int_fail "jira-client-credentials-xtrace-no-secret" "client secret on a traced line"
 else
   echo "PASS: jira-client-credentials-xtrace-no-secret"
+fi
+
+# Token mode is the other tracing path, and the one the client-credentials case
+# cannot cover: jira_auth_fullsend has no xtrace guard of its own there, and the
+# credential re-exec re-applies -x to the child, so the token and email are in
+# scope for every traced line the stage-comment call produces.
+JIRA_XTRACE_TOKEN_VALUE="xtrace-token-V7Qp2Lmz"    # gitleaks:allow -- synthetic test credential
+JIRA_XTRACE_EMAIL_VALUE="xtrace-email@example.com" # gitleaks:allow -- synthetic test value
+JIRA_INT_XTRACE=1 run_jira_int "jira-token-xtrace" github \
+  "JIRA_TOKEN=${JIRA_XTRACE_TOKEN_VALUE}" "FULLSEND_JIRA_TOKEN=${JIRA_XTRACE_TOKEN_VALUE}" \
+  "JIRA_USER_EMAIL=${JIRA_XTRACE_EMAIL_VALUE}" "FULLSEND_JIRA_EMAIL=${JIRA_XTRACE_EMAIL_VALUE}"
+if [ "${JIRA_INT_RC}" -ne 0 ]; then
+  jira_int_fail "jira-token-xtrace-no-secret" "post-code failed"
+elif ! grep -q '^+ SCRIPT_DIR_POST=' "${JIRA_INT_OUT}"; then
+  jira_int_fail "jira-token-xtrace-no-secret" "no xtrace output"
+elif grep -qF "${JIRA_XTRACE_TOKEN_VALUE}" "${JIRA_INT_OUT}" "${JIRA_INT_FORGE_LOG}"; then
+  # The fake CLI's own log legitimately records the env it received, so the
+  # check is the traced script output and the forge log, not that record.
+  grep -nF "${JIRA_XTRACE_TOKEN_VALUE}" "${JIRA_INT_OUT}" | head -5 || true
+  jira_int_fail "jira-token-xtrace-no-secret" "jira token on a traced line"
+elif grep -qF "${JIRA_XTRACE_EMAIL_VALUE}" "${JIRA_INT_OUT}"; then
+  grep -nF "${JIRA_XTRACE_EMAIL_VALUE}" "${JIRA_INT_OUT}" | head -5 || true
+  jira_int_fail "jira-token-xtrace-no-secret" "jira email on a traced line"
+else
+  echo "PASS: jira-token-xtrace-no-secret"
 fi
 
 # A token and client credentials together, or one client variable alone,
@@ -4118,7 +4246,7 @@ else
 fi
 
 # A work-item key that disagrees with the URL is not written anywhere in Jira.
-run_jira_int "jira-key-mismatch" github FULLSEND_WORK_ITEM_KEY=TESTPROJ-7
+run_jira_int "jira-key-mismatch" github FULLSEND_WORK_ITEM_KEY=TESTPROJ-7 CODE_JIRA_PR_READY_TRANSITION=Review
 if [ "${JIRA_INT_RC}" -eq 0 ] || [ -s "${JIRA_INT_FULLSEND_LOG}" ]; then
   jira_int_fail "jira-key-mismatch-not-written" "expected failure with no Jira write"
 else
@@ -4129,7 +4257,7 @@ fi
 # GitHub issue flow, no Jira write.
 run_jira_int "forge-originated" github FULLSEND_TRACKER= FULLSEND_WORK_ITEM_SOURCE=github \
   FULLSEND_WORK_ITEM_KEY= FULLSEND_WORK_ITEM_URL= ISSUE_NUMBER=42 \
-  ISSUE_URL=https://github.com/test-org/test-repo/issues/42 JIRA_TOKEN= JIRA_USER_EMAIL=
+  ISSUE_URL=https://github.com/test-org/test-repo/issues/42 JIRA_TOKEN= JIRA_USER_EMAIL= CODE_JIRA_PR_READY_TRANSITION=Review
 if [ "${JIRA_INT_RC}" -ne 0 ]; then
   jira_int_fail "forge-originated-run-no-jira-write" "post-code failed"
 elif [ -s "${JIRA_INT_FULLSEND_LOG}" ]; then
@@ -4147,6 +4275,134 @@ if [ "${JIRA_INT_RC}" -eq 0 ] || [ -s "${JIRA_INT_FORGE_LOG}" ]; then
   jira_int_fail "jira-tracker-source-conflict-fails" "expected failure before any forge call"
 else
   echo "PASS: jira-tracker-source-conflict-fails (expected failure, got exit ${JIRA_INT_RC})"
+fi
+
+# Optional PR-ready transition shares the verified Jira identity and credentials.
+if [ "$(yq -r '.env.runner.CODE_JIRA_PR_READY_TRANSITION' "${CODE_HARNESS}")" = "off" ] \
+   && [ "$(yq -r '.env.sandbox.CODE_JIRA_PR_READY_TRANSITION' "${CODE_HARNESS}")" = "null" ]; then
+  echo "PASS: jira-pr-ready-harness-runner-only-disabled"
+else
+  jira_int_fail "jira-pr-ready-harness-runner-only-disabled" "invalid harness setting"
+fi
+
+for _transition_forge in github gitlab; do
+  run_jira_int "transition-${_transition_forge}" "${_transition_forge}" CODE_JIRA_PR_READY_TRANSITION="Ready for Review"
+  if [ "${JIRA_INT_RC}" -ne 0 ] \
+     || [ "$(grep -c '^fullsend issues transition ' "${JIRA_INT_FULLSEND_LOG}")" -ne 1 ] \
+     || ! grep -qF -- "--project TESTPROJ --number 42 --transition Ready for Review env-token=fake-jira-token env-email=fullsend-bot@example.com" "${JIRA_INT_FULLSEND_LOG}"; then
+    jira_int_fail "jira-pr-ready-${_transition_forge}" "expected one transition using trusted credentials and identity"
+  else
+    echo "PASS: jira-pr-ready-${_transition_forge}"
+  fi
+
+  for _transition_details in \
+    '{"state":"OPEN","isDraft":true}' \
+    '{"state":"CLOSED","isDraft":false}' \
+    '{"state":"MERGED","isDraft":false}' \
+    '{"state":"opened","draft":true}' \
+    '{"state":"closed","draft":false}' \
+    '{"state":"merged","draft":false}' \
+    '{"state":"OPEN"}' '{"state":"opened"}' 'invalid-json'; do
+    # Each case gets a new local repo, so use a counter in its fixture name.
+    _transition_case="${_transition_case:-0}"
+    _transition_case=$((_transition_case + 1))
+    run_jira_int "transition-skip-${_transition_case}" "${_transition_forge}" \
+      CODE_JIRA_PR_READY_TRANSITION=Review "MOCK_PR_DETAILS=${_transition_details}"
+    if [ "${JIRA_INT_RC}" -ne 0 ] || grep -q '^fullsend issues transition ' "${JIRA_INT_FULLSEND_LOG}" \
+       || ! grep -qF 'not confirmed open and non-draft; skipping' "${JIRA_INT_OUT}"; then
+      jira_int_fail "jira-pr-ready-skip-${_transition_forge}-${_transition_case}" "unconfirmed readiness must not transition"
+    else
+      echo "PASS: jira-pr-ready-skip-${_transition_forge}-${_transition_case}"
+    fi
+  done
+done
+
+for _transition_forge in github gitlab; do
+  run_jira_int "transition-existing-${_transition_forge}" "${_transition_forge}" MOCK_EXISTING_PR=1 CODE_JIRA_PR_READY_TRANSITION=Review
+  if [ "${JIRA_INT_RC}" -ne 0 ] || [ "$(grep -c '^fullsend issues transition ' "${JIRA_INT_FULLSEND_LOG}")" -ne 1 ] \
+     || ! grep -q 'pushed new commits to' "${JIRA_INT_FULLSEND_LOG}" \
+     || grep -qE '^gh pr create|^curl .*--request POST .*merge_requests' "${JIRA_INT_FORGE_LOG}"; then
+    jira_int_fail "jira-pr-ready-existing-${_transition_forge}" "existing ready PR/MR must transition once without creating another"
+  else
+    echo "PASS: jira-pr-ready-existing-${_transition_forge}"
+  fi
+done
+
+for _disabled_setting in '' off; do
+  run_jira_int "transition-disabled-${_disabled_setting:-empty}" github "CODE_JIRA_PR_READY_TRANSITION=${_disabled_setting}"
+  if [ "${JIRA_INT_RC}" -ne 0 ] || grep -q '^fullsend issues transition ' "${JIRA_INT_FULLSEND_LOG}" \
+     || grep -q 'state,isDraft' "${JIRA_INT_FORGE_LOG}"; then
+    jira_int_fail "jira-pr-ready-disabled-${_disabled_setting:-empty}" "disabled setting must not look up readiness or transition"
+  else
+    echo "PASS: jira-pr-ready-disabled-${_disabled_setting:-empty}"
+  fi
+done
+
+run_jira_int "transition-lookup-failure" github CODE_JIRA_PR_READY_TRANSITION=Review MOCK_READINESS_FAIL=1
+if [ "${JIRA_INT_RC}" -ne 0 ] || grep -q '^fullsend issues transition ' "${JIRA_INT_FULLSEND_LOG}" \
+   || ! grep -q 'Could not verify PR/MR readiness' "${JIRA_INT_OUT}"; then
+  jira_int_fail "jira-pr-ready-read-failure" "lookup failure must warn and skip"
+else
+  echo "PASS: jira-pr-ready-read-failure"
+fi
+
+# A repository hook can plant utilities in the directory post-code prepends.
+# Catch credential exposure to a child process, not merely token-free stdout.
+JIRA_REAL_AWK="$(command -v awk)"
+JIRA_AWK_LEAK="${JIRA_INT_TMPDIR}/awk-secret-leak"
+mkdir -p "${JIRA_INT_TMPDIR}/.local/bin"
+cat > "${JIRA_INT_TMPDIR}/.local/bin/awk" <<MOCKEOF
+#!/usr/bin/env bash
+if [[ -n "\${REDACT_LITERAL_TOKEN:-}\${JIRA_TOKEN:-}\${FULLSEND_JIRA_TOKEN:-}" ]]; then
+  printf 'credential reached shadow awk\n' >> "${JIRA_AWK_LEAK}"
+fi
+exec "${JIRA_REAL_AWK}" "\$@"
+MOCKEOF
+chmod +x "${JIRA_INT_TMPDIR}/.local/bin/awk"
+for _failure_forge in github gitlab; do
+  run_jira_int "transition-write-failure-${_failure_forge}" "${_failure_forge}" \
+    CODE_JIRA_PR_READY_TRANSITION=Review MOCK_TRANSITION_FAIL=1
+  if [ "${JIRA_INT_RC}" -ne 0 ] || [ "$(grep -c '^fullsend issues transition ' "${JIRA_INT_FULLSEND_LOG}")" -ne 1 ] \
+     || ! grep -q 'Optional Jira PR-ready transition failed' "${JIRA_INT_OUT}" \
+     || ! grep -qF 'Error: transition failed [REDACTED]' "${JIRA_INT_OUT}" \
+     || grep -q 'fake-jira-token' "${JIRA_INT_OUT}" || [ -s "${JIRA_AWK_LEAK}" ]; then
+    jira_int_fail "jira-pr-ready-write-failure-${_failure_forge}" "transition must warn once without leaking to logs or PATH utilities"
+  else
+    echo "PASS: jira-pr-ready-write-failure-${_failure_forge}"
+  fi
+done
+# Pattern characters in credentials must remain literal during substitution.
+run_jira_int "transition-literal-token" github CODE_JIRA_PR_READY_TRANSITION=Review \
+  MOCK_TRANSITION_FAIL=1 'JIRA_TOKEN=jira.*[?]/&-token'
+if [ "${JIRA_INT_RC}" -ne 0 ] \
+   || ! grep -qF 'Error: transition failed [REDACTED]' "${JIRA_INT_OUT}" \
+   || grep -qF 'jira.*[?]/&-token' "${JIRA_INT_OUT}" || [ -s "${JIRA_AWK_LEAK}" ]; then
+  jira_int_fail "jira-pr-ready-literal-redaction" "credential patterns must be redacted literally without subprocess exposure"
+else
+  echo "PASS: jira-pr-ready-literal-redaction"
+fi
+rm -f "${JIRA_INT_TMPDIR}/.local/bin/awk"
+
+for oauth_forge in github gitlab; do
+  for oauth_fail in '' 1; do
+    run_jira_int "transition-oauth-${oauth_forge}-${oauth_fail:-success}" "${oauth_forge}" \
+      "${JIRA_CLIENT_ENV[@]}" "FULLSEND_JIRA_CLIENT_SECRET= ${JIRA_CLIENT_SECRET_VALUE} " \
+      CODE_JIRA_PR_READY_TRANSITION=Review "MOCK_TRANSITION_FAIL=${oauth_fail}"
+    if [ "${JIRA_INT_RC}" -ne 0 ] \
+       || [ "$(grep -c '^fullsend issues transition ' "${JIRA_INT_FULLSEND_LOG}")" -ne 1 ] \
+       || grep -qF "${JIRA_CLIENT_SECRET_VALUE}" "${JIRA_INT_OUT}"; then
+      jira_int_fail "transition-oauth-${oauth_forge}" "expected one nonfatal transition and no leaked client secret"
+    else
+      echo "PASS: transition-oauth-${oauth_forge}-${oauth_fail:-success}"
+    fi
+  done
+done
+
+run_jira_int "transition-comment-failure" github CODE_JIRA_PR_READY_TRANSITION=Review MOCK_FULLSEND_FAIL=1
+if [ "${JIRA_INT_RC}" -eq 0 ] || grep -q '^fullsend issues transition ' "${JIRA_INT_FULLSEND_LOG}"; then
+  jira_int_fail "jira-pr-ready-comment-failure" "comment failure must still fail the step before transition"
+else
+  echo "PASS: jira-pr-ready-comment-failure"
 fi
 
 rm -rf "${JIRA_INT_TMPDIR}"

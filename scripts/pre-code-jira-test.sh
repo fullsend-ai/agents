@@ -16,6 +16,15 @@ parse_script_test_args "$@"
 PRE_SCRIPT="$(resolve_agent_script pre-code-jira "${SCRIPT_DIR}")"
 FAILURES=0
 
+# /proc exposes initial parent environments on Linux; macOS has no equivalent
+# fixture here. Both platforms still check inherited child environments and
+# restoration for trusted Jira calls below.
+JIRA_EXPECTED_PROC_LEAK=no
+if [[ "$(uname -s)" != Linux ]]; then
+  JIRA_EXPECTED_PROC_LEAK=unavailable
+  echo 'SKIP: Jira parent /proc environment inspection (non-Linux host)'
+fi
+
 TMPDIR="$(mktemp -d)"
 trap 'rm -rf "${TMPDIR}"' EXIT
 
@@ -101,10 +110,16 @@ CURLEOF
 #!/usr/bin/env bash
 {
   echo "ARGS: $*"
+  echo "AUTH: token=${FULLSEND_JIRA_TOKEN:-unset} email=${FULLSEND_JIRA_EMAIL-unset}"
   echo "ENV: token=${FULLSEND_JIRA_TOKEN-unset} id=${FULLSEND_JIRA_CLIENT_ID-unset} secret=${FULLSEND_JIRA_CLIENT_SECRET:+set}"
-  echo "BODY:"
-  cat
+  if [[ "$1 $2" == "issues post-comment" ]]; then
+    echo "BODY:"
+    cat
+  fi
 } >> "${FULLSEND_CALLS}"
+if [[ "$1 $2" == "issues transition" && "${MOCK_FULLSEND_EXIT:-0}" != 0 ]]; then
+  printf 'API error %s %s\n::error::untrusted diagnostic\n' "${FULLSEND_JIRA_TOKEN:-}${FULLSEND_JIRA_CLIENT_SECRET:-}" "${FULLSEND_JIRA_EMAIL:-}" >&2
+fi
 exit "${MOCK_FULLSEND_EXIT:-0}"
 FSEOF
   chmod +x "${mock_bin}/fullsend"
@@ -119,6 +134,11 @@ GITEOF
   # Mock python3 (needed for resolve-precommit-tools.py)
   cat > "${mock_bin}/python3" <<'PYEOF'
 #!/usr/bin/env bash
+if [[ "${MOCK_TOOL_SETUP:-}" == 1 ]]; then
+  echo "resolver jira=${JIRA_TOKEN:-unset} fullsend=${FULLSEND_JIRA_TOKEN:-unset}" >> "${TOOL_CALLS}"
+  echo '{"tools":[{"name":"fixture"}]}'
+  exit 0
+fi
 exit 1
 PYEOF
   chmod +x "${mock_bin}/python3"
@@ -146,6 +166,16 @@ base_env() {
   echo "CURL_ARGV_LOG=${CURL_ARGV_LOG}"
   echo "COMMENT_BODY="
   echo "CODE_FORCE="
+  echo "CODE_JIRA_STARTED_TRANSITION=off"
+  echo "CODE_JIRA_PR_READY_TRANSITION=off"
+  echo "FULLSEND_TRACKER=jira"
+  echo "FULLSEND_WORK_ITEM_SOURCE=jira"
+  echo "FULLSEND_WORK_ITEM_KEY=PROJ-42"
+  echo "FULLSEND_WORK_ITEM_URL=https://acme.atlassian.net/browse/PROJ-42"
+  echo "FULLSEND_JIRA_TOKEN=inherited-jira-token"
+  echo "FULLSEND_JIRA_EMAIL=inherited@example.com"
+  echo "HOME=${TMPDIR}/test-home"
+  echo "TOOL_CALLS=${TMPDIR}/tool-calls.log"
 }
 
 # run_script EXTRA_ENV — run the pre-script; sets RUN_EXIT.
@@ -154,7 +184,32 @@ run_script() {
 
   local mock_bin
   mock_bin="$(build_mock)"
-  rm -f "${PRESCRIPT_OUT}" "${FULLSEND_CALLS}" "${CURL_ARGV_LOG}"
+  rm -f "${PRESCRIPT_OUT}" "${FULLSEND_CALLS}" "${CURL_ARGV_LOG}" "${TMPDIR}/tool-calls.log"
+  rm -rf "${TMPDIR}/workspace" "${TMPDIR}/test-home"
+  if [[ "${TEST_TOOL_INSTALL:-}" == 1 ]]; then
+    mkdir -p "${TMPDIR}/workspace/scripts" "${TMPDIR}/workspace/target-repo"
+    printf 'repos: []\n' > "${TMPDIR}/workspace/target-repo/.pre-commit-config.yaml"
+    touch "${TMPDIR}/workspace/scripts/resolve-precommit-tools.py"
+    cat > "${TMPDIR}/workspace/scripts/install-precommit-tools.sh" <<'INSTALL'
+#!/usr/bin/env bash
+set -euo pipefail
+leak=unavailable
+if [[ "$(uname -s)" == Linux ]]; then
+  leak=no
+  read -r _ _ _ gp _ < "/proc/${PPID}/stat"
+  for pid in "${PPID}" "${gp}"; do
+    if tr '\0' '\n' < "/proc/${pid}/environ" 2>/dev/null | grep -qE '^(JIRA_TOKEN|JIRA_USER_EMAIL|FULLSEND_JIRA_TOKEN|FULLSEND_JIRA_EMAIL|FULLSEND_JIRA_CLIENT_ID|FULLSEND_JIRA_CLIENT_SECRET)=.'; then
+      leak=yes
+    fi
+  done
+fi
+echo "installer jira=${JIRA_TOKEN:-unset} email=${JIRA_USER_EMAIL:-unset} fullsend=${FULLSEND_JIRA_TOKEN:-unset} fullsend-email=${FULLSEND_JIRA_EMAIL:-unset} proc-leak=${leak} client-id=${FULLSEND_JIRA_CLIENT_ID:-unset} client-secret=${FULLSEND_JIRA_CLIENT_SECRET:+set}" >> "${TOOL_CALLS}"
+mkdir -p "${HOME}/.local/bin"
+printf '#!/usr/bin/env bash\necho SHADOW >> "${FULLSEND_CALLS}"\n' > "${HOME}/.local/bin/fullsend"
+chmod +x "${HOME}/.local/bin/fullsend"
+exit "${MOCK_INSTALL_EXIT:-0}"
+INSTALL
+  fi
 
   local env_cmd=(env)
 
@@ -175,9 +230,23 @@ run_script() {
     env_cmd+=("COMMENT_BODY=${TEST_COMMENT_BODY}")
   fi
 
+  if [[ "${TEST_NO_CLI:-}" == 1 ]]; then
+    rm -f "${mock_bin}/fullsend"
+    # Restrict PATH to these known tools so a host-installed fullsend cannot
+    # satisfy the missing-CLI fixture accidentally.
+    local tool
+    for tool in bash env mktemp rm dirname sed tr awk jq head cut; do
+      ln -s "$(command -v "${tool}")" "${mock_bin}/${tool}"
+    done
+    env_cmd+=("PATH=${mock_bin}")
+  fi
+
   RUN_EXIT=0
-  # RUN_XTRACE=1 runs the script under bash -x.
-  "${env_cmd[@]}" bash ${RUN_XTRACE:+-x} "${PRE_SCRIPT}" > "${TMPDIR}/stdout.log" 2>&1 || RUN_EXIT=$?
+  # RUN_XTRACE=1 traces both the script and its credential-isolating re-exec.
+  if [[ -n "${RUN_XTRACE:-}" ]]; then
+    env_cmd+=("SHELLOPTS=xtrace")
+  fi
+  "${env_cmd[@]}" bash "${PRE_SCRIPT}" > "${TMPDIR}/stdout.log" 2>&1 || RUN_EXIT=$?
 }
 
 run_test() {
@@ -504,6 +573,115 @@ run_skip_test "no-children-does-not-skip" \
   false \
   "No child issues found"
 
+# --- Optional started transition ---
+run_started_test() {
+  local name="$1" expected_exit="$2" expected_calls="$3" extra="$4" message="${5:-}"
+  run_script "${extra}"
+  local calls
+  calls="$(grep -c '^ARGS: issues transition ' "${FULLSEND_CALLS}" 2>/dev/null || true)"
+  if [[ "${RUN_EXIT}" -ne "${expected_exit}" || "${calls:-0}" -ne "${expected_calls}" ]] \
+    || { [[ -n "${message}" ]] && ! grep -qF "${message}" "${TMPDIR}/stdout.log"; }; then
+    echo "FAIL: ${name} — exit=${RUN_EXIT}, transitions=${calls:-0}"
+    cat "${TMPDIR}/stdout.log"
+    FAILURES=$((FAILURES + 1))
+  else
+    echo "PASS: ${name}"
+  fi
+}
+
+for _started_forge in github gitlab; do
+  run_started_test "started-${_started_forge}" 0 1 "CODE_JIRA_STARTED_TRANSITION=Start Progress
+FULLSEND_FORGE=${_started_forge}
+GITLAB_TOKEN=fake-gitlab-token
+CI_SERVER_HOST=gitlab.example.com"
+  if ! grep -qF -- '--tracker jira --fullsend-dir' "${FULLSEND_CALLS}" \
+     || ! grep -qF -- '--project PROJ --number 42 --transition Start Progress' "${FULLSEND_CALLS}" \
+     || ! grep -qF 'AUTH: token=fake-jira-token email=bot@acme.com' "${FULLSEND_CALLS}"; then
+    echo "FAIL: started-${_started_forge}-identity-and-auth"
+    FAILURES=$((FAILURES + 1))
+  else
+    echo "PASS: started-${_started_forge}-identity-and-auth"
+  fi
+done
+
+run_started_test started-default 0 0 ''
+run_started_test started-off 0 0 'CODE_JIRA_STARTED_TRANSITION=off'
+run_started_test started-empty 0 0 'CODE_JIRA_STARTED_TRANSITION='
+run_started_test started-independent-of-ready 0 0 'CODE_JIRA_PR_READY_TRANSITION=Review'
+run_started_test started-human-pr-skip 0 0 "CODE_JIRA_STARTED_TRANSITION=Start
+MOCK_GH_PRS=${HUMAN_PR_URL_BODY}"
+run_started_test started-child-skip 0 0 "CODE_JIRA_STARTED_TRANSITION=Start
+MOCK_JIRA_CHILDREN=${HAS_CHILDREN}"
+run_started_test started-force-bypasses-skips 0 1 "CODE_JIRA_STARTED_TRANSITION=Start
+CODE_FORCE=true
+MOCK_GH_PRS=${HUMAN_PR_URL_BODY}
+MOCK_JIRA_CHILDREN=${HAS_CHILDREN}"
+run_started_test started-invalid-url 1 0 'CODE_JIRA_STARTED_TRANSITION=Start
+ISSUE_URL=https://github.com/org/repo/issues/42'
+run_started_test started-host-mismatch 1 0 'CODE_JIRA_STARTED_TRANSITION=Start
+JIRA_BASE_URL=https://other.atlassian.net'
+run_started_test started-invalid-forge 1 0 'CODE_JIRA_STARTED_TRANSITION=Start
+FULLSEND_FORGE=invalid'
+for _started_identity in \
+  'FULLSEND_WORK_ITEM_KEY=PROJ-7' \
+  'FULLSEND_WORK_ITEM_URL=https://other.atlassian.net/browse/PROJ-42' \
+  'FULLSEND_WORK_ITEM_SOURCE=github' \
+  'FULLSEND_TRACKER=gitlab'; do
+  run_started_test "started-identity-${_started_identity%%=*}" 0 0 "CODE_JIRA_STARTED_TRANSITION=Start
+${_started_identity}" 'Jira source identity does not match'
+done
+for _started_missing in JIRA_TOKEN FULLSEND_DIR; do
+  run_started_test "started-missing-${_started_missing}" 0 0 "CODE_JIRA_STARTED_TRANSITION=Start
+${_started_missing}=" 'requires Jira credentials, FULLSEND_DIR and the fullsend CLI'
+done
+TEST_NO_CLI=1 run_started_test started-missing-cli 0 0 'CODE_JIRA_STARTED_TRANSITION=Start' \
+  'requires Jira credentials, FULLSEND_DIR and the fullsend CLI'
+run_started_test started-service-account 0 1 'CODE_JIRA_STARTED_TRANSITION=Start
+JIRA_USER_EMAIL='
+if ! grep -qF 'AUTH: token=fake-jira-token email=unset' "${FULLSEND_CALLS}"; then
+  echo 'FAIL: started-service-account-auth'
+  FAILURES=$((FAILURES + 1))
+else
+  echo 'PASS: started-service-account-auth'
+fi
+run_started_test started-write-failure-warns-no-retry 0 1 'CODE_JIRA_STARTED_TRANSITION=Start
+MOCK_FULLSEND_EXIT=1' 'Optional Jira started transition failed'
+if grep -qF 'fake-jira-token' "${TMPDIR}/stdout.log" \
+   || grep -qF 'bot@acme.com' "${TMPDIR}/stdout.log" \
+   || ! grep -qF 'API error [REDACTED]' "${TMPDIR}/stdout.log" \
+   || ! grep -qF '%3A%3Aerror%3A%3Auntrusted diagnostic' "${TMPDIR}/stdout.log"; then
+  echo 'FAIL: started-write-failure-token-disclosure'
+  FAILURES=$((FAILURES + 1))
+else
+  echo 'PASS: started-write-failure-token-redacted'
+fi
+
+TEST_TOOL_INSTALL=1 run_started_test started-after-tool-install 0 1 'CODE_JIRA_STARTED_TRANSITION=Start
+MOCK_TOOL_SETUP=1'
+if ! grep -qF 'resolver jira=unset fullsend=unset' "${TMPDIR}/tool-calls.log" \
+   || ! grep -qF "installer jira=unset email=unset fullsend=unset fullsend-email=unset proc-leak=${JIRA_EXPECTED_PROC_LEAK}" "${TMPDIR}/tool-calls.log" \
+   || grep -q 'SHADOW' "${FULLSEND_CALLS}"; then
+  echo 'FAIL: started-tools-cannot-read-token-or-shadow-cli'
+  FAILURES=$((FAILURES + 1))
+else
+  echo 'PASS: started-tools-cannot-read-token-or-shadow-cli'
+fi
+TEST_TOOL_INSTALL=1 run_started_test started-tool-install-failure 1 0 'CODE_JIRA_STARTED_TRANSITION=Start
+MOCK_TOOL_SETUP=1
+MOCK_INSTALL_EXIT=1'
+TEST_TOOL_INSTALL=1 run_started_test started-force-still-requires-setup 1 0 'CODE_JIRA_STARTED_TRANSITION=Start
+CODE_FORCE=true
+MOCK_TOOL_SETUP=1
+MOCK_INSTALL_EXIT=1'
+
+if [[ "$(yq -r '.env.runner.CODE_JIRA_STARTED_TRANSITION' "${SCRIPT_DIR}/../harness/code.yaml")" == off ]] \
+  && [[ "$(yq -r '.env.sandbox.CODE_JIRA_STARTED_TRANSITION' "${SCRIPT_DIR}/../harness/code.yaml")" == null ]]; then
+  echo 'PASS: started-harness-runner-only-disabled'
+else
+  echo 'FAIL: started-harness-runner-only-disabled'
+  FAILURES=$((FAILURES + 1))
+fi
+
 # --- Test cases: OAuth 2.0 client credentials (#1926) ---
 
 CLIENT_SECRET_VALUE="client-secret-DO-NOT-LEAK"
@@ -535,7 +713,7 @@ else
 fi
 
 # Under bash -x, the client secret must not appear on any traced line.
-XTRACE_SECRET_VALUE="xtrace-secret-Q7Zk9wPv"
+XTRACE_SECRET_VALUE="xtrace-secret-Q7Zk9wPv" # gitleaks:allow -- synthetic test credential
 RUN_XTRACE=1 run_skip_test "client-credentials-xtrace-runs-child-check" \
   true \
   "reason=PROJ-42 has child issue(s)" \
@@ -547,7 +725,7 @@ JIRA_USER_EMAIL=
 JIRA_API_URL=${GATEWAY_URL}
 FULLSEND_JIRA_CLIENT_ID=client-id-1
 FULLSEND_JIRA_CLIENT_SECRET=${XTRACE_SECRET_VALUE}"
-if grep -q '^+' "${TMPDIR}/stdout.log" \
+if grep -q '^+ SCRIPT_DIR=' "${TMPDIR}/stdout.log" \
    && ! grep -qF "${XTRACE_SECRET_VALUE}" "${TMPDIR}/stdout.log" "${CURL_ARGV_LOG}" "${FULLSEND_CALLS}"; then
   echo "PASS: client-credentials-xtrace-no-secret"
 else
@@ -576,6 +754,63 @@ run_test "one-client-variable-fails" \
   "JIRA_TOKEN=
 JIRA_API_URL=${GATEWAY_URL}
 FULLSEND_JIRA_CLIENT_ID=client-id-1"
+
+# Optional transitions also support the upstream OAuth credential mode.
+for oauth_exit in 0 1; do
+  run_started_test "started-oauth-${oauth_exit}" 0 1 "CODE_JIRA_STARTED_TRANSITION=Start
+JIRA_TOKEN=
+JIRA_USER_EMAIL=
+JIRA_API_URL=${GATEWAY_URL}
+FULLSEND_JIRA_CLIENT_ID=client-id-1
+FULLSEND_JIRA_CLIENT_SECRET=${CLIENT_SECRET_VALUE}
+MOCK_FULLSEND_EXIT=${oauth_exit}"
+  if ! grep -qF 'ENV: token=unset id=client-id-1 secret=set' "${FULLSEND_CALLS}" \
+     || grep -qF "${CLIENT_SECRET_VALUE}" "${TMPDIR}/stdout.log"; then
+    echo 'FAIL: started-oauth-auth-or-diagnostic-isolation'
+    FAILURES=$((FAILURES + 1))
+  fi
+done
+
+TEST_TOOL_INSTALL=1 run_started_test started-oauth-tool-isolation 0 1 "CODE_JIRA_STARTED_TRANSITION=Start
+MOCK_TOOL_SETUP=1
+JIRA_TOKEN=
+JIRA_USER_EMAIL=
+JIRA_API_URL=${GATEWAY_URL}
+FULLSEND_JIRA_CLIENT_ID=client-id-1
+FULLSEND_JIRA_CLIENT_SECRET=${CLIENT_SECRET_VALUE}"
+if ! grep -qF "proc-leak=${JIRA_EXPECTED_PROC_LEAK} client-id=unset client-secret=" "${TMPDIR}/tool-calls.log" \
+   || grep -qF "${CLIENT_SECRET_VALUE}" "${TMPDIR}/stdout.log" "${TMPDIR}/tool-calls.log" \
+   || grep -q SHADOW "${FULLSEND_CALLS}"; then
+  echo 'FAIL: started-oauth-tools-see-credentials'
+  FAILURES=$((FAILURES + 1))
+else
+  echo 'PASS: started-oauth-tools-withheld'
+fi
+
+# Token credentials must also stay off trace lines during library loading.
+RUN_XTRACE=1 run_started_test started-token-xtrace 0 1 'CODE_JIRA_STARTED_TRANSITION=Start'
+if ! grep -q '^+ SCRIPT_DIR=' "${TMPDIR}/stdout.log" \
+   || grep -qF 'fake-jira-token' "${TMPDIR}/stdout.log" \
+   || grep -qF 'bot@acme.com' "${TMPDIR}/stdout.log"; then
+  echo 'FAIL: started-token-xtrace-no-secret'
+  FAILURES=$((FAILURES + 1))
+else
+  echo 'PASS: started-token-xtrace-no-secret'
+fi
+
+for trace_skip_exit in 0 1; do
+  RUN_XTRACE=1 run_skip_test "token-xtrace-skip-${trace_skip_exit}" true \
+    'reason=PROJ-42 has child issue(s)' "MOCK_JIRA_CHILDREN=${HAS_CHILDREN}
+MOCK_FULLSEND_EXIT=${trace_skip_exit}"
+  if ! grep -q '^+ SCRIPT_DIR=' "${TMPDIR}/stdout.log" \
+     || grep -qF 'fake-jira-token' "${TMPDIR}/stdout.log" \
+     || grep -qF 'bot@acme.com' "${TMPDIR}/stdout.log"; then
+    echo 'FAIL: token-xtrace-skip-no-secret'
+    FAILURES=$((FAILURES + 1))
+  else
+    echo 'PASS: token-xtrace-skip-no-secret'
+  fi
+done
 
 # --- Summary ---
 

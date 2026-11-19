@@ -31,14 +31,52 @@
 #                         the check is skipped when unset
 #   COMMENT_BODY       — trigger comment; when unset, read from the dispatch
 #                         event payload (${FULLSEND_DIR}/dispatch/event-payload.json)
+#   CODE_JIRA_STARTED_TRANSITION — optional Jira transition after preflight; "off"
+#                         (default) disables it; not proof the sandbox started
 #   CODE_FORCE         — "true" bypasses the existing-PR and child-issue checks
 #   FULLSEND_APP_SET   — GitHub App identity prefix (default "fullsend-ai"),
 #                         used to exclude bot-authored PRs
 set -euo pipefail
 
+# Withhold Jira credentials before repository dependency tools can run.
+# As in post-code, re-exec without them: plain unset leaves the initial
+# environment readable through /proc. Existing Jira helpers use the restored
+# unexported variables; only trusted API calls receive the token. This is not
+# isolation from a same-user process with ptrace access.
+_jira_xtrace_was_on=0; [[ $- == *x* ]] && _jira_xtrace_was_on=1; set +x
+if [[ -n "${_PRE_CODE_JIRA_FD:-}" ]]; then
+  _jira_stash_fd="${_PRE_CODE_JIRA_FD}"
+  unset _PRE_CODE_JIRA_FD
+  { IFS= read -r -d '' JIRA_TOKEN || true; IFS= read -r -d '' JIRA_USER_EMAIL || true;
+    IFS= read -r -d '' FULLSEND_JIRA_CLIENT_ID || true; IFS= read -r -d '' FULLSEND_JIRA_CLIENT_SECRET || true; } \
+    <&"${_jira_stash_fd}"
+  exec {_jira_stash_fd}<&-
+  unset _jira_stash_fd
+elif [[ -n "${JIRA_TOKEN:-}${JIRA_USER_EMAIL:-}${FULLSEND_JIRA_TOKEN:-}${FULLSEND_JIRA_EMAIL:-}${FULLSEND_JIRA_CLIENT_ID:-}${FULLSEND_JIRA_CLIENT_SECRET:-}" ]]; then
+  _jira_stash_file="$(mktemp)"
+  printf '%s\0%s\0%s\0%s\0' "${JIRA_TOKEN-}" "${JIRA_USER_EMAIL-}" \
+    "${FULLSEND_JIRA_CLIENT_ID-}" "${FULLSEND_JIRA_CLIENT_SECRET-}" >"${_jira_stash_file}"
+  # Open a fresh reader at offset zero before unlinking. Direct descriptor
+  # redirection works on both Linux and macOS without /proc/self/fd.
+  exec {_jira_stash_fd}<"${_jira_stash_file}"
+  rm -f "${_jira_stash_file}"
+  # The child runs traced when the caller is traced: SHELLOPTS is not
+  # exported by bash, so -x must be re-applied explicitly across the re-exec.
+  # That makes every credential expansion after this point a trace hazard,
+  # so each one is guarded by suspending xtrace for the whole CLI call.
+  _jira_bash_flags=()
+  (( _jira_xtrace_was_on )) && _jira_bash_flags+=(-x)
+  exec env -u JIRA_TOKEN -u JIRA_USER_EMAIL -u FULLSEND_JIRA_TOKEN -u FULLSEND_JIRA_EMAIL \
+    -u FULLSEND_JIRA_CLIENT_ID -u FULLSEND_JIRA_CLIENT_SECRET \
+    _PRE_CODE_JIRA_FD="${_jira_stash_fd}" "${BASH}" "${_jira_bash_flags[@]}" "${BASH_SOURCE[0]}" "$@"
+fi
+
+(( _jira_xtrace_was_on )) && set -x
+unset _jira_xtrace_was_on
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/prescript-output.lib.sh
-# BEGIN bundled: lib/prescript-output.lib.sh
+# BEGIN bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/prescript-output.lib.sh
 # prescript-output.lib.sh — Write pre-script output protocol lines.
 #
 # The pre-script output protocol (fullsend docs/normative/prescript-output/v1,
@@ -64,7 +102,7 @@ prescript_output() {
     printf '%s=%s\n' "$1" "$2" >> "${FULLSEND_PRESCRIPT_OUTPUT}"
   fi
 }
-# END bundled: lib/prescript-output.lib.sh
+# END bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/prescript-output.lib.sh
 
 : "${ISSUE_URL:?ISSUE_URL must be set}"
 : "${REPO_FULL_NAME:?REPO_FULL_NAME must be set}"
@@ -110,7 +148,7 @@ PROJECT_KEY="${ISSUE_KEY%-*}"
 echo "::notice::🔗 Jira source: $(_gha_sanitize "${ISSUE_URL}") (project=$(_gha_sanitize "${PROJECT_KEY}"), key=$(_gha_sanitize "${ISSUE_KEY}"))"
 
 # shellcheck source=lib/code-ops.lib.sh
-# BEGIN bundled: lib/code-ops.lib.sh
+# BEGIN bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/code-ops.lib.sh
 # shellcheck shell=bash
 # code-ops.lib.sh — Forge-dispatch wrapper for code agent operations.
 #
@@ -124,7 +162,7 @@ CODE_OPS_SH_LOADED=1
 # forge_retry_transient is defined for every forge (including callers in the
 # pre-code scripts that wrap commands outside the forge-specific libs).
 # shellcheck source=forge-transient-retry.lib.sh
-# BEGIN bundled: lib/forge-transient-retry.lib.sh
+# BEGIN bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/forge-transient-retry.lib.sh
 # forge-transient-retry.lib.sh — Retry forge CLI/API calls on 5xx/timeouts.
 #
 # Usage:
@@ -266,11 +304,11 @@ forge_retry_transient() {
 
   return 1
 }
-# END bundled: lib/forge-transient-retry.lib.sh
+# END bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/forge-transient-retry.lib.sh
 
 case "${FULLSEND_FORGE:-}" in
   github)
-# BEGIN bundled: lib/github-code-ops.lib.sh
+# BEGIN bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/github-code-ops.lib.sh
 # shellcheck shell=bash
 # github-code-ops.lib.sh — GitHub forge operations for code agent scripts.
 #
@@ -288,11 +326,11 @@ case "${FULLSEND_FORGE:-}" in
 GITHUB_CODE_OPS_SH_LOADED=1
 
 # shellcheck source=forge-transient-retry.lib.sh
-# (already bundled: lib/forge-transient-retry.lib.sh)
+# (already bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/forge-transient-retry.lib.sh)
 # forge_push_branch: a plain git push, or with GITHUB_SIGNED_COMMITS=true the
 # API publish that gets the commits signed by GitHub.
 # shellcheck source=github-signed-push.lib.sh
-# BEGIN bundled: lib/github-signed-push.lib.sh
+# BEGIN bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/github-signed-push.lib.sh
 # shellcheck shell=bash
 # github-signed-push.lib.sh — Publish local commits through the GitHub Git
 # Data API so GitHub signs them.
@@ -627,9 +665,9 @@ _forge_push_branch() {
   git config "branch.${branch}.merge" "refs/heads/${branch}" || return 1
   echo "Branch ${branch} is at ${tip} on origin"
 }
-# END bundled: lib/github-signed-push.lib.sh
+# END bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/github-signed-push.lib.sh
 # shellcheck source=github-host.lib.sh
-# BEGIN bundled: lib/github-host.lib.sh
+# BEGIN bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/github-host.lib.sh
 # shellcheck shell=bash
 # github-host.lib.sh — Shared GitHub host handling for GitHub ops.
 #
@@ -664,7 +702,7 @@ _github_url_path() {
   [[ "${url}" == "${base}"* ]] || return 1
   printf '%s\n' "${url#"${base}"}"
 }
-# END bundled: lib/github-host.lib.sh
+# END bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/github-host.lib.sh
 
 # --- URL handling ---
 
@@ -1019,10 +1057,10 @@ forge_append_path() {
   local dir="$1"
   echo "${dir}" >> "${GITHUB_PATH:-/dev/null}"
 }
-# END bundled: lib/github-code-ops.lib.sh
+# END bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/github-code-ops.lib.sh
     ;;
   gitlab)
-# BEGIN bundled: lib/gitlab-code-ops.lib.sh
+# BEGIN bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/gitlab-code-ops.lib.sh
 # shellcheck shell=bash
 # gitlab-code-ops.lib.sh — GitLab forge operations for code agent scripts.
 #
@@ -1046,7 +1084,7 @@ forge_append_path() {
 GITLAB_CODE_OPS_SH_LOADED=1
 
 # shellcheck source=gitlab-host-validation.lib.sh
-# BEGIN bundled: lib/gitlab-host-validation.lib.sh
+# BEGIN bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/gitlab-host-validation.lib.sh
 # shellcheck shell=bash
 # gitlab-host-validation.lib.sh — Shared host validation for GitLab ops.
 #
@@ -1113,9 +1151,9 @@ _validate_gitlab_origin() {
     return 1
   fi
 }
-# END bundled: lib/gitlab-host-validation.lib.sh
+# END bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/gitlab-host-validation.lib.sh
 # shellcheck source=forge-transient-retry.lib.sh
-# (already bundled: lib/forge-transient-retry.lib.sh)
+# (already bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/forge-transient-retry.lib.sh)
 
 if ! declare -F gha_echo >/dev/null 2>&1; then
   gha_echo() { echo "::${1}::${2:-}"; }
@@ -1702,14 +1740,14 @@ forge_append_path() {
   fi
   # On GitLab CI, PATH is modified directly (already done by caller)
 }
-# END bundled: lib/gitlab-code-ops.lib.sh
+# END bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/gitlab-code-ops.lib.sh
     ;;
   *)
     echo "ERROR: invalid FULLSEND_FORGE: '${FULLSEND_FORGE:-}' — pass --forge <github|gitlab> or set FULLSEND_FORGE" >&2
     exit 1
     ;;
 esac
-# END bundled: lib/code-ops.lib.sh
+# END bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/code-ops.lib.sh
 
 # ---------------------------------------------------------------------------
 # Existing human-PR and child-issue checks, unless bypassed
@@ -1751,8 +1789,11 @@ _jira_creds_set=0
 (( _jira_xtrace_was_on )) && set -x
 unset _jira_xtrace_was_on
 if (( _jira_creds_set )); then
+  # The library expands token credentials during initialization. Suspend
+  # tracing in the caller, before those arguments can be printed.
+  _jira_load_xtrace=0; [[ $- == *x* ]] && _jira_load_xtrace=1; set +x
   # shellcheck source=lib/jira-triage-ops.lib.sh
-# BEGIN bundled: lib/jira-triage-ops.lib.sh
+# BEGIN bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/jira-triage-ops.lib.sh
 # shellcheck shell=bash
 # jira-triage-ops.lib.sh — Jira Cloud tracker operations for triage scripts.
 #
@@ -1821,7 +1862,7 @@ JIRA_TRIAGE_OPS_SH_LOADED=1
 # ISSUE_URL and FULLSEND_TRACKER.
 # JIRA_USER_EMAIL is optional: without it, requests use Bearer auth.
 # shellcheck source=jira-auth.lib.sh
-# BEGIN bundled: lib/jira-auth.lib.sh
+# BEGIN bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/jira-auth.lib.sh
 # shellcheck shell=bash
 # jira-auth.lib.sh — Jira credential-mode selection for host-side scripts.
 #
@@ -2109,7 +2150,7 @@ jira_auth_fullsend() {
     )
   fi
 }
-# END bundled: lib/jira-auth.lib.sh
+# END bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/jira-auth.lib.sh
 jira_auth_select "${JIRA_TOKEN:-}" FULLSEND_JIRA_CLIENT_ID FULLSEND_JIRA_CLIENT_SECRET || exit 1
 if [[ "${JIRA_AUTH_MODE}" == "none" ]]; then
   echo "ERROR: JIRA_TOKEN must be set, or FULLSEND_JIRA_CLIENT_ID and FULLSEND_JIRA_CLIENT_SECRET" >&2
@@ -2302,6 +2343,13 @@ tracker_verify_labels_stripped() {
     echo "ERROR: triage labels still present after reset: ${remaining}" >&2
     return 1
   fi
+}
+
+# Print the issue's labels, one per line. Fails when they cannot be read.
+tracker_list_issue_labels() {
+  local issue
+  issue=$(_jira_api GET "/issue/${ISSUE_NUMBER}?fields=labels") || return 1
+  printf '%s' "${issue}" | jq -r '.fields.labels[]'
 }
 
 # Jira has no per-project label registry like GitHub/GitLab — any string is
@@ -2693,7 +2741,9 @@ tracker_dispatch_triage() {
   ISSUE_NUMBER="${saved_number}"
   return "${rc}"
 }
-# END bundled: lib/jira-triage-ops.lib.sh
+# END bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/jira-triage-ops.lib.sh
+  (( _jira_load_xtrace )) && set -x
+  unset _jira_load_xtrace
   JIRA_CREDS_OK=1
   # Globals tracker_post_sticky_comment reads.
   # shellcheck disable=SC2034
@@ -2721,9 +2771,14 @@ _jira_post_skip_comment() {
     echo "No Jira credentials set — not commenting on ${ISSUE_KEY}"
     return 0
   fi
+  local skip_xtrace=0
+  [[ $- == *x* ]] && skip_xtrace=1
+  set +x
   if ! tracker_post_sticky_comment "$1" "${SKIP_COMMENT_MARKER}" > /dev/null; then
     echo "::warning::Failed to post the skip comment on Jira issue ${ISSUE_KEY} — skipping the run anyway"
   fi
+  (( skip_xtrace )) && set -x
+  return 0
 }
 
 # _jira_list_human_prs KEY BOT_LOGIN CODER_BOT_LOGIN — print one
@@ -2786,7 +2841,7 @@ _jira_list_human_prs() {
 # non-zero when the count cannot be read.
 _jira_child_count() {
   local resp
-  resp="$(_jira_api POST "/search/jql" \
+  resp="$(set +x; _jira_api POST "/search/jql" \
     --data "$(jq -cn --arg jql "parent = ${ISSUE_KEY} AND issuetype not in subTaskIssueTypes()" '{jql: $jql, maxResults: 1, fields: ["key"]}')" 2>/dev/null)" \
     || return 1
   printf '%s' "${resp}" | jq -er '.issues | length' 2>/dev/null
@@ -2885,6 +2940,10 @@ The code agent implements leaf work items. Use the child issues for implementati
   fi
 fi
 
+# Resolve the trusted CLI before repository-controlled tool installation or
+# the ~/.local/bin PATH prepend. The optional write happens only at the end.
+_JIRA_STARTED_FULLSEND_BIN="$(command -v fullsend 2>/dev/null || true)"
+
 # ---------------------------------------------------------------------------
 # Auto-detect and install pre-commit tool dependencies
 # ---------------------------------------------------------------------------
@@ -2941,3 +3000,51 @@ if [ -f "${TARGET_REPO}/.pre-commit-config.yaml" ] \
 fi
 export PATH="${HOME}/.local/bin:${PATH}"
 forge_append_path "${HOME}/.local/bin"
+
+# Preflight accepted: this is still before sandbox creation. A later sandbox
+# failure does not roll back the workflow transition. Skip/failure exits above
+# never reach this optional write, including a failed dependency installer.
+_jira_transition_started() {
+  local transition="${CODE_JIRA_STARTED_TRANSITION:-off}"
+  if [[ "${transition}" == "off" ]]; then
+    return 0
+  fi
+  if [[ ( -n "${FULLSEND_TRACKER:-}" && "${FULLSEND_TRACKER}" != jira ) \
+     || ( -n "${FULLSEND_WORK_ITEM_SOURCE:-}" && "${FULLSEND_WORK_ITEM_SOURCE}" != jira ) \
+     || ( -n "${FULLSEND_WORK_ITEM_KEY:-}" && "${FULLSEND_WORK_ITEM_KEY}" != "${ISSUE_KEY}" ) \
+     || ( -n "${FULLSEND_WORK_ITEM_URL:-}" && "${FULLSEND_WORK_ITEM_URL}" != "${ISSUE_URL}" ) ]]; then
+    echo "::warning::Jira source identity does not match ISSUE_URL; skipping the optional started transition"
+    return 0
+  fi
+  if [[ "${JIRA_CREDS_OK}" != 1 || -z "${FULLSEND_DIR:-}" || -z "${_JIRA_STARTED_FULLSEND_BIN}" ]]; then
+    echo "::warning::Optional Jira started transition requires Jira credentials, FULLSEND_DIR and the fullsend CLI; skipping"
+    return 0
+  fi
+  # No retry: transitions can have side effects even when the status stays
+  # the same. Redact in-process before passing diagnostics to PATH utilities.
+  local output line email transition_xtrace=0
+  [[ $- == *x* ]] && transition_xtrace=1
+  set +x
+  if ! output="$(jira_auth_fullsend "${_JIRA_STARTED_FULLSEND_BIN}" "${JIRA_TOKEN:-}" "${JIRA_USER_EMAIL:-}" \
+    issues transition --tracker jira --fullsend-dir "${FULLSEND_DIR}" \
+    --project "${PROJECT_KEY}" --number "${ISSUE_KEY##*-}" \
+    --transition "${transition}" 2>&1)"; then
+    if [[ -n "${JIRA_TOKEN:-}" ]]; then
+      output="${output//"${JIRA_TOKEN}"/[REDACTED]}"
+    fi
+    if [[ -n "${_JIRA_AUTH_CLIENT_SECRET:-}" ]]; then
+      output="${output//"${_JIRA_AUTH_CLIENT_SECRET}"/[REDACTED]}"
+    fi
+    email="$(jira_auth_email "${JIRA_USER_EMAIL:-}")"
+    if [[ -n "${email}" ]]; then
+      output="${output//"${email}"/[REDACTED]}"
+    fi
+    while IFS= read -r line || [[ -n "${line}" ]]; do
+      printf '%s\n' "$(_gha_sanitize "${line}")"
+    done <<< "${output}"
+    echo "::warning::Optional Jira started transition failed; coding will proceed. Inspect the issue before retrying"
+  fi
+  (( transition_xtrace )) && set -x
+  return 0
+}
+_jira_transition_started

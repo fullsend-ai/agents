@@ -33,7 +33,7 @@ set -euo pipefail
 # shellcheck disable=SC2034 # SCRIPT_DIR used by source in .src.sh; unused in bundled .sh
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/scribe-ops.lib.sh
-# BEGIN bundled: lib/scribe-ops.lib.sh
+# BEGIN bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/scribe-ops.lib.sh
 # shellcheck shell=bash
 # scribe-ops.lib.sh — Forge-dispatch wrapper for scribe operations.
 #
@@ -248,7 +248,7 @@ scrub_note_pii() {
 
 case "${FULLSEND_FORGE:-}" in
   github)
-# BEGIN bundled: lib/github-scribe-ops.lib.sh
+# BEGIN bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/github-scribe-ops.lib.sh
 # shellcheck shell=bash
 # github-scribe-ops.lib.sh — GitHub forge operations for scribe scripts.
 #
@@ -263,7 +263,7 @@ case "${FULLSEND_FORGE:-}" in
 GITHUB_SCRIBE_OPS_SH_LOADED=1
 
 # shellcheck source=github-host.lib.sh
-# BEGIN bundled: lib/github-host.lib.sh
+# BEGIN bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/github-host.lib.sh
 # shellcheck shell=bash
 # github-host.lib.sh — Shared GitHub host handling for GitHub ops.
 #
@@ -298,7 +298,7 @@ _github_url_path() {
   [[ "${url}" == "${base}"* ]] || return 1
   printf '%s\n' "${url#"${base}"}"
 }
-# END bundled: lib/github-host.lib.sh
+# END bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/github-host.lib.sh
 
 # --- Pre-script: repo context ---
 
@@ -406,10 +406,10 @@ forge_normalize_labels() {
 forge_run_url() {
   echo "${GITHUB_SERVER_URL:-https://github.com}/${GITHUB_REPOSITORY:-${1}}/actions/runs/${GITHUB_RUN_ID:-0}"
 }
-# END bundled: lib/github-scribe-ops.lib.sh
+# END bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/github-scribe-ops.lib.sh
     ;;
   gitlab)
-# BEGIN bundled: lib/gitlab-scribe-ops.lib.sh
+# BEGIN bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/gitlab-scribe-ops.lib.sh
 # shellcheck shell=bash
 # gitlab-scribe-ops.lib.sh — GitLab forge operations for scribe scripts.
 #
@@ -428,7 +428,7 @@ forge_run_url() {
 GITLAB_SCRIBE_OPS_SH_LOADED=1
 
 # shellcheck source=gitlab-host-validation.lib.sh
-# BEGIN bundled: lib/gitlab-host-validation.lib.sh
+# BEGIN bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/gitlab-host-validation.lib.sh
 # shellcheck shell=bash
 # gitlab-host-validation.lib.sh — Shared host validation for GitLab ops.
 #
@@ -495,7 +495,7 @@ _validate_gitlab_origin() {
     return 1
   fi
 }
-# END bundled: lib/gitlab-host-validation.lib.sh
+# END bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/gitlab-host-validation.lib.sh
 
 _gitlab_api() {
   local method="$1"
@@ -700,7 +700,7 @@ forge_run_url() {
     echo "${origin}/${1}"
   fi
 }
-# END bundled: lib/gitlab-scribe-ops.lib.sh
+# END bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/gitlab-scribe-ops.lib.sh
     ;;
   *)
     echo "ERROR: invalid FULLSEND_FORGE: '$(_gha_sanitize "${FULLSEND_FORGE:-}")' — pass --forge <github|gitlab> or set FULLSEND_FORGE" >&2
@@ -713,7 +713,7 @@ FULLSEND_TRACKER="${FULLSEND_TRACKER:-${FULLSEND_FORGE}}"
 case "${FULLSEND_TRACKER}" in
   "${FULLSEND_FORGE}") ;;
   jira)
-# BEGIN bundled: lib/jira-scribe-ops.lib.sh
+# BEGIN bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/jira-scribe-ops.lib.sh
 # shellcheck shell=bash
 # jira-scribe-ops.lib.sh — Jira Cloud tracker operations for scribe scripts.
 #
@@ -775,7 +775,7 @@ JIRA_SCRIBE_OPS_SH_LOADED=1
 
 # JIRA_USER_EMAIL is optional: without it, requests use Bearer auth.
 # shellcheck source=jira-auth.lib.sh
-# BEGIN bundled: lib/jira-auth.lib.sh
+# BEGIN bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/jira-auth.lib.sh
 # shellcheck shell=bash
 # jira-auth.lib.sh — Jira credential-mode selection for host-side scripts.
 #
@@ -1063,7 +1063,7 @@ jira_auth_fullsend() {
     )
   fi
 }
-# END bundled: lib/jira-auth.lib.sh
+# END bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/jira-auth.lib.sh
 jira_auth_select "${JIRA_TOKEN:-}" FULLSEND_JIRA_CLIENT_ID FULLSEND_JIRA_CLIENT_SECRET || exit 1
 if [[ "${JIRA_AUTH_MODE}" == "none" ]]; then
   echo "ERROR: JIRA_TOKEN must be set, or FULLSEND_JIRA_CLIENT_ID and FULLSEND_JIRA_CLIENT_SECRET" >&2
@@ -1533,14 +1533,14 @@ forge_normalize_labels() {
   local labels="$1"
   printf '%s' "$(_scribe_jira_filter_labels "${labels}")" | jq -r 'join(",")'
 }
-# END bundled: lib/jira-scribe-ops.lib.sh
+# END bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/jira-scribe-ops.lib.sh
     ;;
   *)
     echo "ERROR: invalid FULLSEND_TRACKER: '$(_gha_sanitize "${FULLSEND_TRACKER}")' — must be 'jira' or match FULLSEND_FORGE" >&2
     exit 1
     ;;
 esac
-# END bundled: lib/scribe-ops.lib.sh
+# END bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/scribe-ops.lib.sh
 
 # Jira writes go through the fullsend CLI, which reads tracker.jira from
 # FULLSEND_DIR's config.yaml. Fail here, before the agent runs, rather than

@@ -67,7 +67,7 @@ SCRIPT_DIR_POST="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPT_DIR="${SCRIPT_DIR_POST}"
 : "${FULLSEND_FORGE:?FULLSEND_FORGE is required — set to 'github' or 'gitlab'}"
 # shellcheck source=lib/git-graph-policy.lib.sh
-# BEGIN bundled: lib/git-graph-policy.lib.sh
+# BEGIN bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/git-graph-policy.lib.sh
 # shellcheck shell=bash
 # git-graph-policy.lib.sh — make Git read the object graph as stored, not as
 # rewritten.
@@ -107,9 +107,9 @@ git_graph_policy_init() {
   count=$((count + 1))
   export GIT_CONFIG_COUNT="${count}"
 }
-# END bundled: lib/git-graph-policy.lib.sh
+# END bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/git-graph-policy.lib.sh
 # shellcheck source=lib/fix-ops.lib.sh
-# BEGIN bundled: lib/fix-ops.lib.sh
+# BEGIN bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/fix-ops.lib.sh
 # shellcheck shell=bash
 # fix-ops.lib.sh — Forge-dispatch wrapper for fix agent operations.
 #
@@ -121,7 +121,7 @@ FIX_OPS_SH_LOADED=1
 
 case "${FULLSEND_FORGE:-}" in
   github)
-# BEGIN bundled: lib/github-fix-ops.lib.sh
+# BEGIN bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/github-fix-ops.lib.sh
 # shellcheck shell=bash
 # github-fix-ops.lib.sh — GitHub forge operations for fix agent scripts.
 #
@@ -141,7 +141,7 @@ GITHUB_FIX_OPS_SH_LOADED=1
 # forge_push_branch: a plain git push, or with GITHUB_SIGNED_COMMITS=true the
 # API publish that gets the commits signed by GitHub.
 # shellcheck source=github-signed-push.lib.sh
-# BEGIN bundled: lib/github-signed-push.lib.sh
+# BEGIN bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/github-signed-push.lib.sh
 # shellcheck shell=bash
 # github-signed-push.lib.sh — Publish local commits through the GitHub Git
 # Data API so GitHub signs them.
@@ -476,9 +476,9 @@ _forge_push_branch() {
   git config "branch.${branch}.merge" "refs/heads/${branch}" || return 1
   echo "Branch ${branch} is at ${tip} on origin"
 }
-# END bundled: lib/github-signed-push.lib.sh
+# END bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/github-signed-push.lib.sh
 # shellcheck source=github-host.lib.sh
-# BEGIN bundled: lib/github-host.lib.sh
+# BEGIN bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/github-host.lib.sh
 # shellcheck shell=bash
 # github-host.lib.sh — Shared GitHub host handling for GitHub ops.
 #
@@ -513,7 +513,7 @@ _github_url_path() {
   [[ "${url}" == "${base}"* ]] || return 1
   printf '%s\n' "${url#"${base}"}"
 }
-# END bundled: lib/github-host.lib.sh
+# END bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/github-host.lib.sh
 
 if ! declare -F gha_echo >/dev/null 2>&1; then
   gha_echo() {
@@ -661,10 +661,10 @@ forge_append_path() {
   local dir="$1"
   echo "${dir}" >> "${GITHUB_PATH:-/dev/null}"
 }
-# END bundled: lib/github-fix-ops.lib.sh
+# END bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/github-fix-ops.lib.sh
     ;;
   gitlab)
-# BEGIN bundled: lib/gitlab-fix-ops.lib.sh
+# BEGIN bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/gitlab-fix-ops.lib.sh
 # shellcheck shell=bash
 # gitlab-fix-ops.lib.sh — GitLab forge operations for fix agent scripts.
 #
@@ -688,7 +688,7 @@ forge_append_path() {
 GITLAB_FIX_OPS_SH_LOADED=1
 
 # shellcheck source=gitlab-host-validation.lib.sh
-# BEGIN bundled: lib/gitlab-host-validation.lib.sh
+# BEGIN bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/gitlab-host-validation.lib.sh
 # shellcheck shell=bash
 # gitlab-host-validation.lib.sh — Shared host validation for GitLab ops.
 #
@@ -755,7 +755,7 @@ _validate_gitlab_origin() {
     return 1
   fi
 }
-# END bundled: lib/gitlab-host-validation.lib.sh
+# END bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/gitlab-host-validation.lib.sh
 
 if ! declare -F gha_echo >/dev/null 2>&1; then
   gha_echo() {
@@ -978,7 +978,7 @@ forge_append_path() {
   fi
   # On GitLab CI, PATH is modified directly (already done by caller)
 }
-# END bundled: lib/gitlab-fix-ops.lib.sh
+# END bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/gitlab-fix-ops.lib.sh
     ;;
   *)
     echo "ERROR: invalid FULLSEND_FORGE: '${FULLSEND_FORGE:-}' — pass --forge <github|gitlab> or set FULLSEND_FORGE" >&2
@@ -1122,9 +1122,9 @@ patch_added_lines() {
     }
   '
 }
-# END bundled: lib/fix-ops.lib.sh
+# END bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/fix-ops.lib.sh
 # shellcheck source=lib/post-failure-report.lib.sh
-# BEGIN bundled: lib/post-failure-report.lib.sh
+# BEGIN bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/post-failure-report.lib.sh
 # post-failure-report.lib.sh — Categorized, sanitized failure comments for post-scripts.
 #
 # Source from post-code.src.sh / post-fix.src.sh:
@@ -1138,7 +1138,7 @@ patch_added_lines() {
 POST_FAILURE_REPORT_SH_LOADED=1
 
 # shellcheck source=forge-transient-retry.lib.sh
-# BEGIN bundled: lib/forge-transient-retry.lib.sh
+# BEGIN bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/forge-transient-retry.lib.sh
 # forge-transient-retry.lib.sh — Retry forge CLI/API calls on 5xx/timeouts.
 #
 # Usage:
@@ -1280,7 +1280,7 @@ forge_retry_transient() {
 
   return 1
 }
-# END bundled: lib/forge-transient-retry.lib.sh
+# END bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/forge-transient-retry.lib.sh
 
 POST_FAILURE_CATEGORY="${POST_FAILURE_CATEGORY:-}"
 POST_FAILURE_DETAIL="${POST_FAILURE_DETAIL:-}"
@@ -1795,9 +1795,9 @@ post_fail_to_pr() {
   report_post_failure_to_pr 1
   exit 1
 }
-# END bundled: lib/post-failure-report.lib.sh
+# END bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/post-failure-report.lib.sh
 # shellcheck source=lib/gitleaks-install.lib.sh
-# BEGIN bundled: lib/gitleaks-install.lib.sh
+# BEGIN bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/gitleaks-install.lib.sh
 # gitleaks-install.lib.sh — Platform-aware gitleaks download and verification.
 #
 # Source from post-code.src.sh / post-fix.src.sh:
@@ -1928,9 +1928,9 @@ install_gitleaks() {
   export GITLEAKS_BIN
   export PATH="${install_dir}:${PATH}"
 }
-# END bundled: lib/gitleaks-install.lib.sh
+# END bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/gitleaks-install.lib.sh
 # shellcheck source=lib/precommit-gate.lib.sh
-# BEGIN bundled: lib/precommit-gate.lib.sh
+# BEGIN bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/precommit-gate.lib.sh
 # precommit-gate.lib.sh — Shared pre-commit gate for validation loop and post-scripts.
 #
 # Source from validate-code-output.src.sh / post-code.src.sh / post-fix.src.sh:
@@ -2405,9 +2405,9 @@ precommit_run_gate() {
   # shellcheck disable=SC2034
   PRECOMMIT_GATE_DETAIL="${_pg_output}"
 }
-# END bundled: lib/precommit-gate.lib.sh
+# END bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/precommit-gate.lib.sh
 # shellcheck source=lib/branch-guard.lib.sh
-# BEGIN bundled: lib/branch-guard.lib.sh
+# BEGIN bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/branch-guard.lib.sh
 # shellcheck shell=bash
 
 # enforce_branch_namespace <branch> <issue_number>
@@ -2456,7 +2456,7 @@ classify_branch_vs_pr_head() {
     echo "mismatch"
   fi
 }
-# END bundled: lib/branch-guard.lib.sh
+# END bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/branch-guard.lib.sh
 
 
 # ---------------------------------------------------------------------------

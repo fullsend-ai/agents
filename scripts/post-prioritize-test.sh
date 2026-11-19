@@ -17,6 +17,7 @@ trap 'rm -rf "${TEST_TMPDIR}"' EXIT
 
 GH_LOG="${TEST_TMPDIR}/gh-calls.log"
 GH_FAIL_COUNT="${TEST_TMPDIR}/gh-fail-count"
+FS_ENV_LOG="${TEST_TMPDIR}/fullsend-env.log"
 MOCK_BIN="${TEST_TMPDIR}/bin"
 mkdir -p "${MOCK_BIN}"
 
@@ -113,6 +114,7 @@ cat > "${MOCK_BIN}/fullsend" <<MOCKEOF
 #!/usr/bin/env bash
 BODY=""
 PREV=""
+echo "email=\${FULLSEND_JIRA_EMAIL-<unset>} token=\${FULLSEND_JIRA_TOKEN-<unset>} client-id=\${FULLSEND_JIRA_CLIENT_ID-<unset>} client-secret=\${FULLSEND_JIRA_CLIENT_SECRET:+set}" >> "${FS_ENV_LOG}"
 for arg in "\$@"; do
   if [[ "\${arg}" == "-" ]] && [[ "\${PREV}" == "--result" ]]; then
     BODY=\$(cat)
@@ -1010,6 +1012,818 @@ unset GITLAB_TOKEN CI_SERVER_HOST
 
 # Smoke test: GitHub forge still works after GitLab section (catches state leakage).
 run_test "github-after-gitlab-smoke" "" 8
+
+# ---------------------------------------------------------------------------
+# Jira forge tests
+# Verify FULLSEND_FORGE=jira routes REST through the upstream gateway
+# (<api_url>/ex/jira/<cloudId>/rest/api/3), writes the five RICE custom
+# fields (Confidence mapped onto the shared select; RICE Score uses the
+# unmapped float), posts the unmapped breakdown in the sticky comment,
+# and never calls gh or writes Rank/Priority.
+# ---------------------------------------------------------------------------
+
+export FULLSEND_FORGE="jira"
+export ISSUE_URL="https://redhat.atlassian.net/browse/AISDLC-8"
+export JIRA_TOKEN="fake-jira-token"
+export JIRA_USER_EMAIL="bot@example.com"
+export FULLSEND_DIR="${TEST_TMPDIR}/fullsend-dir"
+mkdir -p "${FULLSEND_DIR}"
+unset GH_TOKEN ORG PROJECT_NUMBER GITLAB_TOKEN CI_SERVER_HOST JIRA_API_URL
+unset JIRA_BASE_URL
+
+CURL_LOG="${TEST_TMPDIR}/jira-curl-calls.log"
+CURL_DATA_FILE="${TEST_TMPDIR}/jira-curl-data.json"
+MOCK_FIELDS_FILE="${TEST_TMPDIR}/jira-fields.json"
+MOCK_TENANT_FILE="${TEST_TMPDIR}/jira-tenant-info.json"
+
+JIRA_CLOUD_ID_VALUE="11111111-2222-3333-4444-555555555555"
+JIRA_DEFAULT_GATEWAY="https://api.atlassian.com"
+JIRA_DEFAULT_REST="${JIRA_DEFAULT_GATEWAY}/ex/jira/${JIRA_CLOUD_ID_VALUE}/rest/api/3"
+
+DEFAULT_JIRA_FIELDS='[
+  {"id":"customfield_10105","name":"RICE Score","schema":{"type":"number"}},
+  {"id":"customfield_10862","name":"Reach","schema":{"type":"number"}},
+  {"id":"customfield_10836","name":"Impact","schema":{"type":"number"}},
+  {"id":"customfield_10637","name":"Effort","schema":{"type":"number"}},
+  {"id":"customfield_10838","name":"Confidence","schema":{"type":"option"}},
+  {"id":"customfield_10101","name":"RICE Reach","schema":{"type":"number"}},
+  {"id":"priority","name":"Priority","schema":{"type":"priority"}},
+  {"id":"customfield_10019","name":"Rank","schema":{"type":"any"}},
+  {"id":"assignee","name":"Assignee","schema":{"type":"user"}},
+  {"id":"status","name":"Status","schema":{"type":"status"}}
+]'
+echo "${DEFAULT_JIRA_FIELDS}" > "${MOCK_FIELDS_FILE}"
+echo "{\"cloudId\":\"${JIRA_CLOUD_ID_VALUE}\"}" > "${MOCK_TENANT_FILE}"
+
+cat > "${MOCK_BIN}/curl" <<CURLMOCK
+#!/usr/bin/env bash
+echo "curl \$*" >> "${CURL_LOG}"
+
+URL=""
+METHOD="GET"
+shift_next=""
+for arg in "\$@"; do
+  case "\${arg}" in
+    --request) shift_next=method ;;
+    --data) shift_next=data ;;
+    --user|--header|--connect-timeout|--max-time|--write-out|--oauth2-bearer)
+      shift_next=skip
+      ;;
+    --fail|--silent|--show-error) ;;
+    *)
+      if [[ "\${shift_next:-}" == "method" ]]; then
+        METHOD="\${arg}"
+        shift_next=""
+      elif [[ "\${shift_next:-}" == "data" ]]; then
+        printf '%s' "\${arg}" > "${CURL_DATA_FILE}"
+        shift_next=""
+      elif [[ "\${shift_next:-}" == "skip" ]]; then
+        shift_next=""
+      elif [[ "\${arg}" =~ ^https:// ]]; then
+        URL="\${arg}"
+      fi
+      ;;
+  esac
+done
+
+if [[ "\${URL}" == */_edge/tenant_info ]]; then
+  cat "${MOCK_TENANT_FILE}"
+  exit 0
+fi
+
+if [[ "\${URL}" == */rest/api/3/field ]]; then
+  cat "${MOCK_FIELDS_FILE}"
+  exit 0
+fi
+
+if [[ "\${URL}" == */rest/api/3/issue/* ]] && [[ "\${METHOD}" == "PUT" ]]; then
+  echo '{}'
+  exit 0
+fi
+
+echo '{"ok":true}'
+exit 0
+CURLMOCK
+chmod +x "${MOCK_BIN}/curl"
+
+run_jira_test() {
+  local test_name="$1"
+  local expect_failure="${2:-false}"
+
+  local run_dir="${TEST_TMPDIR}/run-${test_name}"
+  mkdir -p "${run_dir}/iteration-1/output"
+  echo "${FIXTURE_JSON}" > "${run_dir}/iteration-1/output/agent-result.json"
+
+  : > "${CURL_LOG}"
+  : > "${GH_LOG}"
+  : > "${FS_ENV_LOG}"
+  rm -f "${CURL_DATA_FILE}"
+
+  local exit_code=0
+  (cd "${run_dir}" && bash "${POST_SCRIPT}") > "${TEST_TMPDIR}/stdout-${test_name}.log" 2>&1 || exit_code=$?
+
+  if [[ "${expect_failure}" == "true" ]]; then
+    if [[ ${exit_code} -eq 0 ]]; then
+      echo "FAIL: ${test_name} — expected failure but got success"
+      cat "${TEST_TMPDIR}/stdout-${test_name}.log"
+      FAILURES=$((FAILURES + 1))
+      return
+    fi
+    echo "PASS: ${test_name} (expected failure)"
+    return
+  fi
+
+  if [[ ${exit_code} -ne 0 ]]; then
+    echo "FAIL: ${test_name} — exit code ${exit_code}"
+    cat "${TEST_TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
+run_jira_test_stdout() {
+  local test_name="$1"
+  local expected_stdout="$2"
+  local expect_failure="${3:-false}"
+
+  local run_dir="${TEST_TMPDIR}/run-${test_name}"
+  mkdir -p "${run_dir}/iteration-1/output"
+  echo "${FIXTURE_JSON}" > "${run_dir}/iteration-1/output/agent-result.json"
+
+  : > "${CURL_LOG}"
+  : > "${GH_LOG}"
+  : > "${FS_ENV_LOG}"
+  rm -f "${CURL_DATA_FILE}"
+
+  local exit_code=0
+  (cd "${run_dir}" && bash "${POST_SCRIPT}") > "${TEST_TMPDIR}/stdout-${test_name}.log" 2>&1 || exit_code=$?
+
+  if [[ "${expect_failure}" == "true" ]]; then
+    if [[ ${exit_code} -eq 0 ]]; then
+      echo "FAIL: ${test_name} — expected failure but got success"
+      FAILURES=$((FAILURES + 1))
+      return
+    fi
+  elif [[ ${exit_code} -ne 0 ]]; then
+    echo "FAIL: ${test_name} — exit code ${exit_code}"
+    cat "${TEST_TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if ! grep -qF -- "${expected_stdout}" "${TEST_TMPDIR}/stdout-${test_name}.log"; then
+    echo "FAIL: ${test_name} — expected output containing '${expected_stdout}'"
+    cat "${TEST_TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
+# Assert no REST write happened and nothing was sent to a gateway.
+assert_jira_no_writes() {
+  local test_name="$1"
+  if [[ -f "${CURL_DATA_FILE}" ]] || grep -qF -- '--request PUT' "${CURL_LOG}"; then
+    echo "FAIL: ${test_name} — a Jira write was sent"
+    cat "${CURL_LOG}"
+    FAILURES=$((FAILURES + 1))
+  else
+    echo "PASS: ${test_name}-no-writes"
+  fi
+}
+
+# Assert a log has no /rest/api/3 call outside <rest_root>.
+assert_jira_only_rest_root() {
+  local test_name="$1"
+  local rest_root="$2"
+  if grep -F '/rest/api/3' "${CURL_LOG}" | grep -vqF "${rest_root}/"; then
+    echo "FAIL: ${test_name} — REST call outside ${rest_root}"
+    cat "${CURL_LOG}"
+    FAILURES=$((FAILURES + 1))
+  else
+    echo "PASS: ${test_name}"
+  fi
+}
+
+run_jira_test "jira-happy-path"
+
+run_jira_test "jira-no-gh-calls"
+if grep -qE '^gh ' "${GH_LOG}"; then
+  echo "FAIL: jira-no-gh-calls — gh was called but should not be on jira forge"
+  cat "${GH_LOG}"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: jira-no-gh-calls-log-empty"
+fi
+
+# --- Gateway URL format and cloud-ID routing ---
+
+# Default gateway: the cloud ID comes from the site's tenant_info and REST
+# goes to https://api.atlassian.com/ex/jira/<cloudId>/rest/api/3, never to
+# the site or to <gateway>/rest/api/3 directly.
+run_jira_test "jira-default-gateway-url-format"
+if grep -qF "curl --fail --silent --show-error --connect-timeout 10 --max-time 30 https://redhat.atlassian.net/_edge/tenant_info" "${CURL_LOG}"; then
+  echo "PASS: jira-cloud-id-discovered-from-site-tenant-info"
+else
+  echo "FAIL: jira-cloud-id-discovered-from-site-tenant-info"
+  cat "${CURL_LOG}"
+  FAILURES=$((FAILURES + 1))
+fi
+if grep -qF "${JIRA_DEFAULT_REST}/field" "${CURL_LOG}" \
+  && grep -qF "${JIRA_DEFAULT_REST}/issue/AISDLC-8" "${CURL_LOG}"; then
+  echo "PASS: jira-default-gateway-routes-field-list-and-update"
+else
+  echo "FAIL: jira-default-gateway-routes-field-list-and-update — expected calls at ${JIRA_DEFAULT_REST}"
+  cat "${CURL_LOG}"
+  FAILURES=$((FAILURES + 1))
+fi
+assert_jira_only_rest_root "jira-default-gateway-only-ex-jira-rest" "${JIRA_DEFAULT_REST}"
+if grep -qF "atlassian.net/rest/api/3" "${CURL_LOG}" \
+  || grep -qF "${JIRA_DEFAULT_GATEWAY}/rest/api/3" "${CURL_LOG}"; then
+  echo "FAIL: jira-no-direct-rest-api — /rest/api/3 appended directly to a base"
+  cat "${CURL_LOG}"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: jira-no-direct-rest-api"
+fi
+# The cloud ID is looked up once per run.
+if [[ "$(grep -cF '/_edge/tenant_info' "${CURL_LOG}")" -eq 1 ]]; then
+  echo "PASS: jira-cloud-id-resolved-once"
+else
+  echo "FAIL: jira-cloud-id-resolved-once"
+  cat "${CURL_LOG}"
+  FAILURES=$((FAILURES + 1))
+fi
+
+write_jira_config() {
+  # $1 = api_url (optional), $2 = base_url (optional)
+  rm -f "${FULLSEND_DIR}/config.yaml"
+  [[ -n "${1:-}${2:-}" ]] || return 0
+  {
+    echo "tracker:"
+    echo "  jira:"
+    [[ -n "${1:-}" ]] && echo "    api_url: \"${1}\""
+    [[ -n "${2:-}" ]] && echo "    base_url: \"${2}\""
+  } > "${FULLSEND_DIR}/config.yaml"
+  return 0
+}
+
+if ! command -v yq &>/dev/null; then
+  echo "SKIP: jira-config-* — yq not found"
+else
+  # tracker.jira.api_url is the gateway base; /ex/jira/<cloudId> is appended.
+  write_jira_config "https://gateway.example.test/" "https://redhat.atlassian.net/"
+  GATEWAY_REST="https://gateway.example.test/ex/jira/${JIRA_CLOUD_ID_VALUE}/rest/api/3"
+  run_jira_test "jira-config-api-url-is-gateway-base"
+  if grep -qF "${GATEWAY_REST}/field" "${CURL_LOG}" \
+    && grep -qF "${GATEWAY_REST}/issue/AISDLC-8" "${CURL_LOG}"; then
+    echo "PASS: jira-config-api-url-routes-through-ex-jira"
+  else
+    echo "FAIL: jira-config-api-url-routes-through-ex-jira — expected calls at ${GATEWAY_REST}"
+    cat "${CURL_LOG}"
+    FAILURES=$((FAILURES + 1))
+  fi
+  assert_jira_only_rest_root "jira-config-api-url-no-other-rest-base" "${GATEWAY_REST}"
+  # Cloud ID still comes from the site, not from the gateway.
+  if grep -F '_edge/tenant_info' "${CURL_LOG}" | grep -qvF "https://redhat.atlassian.net/_edge/tenant_info"; then
+    echo "FAIL: jira-config-tenant-info-from-site-only"
+    cat "${CURL_LOG}"
+    FAILURES=$((FAILURES + 1))
+  else
+    echo "PASS: jira-config-tenant-info-from-site-only"
+  fi
+
+  # A JIRA_API_URL environment variable (which fullsend run sets to a full
+  # gateway URL for the sandbox) must not redirect host-side calls.
+  export JIRA_API_URL="https://env-gateway.example.test/ex/jira/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+  run_jira_test "jira-env-api-url-ignored"
+  if grep -qF "env-gateway.example.test" "${CURL_LOG}"; then
+    echo "FAIL: jira-env-api-url-ignored — REST call used JIRA_API_URL"
+    cat "${CURL_LOG}"
+    FAILURES=$((FAILURES + 1))
+  else
+    echo "PASS: jira-env-api-url-ignored-log"
+  fi
+  unset JIRA_API_URL
+
+  # Scalar `tracker: jira` carries no connection settings: default gateway.
+  printf 'tracker: jira\n' > "${FULLSEND_DIR}/config.yaml"
+  run_jira_test "jira-scalar-tracker-uses-default-gateway"
+  assert_jira_only_rest_root "jira-scalar-tracker-uses-default-gateway-log" "${JIRA_DEFAULT_REST}"
+
+  # --- Invalid or mismatched destinations ---
+
+  write_jira_config "http://evil.example"
+  run_jira_test_stdout "jira-config-api-url-requires-https" "Jira REST base must be https" "true"
+  assert_jira_no_writes "jira-config-api-url-requires-https"
+
+  write_jira_config "https://user:pw@evil.example"
+  run_jira_test_stdout "jira-config-api-url-rejects-userinfo" "is not a plain https URL" "true"
+  assert_jira_no_writes "jira-config-api-url-rejects-userinfo"
+
+  write_jira_config "https://evil.example/path?x=1"
+  run_jira_test_stdout "jira-config-api-url-rejects-query" "is not a plain https URL" "true"
+  assert_jira_no_writes "jira-config-api-url-rejects-query"
+
+  write_jira_config "" "https://other.atlassian.net"
+  run_jira_test_stdout "jira-config-base-url-tenant-mismatch" "does not match ISSUE_URL host" "true"
+  assert_jira_no_writes "jira-config-base-url-tenant-mismatch"
+  if grep -qF '_edge/tenant_info' "${CURL_LOG}"; then
+    echo "FAIL: jira-config-base-url-tenant-mismatch — tenant lookup ran for a mismatched site"
+    FAILURES=$((FAILURES + 1))
+  else
+    echo "PASS: jira-config-base-url-tenant-mismatch-no-lookup"
+  fi
+
+  write_jira_config "" "http://redhat.atlassian.net"
+  run_jira_test_stdout "jira-config-base-url-requires-https" "Jira tracker.jira.base_url must be https" "true"
+
+  write_jira_config
+fi
+
+# --- config.yaml present but unreadable: fail closed ---
+# A missing yq or a yq parse error must not be treated as "no config": that
+# would silently route writes to the default gateway.
+
+# Print a PATH equal to the current one but with every yq hidden: any
+# directory that holds a yq is replaced by a directory of symlinks to its
+# other executables.
+path_without_yq() {
+  local dir out="" shim idx=0 f
+  local -a dirs
+  IFS=: read -r -a dirs <<< "${PATH}"
+  for dir in "${dirs[@]}"; do
+    if [[ -x "${dir}/yq" ]]; then
+      idx=$((idx + 1))
+      shim="${TEST_TMPDIR}/no-yq-bin-${idx}"
+      mkdir -p "${shim}"
+      for f in "${dir}"/*; do
+        [[ -x "${f}" && ! -d "${f}" && "${f##*/}" != "yq" ]] || continue
+        ln -sf "${f}" "${shim}/${f##*/}"
+      done
+      dir="${shim}"
+    fi
+    out="${out:+${out}:}${dir}"
+  done
+  printf '%s' "${out}"
+}
+
+# Assert the run failed before any Jira REST call or tenant lookup.
+assert_jira_no_rest_calls() {
+  local test_name="$1"
+  if grep -qE '/rest/api/3|_edge/tenant_info' "${CURL_LOG}"; then
+    echo "FAIL: ${test_name} — Jira call made despite unreadable config"
+    cat "${CURL_LOG}"
+    FAILURES=$((FAILURES + 1))
+  else
+    echo "PASS: ${test_name}-no-rest-calls"
+  fi
+}
+
+SAVED_PATH="${PATH}"
+PATH_NO_YQ=$(path_without_yq)
+
+# config.yaml present + yq missing → fail, no field PUT.
+write_jira_config "https://gateway.example.test"
+export PATH="${PATH_NO_YQ}"
+run_jira_test_stdout "jira-config-present-yq-missing" "yq is not installed" "true"
+export PATH="${SAVED_PATH}"
+assert_jira_no_writes "jira-config-present-yq-missing"
+assert_jira_no_rest_calls "jira-config-present-yq-missing"
+
+# config.yaml present + yq parse error → fail, no field PUT.
+printf '#!/usr/bin/env bash\necho "yq: parse error" >&2\nexit 1\n' > "${MOCK_BIN}/yq"
+chmod +x "${MOCK_BIN}/yq"
+write_jira_config "https://gateway.example.test"
+run_jira_test_stdout "jira-config-present-yq-parse-error" "failed to parse tracker.jira" "true"
+assert_jira_no_writes "jira-config-present-yq-parse-error"
+assert_jira_no_rest_calls "jira-config-present-yq-parse-error"
+
+# config.yaml present + yq succeeds with empty keys → default gateway.
+printf '#!/usr/bin/env bash\nprintf "\\n"\n' > "${MOCK_BIN}/yq"
+printf 'tracker:\n  jira: {}\n' > "${FULLSEND_DIR}/config.yaml"
+run_jira_test "jira-config-present-empty-keys-uses-default-gateway"
+assert_jira_only_rest_root "jira-config-present-empty-keys-uses-default-gateway-log" "${JIRA_DEFAULT_REST}"
+rm -f "${MOCK_BIN}/yq"
+
+# config.yaml absent + yq missing → today's behavior (default gateway).
+write_jira_config
+export PATH="${PATH_NO_YQ}"
+run_jira_test "jira-config-absent-yq-missing-uses-default-gateway"
+export PATH="${SAVED_PATH}"
+assert_jira_only_rest_root "jira-config-absent-yq-missing-uses-default-gateway-log" "${JIRA_DEFAULT_REST}"
+
+# Cloud-ID discovery failures fail closed and send no credentials or writes.
+echo '{"cloudId":"../../evil"}' > "${MOCK_TENANT_FILE}"
+run_jira_test_stdout "jira-invalid-cloud-id-fails" "returned no valid cloudId" "true"
+assert_jira_no_writes "jira-invalid-cloud-id"
+if grep -qF '/rest/api/3' "${CURL_LOG}"; then
+  echo "FAIL: jira-invalid-cloud-id — REST call made with an invalid cloud ID"
+  cat "${CURL_LOG}"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: jira-invalid-cloud-id-no-rest-calls"
+fi
+echo '{}' > "${MOCK_TENANT_FILE}"
+run_jira_test_stdout "jira-missing-cloud-id-fails" "returned no valid cloudId" "true"
+assert_jira_no_writes "jira-missing-cloud-id"
+echo "{\"cloudId\":\"${JIRA_CLOUD_ID_VALUE}\"}" > "${MOCK_TENANT_FILE}"
+
+# The tenant_info lookup is unauthenticated: no credentials go to the site.
+run_jira_test "jira-tenant-info-lookup-unauthenticated"
+if grep -F '_edge/tenant_info' "${CURL_LOG}" | grep -qE -- '--user|--oauth2-bearer|fake-jira-token'; then
+  echo "FAIL: jira-tenant-info-lookup-unauthenticated — credentials sent to tenant_info"
+  cat "${CURL_LOG}"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: jira-tenant-info-lookup-sends-no-credentials"
+fi
+
+SAVED_ISSUE_URL="${ISSUE_URL}"
+export ISSUE_URL="https://evil.example/browse/AISDLC-8"
+run_jira_test "jira-rejects-non-allowlisted-host" "true"
+assert_jira_no_writes "jira-rejects-non-allowlisted-host"
+export ISSUE_URL="${SAVED_ISSUE_URL}"
+
+export JIRA_BASE_URL="https://other.atlassian.net"
+run_jira_test_stdout "jira-base-url-mismatch-fails" "does not match ISSUE_URL host" "true"
+assert_jira_no_writes "jira-base-url-mismatch"
+unset JIRA_BASE_URL
+
+# --- Authentication: bot user (Basic) and service account (Bearer) ---
+
+# Bot user: JIRA_USER_EMAIL set -> Basic auth for the REST calls, and the
+# sticky-comment CLI gets both FULLSEND_JIRA_TOKEN and FULLSEND_JIRA_EMAIL.
+run_jira_test "jira-bot-user-auth"
+if grep -F "${JIRA_DEFAULT_REST}/" "${CURL_LOG}" | grep -vqF -- "--user bot@example.com:fake-jira-token"; then
+  echo "FAIL: jira-bot-user-auth — a REST call lacked Basic auth"
+  cat "${CURL_LOG}"
+  FAILURES=$((FAILURES + 1))
+elif grep -qF -- '--oauth2-bearer' "${CURL_LOG}"; then
+  echo "FAIL: jira-bot-user-auth — Bearer auth used with an email set"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: jira-bot-user-auth-rest-basic"
+fi
+if grep -qF "email=bot@example.com token=fake-jira-token" "${FS_ENV_LOG}"; then
+  echo "PASS: jira-bot-user-auth-cli-env"
+else
+  echo "FAIL: jira-bot-user-auth-cli-env"
+  cat "${FS_ENV_LOG}"
+  FAILURES=$((FAILURES + 1))
+fi
+
+# Service account: no email (or whitespace only) -> Bearer auth, and the CLI
+# must not see an inherited FULLSEND_JIRA_EMAIL.
+for sa_email in "" "   "; do
+  export JIRA_USER_EMAIL="${sa_email}"
+  export FULLSEND_JIRA_EMAIL="stale@example.com"
+  run_jira_test "jira-service-account-auth"
+  if grep -F "${JIRA_DEFAULT_REST}/" "${CURL_LOG}" | grep -vqF -- "--oauth2-bearer fake-jira-token"; then
+    echo "FAIL: jira-service-account-auth — a REST call lacked Bearer auth (email='${sa_email}')"
+    cat "${CURL_LOG}"
+    FAILURES=$((FAILURES + 1))
+  elif grep -qF -- '--user' "${CURL_LOG}"; then
+    echo "FAIL: jira-service-account-auth — Basic auth used without an email"
+    FAILURES=$((FAILURES + 1))
+  else
+    echo "PASS: jira-service-account-auth-rest-bearer"
+  fi
+  if grep -qF "email=<unset> token=fake-jira-token" "${FS_ENV_LOG}"; then
+    echo "PASS: jira-service-account-auth-cli-env"
+  else
+    echo "FAIL: jira-service-account-auth-cli-env (email='${sa_email}')"
+    cat "${FS_ENV_LOG}"
+    FAILURES=$((FAILURES + 1))
+  fi
+done
+unset FULLSEND_JIRA_EMAIL
+export JIRA_USER_EMAIL="bot@example.com"
+
+# --- Five-field update payload ---
+
+# PUT body is Reach/Impact/Effort/RICE Score as numbers and Confidence as
+# the mapped select. Fixture Confidence 0.8 → 100% (High). RICE Score is
+# still (3 * 2 * 0.8 / 2 = 2.4) from the unmapped float.
+run_jira_test "jira-writes-five-rice-fields"
+if [[ ! -f "${CURL_DATA_FILE}" ]]; then
+  echo "FAIL: jira-writes-five-rice-fields — no PUT body captured"
+  FAILURES=$((FAILURES + 1))
+else
+  if jq -e '
+    (.fields | length) == 5
+    and .fields.customfield_10862 == 3
+    and .fields.customfield_10836 == 2
+    and .fields.customfield_10637 == 2
+    and .fields.customfield_10105 == 2.4
+    and .fields.customfield_10838.value == "100% (High)"
+  ' "${CURL_DATA_FILE}" >/dev/null; then
+    echo "PASS: jira-writes-five-rice-fields-payload"
+  else
+    echo "FAIL: jira-writes-five-rice-fields — unexpected payload"
+    cat "${CURL_DATA_FILE}"
+    FAILURES=$((FAILURES + 1))
+  fi
+  if jq -e '.fields | has("priority") or has("rank") or has("assignee") or has("status")' "${CURL_DATA_FILE}" >/dev/null; then
+    echo "FAIL: jira-writes-five-rice-fields — payload includes Rank/Priority/status/assignee"
+    FAILURES=$((FAILURES + 1))
+  fi
+  if jq -e '.fields.customfield_10105 == 2.4' "${CURL_DATA_FILE}" >/dev/null; then
+    echo "PASS: jira-rice-score-uses-unmapped-confidence-float"
+  else
+    echo "FAIL: jira-rice-score-uses-unmapped-confidence-float"
+    cat "${CURL_DATA_FILE}"
+    FAILURES=$((FAILURES + 1))
+  fi
+fi
+if [[ "$(grep -cF -- '--request PUT' "${CURL_LOG}")" -eq 1 ]]; then
+  echo "PASS: jira-single-put-request"
+else
+  echo "FAIL: jira-single-put-request"
+  cat "${CURL_LOG}"
+  FAILURES=$((FAILURES + 1))
+fi
+
+# Confidence 0.6 is Medium on the agent rubric; RICE Score still uses 0.6
+# (3 * 2 * 0.6 / 2 = 1.8), not 0.75 from the select label.
+SAVED_FIXTURE_JSON="${FIXTURE_JSON}"
+FIXTURE_JSON="${FIXTURE_JSON/\"confidence\": 0.8/\"confidence\": 0.6}"
+run_jira_test "jira-maps-confidence-medium"
+FIXTURE_JSON="${SAVED_FIXTURE_JSON}"
+if [[ ! -f "${CURL_DATA_FILE}" ]]; then
+  echo "FAIL: jira-maps-confidence-medium — no PUT body captured"
+  FAILURES=$((FAILURES + 1))
+else
+  if jq -e '
+    .fields.customfield_10838 == {"value":"75% (Medium)"}
+    and .fields.customfield_10105 == 1.8
+  ' "${CURL_DATA_FILE}" >/dev/null; then
+    echo "PASS: jira-maps-confidence-medium-payload"
+  else
+    echo "FAIL: jira-maps-confidence-medium — expected 75% (Medium) and RICE Score 1.8"
+    cat "${CURL_DATA_FILE}"
+    FAILURES=$((FAILURES + 1))
+  fi
+fi
+if grep -qF 'Confidence: 0.6**' "${GH_LOG}"; then
+  echo "PASS: jira-maps-confidence-medium-comment-keeps-float"
+else
+  echo "FAIL: jira-maps-confidence-medium-comment-keeps-float"
+  cat "${GH_LOG}"
+  FAILURES=$((FAILURES + 1))
+fi
+
+SAVED_FIXTURE_JSON="${FIXTURE_JSON}"
+FIXTURE_JSON="${FIXTURE_JSON/\"confidence\": 0.8/\"confidence\": 0.2}"
+run_jira_test "jira-maps-confidence-low"
+FIXTURE_JSON="${SAVED_FIXTURE_JSON}"
+if jq -e '.fields.customfield_10838 == {"value":"50% (Low)"}' "${CURL_DATA_FILE}" >/dev/null; then
+  echo "PASS: jira-maps-confidence-low-payload"
+else
+  echo "FAIL: jira-maps-confidence-low — expected 50% (Low)"
+  cat "${CURL_DATA_FILE}"
+  FAILURES=$((FAILURES + 1))
+fi
+
+# Rank (customfield_10019) and Priority must never appear in the PUT body
+# or the request URL.
+run_jira_test "jira-does-not-write-rank-or-priority"
+if grep -Eiq 'customfield_10019|"priority"|"Rank"|/rank' "${CURL_LOG}" "${CURL_DATA_FILE}"; then
+  echo "FAIL: jira-does-not-write-rank-or-priority — Rank/Priority mentioned in curl"
+  cat "${CURL_LOG}"
+  cat "${CURL_DATA_FILE}"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: jira-does-not-write-rank-or-priority-log"
+fi
+
+# --- Sticky comment carries the complete breakdown ---
+
+run_jira_test "jira-posts-sticky-comment"
+if ! grep -qF 'fullsend issues post-comment --tracker jira' "${GH_LOG}"; then
+  echo "FAIL: jira-posts-sticky-comment — missing fullsend issues post-comment --tracker jira"
+  cat "${GH_LOG}"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: jira-posts-sticky-comment-cli"
+fi
+if ! grep -qF 'fullsend:prioritize-agent' "${GH_LOG}"; then
+  echo "FAIL: jira-posts-sticky-comment — comment marker not posted"
+  cat "${GH_LOG}"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: jira-posts-sticky-comment-marker"
+fi
+for expected in \
+  'RICE Score: 2.4' \
+  'Reach: 3** — Many users affected.' \
+  'Impact: 2** — Moderate workflow improvement.' \
+  'Confidence: 0.8** — Some customer signal.' \
+  'Effort: 2** — Small scoped change.' \
+  'Formula:** (Reach 3 x Impact 2 x Confidence 0.8) / Effort 2 = **2.4**'; do
+  if grep -qF -- "${expected}" "${GH_LOG}"; then
+    echo "PASS: jira-sticky-comment-contains: ${expected}"
+  else
+    echo "FAIL: jira-sticky-comment-contains: ${expected}"
+    cat "${GH_LOG}"
+    FAILURES=$((FAILURES + 1))
+  fi
+done
+# Jira renders markdown, so the GitHub <details> table is not used.
+if grep -qF '<details>' "${GH_LOG}"; then
+  echo "FAIL: jira-sticky-comment-no-details-block"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: jira-sticky-comment-no-details-block"
+fi
+
+# Reasoning from the agent has HTML stripped and newlines collapsed.
+HTML_FIXTURE_JSON='{"reach":3,"impact":2,"confidence":0.8,"effort":2,"reasoning":{"reach":"Many <b>users</b>\nare affected.","impact":"i","confidence":"c","effort":"e"}}'
+SAVED_FIXTURE_JSON="${FIXTURE_JSON}"
+FIXTURE_JSON="${HTML_FIXTURE_JSON}"
+run_jira_test "jira-sticky-comment-sanitizes-reasoning"
+FIXTURE_JSON="${SAVED_FIXTURE_JSON}"
+if grep -qF 'Reach: 3** — Many users are affected.' "${GH_LOG}"; then
+  echo "PASS: jira-sticky-comment-sanitizes-reasoning-body"
+else
+  echo "FAIL: jira-sticky-comment-sanitizes-reasoning-body"
+  cat "${GH_LOG}"
+  FAILURES=$((FAILURES + 1))
+fi
+
+# --- Field resolution fails closed ---
+
+# Missing RICE Score field: nothing is written.
+echo '[{"id":"priority","name":"Priority","schema":{"type":"priority"}},{"id":"customfield_10019","name":"Rank","schema":{"type":"any"}}]' > "${MOCK_FIELDS_FILE}"
+run_jira_test_stdout "jira-missing-field-fails" "Jira field 'RICE Score' not found" "true"
+assert_jira_no_writes "jira-missing-field"
+if grep -qF 'post-comment' "${GH_LOG}"; then
+  echo "FAIL: jira-missing-field — comment posted after a failed field write"
+  FAILURES=$((FAILURES + 1))
+fi
+
+# The old five-field names and the superseded score field name are not enough.
+echo '[{"id":"customfield_10101","name":"RICE Reach","schema":{"type":"number"}},{"id":"customfield_10105","name":"RICE PRIORITY SCORE","schema":{"type":"number"}}]' > "${MOCK_FIELDS_FILE}"
+run_jira_test_stdout "jira-legacy-field-names-not-accepted" "Jira field 'RICE Score' not found" "true"
+assert_jira_no_writes "jira-legacy-field-names"
+
+# Duplicate field name of the same schema type: ambiguous, so fail closed.
+echo '[{"id":"customfield_10105","name":"RICE Score","schema":{"type":"number"}},{"id":"customfield_10106","name":"RICE Score","schema":{"type":"number"}}]' > "${MOCK_FIELDS_FILE}"
+run_jira_test_stdout "jira-duplicate-field-fails" "not found or not unique (matches=2)" "true"
+assert_jira_no_writes "jira-duplicate-field"
+
+# A site-wide Impact select next to another Impact number field is not
+# ambiguous: write the unique number field.
+echo "${DEFAULT_JIRA_FIELDS}" | jq '. + [{"id":"customfield_10004","name":"Impact","schema":{"type":"option"}}]' > "${MOCK_FIELDS_FILE}"
+run_jira_test "jira-impact-number-amid-site-select"
+if [[ ! -f "${CURL_DATA_FILE}" ]]; then
+  echo "FAIL: jira-impact-number-amid-site-select — no PUT body captured"
+  FAILURES=$((FAILURES + 1))
+elif jq -e '.fields.customfield_10836 == 2 and (.fields | has("customfield_10004") | not)' "${CURL_DATA_FILE}" >/dev/null; then
+  echo "PASS: jira-impact-number-amid-site-select"
+else
+  echo "FAIL: jira-impact-number-amid-site-select — expected number Impact customfield_10836"
+  cat "${CURL_DATA_FILE}"
+  FAILURES=$((FAILURES + 1))
+fi
+echo "${DEFAULT_JIRA_FIELDS}" > "${MOCK_FIELDS_FILE}"
+
+# A system field that happens to be named "RICE Score" must not be written.
+echo '[{"id":"priority","name":"RICE Score","schema":{"type":"priority"}}]' > "${MOCK_FIELDS_FILE}"
+run_jira_test_stdout "jira-rejects-system-field-named-rice" "not a custom field" "true"
+assert_jira_no_writes "jira-rejects-system-field-named-rice"
+
+# A custom field of the wrong type must not be written.
+echo '[{"id":"customfield_10105","name":"RICE Score","schema":{"type":"string"}},{"id":"customfield_10862","name":"Reach","schema":{"type":"number"}},{"id":"customfield_10836","name":"Impact","schema":{"type":"number"}},{"id":"customfield_10637","name":"Effort","schema":{"type":"number"}},{"id":"customfield_10838","name":"Confidence","schema":{"type":"option"}}]' > "${MOCK_FIELDS_FILE}"
+run_jira_test_stdout "jira-rejects-non-number-custom-field" "expected number" "true"
+assert_jira_no_writes "jira-rejects-non-number-custom-field"
+
+# Confidence must stay a select. A number Confidence field is refused.
+echo '[{"id":"customfield_10105","name":"RICE Score","schema":{"type":"number"}},{"id":"customfield_10862","name":"Reach","schema":{"type":"number"}},{"id":"customfield_10836","name":"Impact","schema":{"type":"number"}},{"id":"customfield_10637","name":"Effort","schema":{"type":"number"}},{"id":"customfield_10838","name":"Confidence","schema":{"type":"number"}}]' > "${MOCK_FIELDS_FILE}"
+run_jira_test_stdout "jira-rejects-confidence-number-field" "expected option" "true"
+assert_jira_no_writes "jira-rejects-confidence-number-field"
+
+# "RICE Reach" is not "Reach".
+echo '[{"id":"customfield_10105","name":"RICE Score","schema":{"type":"number"}},{"id":"customfield_10101","name":"RICE Reach","schema":{"type":"number"}},{"id":"customfield_10836","name":"Impact","schema":{"type":"number"}},{"id":"customfield_10637","name":"Effort","schema":{"type":"number"}},{"id":"customfield_10838","name":"Confidence","schema":{"type":"option"}}]' > "${MOCK_FIELDS_FILE}"
+run_jira_test_stdout "jira-rejects-legacy-reach-name" "Jira field 'Reach' not found" "true"
+assert_jira_no_writes "jira-rejects-legacy-reach-name"
+echo "${DEFAULT_JIRA_FIELDS}" > "${MOCK_FIELDS_FILE}"
+
+SAVED_JIRA_TOKEN="${JIRA_TOKEN}"
+unset JIRA_TOKEN
+run_jira_test "jira-unset-token-fails" "true"
+export JIRA_TOKEN="${SAVED_JIRA_TOKEN}"
+
+# --- OAuth 2.0 client credentials (#1926) ---
+# post-prioritize selects the credential mode with jira_auth_select before
+# any Jira call. Token-only mode is covered above. Client credentials alone
+# mint a Bearer access token: the RICE Score write and the sticky comment
+# work without JIRA_TOKEN, REST calls use the minted token and never Basic
+# auth, the CLI gets the client variables and no token or email, and the
+# secret reaches no command line and no output. The curl mock is wrapped to
+# answer the Atlassian token endpoint (body on stdin).
+JIRA_CLIENT_SECRET_VALUE="prioritize-client-secret-DO-NOT-LEAK"
+mv "${MOCK_BIN}/curl" "${TEST_TMPDIR}/curl-before-client"
+cat > "${MOCK_BIN}/curl" <<CURLMOCK
+#!/usr/bin/env bash
+for arg in "\$@"; do
+  if [[ "\${arg}" == "https://auth.atlassian.com/oauth/token" ]]; then
+    echo "curl \$*" >> "${CURL_LOG}"
+    cat > /dev/null
+    printf '{"access_token":"minted-access-token","expires_in":3600}\n200'
+    exit 0
+  fi
+done
+exec "${TEST_TMPDIR}/curl-before-client" "\$@"
+CURLMOCK
+chmod +x "${MOCK_BIN}/curl"
+
+SAVED_JIRA_TOKEN="${JIRA_TOKEN}"
+export JIRA_TOKEN=""
+export FULLSEND_JIRA_CLIENT_ID="client-id-1"
+export FULLSEND_JIRA_CLIENT_SECRET="${JIRA_CLIENT_SECRET_VALUE}"
+
+# Client credentials only (JIRA_USER_EMAIL is still set by the harness
+# mapping and must not select Basic auth).
+run_jira_test "jira-client-credentials-only"
+if [[ -f "${CURL_DATA_FILE}" ]] \
+  && jq -e '.fields.customfield_10105 == 2.4 and .fields.customfield_10838.value == "100% (High)"' "${CURL_DATA_FILE}" >/dev/null \
+  && grep -qF -- '--request PUT' "${CURL_LOG}"; then
+  echo "PASS: jira-client-credentials-only-writes-rice-score"
+else
+  echo "FAIL: jira-client-credentials-only-writes-rice-score — expected the RICE Score PUT"
+  cat "${CURL_LOG}" "${TEST_TMPDIR}/stdout-jira-client-credentials-only.log"
+  FAILURES=$((FAILURES + 1))
+fi
+if grep -F "${JIRA_DEFAULT_REST}/" "${CURL_LOG}" | grep -vqF -- "--oauth2-bearer minted-access-token" \
+  || ! grep -qF "${JIRA_DEFAULT_REST}/field" "${CURL_LOG}" \
+  || grep -qF -- '--user' "${CURL_LOG}"; then
+  echo "FAIL: jira-client-credentials-only-rest-bearer — expected the minted Bearer token on every REST call and no Basic auth"
+  cat "${CURL_LOG}"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: jira-client-credentials-only-rest-bearer"
+fi
+if grep -qF 'fullsend issues post-comment --tracker jira' "${GH_LOG}" \
+  && grep -qF '**RICE Score: 2.4**' "${GH_LOG}" \
+  && grep -qF "email=<unset> token=<unset> client-id=client-id-1 client-secret=set" "${FS_ENV_LOG}"; then
+  echo "PASS: jira-client-credentials-only-sticky-comment-cli-env"
+else
+  echo "FAIL: jira-client-credentials-only-sticky-comment-cli-env — expected the sticky comment with client vars and no token or email for the CLI"
+  cat "${GH_LOG}" "${FS_ENV_LOG}"
+  FAILURES=$((FAILURES + 1))
+fi
+if grep -qx "::add-mask::minted-access-token" "${TEST_TMPDIR}/stdout-jira-client-credentials-only.log" \
+  && ! grep -qF "${JIRA_CLIENT_SECRET_VALUE}" "${CURL_LOG}" "${GH_LOG}" "${TEST_TMPDIR}/stdout-jira-client-credentials-only.log"; then
+  echo "PASS: jira-client-credentials-only-secret-hidden"
+else
+  echo "FAIL: jira-client-credentials-only-secret-hidden — expected a masked access token and no client secret in argv or output"
+  cat "${CURL_LOG}" "${TEST_TMPDIR}/stdout-jira-client-credentials-only.log"
+  FAILURES=$((FAILURES + 1))
+fi
+
+# A token next to client credentials fails closed: no Jira call at all and
+# no write, and the error names the variables, never the secret.
+export JIRA_TOKEN="${SAVED_JIRA_TOKEN}"
+run_jira_test_stdout "jira-token-and-client-credentials-fail" "not both" "true"
+assert_jira_no_writes "jira-token-and-client-credentials-fail"
+if [[ -s "${CURL_LOG}" ]]; then
+  echo "FAIL: jira-token-and-client-credentials-fail — a Jira or auth call was made"
+  cat "${CURL_LOG}"
+  FAILURES=$((FAILURES + 1))
+elif grep -qE '^fullsend ' "${GH_LOG}"; then
+  echo "FAIL: jira-token-and-client-credentials-fail — the fullsend CLI was called"
+  cat "${GH_LOG}"
+  FAILURES=$((FAILURES + 1))
+elif grep -qF "${JIRA_CLIENT_SECRET_VALUE}" "${TEST_TMPDIR}/stdout-jira-token-and-client-credentials-fail.log"; then
+  echo "FAIL: jira-token-and-client-credentials-fail — the client secret appeared in the output"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: jira-token-and-client-credentials-fail-no-calls"
+fi
+
+# Only one of the two client variables fails closed too.
+export JIRA_TOKEN=""
+unset FULLSEND_JIRA_CLIENT_SECRET
+run_jira_test_stdout "jira-client-id-without-secret-fails" "must be set together" "true"
+assert_jira_no_writes "jira-client-id-without-secret-fails"
+
+unset FULLSEND_JIRA_CLIENT_ID FULLSEND_JIRA_CLIENT_SECRET
+export JIRA_TOKEN="${SAVED_JIRA_TOKEN}"
+mv "${TEST_TMPDIR}/curl-before-client" "${MOCK_BIN}/curl"
+
+# Restore GitHub forge and prove no Jira state leaked into it.
+export FULLSEND_FORGE="github"
+export ISSUE_URL="https://github.com/test-org/test-repo/issues/42"
+export GH_TOKEN="fake-token"
+export ORG="test-org"
+export PROJECT_NUMBER="1"
+unset JIRA_TOKEN JIRA_USER_EMAIL FULLSEND_DIR JIRA_BASE_URL JIRA_API_URL
+
+run_test "github-after-jira-smoke" "" 8
 
 # --- Summary ---
 

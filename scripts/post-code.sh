@@ -41,6 +41,8 @@
 # host from CI_SERVER_HOST.
 #
 # Optional environment variables:
+#   CODE_JIRA_PR_READY_TRANSITION — named Jira transition after an open, non-draft
+#                       PR/MR is confirmed; "off" (default) disables it
 #   PUSH_TOKEN_SOURCE — "github-app" (for logging; default: unknown)
 #   CODE_ALLOWED_TARGET_BRANCHES
 #                     — comma-separated list of branches the agent may target,
@@ -80,8 +82,8 @@ set -euo pipefail
 # to an unlinked private file, then re-exec this script with them removed
 # from the environment. The re-exec'd process reads them into shell variables
 # and closes the file at once, before any repo-controlled code can run. They
-# then live only in this process's memory, and reach the one trusted
-# consumer, post_jira_stage_update, after all hooks have finished. The
+# then live only in this process's memory, and reach the trusted CLI for
+# Jira stage comments and optional transitions after all hooks finish. The
 # FULLSEND_JIRA_* names are what the harness maps from and what the CLI
 # reads, so inherited copies are withheld as well.
 #
@@ -100,25 +102,47 @@ if [[ -n "${_POST_CODE_JIRA_FD:-}" ]]; then
   unset _POST_CODE_JIRA_FD
   { IFS= read -r -d '' _jira_token_saved || true; IFS= read -r -d '' _jira_email_saved || true
     IFS= read -r -d '' _jira_client_id_saved || true; IFS= read -r -d '' _jira_client_secret_saved || true; } \
-    < "/proc/self/fd/${_jira_stash_fd}"
+    <&"${_jira_stash_fd}"
   exec {_jira_stash_fd}<&-
   unset _jira_stash_fd
 elif [[ -n "${JIRA_TOKEN:-}${JIRA_USER_EMAIL:-}${FULLSEND_JIRA_TOKEN:-}${FULLSEND_JIRA_EMAIL:-}${FULLSEND_JIRA_CLIENT_ID:-}${FULLSEND_JIRA_CLIENT_SECRET:-}" ]]; then
   _jira_stash_file="$(mktemp)"
-  exec {_jira_stash_fd}<>"${_jira_stash_file}"
-  rm -f "${_jira_stash_file}"
   printf '%s\0%s\0%s\0%s\0' "${JIRA_TOKEN-}" "${JIRA_USER_EMAIL-}" \
-    "${FULLSEND_JIRA_CLIENT_ID-}" "${FULLSEND_JIRA_CLIENT_SECRET-}" >&"${_jira_stash_fd}"
+    "${FULLSEND_JIRA_CLIENT_ID-}" "${FULLSEND_JIRA_CLIENT_SECRET-}" >"${_jira_stash_file}"
+  # Open a fresh reader at offset zero before unlinking. Direct descriptor
+  # redirection works on both Linux and macOS without /proc/self/fd.
+  exec {_jira_stash_fd}<"${_jira_stash_file}"
+  rm -f "${_jira_stash_file}"
+  # The child runs traced when the caller is traced: SHELLOPTS is not
+  # exported by bash, so -x must be re-applied explicitly across the re-exec.
+  # That makes every credential expansion after this point a trace hazard,
+  # so each one is guarded — the ::add-mask:: pair below, and
+  # post_jira_stage_update, which suspends xtrace for the whole CLI call.
+  _jira_bash_flags=()
+  (( _jira_xtrace_was_on )) && _jira_bash_flags+=(-x)
   exec env -u JIRA_TOKEN -u JIRA_USER_EMAIL -u FULLSEND_JIRA_TOKEN -u FULLSEND_JIRA_EMAIL \
     -u FULLSEND_JIRA_CLIENT_ID -u FULLSEND_JIRA_CLIENT_SECRET \
-    _POST_CODE_JIRA_FD="${_jira_stash_fd}" "${BASH}" "${BASH_SOURCE[0]}" "$@"
+    _POST_CODE_JIRA_FD="${_jira_stash_fd}" "${BASH}" "${_jira_bash_flags[@]}" "${BASH_SOURCE[0]}" "$@"
 fi
 (( _jira_xtrace_was_on )) && set -x
 unset _jira_xtrace_was_on
 
+# Register the push tokens with the runner's log masker before anything can
+# expand them. A traced run echoes expanded arguments, so the mask has to
+# exist first, and the echo of the value itself must not be traced either.
+_tok_mask_xtrace=0; [[ $- == *x* ]] && _tok_mask_xtrace=1; set +x
+if [ -n "${PUSH_TOKEN:-}" ]; then
+  echo "::add-mask::${PUSH_TOKEN}"
+fi
+if [ -n "${GITLAB_TOKEN:-}" ]; then
+  echo "::add-mask::${GITLAB_TOKEN}"
+fi
+(( _tok_mask_xtrace )) && set -x
+unset _tok_mask_xtrace
+
 SCRIPT_DIR_POST="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/git-graph-policy.lib.sh
-# BEGIN bundled: lib/git-graph-policy.lib.sh
+# BEGIN bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/git-graph-policy.lib.sh
 # shellcheck shell=bash
 # git-graph-policy.lib.sh — make Git read the object graph as stored, not as
 # rewritten.
@@ -158,9 +182,9 @@ git_graph_policy_init() {
   count=$((count + 1))
   export GIT_CONFIG_COUNT="${count}"
 }
-# END bundled: lib/git-graph-policy.lib.sh
+# END bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/git-graph-policy.lib.sh
 # shellcheck source=lib/post-failure-report.lib.sh
-# BEGIN bundled: lib/post-failure-report.lib.sh
+# BEGIN bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/post-failure-report.lib.sh
 # post-failure-report.lib.sh — Categorized, sanitized failure comments for post-scripts.
 #
 # Source from post-code.src.sh / post-fix.src.sh:
@@ -174,7 +198,7 @@ git_graph_policy_init() {
 POST_FAILURE_REPORT_SH_LOADED=1
 
 # shellcheck source=forge-transient-retry.lib.sh
-# BEGIN bundled: lib/forge-transient-retry.lib.sh
+# BEGIN bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/forge-transient-retry.lib.sh
 # forge-transient-retry.lib.sh — Retry forge CLI/API calls on 5xx/timeouts.
 #
 # Usage:
@@ -316,7 +340,7 @@ forge_retry_transient() {
 
   return 1
 }
-# END bundled: lib/forge-transient-retry.lib.sh
+# END bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/forge-transient-retry.lib.sh
 
 POST_FAILURE_CATEGORY="${POST_FAILURE_CATEGORY:-}"
 POST_FAILURE_DETAIL="${POST_FAILURE_DETAIL:-}"
@@ -831,9 +855,9 @@ post_fail_to_pr() {
   report_post_failure_to_pr 1
   exit 1
 }
-# END bundled: lib/post-failure-report.lib.sh
+# END bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/post-failure-report.lib.sh
 # shellcheck source=lib/gitleaks-install.lib.sh
-# BEGIN bundled: lib/gitleaks-install.lib.sh
+# BEGIN bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/gitleaks-install.lib.sh
 # gitleaks-install.lib.sh — Platform-aware gitleaks download and verification.
 #
 # Source from post-code.src.sh / post-fix.src.sh:
@@ -964,9 +988,9 @@ install_gitleaks() {
   export GITLEAKS_BIN
   export PATH="${install_dir}:${PATH}"
 }
-# END bundled: lib/gitleaks-install.lib.sh
+# END bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/gitleaks-install.lib.sh
 # shellcheck source=lib/precommit-gate.lib.sh
-# BEGIN bundled: lib/precommit-gate.lib.sh
+# BEGIN bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/precommit-gate.lib.sh
 # precommit-gate.lib.sh — Shared pre-commit gate for validation loop and post-scripts.
 #
 # Source from validate-code-output.src.sh / post-code.src.sh / post-fix.src.sh:
@@ -1441,9 +1465,9 @@ precommit_run_gate() {
   # shellcheck disable=SC2034
   PRECOMMIT_GATE_DETAIL="${_pg_output}"
 }
-# END bundled: lib/precommit-gate.lib.sh
+# END bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/precommit-gate.lib.sh
 # shellcheck source=lib/pr-assignee.lib.sh
-# BEGIN bundled: lib/pr-assignee.lib.sh
+# BEGIN bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/pr-assignee.lib.sh
 # pr-assignee.lib.sh — Resolve and assign a human owner for code-agent PRs.
 #
 # Source from post-code.src.sh (after post-failure-report.lib.sh for gha_echo):
@@ -1647,9 +1671,9 @@ maybe_assign_pr() {
     }
   fi
 }
-# END bundled: lib/pr-assignee.lib.sh
+# END bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/pr-assignee.lib.sh
 # shellcheck source=lib/branch-guard.lib.sh
-# BEGIN bundled: lib/branch-guard.lib.sh
+# BEGIN bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/branch-guard.lib.sh
 # shellcheck shell=bash
 
 # enforce_branch_namespace <branch> <issue_number>
@@ -1698,9 +1722,9 @@ classify_branch_vs_pr_head() {
     echo "mismatch"
   fi
 }
-# END bundled: lib/branch-guard.lib.sh
+# END bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/branch-guard.lib.sh
 # shellcheck source=lib/jira-auth.lib.sh
-# BEGIN bundled: lib/jira-auth.lib.sh
+# BEGIN bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/jira-auth.lib.sh
 # shellcheck shell=bash
 # jira-auth.lib.sh — Jira credential-mode selection for host-side scripts.
 #
@@ -1988,14 +2012,14 @@ jira_auth_fullsend() {
     )
   fi
 }
-# END bundled: lib/jira-auth.lib.sh
+# END bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/jira-auth.lib.sh
 
 # SCRIPT_DIR is used by code-ops.lib.sh dispatcher to locate forge-specific
 # ops libraries. Not directly referenced in this file.
 # shellcheck disable=SC2034
 SCRIPT_DIR="${SCRIPT_DIR_POST}"
 # shellcheck source=lib/code-ops.lib.sh
-# BEGIN bundled: lib/code-ops.lib.sh
+# BEGIN bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/code-ops.lib.sh
 # shellcheck shell=bash
 # code-ops.lib.sh — Forge-dispatch wrapper for code agent operations.
 #
@@ -2009,11 +2033,11 @@ CODE_OPS_SH_LOADED=1
 # forge_retry_transient is defined for every forge (including callers in the
 # pre-code scripts that wrap commands outside the forge-specific libs).
 # shellcheck source=forge-transient-retry.lib.sh
-# (already bundled: lib/forge-transient-retry.lib.sh)
+# (already bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/forge-transient-retry.lib.sh)
 
 case "${FULLSEND_FORGE:-}" in
   github)
-# BEGIN bundled: lib/github-code-ops.lib.sh
+# BEGIN bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/github-code-ops.lib.sh
 # shellcheck shell=bash
 # github-code-ops.lib.sh — GitHub forge operations for code agent scripts.
 #
@@ -2031,11 +2055,11 @@ case "${FULLSEND_FORGE:-}" in
 GITHUB_CODE_OPS_SH_LOADED=1
 
 # shellcheck source=forge-transient-retry.lib.sh
-# (already bundled: lib/forge-transient-retry.lib.sh)
+# (already bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/forge-transient-retry.lib.sh)
 # forge_push_branch: a plain git push, or with GITHUB_SIGNED_COMMITS=true the
 # API publish that gets the commits signed by GitHub.
 # shellcheck source=github-signed-push.lib.sh
-# BEGIN bundled: lib/github-signed-push.lib.sh
+# BEGIN bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/github-signed-push.lib.sh
 # shellcheck shell=bash
 # github-signed-push.lib.sh — Publish local commits through the GitHub Git
 # Data API so GitHub signs them.
@@ -2370,9 +2394,9 @@ _forge_push_branch() {
   git config "branch.${branch}.merge" "refs/heads/${branch}" || return 1
   echo "Branch ${branch} is at ${tip} on origin"
 }
-# END bundled: lib/github-signed-push.lib.sh
+# END bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/github-signed-push.lib.sh
 # shellcheck source=github-host.lib.sh
-# BEGIN bundled: lib/github-host.lib.sh
+# BEGIN bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/github-host.lib.sh
 # shellcheck shell=bash
 # github-host.lib.sh — Shared GitHub host handling for GitHub ops.
 #
@@ -2407,7 +2431,7 @@ _github_url_path() {
   [[ "${url}" == "${base}"* ]] || return 1
   printf '%s\n' "${url#"${base}"}"
 }
-# END bundled: lib/github-host.lib.sh
+# END bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/github-host.lib.sh
 
 # --- URL handling ---
 
@@ -2762,10 +2786,10 @@ forge_append_path() {
   local dir="$1"
   echo "${dir}" >> "${GITHUB_PATH:-/dev/null}"
 }
-# END bundled: lib/github-code-ops.lib.sh
+# END bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/github-code-ops.lib.sh
     ;;
   gitlab)
-# BEGIN bundled: lib/gitlab-code-ops.lib.sh
+# BEGIN bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/gitlab-code-ops.lib.sh
 # shellcheck shell=bash
 # gitlab-code-ops.lib.sh — GitLab forge operations for code agent scripts.
 #
@@ -2789,7 +2813,7 @@ forge_append_path() {
 GITLAB_CODE_OPS_SH_LOADED=1
 
 # shellcheck source=gitlab-host-validation.lib.sh
-# BEGIN bundled: lib/gitlab-host-validation.lib.sh
+# BEGIN bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/gitlab-host-validation.lib.sh
 # shellcheck shell=bash
 # gitlab-host-validation.lib.sh — Shared host validation for GitLab ops.
 #
@@ -2856,9 +2880,9 @@ _validate_gitlab_origin() {
     return 1
   fi
 }
-# END bundled: lib/gitlab-host-validation.lib.sh
+# END bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/gitlab-host-validation.lib.sh
 # shellcheck source=forge-transient-retry.lib.sh
-# (already bundled: lib/forge-transient-retry.lib.sh)
+# (already bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/forge-transient-retry.lib.sh)
 
 if ! declare -F gha_echo >/dev/null 2>&1; then
   gha_echo() { echo "::${1}::${2:-}"; }
@@ -3445,16 +3469,16 @@ forge_append_path() {
   fi
   # On GitLab CI, PATH is modified directly (already done by caller)
 }
-# END bundled: lib/gitlab-code-ops.lib.sh
+# END bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/gitlab-code-ops.lib.sh
     ;;
   *)
     echo "ERROR: invalid FULLSEND_FORGE: '${FULLSEND_FORGE:-}' — pass --forge <github|gitlab> or set FULLSEND_FORGE" >&2
     exit 1
     ;;
 esac
-# END bundled: lib/code-ops.lib.sh
+# END bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/code-ops.lib.sh
 # shellcheck source=lib/labels.lib.sh
-# BEGIN bundled: lib/labels.lib.sh
+# BEGIN bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/labels.lib.sh
 # labels.lib.sh — Mandatory label management for fullsend agent scripts.
 #
 # Provides forge_ensure_label() which creates mandatory dispatch labels
@@ -3503,7 +3527,7 @@ forge_ensure_label() {
   # description/color — mandatory labels are agent-managed.
   forge_create_label "${name}" "${description}" "${color}"
 }
-# END bundled: lib/labels.lib.sh
+# END bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/labels.lib.sh
 
 # ---------------------------------------------------------------------------
 # enable_auto_merge — arm auto-merge on a PR/MR (best-effort).
@@ -3792,11 +3816,6 @@ else
   echo "No agent branch preference — using repo default: ${TARGET_BRANCH}"
 fi
 
-echo "::add-mask::${PUSH_TOKEN}"
-if [ -n "${GITLAB_TOKEN:-}" ]; then
-  echo "::add-mask::${GITLAB_TOKEN}"
-fi
-
 # Scan optional public text with built-in rules, not repository policy.
 # A file source skips .gitleaks.toml discovery; the private working directory
 # and explicit ignore path prevent .gitleaksignore discovery. The subshell
@@ -3890,7 +3909,24 @@ Retry with \`/fs-code\` if appropriate."
 #
 # Usage: post_jira_stage_update <verb phrase> <pr_url>
 # ---------------------------------------------------------------------------
+# The saved Jira token and email are expanded into arguments inside the inner
+# function, to build the trusted CLI's list. A traced run would echo them, and
+# tracing reaches here two ways: an explicit `bash -x`, and the -x this script
+# re-applies to its own child after the credential re-exec. Suspend xtrace for
+# the whole call — the arguments are a verb phrase and a URL, never a secret —
+# and restore it on every exit path, including failures, so the caller's
+# tracing state is unchanged.
 post_jira_stage_update() {
+  local _stage_xtrace=0
+  [[ $- == *x* ]] && _stage_xtrace=1
+  set +x
+  local _stage_rc=0
+  _post_jira_stage_update_inner "$@" || _stage_rc=$?
+  (( _stage_xtrace )) && set -x
+  return "${_stage_rc}"
+}
+
+_post_jira_stage_update_inner() {
   local verb="$1"
   local pr_url="$2"
 
@@ -3963,7 +3999,63 @@ Review and merge happen on the ${noun}."
     "${_jira_token_saved}" "${_jira_email_saved:-}" \
     issues post-comment --tracker jira --fullsend-dir "${FULLSEND_DIR}" \
     --project "${project}" --number "${number}" \
-    --marker "<!-- fullsend:code-agent -->" --result -
+    --marker "<!-- fullsend:code-agent -->" --result - || return $?
+
+  maybe_transition_jira_pr_ready "${project}" "${number}" "${pr_url##*/}"
+}
+
+# Called only after post_jira_stage_update validates the Jira identity and
+# successfully writes its comment. This optional update must not fail an
+# otherwise successful code run. Jira owns the allowed source states.
+maybe_transition_jira_pr_ready() {
+  local project="$1" number="$2" pr_number="$3"
+  local transition="${CODE_JIRA_PR_READY_TRANSITION:-off}"
+  if [ "${transition}" = "off" ]; then
+    return 0
+  fi
+
+  local pr_json ready_filter
+  if ! pr_json="$(forge_get_pr_details "${pr_number}" "state,isDraft")"; then
+    gha_echo warning "Could not verify PR/MR readiness; skipping the optional Jira transition"
+    return 0
+  fi
+  if [ "${FULLSEND_FORGE}" = "gitlab" ]; then
+    ready_filter='.state == "opened" and .draft == false'
+  else
+    ready_filter='.state == "OPEN" and .isDraft == false'
+  fi
+  # Require explicit false, not a missing/null draft flag. Closed, merged,
+  # draft and malformed responses never cause a transition.
+  if ! jq -e "${ready_filter}" <<< "${pr_json}" >/dev/null 2>&1; then
+    echo "PR/MR is not confirmed open and non-draft; skipping the optional Jira PR-ready transition"
+    return 0
+  fi
+
+  local output email transition_xtrace=0
+  [[ $- == *x* ]] && transition_xtrace=1
+  set +x
+  # Do not retry: a Jira transition can have side effects even if it leaves
+  # the issue in the same status. Credentials reach only the trusted CLI.
+  if ! output="$(jira_auth_fullsend "${_jira_fullsend_bin}" \
+    "${_jira_token_saved}" "${_jira_email_saved:-}" \
+    issues transition --tracker jira --fullsend-dir "${FULLSEND_DIR}" \
+    --project "${project}" --number "${number}" \
+    --transition "${transition}" 2>&1)"; then
+    # Repository hooks can shadow PATH utilities. Redact in-process before
+    # passing diagnostics to any external sanitizer; never export the token.
+    output="${output//"${_jira_token_saved}"/[REDACTED]}"
+    email="$(jira_auth_email "${_jira_email_saved:-}")"
+    if [ -n "${email}" ]; then
+      output="${output//"${email}"/[REDACTED]}"
+    fi
+    if [ -n "${_JIRA_AUTH_CLIENT_SECRET:-}" ]; then
+      output="${output//"${_JIRA_AUTH_CLIENT_SECRET}"/[REDACTED]}"
+    fi
+    print_sanitized_gha_log "${output}"
+    gha_echo warning "Optional Jira PR-ready transition failed; inspect the issue before retrying"
+  fi
+  (( transition_xtrace )) && set -x
+  return 0
 }
 
 # ---------------------------------------------------------------------------
@@ -4448,7 +4540,7 @@ else
   COMMIT_COUNT=1
 fi
 if [ "${COMMIT_COUNT}" -gt 1 ]; then
-  COMMIT_SUBJECT="$(git log --format='%s' --reverse "${MERGE_BASE}..HEAD" | head -1)"
+  COMMIT_SUBJECT="$(git log --format='%s' --reverse "${MERGE_BASE}..HEAD" | sed -n '1p')"
 else
   COMMIT_SUBJECT="$(git log -1 --format='%s' HEAD)"
 fi

@@ -32,16 +32,23 @@ slug: fullsend-ai-triage
 # (fullsend-ai/fullsend#8329); post-triage already avoids issue edits for the
 # same reason. The expression is forge-neutral, so a Jira poller that
 # dispatches triage also matches Jira issues opened or edited.
+# The skip-triage label (#2076) blocks the automatic paths; only a human
+# /fs-triage overrides it. This guard is an early filter: a long label list
+# can truncate state.labels on some transports, so pre-triage, which reads
+# the labels from the tracker, is the authoritative check and also covers
+# the labels in TRIAGE_SKIP_LABELS.
 # harness/triggertest/trigger_test.go evaluates this against the
 # NormalizedEvent fixtures.
 trigger: >
   (event.entity.kind == "work_item"
     && event.transition.kind in ["opened", "edited"]
-    && event.actor.kind == "human")
+    && event.actor.kind == "human"
+    && !("skip-triage" in event.state.labels))
   || (event.entity.kind == "work_item"
     && event.transition.kind == "label_changed"
     && event.transition.label.name == "ready-for-triage"
-    && event.transition.label.action == "added")
+    && event.transition.label.action == "added"
+    && !("skip-triage" in event.state.labels))
   || (event.entity.kind in ["work_item", "change_proposal"]
     && event.transition.kind == "comment_added"
     && has(event.transition.comment.command)
@@ -77,11 +84,26 @@ env:
   runner:
     TRIAGE_AUTO_CODE: "on"
     TRIAGE_AUTO_CODE_CATEGORIES: "bug,documentation,performance"
+    # Comma-separated labels that act like the built-in skip-triage label
+    # (#2076): pre-triage skips the issue and post-triage never promotes it
+    # to ready-to-code. Override via base: composition (e.g. "needs-design").
+    TRIAGE_SKIP_LABELS: ""
   sandbox:
     TRIAGE_AUTO_CODE: "on"
     TRIAGE_AUTO_CODE_CATEGORIES: "bug,documentation,performance"
 
 overlays:
+  # A human /fs-triage deliberately overrides the skip labels (#2076).
+  # pre-triage cannot see the triggering event, so this overlay tells it.
+  # Without a normalized event the overlay does not match and the skip holds.
+  - when: >-
+      has(event.transition) && event.transition.kind == "comment_added"
+      && has(event.transition.comment) && has(event.transition.comment.command)
+      && event.transition.comment.command == "/fs-triage"
+      && has(event.actor) && event.actor.kind == "human"
+    env:
+      runner:
+        TRIAGE_SKIP_LABEL_OVERRIDE: "true"
   - when: '(has(event.source) && event.source.system == "github") || (!has(event.source) && runtime.forge == "github")'
     providers:
       - github-ro

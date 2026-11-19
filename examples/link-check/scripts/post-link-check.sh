@@ -121,19 +121,26 @@ fi
 REPO="${BASH_REMATCH[1]}"
 NUMBER="${BASH_REMATCH[3]}"
 
-# On ok, post nothing — unless an earlier run left a findings comment on
-# this work item. The harness trigger fires again on later pushes, so a
-# problem the author has since fixed would otherwise stay reported.
-# --only-if-exists makes fullsend replace that comment with the all-clear,
-# and post nothing when there is no earlier comment. It matches only a
-# comment carrying this marker whose author is exactly the login fullsend
-# posts as, so a comment anyone else planted with the marker is never
-# edited. When that login cannot be resolved it exits non-zero without
-# posting; under `set -e` this script, and so the run, then fails
-# visibly — rerun it.
+# On ok, post nothing — unless an earlier run left a comment on this work
+# item. The harness trigger fires again on later pushes, so without an
+# all-clear a problem the author has since fixed would look unanswered.
+# --only-if-exists posts the all-clear only when an earlier comment carrying
+# this marker exists, and posts nothing when there is none. It matches only
+# a comment whose author is exactly the login fullsend posts as, so a
+# comment anyone else planted with the marker never triggers a post. When
+# that login cannot be resolved it exits non-zero without posting; under
+# `set -e` this script, and so the run, then fails visibly — rerun it.
+#
+# Posting is append-only on a current fullsend (fullsend-ai/fullsend#9399):
+# the all-clear is a NEW comment at the end of the thread, after the
+# findings it answers, and the findings comment stays as it was. Any earlier
+# marked comment counts, an earlier all-clear included, so once a pull
+# request has had a findings comment every later clean run adds one
+# all-clear. An older fullsend edits the earlier comment in place instead;
+# see --keep-history below.
 if [[ "${status}" == "ok" ]]; then
   if [[ "${POST_LINK_CHECK_DRY_RUN:-}" == "1" ]]; then
-    echo "post-link-check: status=ok, nothing to post (dry run: did not check for an earlier findings comment to replace)" >&2
+    echo "post-link-check: status=ok, nothing to post (dry run: did not check for an earlier link-check comment)" >&2
     exit 0
   fi
   # The runner's fullsend may predate --only-if-exists (it is pinned by the
@@ -143,16 +150,40 @@ if [[ "${status}" == "ok" ]]; then
   # Only a working CLI without the flag keeps the old behaviour — post
   # nothing.
   if ! help_text=$(fullsend issues post-comment --help 2>&1); then
-    printf '%s\n' "post-link-check: 'fullsend issues post-comment --help' failed; cannot replace an earlier findings comment" >&2
+    printf '%s\n' "post-link-check: 'fullsend issues post-comment --help' failed; cannot check for an earlier link-check comment" >&2
     printf '%s\n' "${help_text}" >&2
     exit 1
   fi
-  if [[ "${help_text}" != *--only-if-exists* ]]; then
+  # Reading the help is a heuristic — help text is not a contract. Only
+  # flag-table lines count (whitespace, then the flag), so prose elsewhere
+  # in the help can never turn a flag on, and a flag whose line says
+  # "deprecated" counts as not offered. The help is lower-cased first
+  # (flag names already are) so "Deprecated" or "DEPRECATED" is caught too;
+  # bash 3.2 has no ${var,,}.
+  help_lower=$(printf '%s\n' "${help_text}" | tr '[:upper:]' '[:lower:]')
+  only_if_exists_re='^[[:space:]]+--only-if-exists([=[:space:]]|$)'
+  keep_history_re='^[[:space:]]+--keep-history([=[:space:]]|$)'
+  has_only_if_exists=0
+  keep_history_args=()
+  while IFS= read -r help_line; do
+    if [[ "${help_line}" =~ ${only_if_exists_re} && "${help_line}" != *deprecated* ]]; then
+      has_only_if_exists=1
+    fi
+    if [[ "${help_line}" =~ ${keep_history_re} && "${help_line}" != *deprecated* ]]; then
+      keep_history_args=(--keep-history=false)
+    fi
+  done <<< "${help_lower}"
+  if (( ! has_only_if_exists )); then
     echo "post-link-check: status=ok, nothing to post (this fullsend has no --only-if-exists; an earlier findings comment, if any, stays until a later run with findings)" >&2
     exit 0
   fi
-  # --keep-history=false: the all-clear replaces the comment in place, so
-  # repeated clean runs do not stack identical "Previous run" blocks.
+  # An older fullsend edits the earlier comment in place, and by default
+  # keeps the replaced text in a collapsed "Previous run" block, so repeated
+  # clean runs would stack identical blocks: keep_history_args passes
+  # --keep-history=false there. Since fullsend-ai/fullsend#9399 the flag is
+  # deprecated with no effect and passing it prints a warning, so it is left
+  # out when its flag line says "deprecated" or no such line is listed. The
+  # ${a[@]+...} form expands an empty array safely under set -u on bash 3.2.
   printf '**%s**\n\n%s\n' "${summary}" "${comment}" \
     | fullsend issues post-comment \
         --tracker github \
@@ -160,7 +191,7 @@ if [[ "${status}" == "ok" ]]; then
         --number "${NUMBER}" \
         --marker "${MARKER}" \
         --only-if-exists \
-        --keep-history=false \
+        ${keep_history_args[@]+"${keep_history_args[@]}"} \
         --result -
   exit 0
 fi
@@ -180,9 +211,11 @@ if [[ "${POST_LINK_CHECK_DRY_RUN:-}" == "1" ]]; then
   exit 0
 fi
 
-# fullsend issues post-comment is the repo's sticky-comment primitive: it
-# finds this agent's previous comment by marker and its own author and edits
-# it in place, so re-runs do not flood the work item.
+# fullsend issues post-comment prepends the marker, which is how a later
+# clean run finds that this work item has had a link-check comment. On a
+# current fullsend every run posts a new comment at the end of the thread,
+# so the thread is the history of the runs; an older fullsend edits this
+# agent's previous comment in place instead.
 printf '**%s**\n\n%s\n' "${summary}" "${comment}" \
   | fullsend issues post-comment \
       --tracker github \
