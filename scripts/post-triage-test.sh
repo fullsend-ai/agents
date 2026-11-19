@@ -1942,21 +1942,21 @@ fi
 # state fits, and the readable text still fits.
 mb_open="$(jq -cn '[range(0; 10) | {cause: ("😀" * 195 + "o\(.)"), evidence: ("漢" * 300), verified: true}]')"
 mb_ruled="$(jq -cn '[range(0; 25) | {cause: ("漢" * 195 + "r\(.)"), evidence: ("😀" * 300), verified: true}]')"
-run_state_case "state-github-multibyte-byte-cap" "$(sufficient_with ",\"open_causes\":${mb_open},\"ruled_out\":${mb_ruled}" "Short analysis.")"
+run_state_case "state-github-multibyte-escaped-cap" "$(sufficient_with ",\"open_causes\":${mb_open},\"ruled_out\":${mb_ruled}" "Short analysis.")"
 body="$(posted_body "${GH_LOG}")"
 mb_state="$(state_from_body "${body}")"
 if [[ ${STATE_RC} -ne 0 ]]; then
-  state_fail "state-github-multibyte-byte-cap" "exit code ${STATE_RC}"
+  state_fail "state-github-multibyte-escaped-cap" "exit code ${STATE_RC}"
 elif [[ $(printf '%s' "${mb_state}" | jq -ac . | tr -d '\n' | wc -c) -gt 30000 || $(readable_len "${body}") -gt 4000 ]]; then
-  state_fail "state-github-multibyte-byte-cap" "escaped state is $(printf '%s' "${mb_state}" | jq -ac . | tr -d '\n' | wc -c) characters, readable text $(readable_len "${body}") characters"
+  state_fail "state-github-multibyte-escaped-cap" "escaped state is $(printf '%s' "${mb_state}" | jq -ac . | tr -d '\n' | wc -c) characters, readable text $(readable_len "${body}") characters"
 elif [[ "$(jq -c '[(.open_causes | length), (.ruled_out | length), (all(.open_causes[]; .cause | test("^😀+$"))), (all(.ruled_out[]; .cause | test("^漢+$")))]' <<<"${mb_state}")" != "[10,25,true,true]" ]] \
   || [[ "$(jq -c '[.ruled_out[].evidence, .open_causes[].evidence] | unique' <<<"${mb_state}")" != '[""]' ]]; then
-  state_fail "state-github-multibyte-byte-cap" "expected every cause kept and ruled-out evidence emptied: ${mb_state:0:300}"
+  state_fail "state-github-multibyte-escaped-cap" "expected every cause kept and ruled-out evidence emptied: ${mb_state:0:300}"
 else
-  echo "PASS: state-github-multibyte-byte-cap"
+  echo "PASS: state-github-multibyte-escaped-cap"
 fi
 
-# Over a smaller byte cap the cause text is cut by whole characters, every
+# Under a smaller cap the cause text is cut by whole characters, every
 # cause is kept, and with too little room the state fails instead of
 # dropping causes. (Within the schema limits names alone always fit.)
 cut_file="${TMPDIR}/state-cut.json"
@@ -1964,12 +1964,12 @@ printf '%s\n' "$(sufficient_with ",\"open_causes\":${mb_open},\"ruled_out\":${mb
 cut_out="$(SCRIPT_DIR="${SCRIPT_DIR}" bash -c 'source "${SCRIPT_DIR}/lib/triage-state.lib.sh"; TRIAGE_STATE_MAX_CHARS=12000 triage_state_json "$1"' _ "${cut_file}" 2>&1)" || true
 small_rc=0
 SCRIPT_DIR="${SCRIPT_DIR}" bash -c 'source "${SCRIPT_DIR}/lib/triage-state.lib.sh"; TRIAGE_STATE_MAX_CHARS=500 triage_state_json "$1"' _ "${cut_file}" > "${TMPDIR}/state-small.log" 2>&1 || small_rc=$?
-if [[ $(printf '%s' "${cut_out}" | wc -c) -gt 12000 ]] \
+if [[ $(printf '%s' "${cut_out}" | jq -ac . | tr -d '\n' | wc -c) -gt 12000 ]] \
   || [[ "$(jq -c '[(.open_causes | length), (.ruled_out | length), ([.open_causes[].cause | test("^😀+$")] | all)]' <<<"${cut_out}" 2>/dev/null)" != "[10,25,true]" ]] \
   || [[ ${small_rc} -eq 0 ]] || ! grep -qF 'does not fit 500 characters' "${TMPDIR}/state-small.log"; then
-  state_fail "state-byte-cut-keeps-every-cause" "cut state: ${cut_out:0:200}; small cap rc ${small_rc}"
+  state_fail "state-char-cut-keeps-every-cause" "cut state: ${cut_out:0:200}; small cap rc ${small_rc}"
 else
-  echo "PASS: state-byte-cut-keeps-every-cause"
+  echo "PASS: state-char-cut-keeps-every-cause"
 fi
 
 # A state that cannot be stored fails the run before the issue is touched.
@@ -2065,9 +2065,9 @@ fi
 cap_of() { SCRIPT_DIR="${SCRIPT_DIR}" TRIAGE_STATE_MAX_CHARS="$1" bash -c 'source "${SCRIPT_DIR}/lib/triage-state.lib.sh"; echo "${TRIAGE_STATE_MAX_CHARS}"'; }
 if [[ "$(cap_of 0500)" == "500" && "$(cap_of 09)" == "9" && "$(cap_of 40000)" == "30000" \
   && "$(cap_of 1e3)" == "30000" && "$(cap_of -5)" == "30000" && "$(cap_of 99999999999999999999)" == "30000" ]]; then
-  echo "PASS: state-max-bytes-base-ten"
+  echo "PASS: state-max-chars-base-ten"
 else
-  state_fail "state-max-bytes-base-ten" "got $(cap_of 0500) $(cap_of 09) $(cap_of 40000) $(cap_of 1e3) $(cap_of -5)"
+  state_fail "state-max-chars-base-ten" "got $(cap_of 0500) $(cap_of 09) $(cap_of 40000) $(cap_of 1e3) $(cap_of -5)"
 fi
 
 # A cut inside a fenced code block closes the block before the cut note,
