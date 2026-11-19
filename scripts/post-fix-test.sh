@@ -280,6 +280,33 @@ run_history_rewrite_request_test "rewrite-request-empty" \
 run_history_rewrite_request_test "rewrite-request-merge-conflict-is-not-reset" \
   "fix merge conflicts" "false" "false"
 
+# Keyword detection for human rebase requests (issue #2054).
+run_rebase_request_test() {
+  local test_name="$1"
+  local instruction="$2"
+  local expected="$3"
+  local actual=false
+  if is_human_rebase_request "${instruction}"; then actual=true; fi
+  if [ "${actual}" != "${expected}" ]; then
+    echo "FAIL: ${test_name}"
+    echo "  instruction: '${instruction}' actual=${actual} expected=${expected}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  echo "PASS: ${test_name}"
+}
+
+run_rebase_request_test "rebase-request-rebase" "rebase onto main" "true"
+run_rebase_request_test "rebase-request-merge-conflicts" "fix merge conflicts" "true"
+run_rebase_request_test "rebase-request-resolve-conflicts" "resolve conflicts" "true"
+run_rebase_request_test "rebase-request-fix-conflicts" "Fix conflicts" "true"
+run_rebase_request_test "rebase-request-sync-with-main" "sync with main" "true"
+run_rebase_request_test "rebase-request-confilcts-typo" \
+  "resolve the merge confilcts" "true"
+run_rebase_request_test "rebase-request-ordinary-fix" "fix the typo in the README" "false"
+run_rebase_request_test "rebase-request-bare-sync-is-not-rebase" "sync the docs" "false"
+run_rebase_request_test "rebase-request-empty" "" "false"
+
 # ---------------------------------------------------------------------------
 # FIX_CONFLICT_UPDATE_STRATEGY defaulting (issue #1518)
 # ---------------------------------------------------------------------------
@@ -1961,6 +1988,28 @@ run_push_rebase_postfix() {
   return "${exit_code}"
 }
 
+# check_unauthorized_rebase_fail_fast TEST EXIT LOG BASE REMOTE_TIP — issue
+# #2054: when the agent recorded rebased_onto_target but no skip authorized
+# it, post-fix must fail with the diagnostic, never attempt the replay onto
+# origin/BRANCH, and leave the remote PR branch at REMOTE_TIP. Prints the
+# FAIL line and returns 1 on mismatch.
+check_unauthorized_rebase_fail_fast() {
+  local test_name="$1" exit_code="$2" stdout_log="$3" base="$4" remote_tip="$5"
+  if [ "${exit_code}" -eq 0 ]; then
+    echo "FAIL: ${test_name} — expected fail-fast on an unauthorized agent rebase, got exit 0"
+  elif ! grep -qF "Agent rebased onto target branch (main), but runner authorization checks failed" "${stdout_log}"; then
+    echo "FAIL: ${test_name} — missing unauthorized-rebase diagnostic"
+  elif grep -q "Rebasing local agent/99-test-fix onto origin/agent/99-test-fix" "${stdout_log}"; then
+    echo "FAIL: ${test_name} — attempted the replay onto origin/BRANCH"
+  elif [ "$(git --git-dir="${base}/remote.git" rev-parse refs/heads/agent/99-test-fix)" != "${remote_tip}" ]; then
+    echo "FAIL: ${test_name} — remote PR branch changed"
+  else
+    return 0
+  fi
+  cat "${stdout_log}"
+  return 1
+}
+
 # ---------------------------------------------------------------------------
 # Push retry (post-fix.sh §5) against the real script.
 #
@@ -2735,28 +2784,15 @@ JSONEOF
   local exit_code=0
   run_push_rebase_postfix "${base}" "${stdout_log}" "${PUSH_REBASE_MOCK_BIN}" "fullsend-ai-review[bot]" || exit_code=$?
 
-  if [ "${exit_code}" -ne 0 ]; then
-    echo "FAIL: ${test_name} — exit code ${exit_code}"
-    cat "${stdout_log}"
-    FAILURES=$((FAILURES + 1))
-    return
-  fi
   if grep -q "skipping rebase onto origin/agent/99-test-fix" "${stdout_log}"; then
     echo "FAIL: ${test_name} — trusted rebased_onto_target:true from a bot-triggered run"
     cat "${stdout_log}"
     FAILURES=$((FAILURES + 1))
     return
   fi
-  if ! grep -q "Branch agent/99-test-fix pushed successfully" "${stdout_log}"; then
-    echo "FAIL: ${test_name} — push did not report success"
-    cat "${stdout_log}"
-    FAILURES=$((FAILURES + 1))
-    return
-  fi
-  if ! git --git-dir="${base}/remote.git" merge-base --is-ancestor \
-       "${real_a}" refs/heads/agent/99-test-fix; then
-    echo "FAIL: ${test_name} — remote tip is not a fast-forward of real A (history was replaced instead of fast-forwarded)"
-    git --git-dir="${base}/remote.git" log --oneline refs/heads/agent/99-test-fix
+  # Issue #2054: the unauthorized marker now fails fast instead of replaying
+  # main's commits onto real A; the remote branch is left untouched.
+  if ! check_unauthorized_rebase_fail_fast "${test_name}" "${exit_code}" "${stdout_log}" "${base}" "${real_a}"; then
     FAILURES=$((FAILURES + 1))
     return
   fi
@@ -2830,28 +2866,14 @@ JSONEOF
   local exit_code=0
   run_push_rebase_postfix "${base}" "${stdout_log}" "${PUSH_REBASE_MOCK_BIN}" "test-user" "fix the typo in the README" || exit_code=$?
 
-  if [ "${exit_code}" -ne 0 ]; then
-    echo "FAIL: ${test_name} — exit code ${exit_code}"
-    cat "${stdout_log}"
-    FAILURES=$((FAILURES + 1))
-    return
-  fi
   if grep -q "skipping rebase onto origin/agent/99-test-fix" "${stdout_log}"; then
     echo "FAIL: ${test_name} — trusted rebased_onto_target:true from a non-rebase human instruction"
     cat "${stdout_log}"
     FAILURES=$((FAILURES + 1))
     return
   fi
-  if ! grep -q "Branch agent/99-test-fix pushed successfully" "${stdout_log}"; then
-    echo "FAIL: ${test_name} — push did not report success"
-    cat "${stdout_log}"
-    FAILURES=$((FAILURES + 1))
-    return
-  fi
-  if ! git --git-dir="${base}/remote.git" merge-base --is-ancestor \
-       "${real_a}" refs/heads/agent/99-test-fix; then
-    echo "FAIL: ${test_name} — remote tip is not a fast-forward of real A (history was replaced instead of fast-forwarded)"
-    git --git-dir="${base}/remote.git" log --oneline refs/heads/agent/99-test-fix
+  # Issue #2054: fail fast rather than replay main's commits onto real A.
+  if ! check_unauthorized_rebase_fail_fast "${test_name}" "${exit_code}" "${stdout_log}" "${base}" "${real_a}"; then
     FAILURES=$((FAILURES + 1))
     return
   fi
@@ -2942,6 +2964,85 @@ JSONEOF
   remote_content="$(git --git-dir="${base}/remote.git" show refs/heads/agent/99-test-fix:file.txt)"
   if [ "${remote_content}" != "fixed" ]; then
     echo "FAIL: ${test_name} — remote file.txt is '${remote_content}', want 'fixed'"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  echo "PASS: ${test_name}"
+}
+
+# Issue #2054 reproduction: the agent genuinely rebased onto a target whose
+# commit conflicts with the remote PR commit. With an instruction the
+# rebase predicate accepts (the observed "confilcts" typo) the skip must
+# fire and publish; with one it does not accept, post-fix must fail fast
+# with the unauthorized-rebase diagnostic instead of attempting the replay
+# onto origin/BRANCH (which would conflict and blame the remote branch).
+run_push_rebase_conflicting_replay_test() {
+  local test_name="$1"
+  local instruction="$2"
+  local expect="$3"
+  local base="${PUSH_REBASE_TMPDIR}/${test_name}"
+  mkdir -p "${base}"
+
+  git init -q --bare -b main "${base}/remote.git"
+  git init -q -b main "${base}/seed"
+  push_rebase_ident "${base}/seed"
+  echo "base" > "${base}/seed/file.txt"
+  git -C "${base}/seed" add file.txt
+  git -C "${base}/seed" commit -q -m "init"
+  git -C "${base}/seed" remote add origin "${base}/remote.git"
+  git -C "${base}/seed" push -q -u origin main
+
+  git -C "${base}/seed" checkout -q -b agent/99-test-fix
+  echo "pr-a" > "${base}/seed/file.txt"
+  git -C "${base}/seed" add file.txt
+  git -C "${base}/seed" commit -q -m "real A"
+  git -C "${base}/seed" push -q -u origin agent/99-test-fix
+  local real_a
+  real_a="$(git -C "${base}/seed" rev-parse HEAD)"
+
+  git -C "${base}/seed" checkout -q main
+  echo "main-change" > "${base}/seed/file.txt"
+  git -C "${base}/seed" add file.txt
+  git -C "${base}/seed" commit -q -m "main conflicting change"
+  git -C "${base}/seed" push -q origin main
+
+  # The agent's rebase of real A onto the new main, with the conflict resolved.
+  git clone -q "${base}/remote.git" "${base}/repo"
+  push_rebase_ident "${base}/repo"
+  git -C "${base}/repo" checkout -q -B agent/99-test-fix origin/main
+  echo "pr-a resolved" > "${base}/repo/file.txt"
+  git -C "${base}/repo" add file.txt
+  git -C "${base}/repo" commit -q -m "real A (rebased)"
+
+  mkdir -p "${base}/iteration-1/output"
+  cat > "${base}/iteration-1/output/agent-result.json" <<'JSONEOF'
+{
+  "pr_number": 99,
+  "trigger_source": "human",
+  "actions": [
+    {"type": "fix", "finding": "merge conflicts", "description": "Rebased onto origin/main and resolved conflicts."}
+  ],
+  "summary": "Rebased onto main.",
+  "tests_passed": true,
+  "files_changed": ["file.txt"],
+  "rebased_onto_target": true
+}
+JSONEOF
+
+  local stdout_log="${PUSH_REBASE_TMPDIR}/stdout-${test_name}.log"
+  local exit_code=0
+  run_push_rebase_postfix "${base}" "${stdout_log}" "${PUSH_REBASE_MOCK_BIN}" "test-user" "${instruction}" || exit_code=$?
+
+  if [ "${expect}" = "skip" ]; then
+    if [ "${exit_code}" -ne 0 ] \
+      || ! grep -q "skipping rebase onto origin/agent/99-test-fix to preserve the agent rebase onto the target" "${stdout_log}" \
+      || [ "$(git --git-dir="${base}/remote.git" show refs/heads/agent/99-test-fix:file.txt)" != "pr-a resolved" ]; then
+      echo "FAIL: ${test_name} — expected the authorized rebase to be published (exit ${exit_code})"
+      cat "${stdout_log}"
+      FAILURES=$((FAILURES + 1))
+      return
+    fi
+  elif ! check_unauthorized_rebase_fail_fast "${test_name}" "${exit_code}" "${stdout_log}" "${base}" "${real_a}"; then
     FAILURES=$((FAILURES + 1))
     return
   fi
@@ -4867,6 +4968,10 @@ run_push_rebase_reconstructed_target_advanced_test
 run_push_rebase_bot_trigger_ignores_marker_test
 run_push_rebase_human_non_rebase_instruction_ignores_marker_test
 run_push_rebase_human_rebase_request_skips_stale_reconstruction_test
+run_push_rebase_conflicting_replay_test "push-rebase-conflict-typo-request-skips" \
+  "resolve the merge confilcts" "skip"
+run_push_rebase_conflicting_replay_test "push-rebase-unauthorized-rebase-fails-fast" \
+  "please update the branch" "fail-fast"
 run_push_rebase_preserves_agent_rebase_after_validation_retry_test
 run_push_history_rewrite_preserves_squash_test
 run_push_history_rewrite_refuses_partial_squash_test
@@ -5364,9 +5469,9 @@ JSONEOF
 # rebased_onto_target flag alone when the runner-computed strategy is the
 # conservative default "merge" and no human explicitly asked for a rebase.
 # Same fixture as run_push_preserves_forge_conflict_rebase_test, but without
-# a "rebase" strategy override — the skip must not fire, so the replay onto
-# the stale remote PR tip (origin/BRANCH) proceeds and the new main tip is
-# NOT what the pushed branch ends up based on.
+# a "rebase" strategy override — the skip must not fire, and (issue #2054)
+# the run fails fast instead of replaying onto the stale remote PR tip
+# (origin/BRANCH), so the remote branch is never based on the new main tip.
 run_push_forge_conflict_rebase_requires_strategy_test() {
   local test_name="push-forge-conflict-rebase-requires-strategy"
   local base="${PUSH_REBASE_TMPDIR}/${test_name}"
@@ -5434,12 +5539,6 @@ JSONEOF
   run_push_rebase_postfix_with_mergeable "CONFLICTING" "${base}" "${stdout_log}" \
     "${PUSH_REBASE_MOCK_BIN}" "fullsend-ai-review[bot]" || exit_code=$?
 
-  if [ "${exit_code}" -ne 0 ]; then
-    echo "FAIL: ${test_name} — exit code ${exit_code}"
-    cat "${stdout_log}"
-    FAILURES=$((FAILURES + 1))
-    return
-  fi
   if grep -q "after a forge-conflict rebase" "${stdout_log}"; then
     echo "FAIL: ${test_name} — strategy=merge must not authorize the rebase-skip"
     cat "${stdout_log}"
@@ -5453,10 +5552,8 @@ JSONEOF
     FAILURES=$((FAILURES + 1))
     return
   fi
-  if ! git --git-dir="${base}/remote.git" merge-base --is-ancestor \
-       "${remote_pr_tip}" refs/heads/agent/99-test-fix; then
-    echo "FAIL: ${test_name} — pushed branch does not replay onto the stale remote PR tip"
-    cat "${stdout_log}"
+  # Issue #2054: fail fast rather than replay onto the stale remote PR tip.
+  if ! check_unauthorized_rebase_fail_fast "${test_name}" "${exit_code}" "${stdout_log}" "${base}" "${remote_pr_tip}"; then
     FAILURES=$((FAILURES + 1))
     return
   fi
@@ -5476,9 +5573,8 @@ JSONEOF
 # would force-with-lease push local HEAD, permanently dropping "real A" from
 # the remote. With the fix, the preservation check fails (no ancestor,
 # tree, or patch-id match for "real A" in target..HEAD), so the skip must
-# not fire — the run falls through to the safe fetch+rebase replay onto
-# origin/${BRANCH}, which still preserves "real A" because it becomes the
-# new base.
+# not fire — and (issue #2054) the run fails fast before any replay onto
+# origin/${BRANCH}, leaving "real A" untouched on the remote.
 run_push_forge_conflict_rebased_onto_target_requires_preservation_test() {
   local test_name="push-forge-conflict-rebased-onto-target-requires-preservation"
   local base="${PUSH_REBASE_TMPDIR}/${test_name}"
@@ -5550,22 +5646,15 @@ JSONEOF
     run_push_rebase_postfix_with_mergeable "CONFLICTING" "${base}" "${stdout_log}" \
     "${PUSH_REBASE_MOCK_BIN}" "fullsend-ai-review[bot]" "" "rebase" || exit_code=$?
 
-  if [ "${exit_code}" -ne 0 ]; then
-    echo "FAIL: ${test_name} — exit code ${exit_code}"
-    cat "${stdout_log}"
-    FAILURES=$((FAILURES + 1))
-    return
-  fi
   if grep -q "after a forge-conflict rebase" "${stdout_log}"; then
     echo "FAIL: ${test_name} — rebase-skip fired without proving real A's commit was preserved"
     cat "${stdout_log}"
     FAILURES=$((FAILURES + 1))
     return
   fi
-  if ! git --git-dir="${base}/remote.git" merge-base --is-ancestor \
-       "${real_a}" refs/heads/agent/99-test-fix; then
-    echo "FAIL: ${test_name} — pushed branch is missing the PR's own commit (real A) — it was dropped"
-    git --git-dir="${base}/remote.git" log --oneline refs/heads/agent/99-test-fix
+  # Issue #2054: fail fast; the remote still points at real A, so it was
+  # not dropped.
+  if ! check_unauthorized_rebase_fail_fast "${test_name}" "${exit_code}" "${stdout_log}" "${base}" "${real_a}"; then
     FAILURES=$((FAILURES + 1))
     return
   fi

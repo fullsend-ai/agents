@@ -1164,6 +1164,21 @@ if [ "${NO_PUSH}" = "false" ]; then
       SKIP_REMOTE_REBASE=true
       echo "origin/${BRANCH} is already an ancestor of local HEAD — skipping rebase onto origin/${BRANCH} (push is a fast-forward)"
     fi
+    # Unauthorized agent rebase (issue #2054): the agent recorded
+    # rebased_onto_target and HEAD contains the target tip that the remote PR
+    # tip lacks, but no skip above authorized publishing that rebase.
+    # Replaying origin/${BRANCH}..HEAD onto the stale remote tip would then
+    # re-apply the target branch's own commits onto the PR: it either
+    # conflicts (and the failure would wrongly blame the remote branch) or
+    # silently inflates the PR with target-side commits. Fail fast instead.
+    if [ "${SKIP_REMOTE_REBASE}" = "false" ] \
+      && [ "${AGENT_REBASED_ONTO_TARGET}" = "true" ] \
+      && git merge-base --is-ancestor "origin/${TARGET_BRANCH}" HEAD 2>/dev/null \
+      && ! git merge-base --is-ancestor "origin/${TARGET_BRANCH}" "origin/${BRANCH}" 2>/dev/null; then
+      UNAUTHORIZED_REBASE_MSG="Agent rebased onto target branch (${TARGET_BRANCH}), but runner authorization checks failed (HUMAN_REBASE_REQUESTED=${HUMAN_REBASE_REQUESTED}, FORGE_PR_HAS_CONFLICT=${FORGE_PR_HAS_CONFLICT}, FIX_CONFLICT_STRATEGY=${FIX_CONFLICT_STRATEGY}). Pre-push replay onto origin/${BRANCH} aborted to prevent merge collision."
+      gha_echo error "${UNAUTHORIZED_REBASE_MSG}" >&2
+      post_fail_to_pr push-rejected "${UNAUTHORIZED_REBASE_MSG}"
+    fi
     if [ "${SKIP_REMOTE_REBASE}" = "false" ]; then
       echo "Rebasing local ${BRANCH} onto origin/${BRANCH}..."
       REBASE_OUTPUT="$(git rebase "origin/${BRANCH}" 2>&1)" && REBASE_RC=0 || REBASE_RC=$?
