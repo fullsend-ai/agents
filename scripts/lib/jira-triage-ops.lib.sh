@@ -408,6 +408,8 @@ tracker_close_issue() {
   fi
 
   local rejection_re="won.?t (do|fix|implement)|not.?planned|duplicate|obsolete|reject|cancel|invalid|cannot reproduce|abandon|declin|defer|not a bug|as designed|out of scope"
+  local dup_name="${JIRA_DUPLICATE_TRANSITION:-}"
+  local not_planned_name="${JIRA_NOT_PLANNED_TRANSITION:-}"
 
   # Idempotency pre-flight: check if the issue is already in the matching terminal status.
   local current_status_json current_category="" current_status_name="" current_resolution_name=""
@@ -427,8 +429,6 @@ tracker_close_issue() {
       fi
 
       local is_rejection_status=${is_rejection_resolution}
-      local dup_name="${JIRA_DUPLICATE_TRANSITION:-}"
-      local not_planned_name="${JIRA_NOT_PLANNED_TRANSITION:-}"
       if echo "${current_status_name}" | grep -qiE "${rejection_re}"; then
         is_rejection_status=1
       elif [[ -n "${dup_name}" && "${dup_name,,}" != "${transition_name,,}" && "${current_status_name,,}" == "${dup_name,,}" ]]; then
@@ -465,9 +465,15 @@ tracker_close_issue() {
   # Fallback resolution when configured transition name is not directly available
   local fallback_resolution_name=""
   if [[ -z "${transition_id}" ]]; then
+    if [[ "${reason}" == "split" && "${current_category:-}" == "done" && -n "${current_status_name:-}" ]]; then
+      if ! { [[ -n "${dup_name}" && "${dup_name,,}" != "${transition_name,,}" && "${current_status_name,,}" == "${dup_name,,}" ]]; } \
+        && ! { [[ -n "${not_planned_name}" && "${not_planned_name,,}" != "${transition_name,,}" && "${current_status_name,,}" == "${not_planned_name,,}" ]]; }; then
+        echo "Issue ${ISSUE_NUMBER} is already in status '${current_status_name}' (done); skipping transition for reason '${reason}'"
+        return 0
+      fi
+    fi
+
     if [[ "${reason}" == "completed" || "${reason}" == "split" ]]; then
-      local dup_name="${JIRA_DUPLICATE_TRANSITION:-}"
-      local not_planned_name="${JIRA_NOT_PLANNED_TRANSITION:-}"
       local fallback_json
       fallback_json=$(echo "${transitions}" | jq -c \
         --arg dup "${dup_name}" \
@@ -477,8 +483,7 @@ tracker_close_issue() {
         def is_positive_resolution:
           test("^(done|fixed|resolved|completed?)$"; "i");
         def positive_res_name($t):
-          if ($t.fields?.resolution? == null) then ""
-          elif (($t.fields.resolution.allowedValues // []) | length) == 0 then "Done"
+          if ($t.fields?.resolution? == null) or ((($t.fields.resolution.allowedValues // []) | length) == 0) then ""
           else
             (
               [$t.fields.resolution.allowedValues[]?.name? | strings | select((test($reject_re; "i") | not) and is_positive_resolution)]
@@ -492,7 +497,7 @@ tracker_close_issue() {
             ((.fields? // {}) | type == "object" and length > 0)
             and (([.fields | to_entries[] | select(.key != "resolution" and (.value.required // false) == true)] | length) == 0)
             and (
-              if (.fields.resolution?.required? // false) and (((.fields.resolution.allowedValues // []) | length) > 0) then
+              if (.fields.resolution?.required? // false) then
                 (positive_res_name(.) != "")
               else
                 true

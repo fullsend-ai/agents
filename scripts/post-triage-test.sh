@@ -2579,6 +2579,34 @@ else
   echo "PASS: jira-completed-fallback-screen-required-customfield-skipped-error"
 fi
 
+# Jira completed fallback treats hasScreen: true with required resolution and empty/missing allowedValues as ineligible (never guesses "Done").
+MOCK_JIRA_TRANSITIONS='{"transitions":[{"id":"74","name":"Resolve Empty Allowed","hasScreen":true,"fields":{"resolution":{"required":true,"allowedValues":[]}},"to":{"name":"Resolved","statusCategory":{"key":"done"}}},{"id":"75","name":"Resolve Missing Allowed","hasScreen":true,"fields":{"resolution":{"required":true}},"to":{"name":"Done","statusCategory":{"key":"done"}}}]}' \
+JIRA_COMPLETED_TRANSITION="NonExistent" \
+run_jira_test "jira-completed-fallback-screen-required-res-empty-allowed-skipped" \
+  '{"action":"completed","reasoning":"all child issues are closed","comment":"All tracked work is done."}' \
+  "" true
+
+# Jira completed fallback omits fields.resolution when hasScreen: true has optional resolution with empty allowedValues.
+MOCK_JIRA_TRANSITIONS='{"transitions":[{"id":"76","name":"Resolve Optional Res","hasScreen":true,"fields":{"resolution":{"required":false,"allowedValues":[]}},"to":{"name":"Resolved","statusCategory":{"key":"done"}}}]}' \
+JIRA_COMPLETED_TRANSITION="NonExistent" \
+run_jira_test "jira-completed-fallback-screen-optional-res-empty-allowed-omits-res" \
+  '{"action":"completed","reasoning":"all child issues are closed","comment":"All tracked work is done."}' \
+  '{"transition":{"id":"76"}}'
+
+# Jira completed fallback selects an instance-valid positive resolution (e.g. "Fixed") when "Done" is absent from allowedValues.
+MOCK_JIRA_TRANSITIONS='{"transitions":[{"id":"77","name":"Resolve Issue","hasScreen":true,"fields":{"resolution":{"required":true,"allowedValues":[{"id":"10001","name":"Won'\''t Fix"},{"id":"10002","name":"Fixed"}]}},"to":{"name":"Resolved","statusCategory":{"key":"done"}}}]}' \
+JIRA_COMPLETED_TRANSITION="NonExistent" \
+run_jira_test "jira-completed-fallback-screen-non-done-resolution" \
+  '{"action":"completed","reasoning":"all child issues are closed","comment":"All tracked work is done."}' \
+  '{"transition":{"id":"77"},"fields":{"resolution":{"name":"Fixed"}}}'
+
+# Jira completed fallback parses live Jira Cloud expand=transitions.fields shape (with non-required screen fields, Release Pending vs Closed).
+MOCK_JIRA_TRANSITIONS='{"expand":"transitions","transitions":[{"id":"41","name":"In Progress","hasScreen":false,"isGlobal":true,"isConditional":false,"to":{"id":"3","name":"In Progress","statusCategory":{"id":4,"key":"indeterminate","name":"In Progress"}},"fields":{}},{"id":"131","name":"Release Pending","hasScreen":true,"isGlobal":true,"isConditional":false,"to":{"id":"10158","name":"Release Pending","statusCategory":{"id":3,"key":"done","name":"Done"}},"fields":{"issuelinks":{"required":false,"name":"Linked Issues"},"assignee":{"required":false,"name":"Assignee"},"resolution":{"required":true,"name":"Resolution","allowedValues":[{"id":"10000","name":"Done"},{"id":"10001","name":"Won'\''t Do"}]}}},{"id":"61","name":"Closed","hasScreen":true,"isGlobal":true,"isConditional":false,"to":{"id":"6","name":"Closed","statusCategory":{"id":3,"key":"done","name":"Done"}},"fields":{"issuelinks":{"required":false,"name":"Linked Issues"},"assignee":{"required":false,"name":"Assignee"},"customfield_10015":{"required":false,"name":"Start date"},"resolution":{"required":true,"name":"Resolution","allowedValues":[{"id":"10000","name":"Done"},{"id":"10001","name":"Won'\''t Do"},{"id":"10002","name":"Duplicate"}]}}}]}' \
+JIRA_COMPLETED_TRANSITION="NonExistent" \
+run_jira_test "jira-completed-fallback-live-cloud-shape" \
+  '{"action":"completed","reasoning":"all child issues are closed","comment":"All tracked work is done."}' \
+  '{"transition":{"id":"61"},"fields":{"resolution":{"name":"Done"}}}'
+
 # Jira duplicate action does NOT skip when issue is in a different rejection status (Won't Do).
 MOCK_JIRA_STATUS_REJECTED=1 \
 run_jira_test "jira-duplicate-on-wont-do-transitions" \
@@ -2712,6 +2740,39 @@ if grep -qE "POST .*/transitions" "${JIRA_CURL_LOG}"; then
 else
   echo "PASS: jira-split-idempotent-obsolete-to-name-with-res-no-post"
 fi
+
+# Jira split re-run skips idempotently when transition name differs from status name
+# (e.g. JIRA_SPLIT_TRANSITION='Mark Obsolete', current status 'Obsolete') and no self-transition is offered.
+JIRA_SPLIT_TRANSITION="Mark Obsolete" \
+MOCK_JIRA_STATUS_DONE=1 \
+MOCK_JIRA_STATUS_NAME="Obsolete" \
+MOCK_JIRA_ISSUE_RESOLUTION="Obsolete" \
+MOCK_JIRA_TRANSITIONS='{"transitions":[{"id":"51","name":"Done","to":{"name":"Done","statusCategory":{"key":"done"}}}]}' \
+run_jira_test_stdout "jira-split-idempotent-mark-obsolete-no-self-transition" \
+  '{"action":"split","reasoning":"already split previously","sub_issues":[{"title":"Feature A","body":"Do A"},{"title":"Feature B","body":"Do B"}],"comment":"Splitting into two sub-issues."}' \
+  "is already in status 'Obsolete' (done); skipping transition for reason 'split'"
+if grep -qE "POST .*/transitions" "${JIRA_CURL_LOG}"; then
+  echo "FAIL: jira-split-idempotent-mark-obsolete-no-self-transition — expected no transition POST (must not fall back to Done)"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: jira-split-idempotent-mark-obsolete-no-self-transition-no-post"
+fi
+if grep -qF "::warning::" "${TMPDIR}/stdout.log"; then
+  echo "FAIL: jira-split-idempotent-mark-obsolete-no-self-transition — unexpected fallback warning"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: jira-split-idempotent-mark-obsolete-no-self-transition-no-warning"
+fi
+
+# Jira split on an issue currently in JIRA_DUPLICATE_TRANSITION ('Duplicate') does NOT skip
+# when JIRA_SPLIT_TRANSITION ('Mark Obsolete') is unavailable; it still falls back to Done.
+JIRA_SPLIT_TRANSITION="Mark Obsolete" \
+MOCK_JIRA_STATUS_DONE=1 \
+MOCK_JIRA_STATUS_NAME="Duplicate" \
+MOCK_JIRA_TRANSITIONS='{"transitions":[{"id":"51","name":"Done","to":{"name":"Done","statusCategory":{"key":"done"}}}]}' \
+run_jira_test "jira-split-on-duplicate-status-not-skipped" \
+  '{"action":"split","reasoning":"re-triaging duplicate as split","sub_issues":[{"title":"Feature A","body":"Do A"},{"title":"Feature B","body":"Do B"}],"comment":"Splitting into two sub-issues."}' \
+  '{"transition":{"id":"51"}}'
 
 # Jira split action falls back to Done when configured Obsolete transition is unavailable.
 JIRA_SPLIT_TRANSITION="Obsolete" \
