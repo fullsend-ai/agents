@@ -1682,7 +1682,9 @@ TRIAGE_STATE_FOLD_RE='(?i)<(?=summary\b[^>]*>(?:\s|&nbsp;|&#x?[0-9a-f]+;|<[^>]*>
 # result has no open cause. Over TRIAGE_STATE_MAX_CHARS (measured escaped)
 # it never drops a cause: it empties ruled-out evidence, then open evidence,
 # then cuts cause text (whole characters only), and fails, so nothing is
-# posted, if the names alone still do not fit.
+# posted, if the names alone still do not fit. The evidence of an "Other
+# open candidates" entry (agents/triage.md) names the causes past the ninth,
+# so it is never emptied or cut: those names are causes too.
 triage_state_json() {
   jq -c '
     def text($n):
@@ -1707,7 +1709,7 @@ triage_state_json() {
       if fits then . else
         .ruled_out |= map(.evidence = "")
         | if fits then . else
-            .open_causes |= map(.evidence = "")
+            .open_causes |= map(if .cause == "Other open candidates" then . else .evidence = "" end)
             | if fits then . else
                 . as $bare
                 | ([600, 400, 300, 200, 120, 80, 40]
