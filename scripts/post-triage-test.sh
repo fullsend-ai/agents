@@ -2622,12 +2622,13 @@ run_jira_test_stdout "jira-completed-idempotent-done" \
   '{"action":"completed","reasoning":"all child issues are closed","comment":"All tracked work is done."}' \
   "is already in status 'Done' (done); skipping transition"
 
-# Jira completed action does not skip if issue is currently in Done status "Closed" with a rejection resolution (e.g. "Won't Fix").
+# Jira completed action does not skip on the generic Done-category check if the issue is in a
+# non-target Done status ("Done", while JIRA_COMPLETED_TRANSITION="Closed") with a rejection resolution ("Won't Fix").
 MOCK_JIRA_STATUS_DONE=1 \
-MOCK_JIRA_STATUS_NAME="Closed" \
+MOCK_JIRA_STATUS_NAME="Done" \
 MOCK_JIRA_ISSUE_RESOLUTION="Won't Fix" \
-run_jira_test "jira-completed-preflight-closed-wont-fix-not-satisfied" \
-  '{"action":"completed","reasoning":"re-completing closed wont-fix issue","comment":"All tracked work is done."}' \
+run_jira_test "jira-completed-preflight-done-wont-fix-not-satisfied" \
+  '{"action":"completed","reasoning":"re-completing done wont-fix issue","comment":"All tracked work is done."}' \
   '{"transition":{"id":"61"}}'
 
 # Jira completed action does not skip if issue is currently in a rejection status (e.g. Won't Do).
@@ -2653,6 +2654,63 @@ if grep -qE "POST .*/transitions" "${JIRA_CURL_LOG}"; then
   FAILURES=$((FAILURES + 1))
 else
   echo "PASS: jira-split-idempotent-obsolete-no-transition-post"
+fi
+
+# Jira split re-run on issue already in status Obsolete with resolution Obsolete skips
+# idempotently when the workflow offers an Obsolete self-transition (no duplicate POST).
+JIRA_SPLIT_TRANSITION="Obsolete" \
+MOCK_JIRA_STATUS_DONE=1 \
+MOCK_JIRA_STATUS_NAME="Obsolete" \
+MOCK_JIRA_ISSUE_RESOLUTION="Obsolete" \
+MOCK_JIRA_TRANSITIONS='{"transitions":[{"id":"71","name":"Obsolete","to":{"name":"Obsolete","statusCategory":{"key":"done"}}},{"id":"51","name":"Done","to":{"name":"Done","statusCategory":{"key":"done"}}}]}' \
+run_jira_test_stdout "jira-split-idempotent-obsolete-res-with-self-transition" \
+  '{"action":"split","reasoning":"already split previously","sub_issues":[{"title":"Feature A","body":"Do A"},{"title":"Feature B","body":"Do B"}],"comment":"Splitting into two sub-issues."}' \
+  "is already in status 'Obsolete' (done); skipping transition for reason 'split'"
+if grep -qE "POST .*/transitions" "${JIRA_CURL_LOG}"; then
+  echo "FAIL: jira-split-idempotent-obsolete-res-with-self-transition — expected no transition POST when already Obsolete (resolution Obsolete)"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: jira-split-idempotent-obsolete-res-with-self-transition-no-post"
+fi
+
+# Jira split re-run on issue already in status Obsolete with resolution Obsolete skips
+# idempotently when no self-transition is offered (must not fall back to Done).
+JIRA_SPLIT_TRANSITION="Obsolete" \
+MOCK_JIRA_STATUS_DONE=1 \
+MOCK_JIRA_STATUS_NAME="Obsolete" \
+MOCK_JIRA_ISSUE_RESOLUTION="Obsolete" \
+MOCK_JIRA_TRANSITIONS='{"transitions":[{"id":"51","name":"Done","to":{"name":"Done","statusCategory":{"key":"done"}}}]}' \
+run_jira_test_stdout "jira-split-idempotent-obsolete-res-without-self-transition" \
+  '{"action":"split","reasoning":"already split previously","sub_issues":[{"title":"Feature A","body":"Do A"},{"title":"Feature B","body":"Do B"}],"comment":"Splitting into two sub-issues."}' \
+  "is already in status 'Obsolete' (done); skipping transition for reason 'split'"
+if grep -qE "POST .*/transitions" "${JIRA_CURL_LOG}"; then
+  echo "FAIL: jira-split-idempotent-obsolete-res-without-self-transition — expected no transition POST (no Done fallback)"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: jira-split-idempotent-obsolete-res-without-self-transition-no-post"
+fi
+if grep -qF "::warning::" "${TMPDIR}/stdout.log"; then
+  echo "FAIL: jira-split-idempotent-obsolete-res-without-self-transition — unexpected fallback warning"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: jira-split-idempotent-obsolete-res-without-self-transition-no-warning"
+fi
+
+# Jira split re-run skips idempotently via .to.name when transition name differs from status
+# name (e.g. "Mark Obsolete" -> "Obsolete") even when resolution is Obsolete.
+JIRA_SPLIT_TRANSITION="Mark Obsolete" \
+MOCK_JIRA_STATUS_DONE=1 \
+MOCK_JIRA_STATUS_NAME="Obsolete" \
+MOCK_JIRA_ISSUE_RESOLUTION="Obsolete" \
+MOCK_JIRA_TRANSITIONS='{"transitions":[{"id":"71","name":"Mark Obsolete","to":{"name":"Obsolete","statusCategory":{"key":"done"}}},{"id":"51","name":"Done","to":{"name":"Done","statusCategory":{"key":"done"}}}]}' \
+run_jira_test_stdout "jira-split-idempotent-obsolete-to-name-with-res" \
+  '{"action":"split","reasoning":"already split previously","sub_issues":[{"title":"Feature A","body":"Do A"},{"title":"Feature B","body":"Do B"}],"comment":"Splitting into two sub-issues."}' \
+  "is already in target status 'Obsolete' (done); skipping transition for reason 'split'"
+if grep -qE "POST .*/transitions" "${JIRA_CURL_LOG}"; then
+  echo "FAIL: jira-split-idempotent-obsolete-to-name-with-res — expected no transition POST when .to.name matches current status"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: jira-split-idempotent-obsolete-to-name-with-res-no-post"
 fi
 
 # Jira split action falls back to Done when configured Obsolete transition is unavailable.

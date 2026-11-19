@@ -1395,10 +1395,8 @@ tracker_close_issue() {
     fi
     if [[ "${current_category}" == "done" ]]; then
       if [[ -n "${current_status_name}" && "${current_status_name,,}" == "${transition_name,,}" ]]; then
-        if [[ ( "${reason}" != "completed" && "${reason}" != "split" ) || ${is_rejection_resolution} -eq 0 ]]; then
-          echo "Issue ${ISSUE_NUMBER} is already in status '${current_status_name}' (${current_category}); skipping transition for reason '${reason}'"
-          return 0
-        fi
+        echo "Issue ${ISSUE_NUMBER} is already in status '${current_status_name}' (${current_category}); skipping transition for reason '${reason}'"
+        return 0
       fi
 
       local is_rejection_status=${is_rejection_resolution}
@@ -1430,12 +1428,10 @@ tracker_close_issue() {
   transition_id=$(echo "${transitions}" | jq -r --arg name "${transition_name}" \
     '[.transitions[] | select(.name == $name)][0].id // empty')
   if [[ -n "${transition_id}" && "${current_category:-}" == "done" && -n "${current_status_name:-}" ]]; then
-    if [[ ( "${reason}" != "completed" && "${reason}" != "split" ) || ${is_rejection_resolution} -eq 0 ]]; then
-      target_status_name=$(echo "${transitions}" | jq -r --arg id "${transition_id}" '.transitions[] | select(.id == $id) | (.to.name // empty)')
-      if [[ -n "${target_status_name}" && "${target_status_name,,}" == "${current_status_name,,}" ]]; then
-        echo "Issue ${ISSUE_NUMBER} is already in target status '${current_status_name}' (done); skipping transition for reason '${reason}'"
-        return 0
-      fi
+    target_status_name=$(echo "${transitions}" | jq -r --arg id "${transition_id}" '.transitions[] | select(.id == $id) | (.to.name // empty)')
+    if [[ -n "${target_status_name}" && "${target_status_name,,}" == "${current_status_name,,}" ]]; then
+      echo "Issue ${ISSUE_NUMBER} is already in target status '${current_status_name}' (done); skipping transition for reason '${reason}'"
+      return 0
     fi
   fi
 
