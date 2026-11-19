@@ -51,7 +51,7 @@ FULLSEND_TRACKER="${FULLSEND_TRACKER:-${FULLSEND_FORGE:-}}"
 # shellcheck disable=SC2034 # SCRIPT_DIR used by source in .src.sh; unused in bundled .sh
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/triage-ops.lib.sh
-# BEGIN bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/triage-ops.lib.sh
+# BEGIN bundled: lib/triage-ops.lib.sh
 # shellcheck shell=bash
 # triage-ops.lib.sh — Tracker-dispatch wrapper for triage operations.
 #
@@ -68,7 +68,7 @@ FULLSEND_TRACKER="${FULLSEND_TRACKER:-${FULLSEND_FORGE:-}}"
 
 case "${FULLSEND_TRACKER:-}" in
   github)
-# BEGIN bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/github-triage-ops.lib.sh
+# BEGIN bundled: lib/github-triage-ops.lib.sh
 # shellcheck shell=bash
 # github-triage-ops.lib.sh — GitHub forge operations for triage scripts.
 #
@@ -261,10 +261,10 @@ tracker_dispatch_triage() {
   ISSUE_NUMBER="${saved_number}"
   return "${rc}"
 }
-# END bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/github-triage-ops.lib.sh
+# END bundled: lib/github-triage-ops.lib.sh
     ;;
   gitlab)
-# BEGIN bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/gitlab-triage-ops.lib.sh
+# BEGIN bundled: lib/gitlab-triage-ops.lib.sh
 # shellcheck shell=bash
 # gitlab-triage-ops.lib.sh — GitLab forge operations for triage scripts.
 #
@@ -300,7 +300,7 @@ tracker_dispatch_triage() {
 GITLAB_TRIAGE_OPS_SH_LOADED=1
 
 # shellcheck source=gitlab-host-validation.lib.sh
-# BEGIN bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/gitlab-host-validation.lib.sh
+# BEGIN bundled: lib/gitlab-host-validation.lib.sh
 # shellcheck shell=bash
 # gitlab-host-validation.lib.sh — Shared host validation for GitLab ops.
 #
@@ -367,7 +367,7 @@ _validate_gitlab_origin() {
     return 1
   fi
 }
-# END bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/gitlab-host-validation.lib.sh
+# END bundled: lib/gitlab-host-validation.lib.sh
 
 _gitlab_api() {
   local method="$1"
@@ -671,10 +671,10 @@ tracker_dispatch_triage() {
   ISSUE_NUMBER="${saved_number}"
   return "${rc}"
 }
-# END bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/gitlab-triage-ops.lib.sh
+# END bundled: lib/gitlab-triage-ops.lib.sh
     ;;
   jira)
-# BEGIN bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/jira-triage-ops.lib.sh
+# BEGIN bundled: lib/jira-triage-ops.lib.sh
 # shellcheck shell=bash
 # jira-triage-ops.lib.sh — Jira Cloud tracker operations for triage scripts.
 #
@@ -743,7 +743,7 @@ JIRA_TRIAGE_OPS_SH_LOADED=1
 # ISSUE_URL and FULLSEND_TRACKER.
 # JIRA_USER_EMAIL is optional: without it, requests use Bearer auth.
 # shellcheck source=jira-auth.lib.sh
-# BEGIN bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/jira-auth.lib.sh
+# BEGIN bundled: lib/jira-auth.lib.sh
 # shellcheck shell=bash
 # jira-auth.lib.sh — Jira credential-mode selection for host-side scripts.
 #
@@ -1031,7 +1031,7 @@ jira_auth_fullsend() {
     )
   fi
 }
-# END bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/jira-auth.lib.sh
+# END bundled: lib/jira-auth.lib.sh
 jira_auth_select "${JIRA_TOKEN:-}" FULLSEND_JIRA_CLIENT_ID FULLSEND_JIRA_CLIENT_SECRET || exit 1
 if [[ "${JIRA_AUTH_MODE}" == "none" ]]; then
   echo "ERROR: JIRA_TOKEN must be set, or FULLSEND_JIRA_CLIENT_ID and FULLSEND_JIRA_CLIENT_SECRET" >&2
@@ -1618,7 +1618,7 @@ tracker_dispatch_triage() {
   ISSUE_NUMBER="${saved_number}"
   return "${rc}"
 }
-# END bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/jira-triage-ops.lib.sh
+# END bundled: lib/jira-triage-ops.lib.sh
     ;;
   *)
     echo "ERROR: invalid FULLSEND_TRACKER: '${FULLSEND_TRACKER:-}' — pass --tracker <github|gitlab|jira> or set FULLSEND_TRACKER" >&2
@@ -1654,9 +1654,9 @@ triage_find_skip_label() {
   done <<< "${issue_labels}"
   return 1
 }
-# END bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/triage-ops.lib.sh
+# END bundled: lib/triage-ops.lib.sh
 # shellcheck source=lib/labels.lib.sh
-# BEGIN bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/labels.lib.sh
+# BEGIN bundled: lib/labels.lib.sh
 # labels.lib.sh — Mandatory label management for fullsend agent scripts.
 #
 # Provides forge_ensure_label() which creates mandatory dispatch labels
@@ -1705,7 +1705,7 @@ forge_ensure_label() {
   # description/color — mandatory labels are agent-managed.
   forge_create_label "${name}" "${description}" "${color}"
 }
-# END bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/labels.lib.sh
+# END bundled: lib/labels.lib.sh
 
 # Find the triage result JSON — prefer the validated iteration when set.
 # Trust boundary: FULLSEND_VALIDATED_ITERATION_DIR is set by the fullsend CLI

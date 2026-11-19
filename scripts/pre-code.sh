@@ -28,7 +28,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/prescript-output.lib.sh
-# BEGIN bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/prescript-output.lib.sh
+# BEGIN bundled: lib/prescript-output.lib.sh
 # prescript-output.lib.sh — Write pre-script output protocol lines.
 #
 # The pre-script output protocol (fullsend docs/normative/prescript-output/v1,
@@ -54,9 +54,9 @@ prescript_output() {
     printf '%s=%s\n' "$1" "$2" >> "${FULLSEND_PRESCRIPT_OUTPUT}"
   fi
 }
-# END bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/prescript-output.lib.sh
+# END bundled: lib/prescript-output.lib.sh
 # shellcheck source=lib/code-ops.lib.sh
-# BEGIN bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/code-ops.lib.sh
+# BEGIN bundled: lib/code-ops.lib.sh
 # shellcheck shell=bash
 # code-ops.lib.sh — Forge-dispatch wrapper for code agent operations.
 #
@@ -70,7 +70,7 @@ CODE_OPS_SH_LOADED=1
 # forge_retry_transient is defined for every forge (including callers in the
 # pre-code scripts that wrap commands outside the forge-specific libs).
 # shellcheck source=forge-transient-retry.lib.sh
-# BEGIN bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/forge-transient-retry.lib.sh
+# BEGIN bundled: lib/forge-transient-retry.lib.sh
 # forge-transient-retry.lib.sh — Retry forge CLI/API calls on 5xx/timeouts.
 #
 # Usage:
@@ -212,11 +212,11 @@ forge_retry_transient() {
 
   return 1
 }
-# END bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/forge-transient-retry.lib.sh
+# END bundled: lib/forge-transient-retry.lib.sh
 
 case "${FULLSEND_FORGE:-}" in
   github)
-# BEGIN bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/github-code-ops.lib.sh
+# BEGIN bundled: lib/github-code-ops.lib.sh
 # shellcheck shell=bash
 # github-code-ops.lib.sh — GitHub forge operations for code agent scripts.
 #
@@ -234,11 +234,11 @@ case "${FULLSEND_FORGE:-}" in
 GITHUB_CODE_OPS_SH_LOADED=1
 
 # shellcheck source=forge-transient-retry.lib.sh
-# (already bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/forge-transient-retry.lib.sh)
+# (already bundled: lib/forge-transient-retry.lib.sh)
 # forge_push_branch: a plain git push, or with GITHUB_SIGNED_COMMITS=true the
 # API publish that gets the commits signed by GitHub.
 # shellcheck source=github-signed-push.lib.sh
-# BEGIN bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/github-signed-push.lib.sh
+# BEGIN bundled: lib/github-signed-push.lib.sh
 # shellcheck shell=bash
 # github-signed-push.lib.sh — Publish local commits through the GitHub Git
 # Data API so GitHub signs them.
@@ -573,9 +573,9 @@ _forge_push_branch() {
   git config "branch.${branch}.merge" "refs/heads/${branch}" || return 1
   echo "Branch ${branch} is at ${tip} on origin"
 }
-# END bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/github-signed-push.lib.sh
+# END bundled: lib/github-signed-push.lib.sh
 # shellcheck source=github-host.lib.sh
-# BEGIN bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/github-host.lib.sh
+# BEGIN bundled: lib/github-host.lib.sh
 # shellcheck shell=bash
 # github-host.lib.sh — Shared GitHub host handling for GitHub ops.
 #
@@ -610,7 +610,7 @@ _github_url_path() {
   [[ "${url}" == "${base}"* ]] || return 1
   printf '%s\n' "${url#"${base}"}"
 }
-# END bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/github-host.lib.sh
+# END bundled: lib/github-host.lib.sh
 
 # --- URL handling ---
 
@@ -965,10 +965,10 @@ forge_append_path() {
   local dir="$1"
   echo "${dir}" >> "${GITHUB_PATH:-/dev/null}"
 }
-# END bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/github-code-ops.lib.sh
+# END bundled: lib/github-code-ops.lib.sh
     ;;
   gitlab)
-# BEGIN bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/gitlab-code-ops.lib.sh
+# BEGIN bundled: lib/gitlab-code-ops.lib.sh
 # shellcheck shell=bash
 # gitlab-code-ops.lib.sh — GitLab forge operations for code agent scripts.
 #
@@ -992,7 +992,7 @@ forge_append_path() {
 GITLAB_CODE_OPS_SH_LOADED=1
 
 # shellcheck source=gitlab-host-validation.lib.sh
-# BEGIN bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/gitlab-host-validation.lib.sh
+# BEGIN bundled: lib/gitlab-host-validation.lib.sh
 # shellcheck shell=bash
 # gitlab-host-validation.lib.sh — Shared host validation for GitLab ops.
 #
@@ -1059,9 +1059,9 @@ _validate_gitlab_origin() {
     return 1
   fi
 }
-# END bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/gitlab-host-validation.lib.sh
+# END bundled: lib/gitlab-host-validation.lib.sh
 # shellcheck source=forge-transient-retry.lib.sh
-# (already bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/forge-transient-retry.lib.sh)
+# (already bundled: lib/forge-transient-retry.lib.sh)
 
 if ! declare -F gha_echo >/dev/null 2>&1; then
   gha_echo() { echo "::${1}::${2:-}"; }
@@ -1648,14 +1648,14 @@ forge_append_path() {
   fi
   # On GitLab CI, PATH is modified directly (already done by caller)
 }
-# END bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/gitlab-code-ops.lib.sh
+# END bundled: lib/gitlab-code-ops.lib.sh
     ;;
   *)
     echo "ERROR: invalid FULLSEND_FORGE: '${FULLSEND_FORGE:-}' — pass --forge <github|gitlab> or set FULLSEND_FORGE" >&2
     exit 1
     ;;
 esac
-# END bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/code-ops.lib.sh
+# END bundled: lib/code-ops.lib.sh
 
 # Sanitize a value for safe interpolation into logged output. Strips ANSI
 # escapes, control chars, and newlines, and escapes :: and % so an

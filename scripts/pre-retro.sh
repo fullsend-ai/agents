@@ -20,7 +20,7 @@ set -euo pipefail
 # shellcheck disable=SC2034 # SCRIPT_DIR used by source in .src.sh; unused in bundled .sh
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/retro-ops.lib.sh
-# BEGIN bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/retro-ops.lib.sh
+# BEGIN bundled: lib/retro-ops.lib.sh
 # shellcheck shell=bash
 # retro-ops.lib.sh — Forge-dispatch wrapper for retro operations.
 #
@@ -34,7 +34,7 @@ _gha_sanitize() { printf '%s' "$1" | tr -d '\n\r' | sed 's/\x1b\[[0-9;]*[a-zA-Z]
 
 case "${FULLSEND_FORGE:-}" in
   github)
-# BEGIN bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/github-retro-ops.lib.sh
+# BEGIN bundled: lib/github-retro-ops.lib.sh
 # shellcheck shell=bash
 # github-retro-ops.lib.sh — GitHub forge operations for retro scripts.
 #
@@ -53,7 +53,7 @@ case "${FULLSEND_FORGE:-}" in
 GITHUB_RETRO_OPS_SH_LOADED=1
 
 # shellcheck source=github-host.lib.sh
-# BEGIN bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/github-host.lib.sh
+# BEGIN bundled: lib/github-host.lib.sh
 # shellcheck shell=bash
 # github-host.lib.sh — Shared GitHub host handling for GitHub ops.
 #
@@ -88,7 +88,7 @@ _github_url_path() {
   [[ "${url}" == "${base}"* ]] || return 1
   printf '%s\n' "${url#"${base}"}"
 }
-# END bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/github-host.lib.sh
+# END bundled: lib/github-host.lib.sh
 
 # --- URL handling ---
 
@@ -160,10 +160,10 @@ forge_post_comment() {
     "repos/${repo}/issues/${number}/comments" \
     --input - 2>&1
 }
-# END bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/github-retro-ops.lib.sh
+# END bundled: lib/github-retro-ops.lib.sh
     ;;
   gitlab)
-# BEGIN bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/gitlab-retro-ops.lib.sh
+# BEGIN bundled: lib/gitlab-retro-ops.lib.sh
 # shellcheck shell=bash
 # gitlab-retro-ops.lib.sh — GitLab forge operations for retro scripts.
 #
@@ -184,7 +184,7 @@ forge_post_comment() {
 GITLAB_RETRO_OPS_SH_LOADED=1
 
 # shellcheck source=gitlab-host-validation.lib.sh
-# BEGIN bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/gitlab-host-validation.lib.sh
+# BEGIN bundled: lib/gitlab-host-validation.lib.sh
 # shellcheck shell=bash
 # gitlab-host-validation.lib.sh — Shared host validation for GitLab ops.
 #
@@ -251,7 +251,7 @@ _validate_gitlab_origin() {
     return 1
   fi
 }
-# END bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/gitlab-host-validation.lib.sh
+# END bundled: lib/gitlab-host-validation.lib.sh
 
 _gitlab_api() {
   local method="$1"
@@ -383,14 +383,14 @@ forge_post_comment() {
   rm -f "${body_file}"
   return "${rc}"
 }
-# END bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/gitlab-retro-ops.lib.sh
+# END bundled: lib/gitlab-retro-ops.lib.sh
     ;;
   *)
     echo "ERROR: invalid FULLSEND_FORGE: '${FULLSEND_FORGE:-}' — set FULLSEND_FORGE to github or gitlab" >&2
     exit 1
     ;;
 esac
-# END bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/retro-ops.lib.sh
+# END bundled: lib/retro-ops.lib.sh
 
 forge_validate_originating_url
 

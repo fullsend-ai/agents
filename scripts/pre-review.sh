@@ -24,7 +24,7 @@ set -euo pipefail
 # shellcheck disable=SC2034 # SCRIPT_DIR used by source in .src.sh; unused in bundled .sh
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/prescript-output.lib.sh
-# BEGIN bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/prescript-output.lib.sh
+# BEGIN bundled: lib/prescript-output.lib.sh
 # prescript-output.lib.sh — Write pre-script output protocol lines.
 #
 # The pre-script output protocol (fullsend docs/normative/prescript-output/v1,
@@ -50,9 +50,9 @@ prescript_output() {
     printf '%s=%s\n' "$1" "$2" >> "${FULLSEND_PRESCRIPT_OUTPUT}"
   fi
 }
-# END bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/prescript-output.lib.sh
+# END bundled: lib/prescript-output.lib.sh
 # shellcheck source=lib/review-ops.lib.sh
-# BEGIN bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/review-ops.lib.sh
+# BEGIN bundled: lib/review-ops.lib.sh
 # shellcheck shell=bash
 # review-ops.lib.sh — Forge-dispatch wrapper for review operations.
 #
@@ -66,7 +66,7 @@ _gha_sanitize() { printf '%s' "$1" | tr -d '\n\r' | sed 's/\x1b\[[0-9;]*[a-zA-Z]
 
 case "${FULLSEND_FORGE:-}" in
   github)
-# BEGIN bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/github-review-ops.lib.sh
+# BEGIN bundled: lib/github-review-ops.lib.sh
 # shellcheck shell=bash
 # github-review-ops.lib.sh — GitHub forge operations for review scripts.
 #
@@ -85,7 +85,7 @@ case "${FULLSEND_FORGE:-}" in
 GITHUB_REVIEW_OPS_SH_LOADED=1
 
 # shellcheck source=github-host.lib.sh
-# BEGIN bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/github-host.lib.sh
+# BEGIN bundled: lib/github-host.lib.sh
 # shellcheck shell=bash
 # github-host.lib.sh — Shared GitHub host handling for GitHub ops.
 #
@@ -120,7 +120,7 @@ _github_url_path() {
   [[ "${url}" == "${base}"* ]] || return 1
   printf '%s\n' "${url#"${base}"}"
 }
-# END bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/github-host.lib.sh
+# END bundled: lib/github-host.lib.sh
 
 # --- URL handling ---
 
@@ -512,10 +512,10 @@ forge_add_label_edit() {
 forge_list_repo_labels() {
   GH_TOKEN="${REVIEW_TOKEN}" gh api "repos/${REPO}/labels" --paginate --jq '.[].name' 2>/dev/null || true
 }
-# END bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/github-review-ops.lib.sh
+# END bundled: lib/github-review-ops.lib.sh
     ;;
   gitlab)
-# BEGIN bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/gitlab-review-ops.lib.sh
+# BEGIN bundled: lib/gitlab-review-ops.lib.sh
 # shellcheck shell=bash
 # gitlab-review-ops.lib.sh — GitLab forge operations for review scripts.
 #
@@ -541,7 +541,7 @@ forge_list_repo_labels() {
 GITLAB_REVIEW_OPS_SH_LOADED=1
 
 # shellcheck source=gitlab-host-validation.lib.sh
-# BEGIN bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/gitlab-host-validation.lib.sh
+# BEGIN bundled: lib/gitlab-host-validation.lib.sh
 # shellcheck shell=bash
 # gitlab-host-validation.lib.sh — Shared host validation for GitLab ops.
 #
@@ -608,7 +608,7 @@ _validate_gitlab_origin() {
     return 1
   fi
 }
-# END bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/gitlab-host-validation.lib.sh
+# END bundled: lib/gitlab-host-validation.lib.sh
 
 _gitlab_api() {
   local method="$1"
@@ -819,7 +819,7 @@ forge_list_repo_labels() {
     page=$((page + 1))
   done
 }
-# END bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/gitlab-review-ops.lib.sh
+# END bundled: lib/gitlab-review-ops.lib.sh
     ;;
   *)
     echo "ERROR: invalid FULLSEND_FORGE: '${FULLSEND_FORGE:-}' — pass --forge <github|gitlab> or set FULLSEND_FORGE" >&2
@@ -929,7 +929,7 @@ forge_get_human_dismissals() {
     ]
   ' <<< "${response}" 2>/dev/null || echo '[]'
 }
-# END bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/review-ops.lib.sh
+# END bundled: lib/review-ops.lib.sh
 
 forge_validate_pr_url
 echo "::notice::🔗 Review target: $(_gha_sanitize "${PR_URL}")"

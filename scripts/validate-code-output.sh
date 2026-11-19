@@ -29,7 +29,7 @@
 set -euo pipefail
 
 # shellcheck source=lib/post-failure-report.lib.sh
-# BEGIN bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/post-failure-report.lib.sh
+# BEGIN bundled: lib/post-failure-report.lib.sh
 # post-failure-report.lib.sh — Categorized, sanitized failure comments for post-scripts.
 #
 # Source from post-code.src.sh / post-fix.src.sh:
@@ -43,7 +43,7 @@ set -euo pipefail
 POST_FAILURE_REPORT_SH_LOADED=1
 
 # shellcheck source=forge-transient-retry.lib.sh
-# BEGIN bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/forge-transient-retry.lib.sh
+# BEGIN bundled: lib/forge-transient-retry.lib.sh
 # forge-transient-retry.lib.sh — Retry forge CLI/API calls on 5xx/timeouts.
 #
 # Usage:
@@ -185,7 +185,7 @@ forge_retry_transient() {
 
   return 1
 }
-# END bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/forge-transient-retry.lib.sh
+# END bundled: lib/forge-transient-retry.lib.sh
 
 POST_FAILURE_CATEGORY="${POST_FAILURE_CATEGORY:-}"
 POST_FAILURE_DETAIL="${POST_FAILURE_DETAIL:-}"
@@ -700,9 +700,9 @@ post_fail_to_pr() {
   report_post_failure_to_pr 1
   exit 1
 }
-# END bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/post-failure-report.lib.sh
+# END bundled: lib/post-failure-report.lib.sh
 # shellcheck source=lib/gitleaks-install.lib.sh
-# BEGIN bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/gitleaks-install.lib.sh
+# BEGIN bundled: lib/gitleaks-install.lib.sh
 # gitleaks-install.lib.sh — Platform-aware gitleaks download and verification.
 #
 # Source from post-code.src.sh / post-fix.src.sh:
@@ -833,9 +833,9 @@ install_gitleaks() {
   export GITLEAKS_BIN
   export PATH="${install_dir}:${PATH}"
 }
-# END bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/gitleaks-install.lib.sh
+# END bundled: lib/gitleaks-install.lib.sh
 # shellcheck source=lib/precommit-gate.lib.sh
-# BEGIN bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/precommit-gate.lib.sh
+# BEGIN bundled: lib/precommit-gate.lib.sh
 # precommit-gate.lib.sh — Shared pre-commit gate for validation loop and post-scripts.
 #
 # Source from validate-code-output.src.sh / post-code.src.sh / post-fix.src.sh:
@@ -1310,7 +1310,7 @@ precommit_run_gate() {
   # shellcheck disable=SC2034
   PRECOMMIT_GATE_DETAIL="${_pg_output}"
 }
-# END bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/precommit-gate.lib.sh
+# END bundled: lib/precommit-gate.lib.sh
 
 # ============================================================================
 # Part 1: Schema validation (inline from validate-output-schema.sh)

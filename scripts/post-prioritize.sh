@@ -36,7 +36,7 @@ set -euo pipefail
 # shellcheck disable=SC2034
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/prioritize-ops.lib.sh
-# BEGIN bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/prioritize-ops.lib.sh
+# BEGIN bundled: lib/prioritize-ops.lib.sh
 # shellcheck shell=bash
 # prioritize-ops.lib.sh — Forge-dispatch wrapper for prioritize operations.
 #
@@ -50,7 +50,7 @@ _gha_sanitize() { printf '%s' "$1" | tr -d '\n\r' | sed 's/\x1b\[[0-9;]*[a-zA-Z]
 
 case "${FULLSEND_FORGE:-}" in
   github)
-# BEGIN bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/github-prioritize-ops.lib.sh
+# BEGIN bundled: lib/github-prioritize-ops.lib.sh
 # shellcheck shell=bash
 # github-prioritize-ops.lib.sh — GitHub forge operations for prioritize scripts.
 #
@@ -71,7 +71,7 @@ case "${FULLSEND_FORGE:-}" in
 GITHUB_PRIORITIZE_OPS_SH_LOADED=1
 
 # shellcheck source=github-api-csma.lib.sh
-# BEGIN bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/github-api-csma.lib.sh
+# BEGIN bundled: lib/github-api-csma.lib.sh
 # github-api-csma.lib.sh — CSMA/CD-style resilience for GitHub API calls via gh/fullsend.
 #
 # Source from post-prioritize.src.sh:
@@ -388,9 +388,9 @@ github_csma_run_cmd() {
 
   return 1
 }
-# END bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/github-api-csma.lib.sh
+# END bundled: lib/github-api-csma.lib.sh
 # shellcheck source=github-host.lib.sh
-# BEGIN bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/github-host.lib.sh
+# BEGIN bundled: lib/github-host.lib.sh
 # shellcheck shell=bash
 # github-host.lib.sh — Shared GitHub host handling for GitHub ops.
 #
@@ -425,7 +425,7 @@ _github_url_path() {
   [[ "${url}" == "${base}"* ]] || return 1
   printf '%s\n' "${url#"${base}"}"
 }
-# END bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/github-host.lib.sh
+# END bundled: lib/github-host.lib.sh
 
 # --- URL handling ---
 
@@ -550,10 +550,10 @@ forge_post_sticky_comment() {
     --token "${GH_TOKEN}" \
     --result - >/dev/null
 }
-# END bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/github-prioritize-ops.lib.sh
+# END bundled: lib/github-prioritize-ops.lib.sh
     ;;
   gitlab)
-# BEGIN bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/gitlab-prioritize-ops.lib.sh
+# BEGIN bundled: lib/gitlab-prioritize-ops.lib.sh
 # shellcheck shell=bash
 # gitlab-prioritize-ops.lib.sh — GitLab forge operations for prioritize scripts.
 #
@@ -574,7 +574,7 @@ forge_post_sticky_comment() {
 GITLAB_PRIORITIZE_OPS_SH_LOADED=1
 
 # shellcheck source=gitlab-host-validation.lib.sh
-# BEGIN bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/gitlab-host-validation.lib.sh
+# BEGIN bundled: lib/gitlab-host-validation.lib.sh
 # shellcheck shell=bash
 # gitlab-host-validation.lib.sh — Shared host validation for GitLab ops.
 #
@@ -641,7 +641,7 @@ _validate_gitlab_origin() {
     return 1
   fi
 }
-# END bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/gitlab-host-validation.lib.sh
+# END bundled: lib/gitlab-host-validation.lib.sh
 
 _gitlab_api() {
   local method="$1"
@@ -770,10 +770,10 @@ ${body}"
       || { echo "::warning::Failed to post comment" >&2; return 1; }
   fi
 }
-# END bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/gitlab-prioritize-ops.lib.sh
+# END bundled: lib/gitlab-prioritize-ops.lib.sh
     ;;
   jira)
-# BEGIN bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/jira-prioritize-ops.lib.sh
+# BEGIN bundled: lib/jira-prioritize-ops.lib.sh
 # shellcheck shell=bash
 # jira-prioritize-ops.lib.sh — Jira Cloud forge operations for prioritize.
 #
@@ -825,7 +825,7 @@ ${body}"
 JIRA_PRIORITIZE_OPS_SH_LOADED=1
 
 # shellcheck source=jira-auth.lib.sh
-# BEGIN bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/jira-auth.lib.sh
+# BEGIN bundled: lib/jira-auth.lib.sh
 # shellcheck shell=bash
 # jira-auth.lib.sh — Jira credential-mode selection for host-side scripts.
 #
@@ -1113,7 +1113,7 @@ jira_auth_fullsend() {
     )
   fi
 }
-# END bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/jira-auth.lib.sh
+# END bundled: lib/jira-auth.lib.sh
 
 _jira_require_vars() {
   if [[ -z "${JIRA_BASE_URL:-}" ]]; then
@@ -1491,14 +1491,14 @@ forge_post_sticky_comment() {
     --project "${REPO}" --number "${JIRA_ISSUE_NUM}" \
     --marker "${marker}" --result -
 }
-# END bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/jira-prioritize-ops.lib.sh
+# END bundled: lib/jira-prioritize-ops.lib.sh
     ;;
   *)
     echo "ERROR: invalid FULLSEND_FORGE: '${FULLSEND_FORGE:-}' — pass --forge <github|gitlab|jira> or set FULLSEND_FORGE" >&2
     exit 1
     ;;
 esac
-# END bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/prioritize-ops.lib.sh
+# END bundled: lib/prioritize-ops.lib.sh
 
 forge_validate_issue_url
 forge_parse_issue_url

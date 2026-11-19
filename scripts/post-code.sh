@@ -142,7 +142,7 @@ unset _tok_mask_xtrace
 
 SCRIPT_DIR_POST="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/git-graph-policy.lib.sh
-# BEGIN bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/git-graph-policy.lib.sh
+# BEGIN bundled: lib/git-graph-policy.lib.sh
 # shellcheck shell=bash
 # git-graph-policy.lib.sh — make Git read the object graph as stored, not as
 # rewritten.
@@ -182,9 +182,9 @@ git_graph_policy_init() {
   count=$((count + 1))
   export GIT_CONFIG_COUNT="${count}"
 }
-# END bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/git-graph-policy.lib.sh
+# END bundled: lib/git-graph-policy.lib.sh
 # shellcheck source=lib/post-failure-report.lib.sh
-# BEGIN bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/post-failure-report.lib.sh
+# BEGIN bundled: lib/post-failure-report.lib.sh
 # post-failure-report.lib.sh — Categorized, sanitized failure comments for post-scripts.
 #
 # Source from post-code.src.sh / post-fix.src.sh:
@@ -198,7 +198,7 @@ git_graph_policy_init() {
 POST_FAILURE_REPORT_SH_LOADED=1
 
 # shellcheck source=forge-transient-retry.lib.sh
-# BEGIN bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/forge-transient-retry.lib.sh
+# BEGIN bundled: lib/forge-transient-retry.lib.sh
 # forge-transient-retry.lib.sh — Retry forge CLI/API calls on 5xx/timeouts.
 #
 # Usage:
@@ -340,7 +340,7 @@ forge_retry_transient() {
 
   return 1
 }
-# END bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/forge-transient-retry.lib.sh
+# END bundled: lib/forge-transient-retry.lib.sh
 
 POST_FAILURE_CATEGORY="${POST_FAILURE_CATEGORY:-}"
 POST_FAILURE_DETAIL="${POST_FAILURE_DETAIL:-}"
@@ -855,9 +855,9 @@ post_fail_to_pr() {
   report_post_failure_to_pr 1
   exit 1
 }
-# END bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/post-failure-report.lib.sh
+# END bundled: lib/post-failure-report.lib.sh
 # shellcheck source=lib/gitleaks-install.lib.sh
-# BEGIN bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/gitleaks-install.lib.sh
+# BEGIN bundled: lib/gitleaks-install.lib.sh
 # gitleaks-install.lib.sh — Platform-aware gitleaks download and verification.
 #
 # Source from post-code.src.sh / post-fix.src.sh:
@@ -988,9 +988,9 @@ install_gitleaks() {
   export GITLEAKS_BIN
   export PATH="${install_dir}:${PATH}"
 }
-# END bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/gitleaks-install.lib.sh
+# END bundled: lib/gitleaks-install.lib.sh
 # shellcheck source=lib/precommit-gate.lib.sh
-# BEGIN bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/precommit-gate.lib.sh
+# BEGIN bundled: lib/precommit-gate.lib.sh
 # precommit-gate.lib.sh — Shared pre-commit gate for validation loop and post-scripts.
 #
 # Source from validate-code-output.src.sh / post-code.src.sh / post-fix.src.sh:
@@ -1465,9 +1465,9 @@ precommit_run_gate() {
   # shellcheck disable=SC2034
   PRECOMMIT_GATE_DETAIL="${_pg_output}"
 }
-# END bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/precommit-gate.lib.sh
+# END bundled: lib/precommit-gate.lib.sh
 # shellcheck source=lib/pr-assignee.lib.sh
-# BEGIN bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/pr-assignee.lib.sh
+# BEGIN bundled: lib/pr-assignee.lib.sh
 # pr-assignee.lib.sh — Resolve and assign a human owner for code-agent PRs.
 #
 # Source from post-code.src.sh (after post-failure-report.lib.sh for gha_echo):
@@ -1671,9 +1671,9 @@ maybe_assign_pr() {
     }
   fi
 }
-# END bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/pr-assignee.lib.sh
+# END bundled: lib/pr-assignee.lib.sh
 # shellcheck source=lib/branch-guard.lib.sh
-# BEGIN bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/branch-guard.lib.sh
+# BEGIN bundled: lib/branch-guard.lib.sh
 # shellcheck shell=bash
 
 # enforce_branch_namespace <branch> <issue_number>
@@ -1722,9 +1722,9 @@ classify_branch_vs_pr_head() {
     echo "mismatch"
   fi
 }
-# END bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/branch-guard.lib.sh
+# END bundled: lib/branch-guard.lib.sh
 # shellcheck source=lib/jira-auth.lib.sh
-# BEGIN bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/jira-auth.lib.sh
+# BEGIN bundled: lib/jira-auth.lib.sh
 # shellcheck shell=bash
 # jira-auth.lib.sh — Jira credential-mode selection for host-side scripts.
 #
@@ -2012,14 +2012,14 @@ jira_auth_fullsend() {
     )
   fi
 }
-# END bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/jira-auth.lib.sh
+# END bundled: lib/jira-auth.lib.sh
 
 # SCRIPT_DIR is used by code-ops.lib.sh dispatcher to locate forge-specific
 # ops libraries. Not directly referenced in this file.
 # shellcheck disable=SC2034
 SCRIPT_DIR="${SCRIPT_DIR_POST}"
 # shellcheck source=lib/code-ops.lib.sh
-# BEGIN bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/code-ops.lib.sh
+# BEGIN bundled: lib/code-ops.lib.sh
 # shellcheck shell=bash
 # code-ops.lib.sh — Forge-dispatch wrapper for code agent operations.
 #
@@ -2033,11 +2033,11 @@ CODE_OPS_SH_LOADED=1
 # forge_retry_transient is defined for every forge (including callers in the
 # pre-code scripts that wrap commands outside the forge-specific libs).
 # shellcheck source=forge-transient-retry.lib.sh
-# (already bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/forge-transient-retry.lib.sh)
+# (already bundled: lib/forge-transient-retry.lib.sh)
 
 case "${FULLSEND_FORGE:-}" in
   github)
-# BEGIN bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/github-code-ops.lib.sh
+# BEGIN bundled: lib/github-code-ops.lib.sh
 # shellcheck shell=bash
 # github-code-ops.lib.sh — GitHub forge operations for code agent scripts.
 #
@@ -2055,11 +2055,11 @@ case "${FULLSEND_FORGE:-}" in
 GITHUB_CODE_OPS_SH_LOADED=1
 
 # shellcheck source=forge-transient-retry.lib.sh
-# (already bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/forge-transient-retry.lib.sh)
+# (already bundled: lib/forge-transient-retry.lib.sh)
 # forge_push_branch: a plain git push, or with GITHUB_SIGNED_COMMITS=true the
 # API publish that gets the commits signed by GitHub.
 # shellcheck source=github-signed-push.lib.sh
-# BEGIN bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/github-signed-push.lib.sh
+# BEGIN bundled: lib/github-signed-push.lib.sh
 # shellcheck shell=bash
 # github-signed-push.lib.sh — Publish local commits through the GitHub Git
 # Data API so GitHub signs them.
@@ -2394,9 +2394,9 @@ _forge_push_branch() {
   git config "branch.${branch}.merge" "refs/heads/${branch}" || return 1
   echo "Branch ${branch} is at ${tip} on origin"
 }
-# END bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/github-signed-push.lib.sh
+# END bundled: lib/github-signed-push.lib.sh
 # shellcheck source=github-host.lib.sh
-# BEGIN bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/github-host.lib.sh
+# BEGIN bundled: lib/github-host.lib.sh
 # shellcheck shell=bash
 # github-host.lib.sh — Shared GitHub host handling for GitHub ops.
 #
@@ -2431,7 +2431,7 @@ _github_url_path() {
   [[ "${url}" == "${base}"* ]] || return 1
   printf '%s\n' "${url#"${base}"}"
 }
-# END bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/github-host.lib.sh
+# END bundled: lib/github-host.lib.sh
 
 # --- URL handling ---
 
@@ -2786,10 +2786,10 @@ forge_append_path() {
   local dir="$1"
   echo "${dir}" >> "${GITHUB_PATH:-/dev/null}"
 }
-# END bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/github-code-ops.lib.sh
+# END bundled: lib/github-code-ops.lib.sh
     ;;
   gitlab)
-# BEGIN bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/gitlab-code-ops.lib.sh
+# BEGIN bundled: lib/gitlab-code-ops.lib.sh
 # shellcheck shell=bash
 # gitlab-code-ops.lib.sh — GitLab forge operations for code agent scripts.
 #
@@ -2813,7 +2813,7 @@ forge_append_path() {
 GITLAB_CODE_OPS_SH_LOADED=1
 
 # shellcheck source=gitlab-host-validation.lib.sh
-# BEGIN bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/gitlab-host-validation.lib.sh
+# BEGIN bundled: lib/gitlab-host-validation.lib.sh
 # shellcheck shell=bash
 # gitlab-host-validation.lib.sh — Shared host validation for GitLab ops.
 #
@@ -2880,9 +2880,9 @@ _validate_gitlab_origin() {
     return 1
   fi
 }
-# END bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/gitlab-host-validation.lib.sh
+# END bundled: lib/gitlab-host-validation.lib.sh
 # shellcheck source=forge-transient-retry.lib.sh
-# (already bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/forge-transient-retry.lib.sh)
+# (already bundled: lib/forge-transient-retry.lib.sh)
 
 if ! declare -F gha_echo >/dev/null 2>&1; then
   gha_echo() { echo "::${1}::${2:-}"; }
@@ -3469,16 +3469,16 @@ forge_append_path() {
   fi
   # On GitLab CI, PATH is modified directly (already done by caller)
 }
-# END bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/gitlab-code-ops.lib.sh
+# END bundled: lib/gitlab-code-ops.lib.sh
     ;;
   *)
     echo "ERROR: invalid FULLSEND_FORGE: '${FULLSEND_FORGE:-}' — pass --forge <github|gitlab> or set FULLSEND_FORGE" >&2
     exit 1
     ;;
 esac
-# END bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/code-ops.lib.sh
+# END bundled: lib/code-ops.lib.sh
 # shellcheck source=lib/labels.lib.sh
-# BEGIN bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/labels.lib.sh
+# BEGIN bundled: lib/labels.lib.sh
 # labels.lib.sh — Mandatory label management for fullsend agent scripts.
 #
 # Provides forge_ensure_label() which creates mandatory dispatch labels
@@ -3527,7 +3527,7 @@ forge_ensure_label() {
   # description/color — mandatory labels are agent-managed.
   forge_create_label "${name}" "${description}" "${color}"
 }
-# END bundled: /private/tmp/pr-audit-agents-1998/scripts/lib/labels.lib.sh
+# END bundled: lib/labels.lib.sh
 
 # ---------------------------------------------------------------------------
 # enable_auto_merge — arm auto-merge on a PR/MR (best-effort).
