@@ -1338,9 +1338,12 @@ forge_parse_originating_url() {
 # `fullsend issues post-comment` updates a marked comment in place. Older
 # CLIs keep the replaced text as a collapsed "Previous run" block unless
 # --keep-history=false is passed, which would stack a copy of the previous
-# summary on every rerun. Since fullsend-ai/fullsend#9399 the flag is
-# deprecated and has no effect, and passing it prints a warning, so it is
-# passed only when the CLI's flag table lists it without "deprecated".
+# summary on every rerun. fullsend-ai/fullsend#9399, still open, proposes
+# deprecating the flag and posting every result as a new comment; once that
+# merges, passing the flag prints a warning and has no effect, and each rerun
+# adds another summary comment instead of replacing the previous one. The
+# flag is therefore passed only when the CLI's flag table lists it without
+# "deprecated", which covers a released CLI either way.
 # Sets _RETRO_JIRA_KEEP_HISTORY_ARGS in the caller's shell.
 _RETRO_JIRA_KEEP_HISTORY_ARGS=()
 _retro_jira_keep_history_args() {

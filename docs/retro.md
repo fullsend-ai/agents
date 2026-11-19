@@ -16,7 +16,7 @@ No additional setup is required beyond the standard fullsend configuration.
 
 ## Triggers
 
-The retro agent runs automatically when a PR is closed (merged or not), including after a merge. On GitLab, the equivalent merge-request close event triggers it as well. The Jira integration below changes where the retro's proposals are filed; it does not change the trigger. For example, with `FULLSEND_TRACKER=jira`, closing a PR or MR starts the retrospective and its validated proposals are filed in the configured Jira project. Jira-originated runs are not automatically dispatched or polled: a manually dispatched run may use a Jira issue URL (`https://<site>.atlassian.net/browse/PROJ-123`) as `ORIGINATING_URL`. In that case, the retrospective summary comment is posted directly back to the Jira issue via `fullsend issues post-comment --tracker jira`, and forge credentials are not required.
+The retro agent runs automatically when a PR is closed (merged or not), including after a merge. On GitLab, the equivalent merge-request close event triggers it as well. The Jira integration below changes where the retro's proposals are filed; it does not change the trigger. For example, with `FULLSEND_TRACKER=jira`, closing a PR or MR starts the retrospective and its validated proposals are filed in the configured Jira project — once dispatch supplies Jira credentials to forge-originated runs, which is tracked in [fullsend-ai/fullsend#2267](https://github.com/fullsend-ai/fullsend/issues/2267) and still open ([Jira integration](#jira-integration) covers what happens until then). Jira-originated runs are not automatically dispatched or polled: a manually dispatched run may use a Jira issue URL (`https://<site>.atlassian.net/browse/PROJ-123`) as `ORIGINATING_URL`. In that case, the retrospective summary comment is posted directly back to the Jira issue via `fullsend issues post-comment --tracker jira`, and forge credentials are not required.
 
 It can also be triggered manually with the `/fs-retro` command.
 
@@ -113,10 +113,27 @@ No `JIRA_API_URL` environment variable is read. When `tracker.jira.base_url` is 
 
 For a PR/MR-close run, fullsend must also hand the Jira credentials to the
 runner: the overlay maps them from `FULLSEND_JIRA_TOKEN` and
-`FULLSEND_JIRA_EMAIL` (or the client credentials). If the dispatch supplies
-neither, retro stops with a credential error before filing any proposal.
-Passing Jira credentials to forge-originated runs that target Jira is tracked
-in [fullsend-ai/fullsend#2267](https://github.com/fullsend-ai/fullsend/issues/2267).
+`FULLSEND_JIRA_EMAIL` (or the client credentials). Passing Jira credentials
+to forge-originated runs that target Jira is tracked in
+[fullsend-ai/fullsend#2267](https://github.com/fullsend-ai/fullsend/issues/2267),
+which is still open: for a github or gitlab event, dispatch passes no Jira
+credentials and unsets `FULLSEND_JIRA_TOKEN`, `FULLSEND_JIRA_EMAIL` and the
+client credentials.
+
+So this overlay does not work for PR/MR-close or `/fs-retro` runs yet, and it
+does not fail the way a missing credential usually would. fullsend validates
+every `${VAR}` in `env.runner` against the host environment before any
+pre-script runs, so an unset `FULLSEND_JIRA_TOKEN` (or an unset
+`FULLSEND_JIRA_CLIENT_ID`/`FULLSEND_JIRA_CLIENT_SECRET` pair) aborts the whole
+run with `FULLSEND_JIRA_TOKEN is not set (referenced by
+env.runner[JIRA_TOKEN])`. No retro runs at all, so that run produces neither
+Jira issues nor a forge summary. `${JIRA_BASE_URL}` resolves only when the
+repository sets the `JIRA_BASE_URL` variable that dispatch forwards; otherwise
+set the site URL literally in the overlay, since `action.yml` does not export
+it. Jira-originated runs receive the credentials from dispatch and are not
+affected. Treat forge-originated Jira filing as unverified until
+fullsend-ai/fullsend#2267 lands and this path has run once against a test
+repository.
 
 Cross-project issue creation in Jira is governed by `tracker.jira.allowed_targets.projects` in `config.yaml`. The `tracker.jira` configuration in `config.yaml` (under `FULLSEND_DIR`) is required by the `fullsend` CLI for Jira issue operations; `RETRO_JIRA_PROJECT` must match `tracker.jira.project` or one of the allowed targets (case-insensitively). The configured primary project is always permitted; explicit allowed targets add other projects. When `allowed_targets.projects` is omitted, only the configured primary project is permitted. An explicit empty list (`projects: []`) therefore permits the primary project but no other projects. Missing config or a missing primary project denies issue creation.
 
@@ -131,8 +148,8 @@ for prerequisite issues. The post-script honors the targets of the
 also covers its subgroups' projects), or `tracker.jira.allowed_targets.projects`
 on Jira. A `tracker` mapping for another provider, or one with more than one
 provider block, grants no cross-repo targets (the post-script logs a warning
-naming the providers it found). For a Jira tracker that still permits the
-configured primary project, which is not a cross-project grant. The former
+naming the providers it found). For a Jira tracker, the configured primary
+project is still permitted, because it is not a cross-project grant. The former
 `create_issues.allow_targets` key is no longer read and logs a
 warning if present; move `orgs` and `repos` to
 `tracker.github.allowed_targets`, `repos` to

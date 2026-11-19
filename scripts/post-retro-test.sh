@@ -3473,7 +3473,9 @@ fi
 
 # 27. On a CLI that still keeps sticky-comment history, pass
 # --keep-history=false so a rerun replaces the summary instead of stacking
-# copies; a CLI that marks the flag deprecated gets no flag.
+# copies; a CLI that marks the flag deprecated gets no flag. The deprecated
+# branch models the shape fullsend-ai/fullsend#9399 (still open) proposes, so
+# it pins the detection, not released CLI behaviour.
 export FULLSEND_MOCK_KEEP_HISTORY="supported"
 ORIGINATING_URL="https://mock.atlassian.net/browse/PROJ-123" \
   run_test_stdout "jira/keep-history-supported" \
