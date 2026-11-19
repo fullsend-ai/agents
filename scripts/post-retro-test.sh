@@ -140,8 +140,19 @@ if [[ "\$1" == "issues" ]] && [[ "\$2" == "create" ]]; then
     echo "ERROR: mocked creation failure for \${FULLSEND_MOCK_FAIL_TITLE}" >&2
     exit 1
   fi
+  # Answer with a key in the requested project, so a test that files into a
+  # secondary target exercises the success path instead of failing the
+  # ^<project>-[0-9]+$ key check.
+  MOCK_PROJECT=""
+  MOCK_PREV=""
+  for mock_arg in "\$@"; do
+    if [[ "\${MOCK_PREV}" == "--project" ]]; then
+      MOCK_PROJECT="\${mock_arg}"
+    fi
+    MOCK_PREV="\${mock_arg}"
+  done
   cat >> "${FULLSEND_STDIN_LOG}"
-  echo '{"number":100,"key":"PROJ-100","title":"mock title","url":"https://mock.atlassian.net/browse/PROJ-100"}'
+  echo "{\"number\":100,\"key\":\"\${MOCK_PROJECT:-PROJ}-100\",\"title\":\"mock title\",\"url\":\"https://mock.atlassian.net/browse/\${MOCK_PROJECT:-PROJ}-100\"}"
   exit 0
 fi
 if [[ "\$1" == "issues" ]] && [[ "\$2" == "post-comment" ]]; then
@@ -187,6 +198,15 @@ if [[ "${URL}" == *"/_edge/tenant_info" ]]; then
     exit 22
   fi
   echo '{"cloudId":"11111111-2222-3333-4444-555555555555","url":"https://mock.atlassian.net"}'
+  exit 0
+fi
+
+# Atlassian OAuth token endpoint (client-credentials mode). Every call is
+# already recorded in CURL_LOG, so tests can count exchanges.
+if [[ "${URL}" == "https://auth.atlassian.com/oauth/token" ]]; then
+  # Emulate --write-out '\n%{http_code}': _jira_auth_mint_now reads the status
+  # from the last line of the response.
+  printf '%s\n%s' '{"access_token":"mock-access-token","expires_in":3600,"token_type":"Bearer"}' '200'
   exit 0
 fi
 
@@ -2759,7 +2779,80 @@ if grep -q "/comments" "${GH_LOG}" 2>/dev/null; then
 else
   echo "PASS: jira/issues-only-no-summary-post"
 fi
+if grep -qF 'fullsend issues create --tracker jira' "${FULLSEND_LOG}" 2>/dev/null; then
+  echo "PASS: jira/issues-only-files-issue"
+else
+  echo "FAIL: jira/issues-only-files-issue — issue was not created in issues_only mode"
+  cat "${FULLSEND_LOG}" 2>/dev/null || true
+  FAILURES=$((FAILURES + 1))
+fi
 export RETRO_MODE="all"
+
+# 8b. Client-credentials mode mints one token per run, not one per REST call.
+# Every Jira REST call runs in a command substitution, so a mint performed
+# there is lost with the subshell and repeats the OAuth exchange for the
+# createmeta reads, the duplicate search, the label write and the create.
+export JIRA_TOKEN=""
+export FULLSEND_JIRA_CLIENT_ID="client-id"
+export FULLSEND_JIRA_CLIENT_SECRET="client-secret"
+run_test_stdout "jira/client-credentials-creates-issue" \
+  "${FIXTURE_ONE_PROPOSAL}" \
+  "Created: https://mock.atlassian.net/browse/PROJ-100"
+MINT_CALLS=$(grep -cF 'https://auth.atlassian.com/oauth/token' "${CURL_LOG}" 2>/dev/null || true)
+if [[ "${MINT_CALLS}" == "1" ]]; then
+  echo "PASS: jira/client-credentials-mints-once"
+else
+  echo "FAIL: jira/client-credentials-mints-once — ${MINT_CALLS:-0} token exchange(s), expected 1"
+  grep -F 'https://auth.atlassian.com/oauth/token' "${CURL_LOG}" 2>/dev/null || true
+  FAILURES=$((FAILURES + 1))
+fi
+if grep -qF -- '--oauth2-bearer mock-access-token' "${CURL_LOG}" 2>/dev/null; then
+  echo "PASS: jira/client-credentials-bearer-auth"
+else
+  echo "FAIL: jira/client-credentials-bearer-auth — REST calls did not use the minted token"
+  FAILURES=$((FAILURES + 1))
+fi
+# The REST root (2-4 yq reads plus the tenant_info lookup) is resolved once
+# too; re-resolving it per call repeats the unauthenticated tenant request.
+TENANT_CALLS=$(grep -cF '/_edge/tenant_info' "${CURL_LOG}" 2>/dev/null || true)
+if [[ "${TENANT_CALLS}" == "1" ]]; then
+  echo "PASS: jira/client-credentials-resolves-cloud-id-once"
+else
+  echo "FAIL: jira/client-credentials-resolves-cloud-id-once — ${TENANT_CALLS:-0} tenant_info call(s), expected 1"
+  FAILURES=$((FAILURES + 1))
+fi
+export JIRA_TOKEN="fake-jira-token"
+export FULLSEND_JIRA_CLIENT_ID=""
+export FULLSEND_JIRA_CLIENT_SECRET=""
+
+# 8c. A create screen without a Labels field omits labels instead of failing.
+export JIRA_MOCK_NO_LABELS="1"
+run_test_stdout "jira/create-screen-without-labels" \
+  "${FIXTURE_ONE_PROPOSAL}" \
+  "has no Labels field on its create screen; labels will be omitted"
+if grep -qF -- '--request PUT' "${CURL_LOG}" 2>/dev/null; then
+  echo "FAIL: jira/create-screen-without-labels-no-label-write — label PUT issued without a Labels field"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: jira/create-screen-without-labels-no-label-write"
+fi
+unset JIRA_MOCK_NO_LABELS
+
+# 8d. A failed create is reported under "Proposals not filed" instead of
+# silently disappearing from the summary.
+export FULLSEND_MOCK_FAIL_TITLE="Improve error handling in widget service"
+run_test_stdout "jira/create-failure-reported" \
+  "${FIXTURE_ONE_PROPOSAL}" \
+  "All 1 proposal(s) validated"
+if grep -qF "### Proposals not filed (issue creation failed)" "${GH_STDIN_LOG}" 2>/dev/null \
+  && grep -qF '**Improve error handling in widget service**' "${GH_STDIN_LOG}" 2>/dev/null; then
+  echo "PASS: jira/create-failure-listed-in-summary"
+else
+  echo "FAIL: jira/create-failure-listed-in-summary — failed proposal missing from summary"
+  cat "${GH_STDIN_LOG}" 2>/dev/null || true
+  FAILURES=$((FAILURES + 1))
+fi
+unset FULLSEND_MOCK_FAIL_TITLE
 
 # 9. Retrospectives on Jira-originated items (no forge token required under GHA)
 SAVED_GH_TOKEN="${GH_TOKEN:-}"
@@ -3144,7 +3237,17 @@ CFGEOF
 export RETRO_JIRA_PROJECT="OTHER"
 run_test_stdout "jira/allowlist-explicit-target-case-insensitive" \
   "${FIXTURE_ONE_PROPOSAL}" \
-  "Filing issue in Jira OTHER"
+  "Created: https://mock.atlassian.net/browse/OTHER-100"
+# The mock answers with a key in the requested project, so this asserts the
+# create actually succeeded rather than passing on a failed key check.
+if grep -qF -- '--project OTHER' "${FULLSEND_LOG}" 2>/dev/null \
+  && ! grep -qF "### Proposals not filed" "${GH_STDIN_LOG}" 2>/dev/null; then
+  echo "PASS: jira/allowlist-explicit-target-case-insensitive-created"
+else
+  echo "FAIL: jira/allowlist-explicit-target-case-insensitive-created — create did not succeed for OTHER"
+  cat "${FULLSEND_LOG}" 2>/dev/null || true
+  FAILURES=$((FAILURES + 1))
+fi
 export RETRO_JIRA_PROJECT="PROJ"
 cat > "${FULLSEND_DIR}/config.yaml" <<CFGEOF
 version: "1"
@@ -3155,6 +3258,35 @@ tracker:
       projects:
         - PROJ
 CFGEOF
+
+# A config that exists only under <FULLSEND_DIR>/.fullsend/ is not read: the
+# CLI treats --fullsend-dir as the directory that holds config.yaml, and the
+# Jira REST routing reads the same path. The run must say so and fail closed
+# rather than admit targets from a config the CLI cannot see.
+NESTED_FULLSEND="${TMPDIR}/nested-fullsend"
+mkdir -p "${NESTED_FULLSEND}/.fullsend"
+cat > "${NESTED_FULLSEND}/.fullsend/config.yaml" <<CFGEOF
+version: "1"
+tracker:
+  jira:
+    project: PROJ
+CFGEOF
+SAVED_FULLSEND_DIR="${FULLSEND_DIR}"
+export FULLSEND_DIR="${NESTED_FULLSEND}"
+export RETRO_MODE="issues_only"
+run_test_stdout "jira/nested-config-not-read" \
+  "${FIXTURE_ONE_PROPOSAL}" \
+  "no config.yaml in FULLSEND_DIR" \
+  "true"
+if grep -qF 'fullsend issues create --tracker jira' "${FULLSEND_LOG}" 2>/dev/null; then
+  echo "FAIL: jira/nested-config-no-create — create attempted without a config the CLI can read"
+  cat "${FULLSEND_LOG}" 2>/dev/null || true
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: jira/nested-config-no-create"
+fi
+export RETRO_MODE="all"
+export FULLSEND_DIR="${SAVED_FULLSEND_DIR}"
 
 # 19. Issues_only mode exits non-zero if proposals are skipped due to allowlist
 cat > "${FULLSEND_DIR}/config.yaml" <<CFGEOF

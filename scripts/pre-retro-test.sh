@@ -239,6 +239,19 @@ run_test "jira-tenant-mismatch-fails" 1 "does not match JIRA_BASE_URL" \
   JIRA_BASE_URL="https://test.atlassian.net" RETRO_JIRA_PROJECT="PROJ" \
   ORIGINATING_URL="https://other.atlassian.net/browse/PROJ-123"
 
+# RETRO_JIRA_MAX_PAGES bounds a bash arithmetic loop, so anything outside a
+# plain positive integer is refused: 0 silently truncates every duplicate
+# search, and a non-numeric value would be evaluated as arithmetic.
+run_test "jira-zero-max-pages-fails" 1 "RETRO_JIRA_MAX_PAGES must be a positive integer" \
+  FULLSEND_TRACKER=jira FULLSEND_DIR="${TMPDIR}/dot-fullsend" JIRA_TOKEN="test-token" \
+  JIRA_BASE_URL="https://test.atlassian.net" RETRO_JIRA_PROJECT="PROJ" RETRO_JIRA_MAX_PAGES=0 \
+  ORIGINATING_URL="https://github.com/test-org/test-repo/pull/42"
+
+run_test "jira-nonnumeric-max-pages-fails" 1 "RETRO_JIRA_MAX_PAGES must be a positive integer" \
+  FULLSEND_TRACKER=jira FULLSEND_DIR="${TMPDIR}/dot-fullsend" JIRA_TOKEN="test-token" \
+  JIRA_BASE_URL="https://test.atlassian.net" RETRO_JIRA_PROJECT="PROJ" "RETRO_JIRA_MAX_PAGES=x[1]" \
+  ORIGINATING_URL="https://github.com/test-org/test-repo/pull/42"
+
 run_test "jira-summary-only-forge-no-credentials" 0 "Pre-retro validation complete." \
   FULLSEND_TRACKER=jira RETRO_MODE="summary_only" \
   ORIGINATING_URL="https://github.com/test-org/test-repo/pull/42"
