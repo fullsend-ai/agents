@@ -948,19 +948,24 @@ _jira_auth_mint_now() {
     echo "ERROR: Jira OAuth token response has no usable access_token" >&2
     return 1
   fi
-  # In the script's own shell the mask goes to stdout. In a subshell, such
-  # as a command substitution, stdout may be captured, so it goes to the
-  # main shell's current stdout through /proc when that is a pipe or a
-  # terminal (the runner log), else to stderr. A file or /dev/null there
-  # means the caller redirected stdout around the call.
-  local main_out="/proc/$$/fd/1"
-  if (( BASH_SUBSHELL == 0 )); then
-    _jira_auth_gha_mask "${token}"
-  elif [[ -w "${main_out}" ]] && [[ -p "${main_out}" || -c "${main_out}" ]] \
-    && ! [[ "${main_out}" -ef /dev/null ]]; then
-    _jira_auth_gha_mask "${token}" >> "${main_out}"
-  else
-    _jira_auth_gha_mask "${token}" >&2
+  # ::add-mask:: is a GitHub Actions workflow command. On any other runner
+  # the line is ordinary log output and would print the token, so the mask
+  # is emitted only when GITHUB_ACTIONS is set.
+  if [[ -n "${GITHUB_ACTIONS:-}" ]]; then
+    # In the script's own shell the mask goes to stdout. In a subshell, such
+    # as a command substitution, stdout may be captured, so it goes to the
+    # main shell's current stdout through /proc when that is a pipe or a
+    # terminal (the runner log), else to stderr. A file or /dev/null there
+    # means the caller redirected stdout around the call.
+    local main_out="/proc/$$/fd/1"
+    if (( BASH_SUBSHELL == 0 )); then
+      _jira_auth_gha_mask "${token}"
+    elif [[ -w "${main_out}" ]] && [[ -p "${main_out}" || -c "${main_out}" ]] \
+      && ! [[ "${main_out}" -ef /dev/null ]]; then
+      _jira_auth_gha_mask "${token}" >> "${main_out}"
+    else
+      _jira_auth_gha_mask "${token}" >&2
+    fi
   fi
   [[ "${expires_in}" =~ ^[0-9]+$ ]] || expires_in=3600
   _JIRA_AUTH_ACCESS_TOKEN="${token}"

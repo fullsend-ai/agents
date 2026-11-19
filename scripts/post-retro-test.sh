@@ -112,27 +112,28 @@ echo "fullsend \$*" >> "${FULLSEND_LOG}"
 echo "token=\${FULLSEND_JIRA_TOKEN-unset} email=\${FULLSEND_JIRA_EMAIL-unset}" >> "${FULLSEND_ENV_LOG}"
 if [[ "\$1" == "issues" ]] && [[ "\$2" == "create" ]]; then
   if [[ "\$3" == "--help" ]]; then
+    # Cobra prints the usage header and the command path on separate lines.
     case "\${FULLSEND_MOCK_CREATE_HELP:-}" in
       missing-fullsend-dir)
-        echo "Usage: fullsend issues create [flags]"
-        echo "--tracker"
+        printf 'Usage:\n  fullsend issues create [flags]\n\nFlags:\n'
+        echo "  --tracker string"
         exit 0
         ;;
       missing-tracker)
-        echo "Usage: fullsend issues create [flags]"
-        echo "--fullsend-dir"
+        printf 'Usage:\n  fullsend issues create [flags]\n\nFlags:\n'
+        echo "  --fullsend-dir string"
         exit 0
         ;;
       unrelated-usage)
-        echo "Usage: fullsend issues something-else [flags]"
-        echo "--fullsend-dir"
-        echo "--tracker"
+        printf 'Usage:\n  fullsend issues something-else [flags]\n\nFlags:\n'
+        echo "  --fullsend-dir string"
+        echo "  --tracker string"
         exit 0
         ;;
     esac
-    echo "Usage: fullsend issues create [flags]"
-    echo "--fullsend-dir"
-    echo "--tracker"
+    printf 'Usage:\n  fullsend issues create [flags]\n\nFlags:\n'
+    echo "  --fullsend-dir string"
+    echo "  --tracker string"
     exit 0
   fi
   if [[ -n "\${FULLSEND_MOCK_FAIL_TITLE:-}" ]] && [[ "\$*" == *"--title \${FULLSEND_MOCK_FAIL_TITLE}"* ]]; then

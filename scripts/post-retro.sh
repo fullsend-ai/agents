@@ -718,19 +718,24 @@ _jira_auth_mint_now() {
     echo "ERROR: Jira OAuth token response has no usable access_token" >&2
     return 1
   fi
-  # In the script's own shell the mask goes to stdout. In a subshell, such
-  # as a command substitution, stdout may be captured, so it goes to the
-  # main shell's current stdout through /proc when that is a pipe or a
-  # terminal (the runner log), else to stderr. A file or /dev/null there
-  # means the caller redirected stdout around the call.
-  local main_out="/proc/$$/fd/1"
-  if (( BASH_SUBSHELL == 0 )); then
-    _jira_auth_gha_mask "${token}"
-  elif [[ -w "${main_out}" ]] && [[ -p "${main_out}" || -c "${main_out}" ]] \
-    && ! [[ "${main_out}" -ef /dev/null ]]; then
-    _jira_auth_gha_mask "${token}" >> "${main_out}"
-  else
-    _jira_auth_gha_mask "${token}" >&2
+  # ::add-mask:: is a GitHub Actions workflow command. On any other runner
+  # the line is ordinary log output and would print the token, so the mask
+  # is emitted only when GITHUB_ACTIONS is set.
+  if [[ -n "${GITHUB_ACTIONS:-}" ]]; then
+    # In the script's own shell the mask goes to stdout. In a subshell, such
+    # as a command substitution, stdout may be captured, so it goes to the
+    # main shell's current stdout through /proc when that is a pipe or a
+    # terminal (the runner log), else to stderr. A file or /dev/null there
+    # means the caller redirected stdout around the call.
+    local main_out="/proc/$$/fd/1"
+    if (( BASH_SUBSHELL == 0 )); then
+      _jira_auth_gha_mask "${token}"
+    elif [[ -w "${main_out}" ]] && [[ -p "${main_out}" || -c "${main_out}" ]] \
+      && ! [[ "${main_out}" -ef /dev/null ]]; then
+      _jira_auth_gha_mask "${token}" >> "${main_out}"
+    else
+      _jira_auth_gha_mask "${token}" >&2
+    fi
   fi
   [[ "${expires_in}" =~ ^[0-9]+$ ]] || expires_in=3600
   _JIRA_AUTH_ACCESS_TOKEN="${token}"
@@ -815,23 +820,23 @@ jira_auth_fullsend() {
 # off around those expansions so `bash -x` / `set -x` never writes the token
 # to the trace, then restore the caller's setting.
 _RETRO_JIRA_XTRACE=0
-_jira_retro_xtrace_off() {
+_retro_jira_xtrace_off() {
   _RETRO_JIRA_XTRACE=0
   if [[ $- == *x* ]]; then
     _RETRO_JIRA_XTRACE=1
     set +x
   fi
 }
-_jira_retro_xtrace_restore() {
+_retro_jira_xtrace_restore() {
   if [[ "${_RETRO_JIRA_XTRACE}" -eq 1 ]]; then
     set -x
   fi
 }
 
 _retro_jira_select_rc=0
-_jira_retro_xtrace_off
+_retro_jira_xtrace_off
 jira_auth_select "${JIRA_TOKEN:-}" FULLSEND_JIRA_CLIENT_ID FULLSEND_JIRA_CLIENT_SECRET || _retro_jira_select_rc=$?
-_jira_retro_xtrace_restore
+_retro_jira_xtrace_restore
 if [[ "${_retro_jira_select_rc}" -ne 0 ]]; then
   exit 1
 fi
@@ -888,7 +893,7 @@ RETRO_JIRA_MAX_PAGES="${RETRO_JIRA_MAX_PAGES:-50}"
 # Fails closed (non-zero) when a layer exists but cannot be read, so a yq
 # parse error is never mistaken for "no config" and calls are not routed to
 # the default gateway by accident.
-_jira_retro_config_value() {
+_retro_jira_config_value() {
   local key="$1" cfg tracker value=""
   [[ -n "${FULLSEND_DIR:-}" ]] || return 0
   [[ -f "${FULLSEND_DIR}/config.yaml" || -f "${FULLSEND_DIR}/config.base.yaml" ]] || return 0
@@ -914,7 +919,7 @@ _jira_retro_config_value() {
 }
 
 # Print the argument without trailing slashes.
-_jira_retro_trim_url() {
+_retro_jira_trim_url() {
   local url="$1"
   while [[ -n "${url}" && "${url}" == */ ]]; do
     url="${url%/}"
@@ -925,7 +930,7 @@ _jira_retro_trim_url() {
 # Discover the site's cloud ID from <site>/_edge/tenant_info. The lookup is
 # unauthenticated and does not follow redirects. The value must be a UUID
 # before it is placed in a URL path.
-_jira_retro_cloud_id() {
+_retro_jira_cloud_id() {
   local site="$1" resp id
   resp=$(curl -q --proto '=https' --fail --silent --show-error \
     --connect-timeout 10 --max-time 30 \
@@ -947,26 +952,26 @@ _jira_retro_cloud_id() {
 # and tracker.jira.base_url, when set, must name the JIRA_BASE_URL tenant so
 # a config cannot route reads to a different site than the CLI writes to.
 # Fails closed when the site or cloud ID cannot be resolved.
-_jira_retro_rest_root() {
+_retro_jira_rest_root() {
   local gateway site cfg_base cloud
   [[ -n "${JIRA_BASE_URL:-}" ]] || {
     echo "ERROR: JIRA_BASE_URL is not set" >&2
     return 1
   }
-  gateway=$(_jira_retro_config_value api_url) || return 1
-  gateway=$(_jira_retro_trim_url "${gateway:-https://api.atlassian.com}")
+  gateway=$(_retro_jira_config_value api_url) || return 1
+  gateway=$(_retro_jira_trim_url "${gateway:-https://api.atlassian.com}")
   if [[ ! "${gateway}" =~ ^https://[A-Za-z0-9.-]+(:[0-9]+)?(/[A-Za-z0-9._~/-]*)?$ ]]; then
     echo "ERROR: tracker.jira.api_url is not a plain https URL: $(_gha_sanitize "${gateway}")" >&2
     return 1
   fi
   site="${JIRA_BASE_URL}"
-  cfg_base=$(_jira_retro_config_value base_url) || return 1
-  cfg_base=$(_jira_retro_trim_url "${cfg_base}")
+  cfg_base=$(_retro_jira_config_value base_url) || return 1
+  cfg_base=$(_retro_jira_trim_url "${cfg_base}")
   if [[ -n "${cfg_base}" && "${cfg_base}" != "${site}" ]]; then
     echo "ERROR: tracker.jira.base_url ('$(_gha_sanitize "${cfg_base}")') does not match JIRA_BASE_URL ('$(_gha_sanitize "${site}")') — refusing to route Jira calls to a different tenant" >&2
     return 1
   fi
-  cloud=$(_jira_retro_cloud_id "${site}") || return 1
+  cloud=$(_retro_jira_cloud_id "${site}") || return 1
   printf '%s/ex/jira/%s/rest/api/3' "${gateway}" "${cloud}"
 }
 
@@ -978,8 +983,8 @@ _retro_jira_api() {
   local endpoint="$1"
   shift
   local rest_root rc=0
-  rest_root=$(_jira_retro_rest_root) || return 1
-  _jira_retro_xtrace_off
+  rest_root=$(_retro_jira_rest_root) || return 1
+  _retro_jira_xtrace_off
   jira_auth_curl "${JIRA_TOKEN:-}" "${JIRA_USER_EMAIL:-}" \
     --fail --silent --show-error \
     --connect-timeout 10 --max-time 30 \
@@ -988,7 +993,7 @@ _retro_jira_api() {
     --request "${method}" \
     "${rest_root}${endpoint}" \
     "$@" || rc=$?
-  _jira_retro_xtrace_restore
+  _retro_jira_xtrace_restore
   return "${rc}"
 }
 
@@ -998,9 +1003,9 @@ _retro_jira_api_with_status() {
   local endpoint="$1"
   shift
   local err_file raw http_code body rest_root rc=0
-  rest_root=$(_jira_retro_rest_root) || return 1
+  rest_root=$(_retro_jira_rest_root) || return 1
   err_file=$(mktemp)
-  _jira_retro_xtrace_off
+  _retro_jira_xtrace_off
   raw=$(jira_auth_curl "${JIRA_TOKEN:-}" "${JIRA_USER_EMAIL:-}" \
     --silent --show-error \
     --connect-timeout 10 --max-time 30 \
@@ -1010,7 +1015,7 @@ _retro_jira_api_with_status() {
     --write-out '\n%{http_code}' \
     "${rest_root}${endpoint}" \
     "$@" 2>"${err_file}") || rc=$?
-  _jira_retro_xtrace_restore
+  _retro_jira_xtrace_restore
   if [[ "${rc}" -ne 0 ]]; then
     echo "Jira API error: curl failed — $(_gha_sanitize "$(cat "${err_file}")")" >&2
     rm -f "${err_file}"
@@ -1146,11 +1151,13 @@ tracker_validate_create() {
   local types type_id meta missing
   local help_text
   # The create call below passes both options, so the installed CLI must
-  # support both. Any help output that does not establish the create
-  # command and both options fails preflight here, instead of every
+  # support both. Cobra prints "Usage:" and the command path on separate
+  # lines, so match the command path itself rather than a contiguous
+  # "Usage: <cmd>" string. Any help output that does not establish the
+  # create command and both options fails preflight here, instead of every
   # proposal failing later with an unknown-flag error.
   if ! help_text=$(fullsend issues create --help 2>&1) \
-    || [[ "${help_text}" != *"Usage: fullsend issues create"* ]] \
+    || [[ "${help_text}" != *"fullsend issues create"* ]] \
     || [[ "${help_text}" != *"--fullsend-dir"* ]] \
     || [[ "${help_text}" != *"--tracker"* ]]; then
     echo "ERROR: installed fullsend does not support 'issues create --tracker jira --fullsend-dir'; upgrade to a version with config-backed Jira issue creation (fullsend#7083 / fullsend#9078)" >&2
@@ -1226,7 +1233,7 @@ tracker_find_existing_issue() {
 }
 
 forge_create_issue() {
-  local repo="$1" title="$2" body="$3" labels="${4:-ready-for-triage}"
+  local _repo="$1" title="$2" body="$3" labels="${4:-ready-for-triage}"
   if [[ -z "${body}" || "${body}" == "-" ]]; then
     body=$(cat)
   fi
@@ -1235,7 +1242,7 @@ forge_create_issue() {
     return 1
   fi
   local response key url rc=0
-  _jira_retro_xtrace_off
+  _retro_jira_xtrace_off
   response=$(printf '%s' "${body}" | jira_auth_fullsend fullsend "${JIRA_TOKEN:-}" "${JIRA_USER_EMAIL:-}" \
     issues create \
     --tracker jira \
@@ -1244,7 +1251,7 @@ forge_create_issue() {
     --type "${RETRO_JIRA_ISSUE_TYPE}" \
     --title "${title}" \
     --body -) || rc=$?
-  _jira_retro_xtrace_restore
+  _retro_jira_xtrace_restore
   if [[ "${rc}" -ne 0 ]]; then
     echo "ERROR: forge_create_issue: fullsend issues create failed in project ${RETRO_JIRA_PROJECT}" >&2
     return 1
@@ -1332,7 +1339,7 @@ forge_parse_originating_url() {
 # passed only when the CLI's flag table lists it without "deprecated".
 # Sets _RETRO_JIRA_KEEP_HISTORY_ARGS in the caller's shell.
 _RETRO_JIRA_KEEP_HISTORY_ARGS=()
-_jira_retro_keep_history_args() {
+_retro_jira_keep_history_args() {
   _RETRO_JIRA_KEEP_HISTORY_ARGS=()
   local help_text line has_flag=0 deprecated=0
   if ! help_text=$(fullsend issues post-comment --help 2>&1); then
@@ -1365,15 +1372,15 @@ _retro_jira_post_comment() {
   # Jira issue keys are <PROJECT>-<NUMBER>; fullsend's --number expects the numeric suffix.
   local num="${number##*-}"
   local rc=0
-  _jira_retro_keep_history_args
-  _jira_retro_xtrace_off
+  _retro_jira_keep_history_args
+  _retro_jira_xtrace_off
   printf '%s' "${body}" | jira_auth_fullsend fullsend "${JIRA_TOKEN:-}" "${JIRA_USER_EMAIL:-}" \
     issues post-comment --tracker jira --fullsend-dir "${FULLSEND_DIR}" \
     --project "${repo}" --number "${num}" \
     --marker "<!-- fullsend:retro-agent -->" \
     ${_RETRO_JIRA_KEEP_HISTORY_ARGS[@]+"${_RETRO_JIRA_KEEP_HISTORY_ARGS[@]}"} \
     --result - 2>&1 || rc=$?
-  _jira_retro_xtrace_restore
+  _retro_jira_xtrace_restore
   return "${rc}"
 }
 
@@ -1423,11 +1430,11 @@ forge_mask_token() {
   fi
   # The test below and the mask itself both expand the token, so keep them
   # out of any xtrace.
-  _jira_retro_xtrace_off
+  _retro_jira_xtrace_off
   if [[ -n "${GITHUB_ACTIONS:-}" && -n "${JIRA_TOKEN:-}" ]]; then
     _gha_mask "${JIRA_TOKEN}"
   fi
-  _jira_retro_xtrace_restore
+  _retro_jira_xtrace_restore
 }
 
 forge_get_comment_max_len() {
