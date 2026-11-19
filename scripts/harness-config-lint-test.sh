@@ -927,8 +927,8 @@ test_positive_fixtures() {
           found_error=1
           continue
         }
-        # Replace the placeholder path with the actual absolute path using yq (portable, safe from sed injection)
-        yq -i ".validation_loop.schema = \"${actual_schema_path}\"" \
+        # Pass path via environment variable to avoid injection from special characters
+        SCHEMA_PATH="${actual_schema_path}" yq -i ".validation_loop.schema = env(SCHEMA_PATH)" \
           "${test_dir}/examples/test-harness/harness/${fixture_name}" || {
           echo "Failed to modify fixture YAML with absolute path"
           found_error=1
