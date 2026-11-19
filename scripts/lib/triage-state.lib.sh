@@ -29,14 +29,18 @@ TRIAGE_STATE_SH_LOADED=1
 # posted except the hidden state marker: the agent's comment, the lists and
 # the footers (see triage_state_compose).
 TRIAGE_STATE_READABLE_CAP=4000
-# Jira caps an entity property value at 32768 bytes of stored JSON. Keep the
-# state's UTF-8 bytes under 30000 for room to spare; only multibyte text can
-# come near it. TRIAGE_STATE_MAX_BYTES may lower the cap (tests do), never
-# raise it.
-if [[ "${TRIAGE_STATE_MAX_BYTES:-}" =~ ^[0-9]{1,9}$ ]] && (( 10#${TRIAGE_STATE_MAX_BYTES} <= 30000 )); then
-  TRIAGE_STATE_MAX_BYTES=$((10#${TRIAGE_STATE_MAX_BYTES}))
+# Jira caps an entity property value at 32768 characters of JSON
+# (Atlassian's "Set comment property" reference). The state is measured as
+# JSON with every non-ASCII character escaped (\uXXXX, a surrogate pair for
+# characters outside the BMP), which is never shorter than its character
+# count, and kept under 30000, so it fits whether Jira counts the
+# characters sent or an escaped serialisation. Only non-ASCII text can come
+# near it. TRIAGE_STATE_MAX_CHARS may lower the cap (tests do), never raise
+# it.
+if [[ "${TRIAGE_STATE_MAX_CHARS:-}" =~ ^[0-9]{1,9}$ ]] && (( 10#${TRIAGE_STATE_MAX_CHARS} <= 30000 )); then
+  TRIAGE_STATE_MAX_CHARS=$((10#${TRIAGE_STATE_MAX_CHARS}))
 else
-  TRIAGE_STATE_MAX_BYTES=30000
+  TRIAGE_STATE_MAX_CHARS=30000
 fi
 # Footers other than "Next steps" (label and component reasons, unapplied
 # Jira updates) are cut to this many characters, so "Next steps" always fits.
@@ -53,9 +57,9 @@ TRIAGE_STATE_FOLD_RE='(?i)<(?=summary\b[^>]*>(?:\s|&nbsp;|&#x?[0-9a-f]+;|<[^>]*>
 # triage_state_json RESULT_FILE — print the state as compact JSON, bounded
 # to the schema's limits (whitespace runs folded to one space, strings and
 # lists cut, ruled_out keeping its newest entries), or nothing when the
-# result has no open cause. Over TRIAGE_STATE_MAX_BYTES it never drops a
-# cause: it empties ruled-out evidence, then open evidence, then cuts cause
-# text to fewer bytes (whole characters only), and fails, so nothing is
+# result has no open cause. Over TRIAGE_STATE_MAX_CHARS (measured escaped)
+# it never drops a cause: it empties ruled-out evidence, then open evidence,
+# then cuts cause text (whole characters only), and fails, so nothing is
 # posted, if the names alone still do not fit.
 triage_state_json() {
   jq -c '
@@ -72,10 +76,12 @@ triage_state_json() {
     | {open_causes: ($s.open_causes | causes | .[0:10]),
        ruled_out: ($s.ruled_out | causes | if length > 25 then .[(length - 25):] else . end)}
     | if (.open_causes | length) == 0 then empty else . end
-    # Only multibyte text can push the state past the byte cap. jq slices
-    # whole characters, so a cut never splits a UTF-8 sequence.
-    | def fits: (tojson | utf8bytelength) <= $max_bytes;
-      def bytecut($n): until(utf8bytelength <= $n; .[0:(length - 1)]);
+    # The length as JSON with non-ASCII escaped: 6 characters for a BMP
+    # character, 12 for one outside it. jq slices whole characters, so a
+    # cut never splits one.
+    | def esclen: explode | map(if . < 128 then 1 elif . < 65536 then 6 else 12 end) | add // 0;
+      def fits: (tojson | esclen) <= $max_chars;
+      def charcut($n): until(esclen <= $n; .[0:(length - 1)]);
       if fits then . else
         .ruled_out |= map(.evidence = "")
         | if fits then . else
@@ -83,13 +89,13 @@ triage_state_json() {
             | if fits then . else
                 . as $bare
                 | ([600, 400, 300, 200, 120, 80, 40]
-                   | map(. as $n | $bare | (.open_causes, .ruled_out) |= map(.cause |= bytecut($n)) | select(fits))
+                   | map(. as $n | $bare | (.open_causes, .ruled_out) |= map(.cause |= charcut($n)) | select(fits))
                    | first)
-                  // error("the triage state does not fit \($max_bytes) bytes even with its cause names cut")
+                  // error("the triage state does not fit \($max_chars) characters of escaped JSON even with its cause names cut")
               end
           end
       end
-  ' --argjson max_bytes "${TRIAGE_STATE_MAX_BYTES}" "$1"
+  ' --argjson max_chars "${TRIAGE_STATE_MAX_CHARS}" "$1"
 }
 
 # triage_state_dropped RESULT_FILE STATE_JSON — print how many causes the

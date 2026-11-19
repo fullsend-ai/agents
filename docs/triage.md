@@ -279,9 +279,16 @@ same lists as data for the next run (fullsend-ai/agents#2042):
 On Jira the post-script posts the comment first, then sets the
 `fullsend.triage-state` property on it. Setting a property on a comment
 needs the "Edit own comments" project permission (or "Edit all comments"),
-which posting alone does not, so the triage account needs it. Without it
-the property write fails the run after the comment is posted; the next run
-reads that comment as claims (step 2e) on top of the older state.
+which posting alone does not, so the triage account needs it. A scoped
+token also needs the OAuth scope for it: `write:jira-work`, or with
+granular scopes `write:comment.property:jira`, which the scopes for posting
+a comment do not include. Reading the comments with their properties
+(`expand=properties`) needs `read:jira-work`, or with granular scopes
+`read:comment.property:jira` among the comment-listing scopes (Atlassian's
+"Set comment property" and "Get comments" references; the granular scopes
+are Beta). Without the permission or the scope, the property write fails
+the run after the comment is posted; the next run reads that comment as
+claims (step 2e) on top of the older state.
 
 Before fullsend-ai/fullsend#9399, fullsend edits the earlier comment in place, so a run cancelled after the
 edit but before the property write leaves the previous run's state attached
@@ -312,8 +319,9 @@ end with a note saying so. Footers other than **Next steps** (label and
 component reasons, updates Jira could not apply) are held to 1000
 characters, so **Next steps** is always posted whole. The prompt keeps the agent's comment under 2500 characters, which
 leaves room for the lists and footers. The stored state keeps every cause
-(at most 10 open, 25 ruled out); over 30000 bytes, under Jira's 32768
-property limit, it drops evidence and then cuts cause text, and fails the
+(at most 10 open, 25 ruled out); over 30000 characters of JSON with
+non-ASCII escaped, under Jira's 32768-character property limit, it drops
+evidence and then cuts cause text, and fails the
 run, before any label or comment changes, if the names alone do not fit.
 A cause the state cannot keep (an empty name, or past the list limits) is
 reported as a warning.
