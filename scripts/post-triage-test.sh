@@ -1972,6 +1972,22 @@ else
   echo "PASS: state-char-cut-keeps-every-cause"
 fi
 
+# An "Other open candidates" entry names the causes past the ninth in its
+# evidence (agents/triage.md), so shrinking an over-cap non-ASCII state
+# never empties or cuts that evidence: those names are causes too.
+oc_open="$(jq -cn '[range(0; 9) | {cause: ("漢" * 199 + "\(.)"), evidence: ("漢" * 300), verified: true}] + [{cause: "Other open candidates", evidence: "cache eviction race; DNS TTL drift; clock skew on the runner", verified: false}]')"
+oc_ruled="$(jq -cn '[range(0; 25) | {cause: ("漢" * 199 + "\(.)"), evidence: ("漢" * 300), verified: true}]')"
+oc_file="${TMPDIR}/state-other-candidates.json"
+printf '%s\n' "$(sufficient_with ",\"open_causes\":${oc_open},\"ruled_out\":${oc_ruled}" "x")" > "${oc_file}"
+oc_out="$(SCRIPT_DIR="${SCRIPT_DIR}" bash -c 'source "${SCRIPT_DIR}/lib/triage-state.lib.sh"; triage_state_json "$1"' _ "${oc_file}" 2>&1)" || true
+if [[ "$(jq -r '.open_causes[] | select(.cause == "Other open candidates") | .evidence' <<<"${oc_out}" 2>/dev/null)" != "cache eviction race; DNS TTL drift; clock skew on the runner" ]] \
+  || [[ "$(jq -c '[.open_causes[0].evidence, (.open_causes | length), (.ruled_out | length)]' <<<"${oc_out}" 2>/dev/null)" != '["",10,25]' ]] \
+  || [[ $(printf '%s' "${oc_out}" | jq -ac . | tr -d '\n' | wc -c) -gt 30000 ]]; then
+  state_fail "state-other-candidates-evidence-kept" "expected the overflow entry's evidence kept and the rest emptied: ${oc_out:0:300}"
+else
+  echo "PASS: state-other-candidates-evidence-kept"
+fi
+
 # A state that cannot be stored fails the run before the issue is touched.
 export TRIAGE_STATE_MAX_CHARS=500
 run_state_case "state-too-large-fails-closed" "$(sufficient_with ",${OPEN_TWO},\"ruled_out\":${many_ruled}" "Short analysis.")"
