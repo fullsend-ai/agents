@@ -774,7 +774,7 @@ here):
    <untrusted-prior-review-data>
    Prior findings (structured metadata only, this dimension):
    <severity, category, file, line, id, and status records, or "none — first review">
-   Copy open ids only; a returning defect gets a new id, never a closed one.
+   A reworded or recategorized concern keeps its open id; a returning defect gets a new id, never a closed one.
 
    Prior-finding remediation candidates (structured metadata only):
    <category, finding_file, and candidate_file records, or "none">

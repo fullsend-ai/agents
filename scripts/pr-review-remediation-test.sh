@@ -361,6 +361,25 @@ assert_contains "Prior paths are rejected, never rewritten" "${REREVIEW}" \
   "It rejects, never rewrites, invalid records"
 assert_contains "Missing-test counterpart wording tripwire" "${REREVIEW}" \
   '`.go` suffix with `_test.go` (for example, `pkg/foo.go` → `pkg/foo_test.go`).'
+
+# A reworded or recategorized open finding keeps its prior id (#1961).
+assert_contains "same concern keeps its open prior id" "${REREVIEW}" \
+  "**Same concern, new wording or category.**"
+assert_contains "category or severity change is reclassified, not minted" "${REREVIEW}" \
+  'severity changed, it is `reclassified`, with `rationale` and `evidence`.'
+assert_contains "same-concern reuse needs the same root cause" "${REREVIEW}" \
+  "Never copy an id only because it is"
+assert_contains "orchestrator matches same concern across dimensions" "${REREVIEW}" \
+  "with every open prior finding, and copy a matching id as above."
+assert_contains "same-concern rule has a worked example" "${REREVIEW}" \
+  'Right: emit it at `docs/adr/0038-x.md:12` with `id: f_7b100be48f718e09`,'
+assert_contains "unstaged prior defers to same-concern rule" "${REREVIEW}" \
+  '(step 2a, "Same concern, new wording or category"), copy the id onto that'
+assert_order "same-concern rule follows the disposition list" "${REREVIEW}" \
+  "Absence from the latest diff is not a resolution." \
+  "**Same concern, new wording or category.**"
+assert_contains "sub-agent keeps id when wording or category differs" "${SKILL}" \
+  "A reworded or recategorized concern keeps its open id;"
 assert_jq_result "GitHub accepts complete compare" "${GITHUB_COMPARE_COMPLETE}" \
   '{"status":"ahead","behind_by":0,"total_commits":1,"files":[{"filename":"a.txt","patch":"@@ -1 +1 @@"}]}' true
 assert_jq_result "GitHub accepts comparisons with more than 250 commits" "${GITHUB_COMPARE_COMPLETE}" \
