@@ -4301,6 +4301,29 @@ for _reason_case in preferred legacy absent; do
   fi
 done
 
+# Keep the reason at the beginning of long explanations, including legacy output.
+for _reason_field in no_pr_reason pr_body; do
+  for _reason_lines in 30 31 45; do
+    _reason_json="$(jq -nc --arg field "${_reason_field}" --argjson count "${_reason_lines}" \
+      '{target_branch:"main", ($field): (["Stop reason comes first"] + [range(2; $count + 1) | "Unblock step \(.)"] | join("\n"))}')"
+    _reason_name="jira-reason-head-${_reason_field}-${_reason_lines}"
+    JIRA_INT_NO_BRANCH=1 JIRA_INT_RESULT_JSON="${_reason_json}" \
+      run_jira_int "${_reason_name}" github
+    if [ "${JIRA_INT_RC}" -ne 0 ] \
+         || ! grep -qF 'Stop reason comes first' "${JIRA_INT_FULLSEND_LOG}" \
+         || ! grep -qF 'Unblock step 30' "${JIRA_INT_FULLSEND_LOG}" \
+         || grep -qF 'Unblock step 31' "${JIRA_INT_FULLSEND_LOG}"; then
+      jira_int_fail "${_reason_name}" "expected the first 30 lines of agent context"
+    elif [ "${_reason_lines}" -gt 30 ] && ! grep -qF '... truncated' "${JIRA_INT_FULLSEND_LOG}"; then
+      jira_int_fail "${_reason_name}" "missing truncation marker"
+    elif [ "${_reason_lines}" -eq 30 ] && grep -qF '... truncated' "${JIRA_INT_FULLSEND_LOG}"; then
+      jira_int_fail "${_reason_name}" "unexpected truncation marker"
+    else
+      echo "PASS: ${_reason_name}"
+    fi
+  done
+done
+
 # Agent context that fails the secret scan is left out of the Jira comment;
 # the generic reason is still written.
 JIRA_INT_NO_BRANCH=1 JIRA_INT_RESULT_JSON="${JIRA_NOOP_RESULT}" \

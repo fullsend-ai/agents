@@ -77,9 +77,12 @@ this repository. The agent also sets `no_pr_reason` to a short explanation
 whenever it stops without a commit for another reason (gate label, already
 fixed, blocked, missing acceptance criteria). On GitHub, GitLab and Jira
 source issues, the no-PR path prefers `no_pr_reason`, falling back to `pr_body` for older
-agent outputs. It sanitizes the selected explanation, keeps only its last 30
-lines by default, and posts it as "Agent context" under a generic "No PR
-created — agent determined no changes needed" notice with retry guidance.
+agent outputs. It sanitizes and secret-scans the complete selected explanation,
+then keeps its first 30 lines and adds a `... truncated` marker when more lines
+remain. This fixed agent-context limit is independent of
+`POST_FAILURE_DETAIL_MAX_LINES`, which controls failure-log tails. It posts the
+result as "Agent context" under a generic "No PR created — agent determined no
+changes needed" notice with retry guidance.
 Keep escalation text under 25 lines, put the repository, file, and required
 change first, and omit the normal PR template. On a Jira issue the notice
 goes to an outcome comment with its own marker, so a rerun edits it and it

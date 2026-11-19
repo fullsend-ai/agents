@@ -621,10 +621,16 @@ post_noop_comment() {
   local detail_block=""
   if [ -n "${agent_context}" ]; then
     local sanitized_context
-    sanitized_context="$(sanitize_failure_detail "${agent_context}")"
+    # Agent explanations put the reason first, unlike command diagnostics.
+    # Sanitize and scan the whole explanation before retaining its first lines.
+    sanitized_context="$(sanitize_failure_detail "${agent_context}" 0)"
     if ! install_gitleaks || ! scan_public_text "${sanitized_context}"; then
       gha_echo warning "Agent context omitted because its secret scan did not pass"
     else
+      sanitized_context="$(printf '%s\n' "${sanitized_context}" | "${_POST_FAILURE_AWK}" '
+        NR <= 30 { print }
+        END { if (NR > 30) print "... truncated" }
+      ')"
       detail_block="
 
 **Agent context:**
