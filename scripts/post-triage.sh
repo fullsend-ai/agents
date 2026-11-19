@@ -1644,7 +1644,10 @@ echo "Issue: #${ISSUE_NUMBER}"
 # and pr-open before each run; the action handlers below apply the rest.
 # pr-open is also created and applied independently by the code agent's
 # pre-check (scripts/pre-code.sh) when it finds a human PR before dispatching.
-CONTROL_LABELS=("needs-info" "ready-to-code" "duplicate" "feature" "blocked" "triaged" "question" "bug" "documentation" "not-planned" "completed" "pr-open")
+# ready-for-triage dispatches triage, from a human or a bot, so an agent that
+# adds it to the issue it is triaging starts its own next run; the
+# post-script applies it only to the sub-issues it creates (#2082).
+CONTROL_LABELS=("needs-info" "ready-to-code" "duplicate" "feature" "blocked" "triaged" "question" "bug" "documentation" "not-planned" "completed" "pr-open" "ready-for-triage")
 
 is_control_label() {
   local label="$1"
