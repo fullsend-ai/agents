@@ -54,8 +54,10 @@ where that code now sits, when the prior finding has one) and has the same
 root cause: the same defect in the same code, still unfixed. Rewording it,
 citing new evidence, or changing its category or severity does not make it a
 new finding. Copy the open prior `id` onto it, update its description in
-place, and keep it at the prior file and line. The post-script keeps a
-supplied id only there, and mints a new one anywhere else. If only the
+place, and keep it where that code now sits: the current file and line of
+the prior finding's review thread. The recorded file and line apply only
+when the id has no stamped review thread. The post-script keeps a supplied
+id only there, and mints a new one anywhere else. If only the
 wording or evidence changed, the disposition is `open`. If the category or
 severity changed, it is `reclassified`, with `rationale` and `evidence`. This
 mirrors how `resolved_by_change` answers the original id. A matching file,
