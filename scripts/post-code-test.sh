@@ -4389,6 +4389,75 @@ else
   echo "PASS: jira-post-failure-to-jira"
 fi
 
+# Every caller must guard tracing, including early failures before setup ends.
+for _trace_outcome in noop failure; do
+  for _trace_auth in token client; do
+    for _trace_delivery in success failure; do
+      _trace_env=("${JIRA_CLIENT_ENV[@]}")
+      if [ "${_trace_auth}" = token ]; then
+        _trace_env=("JIRA_TOKEN=${JIRA_XTRACE_TOKEN_VALUE}" "FULLSEND_JIRA_TOKEN=${JIRA_XTRACE_TOKEN_VALUE}"
+          "JIRA_USER_EMAIL=${JIRA_XTRACE_EMAIL_VALUE}" "FULLSEND_JIRA_EMAIL=${JIRA_XTRACE_EMAIL_VALUE}")
+      fi
+      _trace_name="jira-trace-${_trace_outcome}-${_trace_auth}-${_trace_delivery}"
+      _trace_fail=""
+      [ "${_trace_delivery}" = failure ] && _trace_fail=1
+      if [ "${_trace_outcome}" = noop ]; then
+        JIRA_INT_XTRACE=1 JIRA_INT_NO_BRANCH=1 run_jira_int "${_trace_name}" github \
+          "${_trace_env[@]}" "MOCK_FULLSEND_FAIL=${_trace_fail}"
+        _trace_rc=0
+        _trace_marker="${JIRA_OUTCOME_MARKER}"
+        _trace_warning='Failed to post no-op comment'
+      else
+        JIRA_INT_XTRACE=1 JIRA_INT_RESULT_JSON="${JIRA_BRANCH_FAIL_RESULT}" \
+          run_jira_int "${_trace_name}" github "${_trace_env[@]}" \
+            CODE_ALLOWED_TARGET_BRANCHES=main "MOCK_FULLSEND_FAIL=${_trace_fail}"
+        _trace_rc=1
+        _trace_marker="${JIRA_FAILURE_MARKER}"
+        _trace_warning='Post-code failure for TESTPROJ-42'
+      fi
+      _trace_write_rc=0
+      [ "${_trace_delivery}" = failure ] && _trace_write_rc=1
+      if [ "${JIRA_INT_RC}" -ne "${_trace_rc}" ] \
+         || ! grep -q '^+ SCRIPT_DIR_POST=' "${JIRA_INT_OUT}" \
+         || [ "$(grep -c '^fullsend issues post-comment' "${JIRA_INT_FULLSEND_LOG}")" -ne 1 ] \
+         || ! grep -qF -- "${_trace_marker}" "${JIRA_INT_FULLSEND_LOG}" \
+         || ! awk -v rc="${_trace_write_rc}" '
+           /^\++ post_jira_code_comment / { writer=1 }
+           writer && /^\++ return / { if ($NF == rc) restored=1; writer=0 }
+           END { exit !restored }
+         ' "${JIRA_INT_OUT}" \
+         || grep -qF "${JIRA_XTRACE_TOKEN_VALUE}" "${JIRA_INT_OUT}" \
+         || grep -qF "${JIRA_XTRACE_EMAIL_VALUE}" "${JIRA_INT_OUT}" \
+         || grep -qF "${JIRA_CLIENT_SECRET_VALUE}" "${JIRA_INT_OUT}"; then
+        jira_int_fail "${_trace_name}" "wrong status/write/marker, missing restored trace, or credential in trace"
+      elif { [ "${_trace_delivery}" = failure ] && ! grep -qF "${_trace_warning}" "${JIRA_INT_OUT}"; } \
+           || { [ "${_trace_delivery}" = success ] && grep -qF "${_trace_warning}" "${JIRA_INT_OUT}"; }; then
+        jira_int_fail "${_trace_name}" "delivery failure must warn; successful delivery must not"
+      else
+        echo "PASS: ${_trace_name}"
+      fi
+    done
+  done
+done
+
+# A saved OAuth secret appearing in failure detail is redacted literally.
+# The invalid target branch is included in the branch-validation diagnostic.
+_jira_secret_result="$(jq -cn --arg branch "${JIRA_CLIENT_SECRET_VALUE}" '{target_branch:$branch}')"
+for _secret_padding in plain padded; do
+  _secret_env="${JIRA_CLIENT_SECRET_VALUE}"
+  [ "${_secret_padding}" = padded ] && _secret_env="  ${JIRA_CLIENT_SECRET_VALUE}"$'\n'
+  JIRA_INT_RESULT_JSON="${_jira_secret_result}" run_jira_int "jira-failure-redacts-client-secret-${_secret_padding}" github \
+    "${JIRA_CLIENT_ENV[@]}" "FULLSEND_JIRA_CLIENT_SECRET=${_secret_env}" CODE_ALLOWED_TARGET_BRANCHES=main
+  if [ "${JIRA_INT_RC}" -ne 1 ] \
+     || grep -qF "${JIRA_CLIENT_SECRET_VALUE}" "${JIRA_INT_FULLSEND_LOG}" \
+     || ! grep -qF '[REDACTED]' "${JIRA_INT_FULLSEND_LOG}" \
+     || ! grep -qF -- "${JIRA_FAILURE_MARKER}" "${JIRA_INT_FULLSEND_LOG}"; then
+    jira_int_fail "jira-failure-redacts-client-secret-${_secret_padding}" "expected redacted failure body with original status"
+  else
+    echo "PASS: jira-failure-redacts-client-secret-${_secret_padding}"
+  fi
+done
+
 # The shared writer retains upstream OAuth support on both new outcomes.
 for _jira_client_outcome in noop failure; do
   if [ "${_jira_client_outcome}" = noop ]; then

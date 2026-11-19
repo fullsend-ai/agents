@@ -415,7 +415,11 @@ vars. Key differences from single-forge setup:
   idempotent methods. There is no additional shell retry. A rerun after an
   ambiguous comment POST failure relies on the sticky-marker property lookup
   to find a comment the earlier request may have created. Every Jira
-  write has the Jira token redacted from its text.
+  write has the Jira token and saved OAuth client secret redacted from its text.
+  Failure details use the same bounded regex/literal-token sanitizer as forge
+  failure comments, rather than `scan_public_text`. Failures can occur before
+  the public-text scanner is initialized; the scanner remains required for
+  optional agent context on the no-op path.
 - **Policy** is `policies/base.yaml` for all forges. Network access is
   provided by profiles (`fullsend-gitlab-code` for GitLab). Custom
   harnesses using `base:` composition should override at the forge level

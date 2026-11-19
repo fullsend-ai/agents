@@ -118,7 +118,7 @@ elif [[ -n "${JIRA_TOKEN:-}${JIRA_USER_EMAIL:-}${FULLSEND_JIRA_TOKEN:-}${FULLSEN
   # exported by bash, so -x must be re-applied explicitly across the re-exec.
   # That makes every credential expansion after this point a trace hazard,
   # so each one is guarded — the ::add-mask:: pair below, and
-  # post_jira_stage_update, which suspends xtrace for the whole CLI call.
+  # the shared Jira writer, which suspends xtrace for every comment call.
   _jira_bash_flags=()
   (( _jira_xtrace_was_on )) && _jira_bash_flags+=(-x)
   exec env -u JIRA_TOKEN -u JIRA_USER_EMAIL -u FULLSEND_JIRA_TOKEN -u FULLSEND_JIRA_EMAIL \
@@ -3662,6 +3662,15 @@ JIRA_OUTCOME_MARKER="<!-- fullsend:code-agent-outcome -->"
 JIRA_FAILURE_MARKER="<!-- fullsend:code-agent-failure -->"
 
 post_jira_code_comment() {
+  local _comment_xtrace=0 _comment_rc=0
+  [[ $- == *x* ]] && _comment_xtrace=1
+  set +x
+  _post_jira_code_comment_inner "$@" || _comment_rc=$?
+  (( _comment_xtrace )) && set -x
+  return "${_comment_rc}"
+}
+
+_post_jira_code_comment_inner() {
   local marker="$1"
   local body="$2"
 
@@ -3709,6 +3718,8 @@ post_jira_code_comment() {
 
   # Defense in depth: the text may carry agent-written context.
   body="$(_redact_literal_token "${body}" "${_jira_token_saved}")"
+  body="$(_redact_literal_token "${body}" "${_jira_client_secret_saved}")"
+  body="$(_redact_literal_token "${body}" "${_JIRA_AUTH_CLIENT_SECRET:-}")"
 
   # The credentials reach the CLI through FULLSEND_JIRA_TOKEN and, for a
   # bot user only, FULLSEND_JIRA_EMAIL, or through FULLSEND_JIRA_CLIENT_ID
