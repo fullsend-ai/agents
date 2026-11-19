@@ -141,7 +141,7 @@ check_validation_loop_at_path() {
     # Allow inheritance only when schema is YAML null or empty string AND there is a usable top-level schema
     # Forge and overlays are mutually exclusive (validateOverlays). Each merges with top-level (mergeValidationLoop).
     # Overlay-to-overlay inheritance is not modeled (stricter repo policy).
-    if [[ "${per_location_type}" == '!!null' || -z "${per_location_value}" ]]; then
+    if [[ "${per_location_type}" == *"null"* && "${per_location_type}" != *"str"* ]] || [[ -z "${per_location_value}" ]]; then
       # Check if top-level schema exists AND is usable (non-empty, non-null)
       local top_level_has_schema
       top_level_has_schema="$(yq '.validation_loop | has("schema")' "${harness}")" || {
@@ -715,7 +715,7 @@ test_negative_fixtures() {
     "absolute-schema-path.yaml:test_schema_files_exist_and_valid:absolute-schema-path\.yaml.*schema path must be relative.*not absolute"
     "schema-internal-dotdot-path.yaml:test_schema_files_exist_and_valid:schema-internal-dotdot-path\.yaml.*schema path contains.*\\..*traversal.*not allowed"
     "forge-literal-null-schema.yaml:test_schema_files_exist_and_valid:forge-literal-null-schema\.yaml.*schema file not found"
-    "examples-harness-negative/schema-traversal-to-sibling-example.yaml:test_schema_files_exist_and_valid:schema-traversal-to-sibling-example\.yaml.*schema path escapes bundle root via"
+    "schema-traversal-to-sibling-example.yaml:test_schema_files_exist_and_valid:schema-traversal-to-sibling-example\.yaml.*schema path escapes bundle root via"
   )
 
   for fixture_spec in "${expected_failures[@]}"; do
@@ -724,6 +724,12 @@ test_negative_fixtures() {
     local test_func="${rest%%:*}"
     local expected_message="${rest#*:}"
     local fixture_file="${fixtures_dir}/${fixture_name}"
+
+    # Check if fixture is in bad-examples subdirectory (for symmetric layout)
+    local bad_examples_dir="${SCRIPT_DIR}/test-fixtures/harness-config-bad-examples"
+    if [[ "${fixture_name}" == *"-example.yaml" ]] && [[ -f "${bad_examples_dir}/${fixture_name}" ]]; then
+      fixture_file="${bad_examples_dir}/${fixture_name}"
+    fi
 
     if [[ ! -f "${fixture_file}" ]]; then
       echo "Missing fixture: ${fixture_name}"
@@ -806,8 +812,8 @@ test_negative_fixtures() {
       # This makes the containment check work: resolve_root is bundle_dir, normalized path ../example-other/...
       # resolves to parent_dir/example-other which shares the bundle prefix but violates the directory boundary
       output="$(HARNESS_DIR="${bundle_dir}" REPO_ROOT="${bundle_dir}" ${test_func} 2>&1)" || exit_code=$?
-    # Special handling for examples-harness-negative fixtures to test examples/*/harness validation
-    elif [[ "${fixture_name}" == *"-example.yaml" ]] && [[ "${fixture_file}" == *"examples-harness-negative"* ]]; then
+    # Special handling for examples negative fixtures to test examples/*/harness validation
+    elif [[ "${fixture_name}" == *"-example.yaml" ]] && [[ "${fixture_file}" == *"harness-config-bad-examples"* ]]; then
       # This is an examples/*/harness negative fixture
       # Create examples/test-example/ and examples/test-example-other/ structures
       local parent_dir="${test_dir}/examples"
@@ -818,12 +824,8 @@ test_negative_fixtures() {
         found_error=1
         continue
       }
-      # The fixture was copied with its subdirectory path (e.g., examples-harness-negative/file.yaml)
-      # Extract just the base filename for the target
-      local base_fixture_name
-      base_fixture_name="$(basename "${fixture_name}")"
       # Move the fixture to the test-example/harness directory
-      mv "${test_dir}/${fixture_name}" "${test_example_dir}/harness/${base_fixture_name}" || {
+      mv "${test_dir}/${fixture_name}" "${test_example_dir}/harness/${fixture_name}" || {
         echo "Failed to move examples fixture to test-example/harness directory"
         found_error=1
         continue
@@ -876,7 +878,6 @@ test_positive_fixtures() {
     "forge-schema-only-empty-override.yaml"
     "forge-same-script-empty-schema.yaml"
     "overlay-schema-only-empty-with-inherited-script.yaml"
-    "schema-with-env-var.yaml"
     "forge-empty-schema-inherits-top-level.yaml"
     "schema-with-consecutive-dots.yaml"
   )
@@ -926,9 +927,8 @@ test_positive_fixtures() {
           found_error=1
           continue
         }
-        # Replace the placeholder path with the actual absolute path
-        # Use sed with | as delimiter since path contains /
-        sed -i "s|/tmp/shared/schemas/test-schema.json|${actual_schema_path}|g" \
+        # Replace the placeholder path with the actual absolute path using yq (portable, safe from sed injection)
+        yq -i ".validation_loop.schema = \"${actual_schema_path}\"" \
           "${test_dir}/examples/test-harness/harness/${fixture_name}" || {
           echo "Failed to modify fixture YAML with absolute path"
           found_error=1
@@ -1056,11 +1056,11 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
 
   if [[ ${FAILURES} -eq 0 ]]; then
     echo
-    echo "✓ All harness config invariants pass"
+    echo "All tests passed"
     exit 0
   else
     echo
-    echo "✗ ${FAILURES} test(s) failed"
+    echo "${FAILURES} test(s) failed"
     exit 1
   fi
 fi

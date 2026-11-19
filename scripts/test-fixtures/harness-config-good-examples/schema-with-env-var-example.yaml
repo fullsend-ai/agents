@@ -1,0 +1,7 @@
+---
+# Positive fixture: examples/*/harness allows ${VAR} in schema paths
+# (harness/ files skip ${VAR} paths during lint time, examples/ files do the same)
+# This demonstrates that environment variables in schema paths are allowed in both contexts
+validation_loop:
+  script: scripts/validate-output-schema.sh
+  schema: ${FULLSEND_DIR}/schemas/test-schema.json
