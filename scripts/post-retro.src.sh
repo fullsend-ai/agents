@@ -88,8 +88,18 @@ esac
 echo "Mode: ${RETRO_MODE}"
 
 # Read the allowlist from config.yaml. The config repo is checked out
-# at the forge-specific workspace directory by the reusable workflow.
-CONFIG_WORKSPACE="$(forge_get_config_workspace)"
+# at the forge-specific workspace directory by the reusable workflow. For a
+# Jira tracker, the allowlist and primary project are read from FULLSEND_DIR,
+# the directory the fullsend CLI and the Jira operations use, so the policy
+# applied here is the policy the CLI enforces.
+FULLSEND_TRACKER="${FULLSEND_TRACKER:-${FULLSEND_FORGE}}"
+TRACKER_PROVIDER="${FULLSEND_TRACKER}"
+ALLOW_TARGETS_KEY="tracker.${TRACKER_PROVIDER}.allowed_targets"
+if [[ "${FULLSEND_TRACKER}" == "jira" && -n "${FULLSEND_DIR:-}" ]]; then
+  CONFIG_WORKSPACE="${FULLSEND_DIR}"
+else
+  CONFIG_WORKSPACE="$(forge_get_config_workspace)"
+fi
 CONFIG_FILE="${CONFIG_WORKSPACE}/config.yaml"
 if [[ ! -f "${CONFIG_FILE}" && ! -f "${CONFIG_WORKSPACE}/config.base.yaml" ]]; then
   # Per-repo mode: config is under .fullsend/
@@ -101,9 +111,6 @@ fi
 # otherwise tracker is inherited from the base. A null or bare `tracker:` in
 # the overlay counts as unset (it inherits the base), matching that merge.
 BASE_CONFIG_FILE="$(dirname "${CONFIG_FILE}")/config.base.yaml"
-FULLSEND_TRACKER="${FULLSEND_TRACKER:-${FULLSEND_FORGE}}"
-TRACKER_PROVIDER="${FULLSEND_TRACKER}"
-ALLOW_TARGETS_KEY="tracker.${TRACKER_PROVIDER}.allowed_targets"
 
 # ALLOWED_SCOPES holds GitHub orgs or GitLab groups (a scope admits every
 # repository under it, including GitLab subgroups); ALLOWED_REPOS holds
@@ -112,6 +119,7 @@ ALLOW_TARGETS_KEY="tracker.${TRACKER_PROVIDER}.allowed_targets"
 # projects. Match that same policy here before invoking the CLI.
 ALLOWED_SCOPES=""
 ALLOWED_REPOS=""
+JIRA_PRIMARY_PROJECT=""
 JIRA_ALLOWLIST_STATE="unset"
 if [[ -f "${CONFIG_FILE}" || -f "${BASE_CONFIG_FILE}" ]] && ! command -v yq &>/dev/null; then
   echo "::warning::yq not found — cannot read ${ALLOW_TARGETS_KEY} from config; cross-repo issue creation disabled"
@@ -146,14 +154,15 @@ if command -v yq &>/dev/null; then
     fi
   done
   # Warn when a tracker mapping selects other or several providers, since it
-  # then grants no cross-repo targets.
+  # then grants no cross-repo targets. For Jira the primary project is still
+  # permitted, because it is not a cross-project grant.
   TRACKER_PROVIDERS=$(jq -r '
     (if type == "object" then . else {} end) as $t
     | [("github", "gitlab", "jira") | select($t[.] != null)] | join(",")
   ' <<<"${TRACKER_JSON}" 2>/dev/null || true)
   if [[ -n "${TRACKER_PROVIDERS}" && "${TRACKER_PROVIDERS}" != "${TRACKER_PROVIDER}" ]]; then
     echo "::warning::tracker mapping selects provider(s) '${TRACKER_PROVIDERS}' but FULLSEND_TRACKER requires only '${TRACKER_PROVIDER}' — no cross-repo targets granted"
-    if [[ "${JIRA_ALLOWLIST_STATE}" != "failed" ]]; then
+    if [[ "${TRACKER_PROVIDER}" != "jira" && "${JIRA_ALLOWLIST_STATE}" != "failed" ]]; then
       JIRA_ALLOWLIST_STATE="failed"
     fi
   fi
@@ -185,33 +194,49 @@ if command -v yq &>/dev/null; then
   ' <<<"${TRACKER_JSON}" 2>/dev/null || true)
   if [[ "${TRACKER_PROVIDER}" == "jira" && "${JIRA_ALLOWLIST_STATE}" != "failed" ]]; then
     if [[ "${TRACKER_JSON}" != "null" && -n "${TRACKER_JSON}" ]]; then
-      projects_status=$(jq -r '
-        if type != "object" or (has("jira") | not) or (.jira | type != "object") then
-          "failed"
-        elif (.jira | has("allowed_targets")) then
-          if (.jira.allowed_targets | type == "object") and (.jira.allowed_targets | has("projects")) then
-            if (.jira.allowed_targets.projects | type == "array") then
-              "configured"
+      # The primary project and the target policy both come from the already
+      # resolved TRACKER_JSON, so the whole-object tracker merge is applied
+      # once and this gate cannot resurrect a base-layer project.
+      JIRA_PRIMARY_PROJECT=$(jq -r '
+        if type == "object" and (.jira | type) == "object" and (.jira.project | type) == "string"
+        then .jira.project | ascii_upcase
+        else ""
+        end
+      ' <<<"${TRACKER_JSON}" 2>/dev/null || echo "")
+      if [[ "${TRACKER_PROVIDERS}" != "jira" ]]; then
+        # A mapping that also names another provider grants no cross-project
+        # targets, but the Jira primary project is not a cross-project grant.
+        JIRA_ALLOWLIST_STATE="unset"
+        ALLOWED_REPOS=""
+      else
+        projects_status=$(jq -r '
+          if type != "object" or (has("jira") | not) or (.jira | type != "object") then
+            "failed"
+          elif (.jira | has("allowed_targets")) then
+            if (.jira.allowed_targets | type == "object") and (.jira.allowed_targets | has("projects")) then
+              if (.jira.allowed_targets.projects | type == "array") then
+                "configured"
+              else
+                "failed"
+              end
+            elif (.jira.allowed_targets == null) then
+              "unset"
+            elif (.jira.allowed_targets | type == "object") and ((.jira.allowed_targets | has("projects")) | not) then
+              "unset"
             else
               "failed"
             end
-          elif (.jira.allowed_targets == null) then
-            "unset"
-          elif (.jira.allowed_targets | type == "object") and ((.jira.allowed_targets | has("projects")) | not) then
-            "unset"
           else
-            "failed"
+            "unset"
           end
+        ' <<<"${TRACKER_JSON}" 2>/dev/null || echo "failed")
+        if [[ "${projects_status}" == "configured" ]]; then
+          JIRA_ALLOWLIST_STATE="configured"
+        elif [[ "${projects_status}" == "failed" ]]; then
+          JIRA_ALLOWLIST_STATE="failed"
         else
-          "unset"
-        end
-      ' <<<"${TRACKER_JSON}" 2>/dev/null || echo "failed")
-      if [[ "${projects_status}" == "configured" ]]; then
-        JIRA_ALLOWLIST_STATE="configured"
-      elif [[ "${projects_status}" == "failed" ]]; then
-        JIRA_ALLOWLIST_STATE="failed"
-      else
-        JIRA_ALLOWLIST_STATE="unset"
+          JIRA_ALLOWLIST_STATE="unset"
+        fi
       fi
     else
       JIRA_ALLOWLIST_STATE="failed"
@@ -233,24 +258,11 @@ is_target_allowed() {
         if [[ -n "${ALLOWED_REPOS}" ]] && echo "${ALLOWED_REPOS}" | grep -qiFx "${target_repo}"; then
           return 0
         fi
-        local primary_project
-        primary_project=$(yq -r '.tracker.jira.project // empty' "${CONFIG_FILE}" 2>/dev/null || true)
-        if [[ -z "${primary_project}" && -f "${BASE_CONFIG_FILE}" ]]; then
-          primary_project=$(yq -r '.tracker.jira.project // empty' "${BASE_CONFIG_FILE}" 2>/dev/null || true)
-        fi
-        [[ -n "${primary_project}" && "${primary_project,,}" == "${target_repo,,}" ]] && return 0
+        [[ -n "${JIRA_PRIMARY_PROJECT}" && "${JIRA_PRIMARY_PROJECT}" == "${target_repo^^}" ]] && return 0
         return 1
         ;;
       unset)
-        if [[ ! -f "${CONFIG_FILE}" && ! -f "${BASE_CONFIG_FILE}" ]]; then
-          return 1
-        fi
-        local primary_project
-        primary_project=$(yq -r '.tracker.jira.project // empty' "${CONFIG_FILE}" 2>/dev/null || true)
-        if [[ -z "${primary_project}" && -f "${BASE_CONFIG_FILE}" ]]; then
-          primary_project=$(yq -r '.tracker.jira.project // empty' "${BASE_CONFIG_FILE}" 2>/dev/null || true)
-        fi
-        [[ -n "${primary_project}" && "${primary_project,,}" == "${target_repo,,}" ]]
+        [[ -n "${JIRA_PRIMARY_PROJECT}" && "${JIRA_PRIMARY_PROJECT}" == "${target_repo^^}" ]]
         return $?
         ;;
       *)
@@ -308,7 +320,11 @@ if [[ "${PROPOSAL_COUNT}" -gt 0 ]]; then
 fi
 echo "All ${PROPOSAL_COUNT} proposal(s) validated"
 
-JIRA_CREATEMETA_VALIDATED="false"
+# Three-state: "unknown" until tracker_validate_create runs, then "ok" or
+# "failed". A failed check is not retried for the remaining proposals, so a
+# misconfigured project costs one CLI/createmeta probe per run, not one per
+# proposal.
+JIRA_CREATEMETA_STATE="unknown"
 
 ISSUE_LINKS=""
 EVIDENCE_NOTES=""
@@ -390,7 +406,14 @@ if [[ "${PROPOSAL_COUNT}" -gt 0 ]]; then
     fi
 
     # Build the issue body from the four sections, plus the dedup receipt.
-    BODY=$(jq -r --arg url "${ORIGINATING_URL}" --arg tracker "${FULLSEND_TRACKER}" --arg tr "${TARGET_REPO}" --arg forge "${FULLSEND_FORGE}" --arg gl_host "${GITLAB_HOST:-${CI_SERVER_HOST:-}}" "
+    # Numeric forge references become full URLs. On GitHub use the run's
+    # server origin (GITHUB_SERVER_URL), so a GitHub Enterprise deployment
+    # links to its own repos rather than github.com.
+    GH_ORIGIN=""
+    if [[ "${FULLSEND_FORGE}" == "github" ]]; then
+      GH_ORIGIN=$(_github_server_url 2>/dev/null || echo "https://github.com")
+    fi
+    BODY=$(jq -r --arg url "${ORIGINATING_URL}" --arg tracker "${FULLSEND_TRACKER}" --arg tr "${TARGET_REPO}" --arg forge "${FULLSEND_FORGE}" --arg gl_host "${GITLAB_HOST:-${CI_SERVER_HOST:-}}" --arg gh_origin "${GH_ORIGIN}" "
       .proposals[$i] |
       \"## What happened\n\n\" + .what_happened +
       \"\n\n## What could go better\n\n\" + .what_could_go_better +
@@ -406,7 +429,7 @@ if [[ "${PROPOSAL_COUNT}" -gt 0 ]]; then
               (if \$forge == \"gitlab\" then
                 (if (\$gl_host // \"\") != \"\" then \"https://\" + \$gl_host + \"/\" + \$tr + \"/-/issues/\" + tostring
                  else \$tr + \"#\" + tostring end)
-               else \"https://github.com/\" + \$tr + \"/issues/\" + tostring end)
+               else (if \$gh_origin != \"\" then \$gh_origin else \"https://github.com\" end) + \"/\" + \$tr + \"/issues/\" + tostring end)
              else \"#\" + tostring end)
           else tostring end
         ) | join(\", \")) +
@@ -425,14 +448,18 @@ if [[ "${PROPOSAL_COUNT}" -gt 0 ]]; then
 
     # Jira rerun protection: skip if an issue with the same summary exists.
     if [[ "${FULLSEND_TRACKER}" == "jira" ]]; then
-      if [[ "${JIRA_CREATEMETA_VALIDATED}" != "true" ]]; then
-        if ! tracker_validate_create; then
-          echo "::warning::Jira project validation failed for ${RETRO_JIRA_PROJECT} — cannot create issues"
-          FAILED_PROPOSALS="${FAILED_PROPOSALS}
-- **${TITLE}** (\`${RETRO_JIRA_PROJECT}\`)"
-          continue
+      if [[ "${JIRA_CREATEMETA_STATE}" == "unknown" ]]; then
+        if tracker_validate_create; then
+          JIRA_CREATEMETA_STATE="ok"
+        else
+          JIRA_CREATEMETA_STATE="failed"
         fi
-        JIRA_CREATEMETA_VALIDATED="true"
+      fi
+      if [[ "${JIRA_CREATEMETA_STATE}" != "ok" ]]; then
+        echo "::warning::Jira project validation failed for ${RETRO_JIRA_PROJECT} — cannot create issues"
+        FAILED_PROPOSALS="${FAILED_PROPOSALS}
+- **${TITLE}** (\`${RETRO_JIRA_PROJECT}\`)"
+        continue
       fi
 
       if ! EXISTING_URL=$(tracker_find_existing_issue "${TITLE}"); then

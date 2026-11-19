@@ -784,6 +784,18 @@ JIRA_TRIAGE_OPS_SH_LOADED=1
 [[ -n "${JIRA_AUTH_SH_LOADED:-}" ]] && return 0
 JIRA_AUTH_SH_LOADED=1
 
+# Emit a GitHub Actions masking command for a secret. Defined here rather
+# than in a caller's library so every bundle that sources Jira auth can mask
+# a minted token, whatever the agent. Percent signs, CR and LF are escaped
+# because an unescaped line break would end the workflow command.
+_jira_auth_gha_mask() {
+  local value="$1"
+  value="${value//%/%25}"
+  value="${value//$'\r'/%0D}"
+  value="${value//$'\n'/%0A}"
+  printf '::add-mask::%s\n' "${value}"
+}
+
 # Selected mode: "token", "client", or "none". Empty until jira_auth_select.
 JIRA_AUTH_MODE=""
 _JIRA_AUTH_CLIENT_ID=""
@@ -952,12 +964,12 @@ _jira_auth_mint_now() {
   # means the caller redirected stdout around the call.
   local main_out="/proc/$$/fd/1"
   if (( BASH_SUBSHELL == 0 )); then
-    _gha_mask "${token}"
+    _jira_auth_gha_mask "${token}"
   elif [[ -w "${main_out}" ]] && [[ -p "${main_out}" || -c "${main_out}" ]] \
     && ! [[ "${main_out}" -ef /dev/null ]]; then
-    _gha_mask "${token}" >> "${main_out}"
+    _jira_auth_gha_mask "${token}" >> "${main_out}"
   else
-    _gha_mask "${token}" >&2
+    _jira_auth_gha_mask "${token}" >&2
   fi
   [[ "${expires_in}" =~ ^[0-9]+$ ]] || expires_in=3600
   _JIRA_AUTH_ACCESS_TOKEN="${token}"

@@ -12,6 +12,11 @@
 #   RETRO_COMMENT   — The /retro comment text (empty for automatic triggers)
 #   FULLSEND_TRACKER — "github", "gitlab", or "jira" (defaults to FULLSEND_FORGE)
 #   FULLSEND_DIR    — .fullsend directory (required when FULLSEND_TRACKER=jira)
+#
+# When FULLSEND_TRACKER=jira, scripts/lib/jira-retro-ops.lib.sh (sourced
+# through retro-ops.lib.sh) also enforces JIRA_BASE_URL, RETRO_JIRA_PROJECT
+# and a Jira credential, and reads tracker.jira from FULLSEND_DIR's config.
+# RETRO_MODE=summary_only relaxes those requirements: no issue is filed.
 
 set -euo pipefail
 

@@ -58,14 +58,15 @@ See [Customizing with AGENTS.md](https://fullsend.sh/docs/guides/user/customizin
 | `RETRO_MODE` | Output mode. `all` creates issues and posts summary; `summary_only` disables issue creation and lists proposals in the summary; `issues_only` files issues without posting a summary. | `"all"` | `"all"`, `"summary_only"`, `"issues_only"` |
 | `RETRO_JIRA_PROJECT` | Jira project key where proposal issues are filed when `FULLSEND_TRACKER=jira`. | none (required for Jira issue creation) | Jira project key (e.g. `"PROJ"`) |
 | `RETRO_JIRA_ISSUE_TYPE` | Issue type name for created Jira issues. | `"Task"` | e.g. `"Task"`, `"Improvement"` |
-| `RETRO_JIRA_LABELS` | Comma-separated Jira labels retro applies to created issues. Set empty to create issues without labels. | `"ready-for-triage"` | Alphanumeric label names |
+| `RETRO_JIRA_LABELS` | Comma-separated Jira labels retro applies to created issues. Set empty to create issues without labels. | `"ready-for-triage"` | Label names of 1–64 characters from letters, digits, `.`, `_`, and `-` |
 | `JIRA_BASE_URL` | Jira Cloud base URL (`https://<site>.atlassian.net`). Required when `FULLSEND_TRACKER=jira` (except forge summary-only runs). | none | Jira Cloud URL (`https://<site>.atlassian.net`) |
 | `JIRA_TOKEN` | Jira API token. Required when `FULLSEND_TRACKER=jira` (except forge summary-only runs), unless using OAuth client credentials. | none | Secret string |
-| `FULLSEND_JIRA_CLIENT_ID` / `FULLSEND_JIRA_CLIENT_SECRET` | OAuth client credentials alternative to `JIRA_TOKEN`. Use with `JIRA_API_URL` set to the Atlassian API gateway. | none | Secret credentials |
-| `FULLSEND_DIR` | Directory containing `.fullsend/config.yaml` for CLI issue operations. Required when `FULLSEND_TRACKER=jira` (except forge summary-only runs). | none | Directory path |
+| `FULLSEND_JIRA_CLIENT_ID` / `FULLSEND_JIRA_CLIENT_SECRET` | OAuth client credentials alternative to `JIRA_TOKEN`. The access token they mint is sent through the Atlassian API gateway (`tracker.jira.api_url`). | none | Secret credentials |
+| `FULLSEND_DIR` | Directory containing `.fullsend/config.yaml` for CLI issue operations and the `tracker.jira` policy. Required when `FULLSEND_TRACKER=jira` (except forge summary-only runs). | none | Directory path |
 | `JIRA_USER_EMAIL` | Bot-user email. When set, uses Basic auth with email and token; when unset or empty, uses Bearer auth. | none | Email address |
-| `JIRA_API_URL` | REST API base URL. OAuth client credentials require `https://api.atlassian.com/ex/jira/<cloudId>`. | `JIRA_BASE_URL` | Jira site URL or Atlassian API gateway URL |
 | `RETRO_JIRA_MAX_PAGES` | Maximum pages fetched per paginated Jira read. | `50` | Positive integer |
+
+REST reads (create metadata, duplicate search, label updates) are routed the same way as the `fullsend` CLI, as described in [Jira REST routing](#jira-rest-routing).
 
 ### Jira integration
 
@@ -90,15 +91,32 @@ env:
     RETRO_JIRA_ISSUE_TYPE: Task
     RETRO_MODE: all
     JIRA_BASE_URL: ${JIRA_BASE_URL}
-    JIRA_TOKEN: ${JIRA_TOKEN}
-    # Instead of JIRA_TOKEN, configure both client credentials and the gateway URL:
+    # Fullsend exposes the Jira credentials to the runner as FULLSEND_JIRA_*.
+    JIRA_TOKEN: ${FULLSEND_JIRA_TOKEN}
+    # Instead of JIRA_TOKEN, configure both client credentials:
     # FULLSEND_JIRA_CLIENT_ID: ${FULLSEND_JIRA_CLIENT_ID}
     # FULLSEND_JIRA_CLIENT_SECRET: ${FULLSEND_JIRA_CLIENT_SECRET}
-    # JIRA_API_URL: ${JIRA_API_URL}
     # Bot user only. Omit for a service account token (Bearer auth).
-    JIRA_USER_EMAIL: ${JIRA_USER_EMAIL}
+    JIRA_USER_EMAIL: ${FULLSEND_JIRA_EMAIL}
     FULLSEND_DIR: ${FULLSEND_DIR}
 ```
+
+### Jira REST routing
+
+Retro routes its own REST reads and label writes exactly as the `fullsend` CLI routes Jira calls:
+
+- `tracker.jira.api_url` in `FULLSEND_DIR`'s config is the Atlassian gateway base. It defaults to `https://api.atlassian.com`.
+- The cloud ID is discovered from the site at `tracker.jira.base_url` (`<site>/_edge/tenant_info`); the lookup carries no credentials.
+- Every REST call goes to `<api_url>/ex/jira/<cloudId>/rest/api/3/...`.
+
+No `JIRA_API_URL` environment variable is read. When `tracker.jira.base_url` is set it must equal `JIRA_BASE_URL`, so reads and CLI writes cannot be split across tenants. The configuration is read from `FULLSEND_DIR`, the same directory the CLI reads, and an overlay that sets `tracker` replaces the preset's `tracker` block as a whole.
+
+For a PR/MR-close run, fullsend must also hand the Jira credentials to the
+runner: the overlay maps them from `FULLSEND_JIRA_TOKEN` and
+`FULLSEND_JIRA_EMAIL` (or the client credentials). If the dispatch supplies
+neither, retro stops with a credential error before filing any proposal.
+Passing Jira credentials to forge-originated runs that target Jira is tracked
+in [fullsend-ai/fullsend#2267](https://github.com/fullsend-ai/fullsend/issues/2267).
 
 Cross-project issue creation in Jira is governed by `tracker.jira.allowed_targets.projects` in `config.yaml`. The `tracker.jira` configuration in `config.yaml` (under `FULLSEND_DIR`) is required by the `fullsend` CLI for Jira issue operations; `RETRO_JIRA_PROJECT` must match `tracker.jira.project` or one of the allowed targets (case-insensitively). The configured primary project is always permitted; explicit allowed targets add other projects. When `allowed_targets.projects` is omitted, only the configured primary project is permitted. An explicit empty list (`projects: []`) therefore permits the primary project but no other projects. Missing config or a missing primary project denies issue creation.
 
@@ -112,8 +130,9 @@ for prerequisite issues. The post-script honors the targets of the
 `tracker.gitlab.allowed_targets.groups` and `repos` on GitLab (a group
 also covers its subgroups' projects), or `tracker.jira.allowed_targets.projects`
 on Jira. A `tracker` mapping for another provider, or one with more than one
-provider block, grants no cross-repo/cross-project targets (the post-script
-logs a warning naming the providers it found). The former
+provider block, grants no cross-repo targets (the post-script logs a warning
+naming the providers it found). For a Jira tracker that still permits the
+configured primary project, which is not a cross-project grant. The former
 `create_issues.allow_targets` key is no longer read and logs a
 warning if present; move `orgs` and `repos` to
 `tracker.github.allowed_targets`, `repos` to
@@ -121,6 +140,12 @@ warning if present; move `orgs` and `repos` to
 `projects` to `tracker.jira.allowed_targets`. Proposals targeting repos or
 projects outside the allowlist are skipped with a warning and surfaced in the
 summary comment so they can be filed manually.
+
+For a Jira tracker the policy is read from `FULLSEND_DIR`'s config, the same
+file the `fullsend` CLI reads, so the destination that passes this gate is the
+destination the CLI honors. The primary project and the target policy are
+taken from the merged `tracker` block only; a base-layer project is never
+re-added when the overlay replaces `tracker`.
 
 A configuration preset (`config.base.yaml`, beside `config.yaml`) is
 composed beneath the overlay with fullsend's whole-object `tracker` merge:

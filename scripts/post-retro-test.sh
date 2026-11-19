@@ -126,6 +126,18 @@ if [[ "\$1" == "issues" ]] && [[ "\$2" == "create" ]]; then
   exit 0
 fi
 if [[ "\$1" == "issues" ]] && [[ "\$2" == "post-comment" ]]; then
+  if [[ "\$3" == "--help" ]]; then
+    echo "Usage: fullsend issues post-comment [flags]"
+    case "\${FULLSEND_MOCK_KEEP_HISTORY:-}" in
+      supported)
+        echo "  --keep-history          append previous content as collapsed history blocks (set false to replace in-place) (default true)"
+        ;;
+      deprecated)
+        echo "  --keep-history          deprecated: no effect (every result is posted as a new comment; sticky comments were removed) (default true)"
+        ;;
+    esac
+    exit 0
+  fi
   cat >> "${FULLSEND_STDIN_LOG}"
   echo '{"id":10,"url":"https://mock.atlassian.net/browse/PROJ-10#comment-1"}'
   exit 0
@@ -149,8 +161,18 @@ for arg in "$@"; do
   fi
 done
 
+# Jira Cloud tenant info (cloud ID discovery, unauthenticated)
+if [[ "${URL}" == *"/_edge/tenant_info" ]]; then
+  if [[ "${JIRA_MOCK_TENANT_INFO_FAIL:-}" == "1" ]]; then
+    echo "curl: (22) The requested URL returned error: 500" >&2
+    exit 22
+  fi
+  echo '{"cloudId":"11111111-2222-3333-4444-555555555555","url":"https://mock.atlassian.net"}'
+  exit 0
+fi
+
 # Jira Cloud REST API
-if [[ "${URL}" == *"atlassian.net/rest/api/3"* ]]; then
+if [[ "${URL}" == *"/rest/api/3/"* ]]; then
   case "${URL}" in
     */issue/createmeta/PROJ/issuetypes\?*)
       if [[ "${JIRA_MOCK_CREATEMETA_PAGES:-}" == "1" ]]; then
@@ -2464,14 +2486,6 @@ fi
 
 JIRA_WORKSPACE="${TMPDIR}/jira-workspace"
 mkdir -p "${JIRA_WORKSPACE}"
-cat > "${JIRA_WORKSPACE}/config.yaml" <<CFGEOF
-version: "1"
-tracker:
-  jira:
-    allowed_targets:
-      projects:
-        - PROJ
-CFGEOF
 export GITHUB_WORKSPACE="${JIRA_WORKSPACE}"
 
 export FULLSEND_FORGE="github"
@@ -2479,17 +2493,21 @@ export GH_TOKEN="fake-token"
 export ORIGINATING_URL="https://github.com/test-org/test-repo/pull/10"
 export FULLSEND_TRACKER="jira"
 export JIRA_BASE_URL="https://mock.atlassian.net"
-export JIRA_API_URL="https://mock.atlassian.net"
 mkdir -p "${TMPDIR}/dot-fullsend"
+# For a Jira tracker the allowlist and primary project are read from
+# FULLSEND_DIR, the directory the fullsend CLI reads.
 cat > "${TMPDIR}/dot-fullsend/config.yaml" <<CFGEOF
 tracker:
   jira:
     base_url: https://mock.atlassian.net
+    project: PROJ
+    allowed_targets:
+      projects:
+        - PROJ
 CFGEOF
 export JIRA_USER_EMAIL="bot@mock.example"
 export JIRA_TOKEN="fake-jira-token"
 export FULLSEND_DIR="${TMPDIR}/dot-fullsend"
-export JIRA_API_URL="https://mock.atlassian.net"
 export FULLSEND_JIRA_CLIENT_ID=""
 export FULLSEND_JIRA_CLIENT_SECRET=""
 export RETRO_JIRA_PROJECT="PROJ"
@@ -2794,7 +2812,6 @@ export GH_TOKEN="fake-token"
 export ORIGINATING_URL="https://github.com/test-org/test-repo/pull/10"
 export FULLSEND_TRACKER="jira"
 export JIRA_BASE_URL="https://mock.atlassian.net"
-export JIRA_API_URL="https://mock.atlassian.net"
 export JIRA_USER_EMAIL="bot@mock.example"
 export JIRA_TOKEN="fake-jira-token"
 export FULLSEND_DIR="${TMPDIR}/dot-fullsend"
@@ -2803,6 +2820,10 @@ cat > "${FULLSEND_DIR}/config.yaml" <<CFGEOF
 tracker:
   jira:
     base_url: https://mock.atlassian.net
+    project: PROJ
+    allowed_targets:
+      projects:
+        - PROJ
 CFGEOF
 export RETRO_JIRA_PROJECT="PROJ"
 export RETRO_MODE="all"
@@ -2829,7 +2850,7 @@ fi
 unset JIRA_MOCK_LABEL_FAIL
 
 # 12. An explicit empty list denies other projects when the primary project differs.
-cat > "${JIRA_WORKSPACE}/config.yaml" <<CFGEOF
+cat > "${FULLSEND_DIR}/config.yaml" <<CFGEOF
 version: "1"
 tracker:
   jira:
@@ -2850,7 +2871,7 @@ else
 fi
 
 # 12b. Explicit empty targets keep the primary project and exclude others.
-cat > "${JIRA_WORKSPACE}/config.yaml" <<CFGEOF
+cat > "${FULLSEND_DIR}/config.yaml" <<CFGEOF
 version: "1"
 tracker:
   jira:
@@ -2864,7 +2885,7 @@ run_test_stdout "jira/allowlist-empty-only-revokes-cross-project" \
 
 # Without an explicit cross-project list, RETRO_JIRA_PROJECT must be the
 # configured primary project; the CLI itself rejects any other project.
-cat > "${JIRA_WORKSPACE}/config.yaml" <<CFGEOF
+cat > "${FULLSEND_DIR}/config.yaml" <<CFGEOF
 version: "1"
 tracker:
   jira:
@@ -2875,14 +2896,14 @@ run_test_stdout "jira/allowlist-unlisted-primary-mismatch-denies" \
   "${FIXTURE_ONE_PROPOSAL}" \
   "Skipping issue creation in Jira project 'PROJ'"
 export RETRO_JIRA_PROJECT="PROJ"
-cat > "${JIRA_WORKSPACE}/config.yaml" <<CFGEOF
+cat > "${FULLSEND_DIR}/config.yaml" <<CFGEOF
 version: "1"
 tracker:
   jira:
     project: PROJ
 CFGEOF
 
-cat > "${JIRA_WORKSPACE}/config.yaml" <<CFGEOF
+cat > "${FULLSEND_DIR}/config.yaml" <<CFGEOF
 version: "1"
 tracker:
   jira:
@@ -2902,13 +2923,13 @@ else
 fi
 
 # 13. Allowlist: config parse error fails closed
-printf 'version: "1"\ntracker: [invalid yaml\n' > "${JIRA_WORKSPACE}/config.yaml"
+printf 'version: "1"\ntracker: [invalid yaml\n' > "${FULLSEND_DIR}/config.yaml"
 run_test_stdout "jira/allowlist-parse-failure-denies" \
   "${FIXTURE_ONE_PROPOSAL}" \
   "cannot parse config.yaml — cross-repo issue creation disabled"
 
 # 14. Allowlist: missing yq fails closed
-cat > "${JIRA_WORKSPACE}/config.yaml" <<CFGEOF
+cat > "${FULLSEND_DIR}/config.yaml" <<CFGEOF
 version: "1"
 tracker:
   jira:
@@ -2949,31 +2970,77 @@ rm -rf "${MOCK_NO_YQ_BIN}" "${MOCK_BIN_NO_YQ}"
 export PATH="${MOCK_BIN}:${SAVED_PATH}"
 
 # 15. Allowlist: unset config denies issue creation
-rm -f "${JIRA_WORKSPACE}/config.yaml"
-rm -f "${JIRA_WORKSPACE}/config.base.yaml"
+rm -f "${FULLSEND_DIR}/config.yaml"
+rm -f "${FULLSEND_DIR}/config.base.yaml"
 run_test_stdout "jira/allowlist-unset-denies" \
   "${FIXTURE_ONE_PROPOSAL}" \
   "Skipping issue creation in Jira project 'PROJ'"
 
-# 15b. A missing or empty policy object does not inherit forge allowlist grants.
-mkdir -p "${JIRA_WORKSPACE}/.fullsend"
-cat > "${JIRA_WORKSPACE}/config.yaml" <<CFGEOF
-version: "1"
-tracker:
-  jira: {}
-CFGEOF
-cat > "${FULLSEND_DIR}/config.yaml" <<CFGEOF
+# 15b. An overlay that sets tracker replaces the preset's tracker as a whole
+# object, so a Jira tracker without a primary project grants nothing even
+# when config.base.yaml names one (no base-layer fallback).
+cat > "${FULLSEND_DIR}/config.base.yaml" <<CFGEOF
 tracker:
   jira:
     base_url: https://mock.atlassian.net
     project: PROJ
 CFGEOF
-cp "${JIRA_WORKSPACE}/config.yaml" "${JIRA_WORKSPACE}/.fullsend/config.yaml"
-run_test_stdout "jira/allowlist-no-allowed-targets-denies" \
+cat > "${FULLSEND_DIR}/config.yaml" <<CFGEOF
+version: "1"
+tracker:
+  jira: {}
+CFGEOF
+run_test_stdout "jira/allowlist-overlay-without-project-denies" \
   "${FIXTURE_ONE_PROPOSAL}" \
   "Skipping issue creation in Jira project 'PROJ'"
 
-cat > "${JIRA_WORKSPACE}/config.yaml" <<CFGEOF
+cat > "${FULLSEND_DIR}/config.yaml" <<CFGEOF
+version: "1"
+tracker:
+  jira:
+    allowed_targets:
+      projects: []
+CFGEOF
+run_test_stdout "jira/allowlist-empty-targets-no-project-denies" \
+  "${FIXTURE_ONE_PROPOSAL}" \
+  "Skipping issue creation in Jira project 'PROJ'"
+
+# A null tracker inherits the preset, including its primary project.
+cat > "${FULLSEND_DIR}/config.yaml" <<CFGEOF
+version: "1"
+tracker:
+CFGEOF
+run_test_stdout "jira/allowlist-null-tracker-inherits-primary" \
+  "${FIXTURE_ONE_PROPOSAL}" \
+  "Created: https://mock.atlassian.net/browse/PROJ-100"
+rm -f "${FULLSEND_DIR}/config.base.yaml"
+
+# A Jira tracker that also names another provider grants no cross-project
+# targets, but keeps permitting the primary project.
+cat > "${FULLSEND_DIR}/config.yaml" <<CFGEOF
+version: "1"
+tracker:
+  github:
+    allowed_targets:
+      orgs:
+        - test-org
+  jira:
+    project: PROJ
+    allowed_targets:
+      projects:
+        - OTHER
+CFGEOF
+export RETRO_JIRA_PROJECT="PROJ"
+run_test_stdout "jira/allowlist-multi-provider-primary-allowed" \
+  "${FIXTURE_ONE_PROPOSAL}" \
+  "Created: https://mock.atlassian.net/browse/PROJ-100"
+export RETRO_JIRA_PROJECT="OTHER"
+run_test_stdout "jira/allowlist-multi-provider-cross-project-denied" \
+  "${FIXTURE_ONE_PROPOSAL}" \
+  "Skipping issue creation in Jira project 'OTHER'"
+export RETRO_JIRA_PROJECT="PROJ"
+
+cat > "${FULLSEND_DIR}/config.yaml" <<CFGEOF
 version: "1"
 tracker:
   jira:
@@ -2982,20 +3049,12 @@ CFGEOF
 run_test_stdout "jira/allowlist-no-policy-primary-mismatch-denies" \
   "${FIXTURE_ONE_PROPOSAL}" \
   "Skipping issue creation in Jira project 'PROJ'"
-cat > "${JIRA_WORKSPACE}/config.yaml" <<CFGEOF
+# Restore valid config.yaml
+cat > "${FULLSEND_DIR}/config.yaml" <<CFGEOF
 version: "1"
 tracker:
   jira:
     project: PROJ
-    allowed_targets:
-      projects:
-        - PROJ
-CFGEOF
-# Restore valid config.yaml
-cat > "${JIRA_WORKSPACE}/config.yaml" <<CFGEOF
-version: "1"
-tracker:
-  jira:
     allowed_targets:
       projects:
         - PROJ
@@ -3038,10 +3097,9 @@ tracker:
     project: PROJ
 CFGEOF
 
-# 18. An explicit empty list denies issue creation and does not fall through
-# to the Jira-originating project's generic forge allowance.
-mkdir -p "${JIRA_WORKSPACE}/.fullsend"
-cat > "${JIRA_WORKSPACE}/config.yaml" <<CFGEOF
+# 18. An explicit empty list denies a non-primary project and does not fall
+# through to the Jira-originating project's generic forge allowance.
+cat > "${FULLSEND_DIR}/config.yaml" <<CFGEOF
 version: "1"
 tracker:
   jira:
@@ -3049,20 +3107,13 @@ tracker:
     allowed_targets:
       projects: []
 CFGEOF
-cat > "${FULLSEND_DIR}/config.yaml" <<CFGEOF
-tracker:
-  jira:
-    base_url: https://mock.atlassian.net
-    project: PROJ
-CFGEOF
-cp "${JIRA_WORKSPACE}/config.yaml" "${JIRA_WORKSPACE}/.fullsend/config.yaml"
 export RETRO_JIRA_PROJECT="PROJ"
 run_test_stdout "jira/allowlist-primary-project-revoked-by-empty-targets" \
   "${FIXTURE_ONE_PROPOSAL}" \
   "Skipping issue creation in Jira project 'PROJ'"
 
 # A case-insensitive explicit target is admitted by the pre-create gate.
-cat > "${JIRA_WORKSPACE}/config.yaml" <<CFGEOF
+cat > "${FULLSEND_DIR}/config.yaml" <<CFGEOF
 version: "1"
 tracker:
   jira:
@@ -3076,7 +3127,7 @@ run_test_stdout "jira/allowlist-explicit-target-case-insensitive" \
   "${FIXTURE_ONE_PROPOSAL}" \
   "Filing issue in Jira OTHER"
 export RETRO_JIRA_PROJECT="PROJ"
-cat > "${JIRA_WORKSPACE}/config.yaml" <<CFGEOF
+cat > "${FULLSEND_DIR}/config.yaml" <<CFGEOF
 version: "1"
 tracker:
   jira:
@@ -3087,7 +3138,7 @@ tracker:
 CFGEOF
 
 # 19. Issues_only mode exits non-zero if proposals are skipped due to allowlist
-cat > "${JIRA_WORKSPACE}/config.yaml" <<CFGEOF
+cat > "${FULLSEND_DIR}/config.yaml" <<CFGEOF
 version: "1"
 tracker:
   jira:
@@ -3106,7 +3157,7 @@ export RETRO_MODE="all"
 # RETRO_JIRA_LABELS is the applied-label allowlist; it can replace or suppress
 # the default ready-for-triage label for Jira without changing forge labels.
 export RETRO_JIRA_LABELS="retro"
-cat > "${JIRA_WORKSPACE}/config.yaml" <<CFGEOF
+cat > "${FULLSEND_DIR}/config.yaml" <<CFGEOF
 version: "1"
 tracker:
   jira:
@@ -3135,7 +3186,7 @@ else
   echo "PASS: jira/empty-label-policy-no-label-update"
 fi
 unset RETRO_JIRA_LABELS
-cat > "${JIRA_WORKSPACE}/config.yaml" <<CFGEOF
+cat > "${FULLSEND_DIR}/config.yaml" <<CFGEOF
 version: "1"
 tracker:
   jira:
@@ -3146,7 +3197,7 @@ tracker:
 CFGEOF
 
 # Restore valid config.yaml
-cat > "${JIRA_WORKSPACE}/config.yaml" <<CFGEOF
+cat > "${FULLSEND_DIR}/config.yaml" <<CFGEOF
 version: "1"
 tracker:
   jira:
@@ -3224,6 +3275,222 @@ if grep -qF "...(truncated)" "${FULLSEND_STDIN_LOG}" 2>/dev/null; then
   echo "PASS: jira/comment-truncated-marker"
 else
   echo "FAIL: jira/comment-truncated-marker — missing truncation notice"
+  FAILURES=$((FAILURES + 1))
+fi
+
+# 22. REST reads route through the Atlassian API gateway, as fullsend does:
+# tracker.jira.api_url (default https://api.atlassian.com) plus the cloud ID
+# discovered from the site. The site URL is never used as a REST base.
+export FULLSEND_FORGE="github"
+export ORIGINATING_URL="https://github.com/test-org/test-repo/pull/10"
+export JIRA_BASE_URL="https://mock.atlassian.net"
+export RETRO_JIRA_PROJECT="PROJ"
+export RETRO_MODE="all"
+cat > "${FULLSEND_DIR}/config.yaml" <<CFGEOF
+version: "1"
+tracker:
+  jira:
+    base_url: https://mock.atlassian.net
+    project: PROJ
+CFGEOF
+run_test_stdout "jira/rest-routes-through-gateway" \
+  "${FIXTURE_ONE_PROPOSAL}" \
+  "Created: https://mock.atlassian.net/browse/PROJ-100"
+if grep -qF "https://api.atlassian.com/ex/jira/11111111-2222-3333-4444-555555555555/rest/api/3/issue/createmeta/PROJ/issuetypes" "${CURL_LOG}" \
+  && grep -qF "https://mock.atlassian.net/_edge/tenant_info" "${CURL_LOG}" \
+  && ! grep -qF "https://mock.atlassian.net/rest/api/3" "${CURL_LOG}"; then
+  echo "PASS: jira/rest-routes-through-gateway-endpoints"
+else
+  echo "FAIL: jira/rest-routes-through-gateway-endpoints — REST did not use the gateway"
+  cat "${CURL_LOG}" 2>/dev/null || true
+  FAILURES=$((FAILURES + 1))
+fi
+
+# tracker.jira.api_url overrides the gateway base.
+cat > "${FULLSEND_DIR}/config.yaml" <<CFGEOF
+version: "1"
+tracker:
+  jira:
+    base_url: https://mock.atlassian.net
+    api_url: https://jira-gateway.example.com
+    project: PROJ
+CFGEOF
+run_test_stdout "jira/rest-api-url-override" \
+  "${FIXTURE_ONE_PROPOSAL}" \
+  "Created: https://mock.atlassian.net/browse/PROJ-100"
+if grep -qF "https://jira-gateway.example.com/ex/jira/11111111-2222-3333-4444-555555555555/rest/api/3" "${CURL_LOG}"; then
+  echo "PASS: jira/rest-api-url-override-endpoint"
+else
+  echo "FAIL: jira/rest-api-url-override-endpoint — api_url was not used"
+  cat "${CURL_LOG}" 2>/dev/null || true
+  FAILURES=$((FAILURES + 1))
+fi
+
+# A config that names another Jira tenant fails closed before any read.
+cat > "${FULLSEND_DIR}/config.yaml" <<CFGEOF
+version: "1"
+tracker:
+  jira:
+    base_url: https://other-site.atlassian.net
+    project: PROJ
+CFGEOF
+run_test_stdout "jira/rest-base-url-mismatch-denies" \
+  "${FIXTURE_ONE_PROPOSAL}" \
+  "does not match JIRA_BASE_URL"
+if grep -F 'fullsend issues create' "${FULLSEND_LOG}" 2>/dev/null | grep -qvF -- '--help'; then
+  echo "FAIL: jira/rest-base-url-mismatch-no-create — create called despite tenant mismatch"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: jira/rest-base-url-mismatch-no-create"
+fi
+
+# Cloud ID discovery failure fails closed.
+cat > "${FULLSEND_DIR}/config.yaml" <<CFGEOF
+version: "1"
+tracker:
+  jira:
+    base_url: https://mock.atlassian.net
+    project: PROJ
+CFGEOF
+export JIRA_MOCK_TENANT_INFO_FAIL="1"
+run_test_stdout "jira/rest-cloud-id-failure-denies" \
+  "${FIXTURE_ONE_PROPOSAL}" \
+  "failed to discover the Jira cloud ID"
+if grep -F 'fullsend issues create' "${FULLSEND_LOG}" 2>/dev/null | grep -qvF -- '--help'; then
+  echo "FAIL: jira/rest-cloud-id-failure-no-create — create called without a cloud ID"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: jira/rest-cloud-id-failure-no-create"
+fi
+unset JIRA_MOCK_TENANT_INFO_FAIL
+
+# 23. issues_only files issues without posting a comment, so it does not
+# need a forge token.
+export RETRO_MODE="issues_only"
+JIRA_SAVED_GH_TOKEN="${GH_TOKEN:-}"
+unset GH_TOKEN
+run_test_stdout "jira/issues-only-no-forge-token" \
+  "${FIXTURE_ONE_PROPOSAL}" \
+  "Created: https://mock.atlassian.net/browse/PROJ-100"
+export GH_TOKEN="${JIRA_SAVED_GH_TOKEN}"
+export RETRO_MODE="all"
+
+# 24. A failed createmeta check is not retried for every proposal.
+JIRA_TWO_PROPOSAL_FIXTURE=$(printf '%s' "${FIXTURE_ONE_PROPOSAL}" \
+  | jq -c '.proposals += [(.proposals[0] | .title = "Second proposal title")]')
+export JIRA_MOCK_REQUIRED_FIELD="1"
+run_test_stdout "jira/createmeta-failure-not-retried" \
+  "${JIRA_TWO_PROPOSAL_FIXTURE}" \
+  "Jira project validation failed"
+JIRA_CREATEMETA_PROBES=$(grep -cF 'issue/createmeta/PROJ/issuetypes?' "${CURL_LOG}" || true)
+if [[ "${JIRA_CREATEMETA_PROBES}" -eq 1 ]]; then
+  echo "PASS: jira/createmeta-failure-not-retried-once"
+else
+  echo "FAIL: jira/createmeta-failure-not-retried-once — ${JIRA_CREATEMETA_PROBES} createmeta probes for 2 proposals"
+  cat "${CURL_LOG}" 2>/dev/null || true
+  FAILURES=$((FAILURES + 1))
+fi
+unset JIRA_MOCK_REQUIRED_FIELD
+
+# 25. Numeric forge references on GitHub Enterprise link to the run's server.
+export GITHUB_SERVER_URL="https://ghe.example.com"
+export ORIGINATING_URL="https://ghe.example.com/test-org/test-repo/pull/10"
+run_test_stdout "jira/body-ghes-link" \
+  "${FIXTURE_RECEIPT_FOUND}" \
+  "Created: https://mock.atlassian.net/browse/PROJ-100"
+if grep -qF "https://ghe.example.com/test-org/target-repo/issues/2476" "${FULLSEND_STDIN_LOG}" 2>/dev/null; then
+  echo "PASS: jira/body-ghes-link"
+else
+  echo "FAIL: jira/body-ghes-link — body did not use GITHUB_SERVER_URL"
+  cat "${FULLSEND_STDIN_LOG}" 2>/dev/null || true
+  FAILURES=$((FAILURES + 1))
+fi
+unset GITHUB_SERVER_URL
+export ORIGINATING_URL="https://github.com/test-org/test-repo/pull/10"
+
+# 26. Dotted and hyphenated tokens are not split into search fragments.
+JIRA_DOTTED_TITLE_FIXTURE=$(printf '%s' "${FIXTURE_ONE_PROPOSAL}" \
+  | jq -c '.proposals[0].title = "Fix post-retro.sh crash"')
+run_test_stdout "jira/duplicate-dotted-token" \
+  "${JIRA_DOTTED_TITLE_FIXTURE}" \
+  "Post-retro complete."
+if ! grep -qF 'summary ~ \"post\"' "${CURL_LOG}" 2>/dev/null \
+  && ! grep -qF 'summary ~ \"retro\"' "${CURL_LOG}" 2>/dev/null \
+  && grep -qF 'summary ~ \"crash\"' "${CURL_LOG}" 2>/dev/null; then
+  echo "PASS: jira/duplicate-dotted-token-not-split"
+else
+  echo "FAIL: jira/duplicate-dotted-token-not-split — JQL split a dotted or hyphenated token"
+  cat "${CURL_LOG}" 2>/dev/null || true
+  FAILURES=$((FAILURES + 1))
+fi
+JIRA_DOTTED_ONLY_FIXTURE=$(printf '%s' "${FIXTURE_ONE_PROPOSAL}" \
+  | jq -c '.proposals[0].title = "post-retro.sh result.json"')
+run_test_stdout "jira/duplicate-dotted-only" \
+  "${JIRA_DOTTED_ONLY_FIXTURE}" \
+  "Post-retro complete."
+if grep -qF 'project = \"PROJ\"' "${CURL_LOG}" 2>/dev/null \
+  && ! grep -qF 'summary ~ ' "${CURL_LOG}" 2>/dev/null; then
+  echo "PASS: jira/duplicate-dotted-only-project-fallback"
+else
+  echo "FAIL: jira/duplicate-dotted-only-project-fallback — expected project-only search"
+  cat "${CURL_LOG}" 2>/dev/null || true
+  FAILURES=$((FAILURES + 1))
+fi
+
+# 27. On a CLI that still keeps sticky-comment history, pass
+# --keep-history=false so a rerun replaces the summary instead of stacking
+# copies; a CLI that marks the flag deprecated gets no flag.
+export FULLSEND_MOCK_KEEP_HISTORY="supported"
+ORIGINATING_URL="https://mock.atlassian.net/browse/PROJ-123" \
+  run_test_stdout "jira/keep-history-supported" \
+  "${FIXTURE_ONE_PROPOSAL}" \
+  "Posting summary comment on PROJ#PROJ-123"
+if grep -qF -- '--keep-history=false' "${FULLSEND_LOG}" 2>/dev/null; then
+  echo "PASS: jira/keep-history-supported-flag-passed"
+else
+  echo "FAIL: jira/keep-history-supported-flag-passed — --keep-history=false was not passed"
+  cat "${FULLSEND_LOG}" 2>/dev/null || true
+  FAILURES=$((FAILURES + 1))
+fi
+export FULLSEND_MOCK_KEEP_HISTORY="deprecated"
+ORIGINATING_URL="https://mock.atlassian.net/browse/PROJ-123" \
+  run_test_stdout "jira/keep-history-deprecated" \
+  "${FIXTURE_ONE_PROPOSAL}" \
+  "Posting summary comment on PROJ#PROJ-123"
+if grep -qF -- '--keep-history' "${FULLSEND_LOG}" 2>/dev/null; then
+  echo "FAIL: jira/keep-history-deprecated-flag-omitted — deprecated flag was passed"
+  cat "${FULLSEND_LOG}" 2>/dev/null || true
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: jira/keep-history-deprecated-flag-omitted"
+fi
+unset FULLSEND_MOCK_KEEP_HISTORY
+
+# 28. Jira credentials never reach an xtrace line.
+JIRA_XTRACE_RUN="${TMPDIR}/run-jira-xtrace"
+mkdir -p "${JIRA_XTRACE_RUN}/iteration-1/output"
+printf '%s' "${FIXTURE_ONE_PROPOSAL}" > "${JIRA_XTRACE_RUN}/iteration-1/output/agent-result.json"
+: > "${GH_LOG}"
+: > "${GH_STDIN_LOG}"
+: > "${CURL_LOG}"
+: > "${FULLSEND_LOG}"
+: > "${FULLSEND_ENV_LOG}"
+: > "${FULLSEND_STDIN_LOG}"
+JIRA_SAVED_GITHUB_ACTIONS="${GITHUB_ACTIONS:-}"
+unset GITHUB_ACTIONS
+JIRA_XTRACE_EXIT=0
+(
+  cd "${JIRA_XTRACE_RUN}"
+  bash -x "${POST_SCRIPT}"
+) > "${TMPDIR}/xtrace.log" 2>&1 || JIRA_XTRACE_EXIT=$?
+if [[ -n "${JIRA_SAVED_GITHUB_ACTIONS}" ]]; then
+  export GITHUB_ACTIONS="${JIRA_SAVED_GITHUB_ACTIONS}"
+fi
+if [[ ${JIRA_XTRACE_EXIT} -eq 0 ]] && ! grep -qF "fake-jira-token" "${TMPDIR}/xtrace.log"; then
+  echo "PASS: jira/xtrace-does-not-leak-token"
+else
+  echo "FAIL: jira/xtrace-does-not-leak-token — token appeared in the trace (exit ${JIRA_XTRACE_EXIT})"
+  grep -F "fake-jira-token" "${TMPDIR}/xtrace.log" | head -5 || true
   FAILURES=$((FAILURES + 1))
 fi
 

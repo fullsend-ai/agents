@@ -482,13 +482,21 @@ case "${FULLSEND_TRACKER}" in
 #   JIRA_USER_EMAIL        — bot-user email. When set, requests use Basic
 #                            auth with email and token; when unset or empty,
 #                            Bearer auth with a service-account token.
-#   JIRA_API_URL           — REST API gateway base URL (trusted Atlassian
-#                            gateway or the configured Jira tenant URL).
 #   RETRO_JIRA_ISSUE_TYPE  — issue type name for created issues (default: "Task")
 #   RETRO_JIRA_LABELS      — comma-separated allowlist of labels that retro may
 #                            apply to Jira issues (default: "ready-for-triage")
 #   RETRO_JIRA_MAX_PAGES   — maximum pages fetched per paginated Jira read (default: 50)
 #   RETRO_MODE             — "all" (default), "summary_only", or "issues_only"
+#
+# REST routing mirrors fullsend's Jira Scoped client
+# (internal/forge/jira/scoped.go), as jira-prioritize-ops.lib.sh does:
+# tracker.jira.api_url in FULLSEND_DIR's config is the gateway base (default
+# https://api.atlassian.com), the cloud ID is discovered from the site at
+# tracker.jira.base_url (<site>/_edge/tenant_info), and every REST call goes
+# to <api_url>/ex/jira/<cloudId>/rest/api/3/... . A JIRA_API_URL environment
+# variable is not read: the gateway comes only from tracker.jira in the
+# config, as it does for the `fullsend issues` CLI. Configuration is read
+# from FULLSEND_DIR, the same directory the CLI reads.
 
 [[ -n "${JIRA_RETRO_OPS_SH_LOADED:-}" ]] && return 0
 JIRA_RETRO_OPS_SH_LOADED=1
@@ -536,6 +544,18 @@ fi
 
 [[ -n "${JIRA_AUTH_SH_LOADED:-}" ]] && return 0
 JIRA_AUTH_SH_LOADED=1
+
+# Emit a GitHub Actions masking command for a secret. Defined here rather
+# than in a caller's library so every bundle that sources Jira auth can mask
+# a minted token, whatever the agent. Percent signs, CR and LF are escaped
+# because an unescaped line break would end the workflow command.
+_jira_auth_gha_mask() {
+  local value="$1"
+  value="${value//%/%25}"
+  value="${value//$'\r'/%0D}"
+  value="${value//$'\n'/%0A}"
+  printf '::add-mask::%s\n' "${value}"
+}
 
 # Selected mode: "token", "client", or "none". Empty until jira_auth_select.
 JIRA_AUTH_MODE=""
@@ -705,12 +725,12 @@ _jira_auth_mint_now() {
   # means the caller redirected stdout around the call.
   local main_out="/proc/$$/fd/1"
   if (( BASH_SUBSHELL == 0 )); then
-    _gha_mask "${token}"
+    _jira_auth_gha_mask "${token}"
   elif [[ -w "${main_out}" ]] && [[ -p "${main_out}" || -c "${main_out}" ]] \
     && ! [[ "${main_out}" -ef /dev/null ]]; then
-    _gha_mask "${token}" >> "${main_out}"
+    _jira_auth_gha_mask "${token}" >> "${main_out}"
   else
-    _gha_mask "${token}" >&2
+    _jira_auth_gha_mask "${token}" >&2
   fi
   [[ "${expires_in}" =~ ^[0-9]+$ ]] || expires_in=3600
   _JIRA_AUTH_ACCESS_TOKEN="${token}"
@@ -790,15 +810,39 @@ jira_auth_fullsend() {
   fi
 }
 # END bundled: lib/jira-auth.lib.sh
-jira_auth_select "${JIRA_TOKEN:-}" FULLSEND_JIRA_CLIENT_ID FULLSEND_JIRA_CLIENT_SECRET || exit 1
 
-if [[ "${RETRO_MODE}" != "summary_only" ]]; then
-  if [[ "${JIRA_AUTH_MODE}" == "none" ]]; then
-    echo "ERROR: JIRA_TOKEN must be set, or FULLSEND_JIRA_CLIENT_ID and FULLSEND_JIRA_CLIENT_SECRET" >&2
-    exit 1
+# Credentials are expanded into curl and CLI arguments below. Turn xtrace
+# off around those expansions so `bash -x` / `set -x` never writes the token
+# to the trace, then restore the caller's setting.
+_RETRO_JIRA_XTRACE=0
+_jira_retro_xtrace_off() {
+  _RETRO_JIRA_XTRACE=0
+  if [[ $- == *x* ]]; then
+    _RETRO_JIRA_XTRACE=1
+    set +x
   fi
-  jira_auth_require_api_url || exit 1
+}
+_jira_retro_xtrace_restore() {
+  if [[ "${_RETRO_JIRA_XTRACE}" -eq 1 ]]; then
+    set -x
+  fi
+}
+
+_retro_jira_select_rc=0
+_jira_retro_xtrace_off
+jira_auth_select "${JIRA_TOKEN:-}" FULLSEND_JIRA_CLIENT_ID FULLSEND_JIRA_CLIENT_SECRET || _retro_jira_select_rc=$?
+_jira_retro_xtrace_restore
+if [[ "${_retro_jira_select_rc}" -ne 0 ]]; then
+  exit 1
 fi
+
+if [[ "${RETRO_MODE}" != "summary_only" && "${JIRA_AUTH_MODE}" == "none" ]]; then
+  echo "ERROR: JIRA_TOKEN must be set, or FULLSEND_JIRA_CLIENT_ID and FULLSEND_JIRA_CLIENT_SECRET" >&2
+  exit 1
+fi
+# Client-credentials access tokens are accepted by the Atlassian API
+# gateway, which tracker.jira.api_url points at, so no separate gateway URL
+# is required. The resolved endpoint is validated per call.
 
 if [[ -n "${JIRA_BASE_URL:-}" ]]; then
   while [[ "${JIRA_BASE_URL}" == */ ]]; do
@@ -810,47 +854,11 @@ if [[ -n "${JIRA_BASE_URL:-}" ]]; then
   fi
 fi
 
-RETRO_JIRA_API_BASE="${JIRA_API_URL:-${JIRA_BASE_URL:-}}"
-if [[ -n "${RETRO_JIRA_API_BASE}" ]]; then
-  while [[ "${RETRO_JIRA_API_BASE}" == */ ]]; do
-    RETRO_JIRA_API_BASE="${RETRO_JIRA_API_BASE%/}"
-  done
-  if [[ ! "${RETRO_JIRA_API_BASE}" =~ ^https://api\.atlassian\.com/ex/jira/[A-Za-z0-9-]+$ && "${RETRO_JIRA_API_BASE}" != "${JIRA_BASE_URL:-}" ]]; then
-    echo "ERROR: JIRA_API_URL must match JIRA_BASE_URL or the Atlassian API gateway URL (https://api.atlassian.com/ex/jira/<cloudId>)" >&2
-    exit 1
-  fi
-fi
-
 if [[ "${RETRO_MODE}" != "summary_only" ]]; then
   [[ -n "${FULLSEND_DIR:-}" ]] || {
     echo "ERROR: FULLSEND_DIR must be set when FULLSEND_TRACKER=jira" >&2
     exit 1
   }
-  config_file="${FULLSEND_DIR}/config.yaml"
-  if [[ ! -f "${config_file}" && -f "${FULLSEND_DIR}/config.base.yaml" ]]; then
-    config_file="${FULLSEND_DIR}/config.base.yaml"
-  fi
-  if [[ -f "${config_file}" ]] && command -v yq >/dev/null 2>&1; then
-    config_base=$(yq -r '.tracker.jira.base_url // empty' "${config_file}" 2>/dev/null || true)
-    config_api=$(yq -r '.tracker.jira.api_url // empty' "${config_file}" 2>/dev/null || true)
-    for variable in config_base config_api; do
-      while [[ -n "${!variable}" && "${!variable}" == */ ]]; do
-        printf -v "${variable}" '%s' "${!variable%/}"
-      done
-    done
-    if [[ -n "${config_base}" && "${config_base}" != "${JIRA_BASE_URL}" ]]; then
-      echo "ERROR: JIRA_BASE_URL must match tracker.jira.base_url in ${config_file}" >&2
-      exit 1
-    fi
-    if [[ -n "${config_api}" && "${config_api}" != "${RETRO_JIRA_API_BASE}" ]]; then
-      echo "ERROR: JIRA_API_URL must match tracker.jira.api_url in ${config_file}" >&2
-      exit 1
-    fi
-    if [[ -n "${config_base}" && -z "${config_api}" && "${RETRO_JIRA_API_BASE}" != "${JIRA_BASE_URL}" ]]; then
-      echo "ERROR: JIRA_API_URL must match tracker.jira.base_url when tracker.jira.api_url is unset" >&2
-      exit 1
-    fi
-  fi
 fi
 
 if [[ "${RETRO_MODE}" != "summary_only" && "${JIRA_AUTH_MODE}" == "client" ]]; then
@@ -870,19 +878,118 @@ if [[ -z "${RETRO_JIRA_LABELS}" ]]; then
 fi
 RETRO_JIRA_MAX_PAGES="${RETRO_JIRA_MAX_PAGES:-50}"
 
+# --- Configuration and REST routing ---
+
+# Print the effective value of tracker.jira.<key> from the configuration in
+# FULLSEND_DIR. The overlay (config.yaml) is composed over config.base.yaml
+# with fullsend's whole-object tracker merge: an overlay that sets tracker
+# replaces the base tracker as a whole object; a missing, null or bare
+# tracker inherits the base. Prints nothing when no layer sets the key.
+# Fails closed (non-zero) when a layer exists but cannot be read, so a yq
+# parse error is never mistaken for "no config" and calls are not routed to
+# the default gateway by accident.
+_jira_retro_config_value() {
+  local key="$1" cfg tracker value=""
+  [[ -n "${FULLSEND_DIR:-}" ]] || return 0
+  [[ -f "${FULLSEND_DIR}/config.yaml" || -f "${FULLSEND_DIR}/config.base.yaml" ]] || return 0
+  if ! command -v yq &>/dev/null; then
+    echo "ERROR: a Jira config file exists under FULLSEND_DIR but yq is not installed — cannot read tracker.jira.${key}" >&2
+    return 1
+  fi
+  for cfg in "${FULLSEND_DIR}/config.yaml" "${FULLSEND_DIR}/config.base.yaml"; do
+    [[ -f "${cfg}" ]] || continue
+    tracker=$(yq -o=json '.tracker' "${cfg}" 2>/dev/null) || {
+      echo "ERROR: failed to parse $(basename "${cfg}") — cannot read tracker.jira.${key}" >&2
+      return 1
+    }
+    # An unset, null or bare tracker inherits the next layer.
+    [[ "${tracker}" == "null" || -z "${tracker}" ]] && continue
+    value=$(yq -r ".tracker.jira.${key} // \"\"" "${cfg}" 2>/dev/null) || {
+      echo "ERROR: failed to parse tracker.jira.${key} from ${cfg}" >&2
+      return 1
+    }
+    break
+  done
+  printf '%s' "${value}"
+}
+
+# Print the argument without trailing slashes.
+_jira_retro_trim_url() {
+  local url="$1"
+  while [[ -n "${url}" && "${url}" == */ ]]; do
+    url="${url%/}"
+  done
+  printf '%s' "${url}"
+}
+
+# Discover the site's cloud ID from <site>/_edge/tenant_info. The lookup is
+# unauthenticated and does not follow redirects. The value must be a UUID
+# before it is placed in a URL path.
+_jira_retro_cloud_id() {
+  local site="$1" resp id
+  resp=$(curl -q --proto '=https' --fail --silent --show-error \
+    --connect-timeout 10 --max-time 30 \
+    "${site}/_edge/tenant_info") || {
+    echo "ERROR: failed to discover the Jira cloud ID from ${site}/_edge/tenant_info" >&2
+    return 1
+  }
+  id=$(printf '%s' "${resp}" | jq -r '.cloudId // empty' 2>/dev/null) || id=""
+  if [[ ! "${id}" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]]; then
+    echo "ERROR: Jira cloud ID discovery from ${site} returned no valid cloudId" >&2
+    return 1
+  fi
+  printf '%s' "${id}"
+}
+
+# Print the REST root for Jira Cloud REST API v3:
+#   <tracker.jira.api_url>/ex/jira/<cloudId>/rest/api/3
+# tracker.jira.api_url is the gateway base (default https://api.atlassian.com)
+# and tracker.jira.base_url, when set, must name the JIRA_BASE_URL tenant so
+# a config cannot route reads to a different site than the CLI writes to.
+# Fails closed when the site or cloud ID cannot be resolved.
+_jira_retro_rest_root() {
+  local gateway site cfg_base cloud
+  [[ -n "${JIRA_BASE_URL:-}" ]] || {
+    echo "ERROR: JIRA_BASE_URL is not set" >&2
+    return 1
+  }
+  gateway=$(_jira_retro_config_value api_url) || return 1
+  gateway=$(_jira_retro_trim_url "${gateway:-https://api.atlassian.com}")
+  if [[ ! "${gateway}" =~ ^https://[A-Za-z0-9.-]+(:[0-9]+)?(/[A-Za-z0-9._~/-]*)?$ ]]; then
+    echo "ERROR: tracker.jira.api_url is not a plain https URL: $(_gha_sanitize "${gateway}")" >&2
+    return 1
+  fi
+  site="${JIRA_BASE_URL}"
+  cfg_base=$(_jira_retro_config_value base_url) || return 1
+  cfg_base=$(_jira_retro_trim_url "${cfg_base}")
+  if [[ -n "${cfg_base}" && "${cfg_base}" != "${site}" ]]; then
+    echo "ERROR: tracker.jira.base_url ('$(_gha_sanitize "${cfg_base}")') does not match JIRA_BASE_URL ('$(_gha_sanitize "${site}")') — refusing to route Jira calls to a different tenant" >&2
+    return 1
+  fi
+  cloud=$(_jira_retro_cloud_id "${site}") || return 1
+  printf '%s/ex/jira/%s/rest/api/3' "${gateway}" "${cloud}"
+}
+
+# --- Jira REST calls ---
+
 _retro_jira_api() {
   local method="$1"
   shift
   local endpoint="$1"
   shift
+  local rest_root rc=0
+  rest_root=$(_jira_retro_rest_root) || return 1
+  _jira_retro_xtrace_off
   jira_auth_curl "${JIRA_TOKEN:-}" "${JIRA_USER_EMAIL:-}" \
     --fail --silent --show-error \
     --connect-timeout 10 --max-time 30 \
     --header "Content-Type: application/json" \
     --header "Accept: application/json" \
     --request "${method}" \
-    "${RETRO_JIRA_API_BASE}/rest/api/3${endpoint}" \
-    "$@"
+    "${rest_root}${endpoint}" \
+    "$@" || rc=$?
+  _jira_retro_xtrace_restore
+  return "${rc}"
 }
 
 _retro_jira_api_with_status() {
@@ -890,8 +997,10 @@ _retro_jira_api_with_status() {
   shift
   local endpoint="$1"
   shift
-  local err_file raw http_code body
+  local err_file raw http_code body rest_root rc=0
+  rest_root=$(_jira_retro_rest_root) || return 1
   err_file=$(mktemp)
+  _jira_retro_xtrace_off
   raw=$(jira_auth_curl "${JIRA_TOKEN:-}" "${JIRA_USER_EMAIL:-}" \
     --silent --show-error \
     --connect-timeout 10 --max-time 30 \
@@ -899,12 +1008,14 @@ _retro_jira_api_with_status() {
     --header "Accept: application/json" \
     --request "${method}" \
     --write-out '\n%{http_code}' \
-    "${RETRO_JIRA_API_BASE}/rest/api/3${endpoint}" \
-    "$@" 2>"${err_file}") || {
+    "${rest_root}${endpoint}" \
+    "$@" 2>"${err_file}") || rc=$?
+  _jira_retro_xtrace_restore
+  if [[ "${rc}" -ne 0 ]]; then
     echo "Jira API error: curl failed — $(_gha_sanitize "$(cat "${err_file}")")" >&2
     rm -f "${err_file}"
     return 1
-  }
+  fi
   rm -f "${err_file}"
   http_code=$(printf '%s' "${raw}" | tail -1)
   body=$(printf '%s' "${raw}" | sed '$d')
@@ -1034,10 +1145,14 @@ _retro_jira_createmeta_all() {
 tracker_validate_create() {
   local types type_id meta missing
   local help_text
+  # The create call below passes both options, so the installed CLI must
+  # support both. Any help output that does not establish the create
+  # command and both options fails preflight here, instead of every
+  # proposal failing later with an unknown-flag error.
   if ! help_text=$(fullsend issues create --help 2>&1) \
-    || { [[ "${help_text}" == *"Usage: fullsend issues create"* ]] \
-      && [[ "${help_text}" != *"--fullsend-dir"* ]] \
-      && [[ "${help_text}" != *"--tracker"* ]]; }; then
+    || [[ "${help_text}" != *"Usage: fullsend issues create"* ]] \
+    || [[ "${help_text}" != *"--fullsend-dir"* ]] \
+    || [[ "${help_text}" != *"--tracker"* ]]; then
     echo "ERROR: installed fullsend does not support 'issues create --tracker jira --fullsend-dir'; upgrade to a version with config-backed Jira issue creation (fullsend#7083 / fullsend#9078)" >&2
     return 1
   fi
@@ -1077,9 +1192,13 @@ tracker_validate_create() {
 
 tracker_find_existing_issue() {
   local title="$1" raw_file jql terms match rc=0
-  # Drop Jira text-search stop words so they cannot exclude an exact summary.
-  # With no usable terms, search the project and compare summaries client-side.
-  terms=$(printf '%s' "${title}" | jq -Rs '[scan("[\\p{L}\\p{N}]+") | ascii_downcase] | unique | map(select(length > 2 and (. as $word | (["a", "an", "and", "are", "as", "at", "be", "but", "by", "for", "if", "in", "into", "is", "it", "no", "not", "of", "on", "or", "such", "that", "the", "their", "then", "there", "these", "they", "this", "to", "was", "will", "with"] | index($word) | not)))) | sort_by(-length) | .[0:3]') || return 1
+  # Search terms are whole whitespace-separated words of letters and digits;
+  # a dotted or hyphenated token such as `post-retro.sh` is not split, since
+  # Jira may index it as one token and a fragment would miss the exact
+  # summary. Stop words are dropped so they cannot exclude an exact summary.
+  # With no usable terms, search the project and compare summaries
+  # client-side.
+  terms=$(printf '%s' "${title}" | jq -Rs '[splits("[[:space:]]+") | select(test("^[\\p{L}\\p{N}]+$")) | ascii_downcase] | unique | map(select(length > 2 and (. as $word | (["a", "an", "and", "are", "as", "at", "be", "but", "by", "for", "if", "in", "into", "is", "it", "no", "not", "of", "on", "or", "such", "that", "the", "their", "then", "there", "these", "they", "this", "to", "was", "will", "with"] | index($word) | not)))) | sort_by(-length) | .[0:3]') || return 1
   if [[ "$(printf '%s' "${terms}" | jq 'length')" -eq 0 ]]; then
     terms='[]'
   fi
@@ -1115,7 +1234,8 @@ forge_create_issue() {
     echo "ERROR: forge_create_issue: FULLSEND_DIR is not set; the fullsend CLI needs it for the tracker.jira settings" >&2
     return 1
   fi
-  local response key url
+  local response key url rc=0
+  _jira_retro_xtrace_off
   response=$(printf '%s' "${body}" | jira_auth_fullsend fullsend "${JIRA_TOKEN:-}" "${JIRA_USER_EMAIL:-}" \
     issues create \
     --tracker jira \
@@ -1123,10 +1243,12 @@ forge_create_issue() {
     --project "${RETRO_JIRA_PROJECT}" \
     --type "${RETRO_JIRA_ISSUE_TYPE}" \
     --title "${title}" \
-    --body -) || {
+    --body -) || rc=$?
+  _jira_retro_xtrace_restore
+  if [[ "${rc}" -ne 0 ]]; then
     echo "ERROR: forge_create_issue: fullsend issues create failed in project ${RETRO_JIRA_PROJECT}" >&2
     return 1
-  }
+  fi
   key=$(printf '%s' "${response}" | jq -r '.key // empty' 2>/dev/null)
   url=$(printf '%s' "${response}" | jq -r '.url // empty' 2>/dev/null)
   if [[ -z "${key}" ]] || [[ ! "${key}" =~ ^${RETRO_JIRA_PROJECT}-[0-9]+$ ]]; then
@@ -1152,15 +1274,6 @@ forge_create_issue() {
 forge_create_label() {
   # Jira labels are ad-hoc strings and do not require pre-creation.
   return 0
-}
-
-forge_issue_url_base() {
-  echo "${JIRA_BASE_URL}/browse"
-}
-
-forge_normalize_labels() {
-  local labels="$1"
-  printf '%s' "$(_retro_jira_filter_labels "${labels}")" | jq -r 'join(",")'
 }
 
 # --- Originating URL handling and comments ---
@@ -1211,6 +1324,34 @@ forge_parse_originating_url() {
   fi
 }
 
+# `fullsend issues post-comment` updates a marked comment in place. Older
+# CLIs keep the replaced text as a collapsed "Previous run" block unless
+# --keep-history=false is passed, which would stack a copy of the previous
+# summary on every rerun. Since fullsend-ai/fullsend#9399 the flag is
+# deprecated and has no effect, and passing it prints a warning, so it is
+# passed only when the CLI's flag table lists it without "deprecated".
+# Sets _RETRO_JIRA_KEEP_HISTORY_ARGS in the caller's shell.
+_RETRO_JIRA_KEEP_HISTORY_ARGS=()
+_jira_retro_keep_history_args() {
+  _RETRO_JIRA_KEEP_HISTORY_ARGS=()
+  local help_text line has_flag=0 deprecated=0
+  if ! help_text=$(fullsend issues post-comment --help 2>&1); then
+    # A broken CLI fails the post itself, with its own error.
+    return 0
+  fi
+  help_text=$(printf '%s\n' "${help_text}" | tr '[:upper:]' '[:lower:]')
+  while IFS= read -r line; do
+    [[ "${line}" =~ ^[[:space:]]+--keep-history([=[:space:]]|$) ]] || continue
+    has_flag=1
+    if [[ "${line}" == *deprecated* ]]; then
+      deprecated=1
+    fi
+  done <<< "${help_text}"
+  if [[ "${has_flag}" -eq 1 && "${deprecated}" -eq 0 ]]; then
+    _RETRO_JIRA_KEEP_HISTORY_ARGS=(--keep-history=false)
+  fi
+}
+
 _retro_jira_post_comment() {
   local repo="$1" number="$2" body="$3"
   if [[ -z "${FULLSEND_DIR:-}" ]]; then
@@ -1223,10 +1364,17 @@ _retro_jira_post_comment() {
   fi
   # Jira issue keys are <PROJECT>-<NUMBER>; fullsend's --number expects the numeric suffix.
   local num="${number##*-}"
+  local rc=0
+  _jira_retro_keep_history_args
+  _jira_retro_xtrace_off
   printf '%s' "${body}" | jira_auth_fullsend fullsend "${JIRA_TOKEN:-}" "${JIRA_USER_EMAIL:-}" \
     issues post-comment --tracker jira --fullsend-dir "${FULLSEND_DIR}" \
     --project "${repo}" --number "${num}" \
-    --marker "<!-- fullsend:retro-agent -->" --result - 2>&1
+    --marker "<!-- fullsend:retro-agent -->" \
+    ${_RETRO_JIRA_KEEP_HISTORY_ARGS[@]+"${_RETRO_JIRA_KEEP_HISTORY_ARGS[@]}"} \
+    --result - 2>&1 || rc=$?
+  _jira_retro_xtrace_restore
+  return "${rc}"
 }
 
 forge_post_comment() {
@@ -1255,6 +1403,11 @@ forge_require_token() {
   if [[ "${jira_origin}" == "true" ]]; then
     return 0
   fi
+  # issues_only posts no forge comment, so a forge token is not required for
+  # a Jira-backed run that only files issues.
+  if [[ "${RETRO_MODE}" == "issues_only" ]]; then
+    return 0
+  fi
   if declare -f _forge_require_token >/dev/null 2>&1; then
     _forge_require_token
   fi
@@ -1268,9 +1421,13 @@ forge_mask_token() {
   if [[ "${jira_origin}" != "true" ]] && declare -f _forge_mask_token >/dev/null 2>&1; then
     _forge_mask_token
   fi
+  # The test below and the mask itself both expand the token, so keep them
+  # out of any xtrace.
+  _jira_retro_xtrace_off
   if [[ -n "${GITHUB_ACTIONS:-}" && -n "${JIRA_TOKEN:-}" ]]; then
     _gha_mask "${JIRA_TOKEN}"
   fi
+  _jira_retro_xtrace_restore
 }
 
 forge_get_comment_max_len() {
@@ -1347,8 +1504,18 @@ esac
 echo "Mode: ${RETRO_MODE}"
 
 # Read the allowlist from config.yaml. The config repo is checked out
-# at the forge-specific workspace directory by the reusable workflow.
-CONFIG_WORKSPACE="$(forge_get_config_workspace)"
+# at the forge-specific workspace directory by the reusable workflow. For a
+# Jira tracker, the allowlist and primary project are read from FULLSEND_DIR,
+# the directory the fullsend CLI and the Jira operations use, so the policy
+# applied here is the policy the CLI enforces.
+FULLSEND_TRACKER="${FULLSEND_TRACKER:-${FULLSEND_FORGE}}"
+TRACKER_PROVIDER="${FULLSEND_TRACKER}"
+ALLOW_TARGETS_KEY="tracker.${TRACKER_PROVIDER}.allowed_targets"
+if [[ "${FULLSEND_TRACKER}" == "jira" && -n "${FULLSEND_DIR:-}" ]]; then
+  CONFIG_WORKSPACE="${FULLSEND_DIR}"
+else
+  CONFIG_WORKSPACE="$(forge_get_config_workspace)"
+fi
 CONFIG_FILE="${CONFIG_WORKSPACE}/config.yaml"
 if [[ ! -f "${CONFIG_FILE}" && ! -f "${CONFIG_WORKSPACE}/config.base.yaml" ]]; then
   # Per-repo mode: config is under .fullsend/
@@ -1360,9 +1527,6 @@ fi
 # otherwise tracker is inherited from the base. A null or bare `tracker:` in
 # the overlay counts as unset (it inherits the base), matching that merge.
 BASE_CONFIG_FILE="$(dirname "${CONFIG_FILE}")/config.base.yaml"
-FULLSEND_TRACKER="${FULLSEND_TRACKER:-${FULLSEND_FORGE}}"
-TRACKER_PROVIDER="${FULLSEND_TRACKER}"
-ALLOW_TARGETS_KEY="tracker.${TRACKER_PROVIDER}.allowed_targets"
 
 # ALLOWED_SCOPES holds GitHub orgs or GitLab groups (a scope admits every
 # repository under it, including GitLab subgroups); ALLOWED_REPOS holds
@@ -1371,6 +1535,7 @@ ALLOW_TARGETS_KEY="tracker.${TRACKER_PROVIDER}.allowed_targets"
 # projects. Match that same policy here before invoking the CLI.
 ALLOWED_SCOPES=""
 ALLOWED_REPOS=""
+JIRA_PRIMARY_PROJECT=""
 JIRA_ALLOWLIST_STATE="unset"
 if [[ -f "${CONFIG_FILE}" || -f "${BASE_CONFIG_FILE}" ]] && ! command -v yq &>/dev/null; then
   echo "::warning::yq not found — cannot read ${ALLOW_TARGETS_KEY} from config; cross-repo issue creation disabled"
@@ -1405,14 +1570,15 @@ if command -v yq &>/dev/null; then
     fi
   done
   # Warn when a tracker mapping selects other or several providers, since it
-  # then grants no cross-repo targets.
+  # then grants no cross-repo targets. For Jira the primary project is still
+  # permitted, because it is not a cross-project grant.
   TRACKER_PROVIDERS=$(jq -r '
     (if type == "object" then . else {} end) as $t
     | [("github", "gitlab", "jira") | select($t[.] != null)] | join(",")
   ' <<<"${TRACKER_JSON}" 2>/dev/null || true)
   if [[ -n "${TRACKER_PROVIDERS}" && "${TRACKER_PROVIDERS}" != "${TRACKER_PROVIDER}" ]]; then
     echo "::warning::tracker mapping selects provider(s) '${TRACKER_PROVIDERS}' but FULLSEND_TRACKER requires only '${TRACKER_PROVIDER}' — no cross-repo targets granted"
-    if [[ "${JIRA_ALLOWLIST_STATE}" != "failed" ]]; then
+    if [[ "${TRACKER_PROVIDER}" != "jira" && "${JIRA_ALLOWLIST_STATE}" != "failed" ]]; then
       JIRA_ALLOWLIST_STATE="failed"
     fi
   fi
@@ -1444,33 +1610,49 @@ if command -v yq &>/dev/null; then
   ' <<<"${TRACKER_JSON}" 2>/dev/null || true)
   if [[ "${TRACKER_PROVIDER}" == "jira" && "${JIRA_ALLOWLIST_STATE}" != "failed" ]]; then
     if [[ "${TRACKER_JSON}" != "null" && -n "${TRACKER_JSON}" ]]; then
-      projects_status=$(jq -r '
-        if type != "object" or (has("jira") | not) or (.jira | type != "object") then
-          "failed"
-        elif (.jira | has("allowed_targets")) then
-          if (.jira.allowed_targets | type == "object") and (.jira.allowed_targets | has("projects")) then
-            if (.jira.allowed_targets.projects | type == "array") then
-              "configured"
+      # The primary project and the target policy both come from the already
+      # resolved TRACKER_JSON, so the whole-object tracker merge is applied
+      # once and this gate cannot resurrect a base-layer project.
+      JIRA_PRIMARY_PROJECT=$(jq -r '
+        if type == "object" and (.jira | type) == "object" and (.jira.project | type) == "string"
+        then .jira.project | ascii_upcase
+        else ""
+        end
+      ' <<<"${TRACKER_JSON}" 2>/dev/null || echo "")
+      if [[ "${TRACKER_PROVIDERS}" != "jira" ]]; then
+        # A mapping that also names another provider grants no cross-project
+        # targets, but the Jira primary project is not a cross-project grant.
+        JIRA_ALLOWLIST_STATE="unset"
+        ALLOWED_REPOS=""
+      else
+        projects_status=$(jq -r '
+          if type != "object" or (has("jira") | not) or (.jira | type != "object") then
+            "failed"
+          elif (.jira | has("allowed_targets")) then
+            if (.jira.allowed_targets | type == "object") and (.jira.allowed_targets | has("projects")) then
+              if (.jira.allowed_targets.projects | type == "array") then
+                "configured"
+              else
+                "failed"
+              end
+            elif (.jira.allowed_targets == null) then
+              "unset"
+            elif (.jira.allowed_targets | type == "object") and ((.jira.allowed_targets | has("projects")) | not) then
+              "unset"
             else
               "failed"
             end
-          elif (.jira.allowed_targets == null) then
-            "unset"
-          elif (.jira.allowed_targets | type == "object") and ((.jira.allowed_targets | has("projects")) | not) then
-            "unset"
           else
-            "failed"
+            "unset"
           end
+        ' <<<"${TRACKER_JSON}" 2>/dev/null || echo "failed")
+        if [[ "${projects_status}" == "configured" ]]; then
+          JIRA_ALLOWLIST_STATE="configured"
+        elif [[ "${projects_status}" == "failed" ]]; then
+          JIRA_ALLOWLIST_STATE="failed"
         else
-          "unset"
-        end
-      ' <<<"${TRACKER_JSON}" 2>/dev/null || echo "failed")
-      if [[ "${projects_status}" == "configured" ]]; then
-        JIRA_ALLOWLIST_STATE="configured"
-      elif [[ "${projects_status}" == "failed" ]]; then
-        JIRA_ALLOWLIST_STATE="failed"
-      else
-        JIRA_ALLOWLIST_STATE="unset"
+          JIRA_ALLOWLIST_STATE="unset"
+        fi
       fi
     else
       JIRA_ALLOWLIST_STATE="failed"
@@ -1492,24 +1674,11 @@ is_target_allowed() {
         if [[ -n "${ALLOWED_REPOS}" ]] && echo "${ALLOWED_REPOS}" | grep -qiFx "${target_repo}"; then
           return 0
         fi
-        local primary_project
-        primary_project=$(yq -r '.tracker.jira.project // empty' "${CONFIG_FILE}" 2>/dev/null || true)
-        if [[ -z "${primary_project}" && -f "${BASE_CONFIG_FILE}" ]]; then
-          primary_project=$(yq -r '.tracker.jira.project // empty' "${BASE_CONFIG_FILE}" 2>/dev/null || true)
-        fi
-        [[ -n "${primary_project}" && "${primary_project,,}" == "${target_repo,,}" ]] && return 0
+        [[ -n "${JIRA_PRIMARY_PROJECT}" && "${JIRA_PRIMARY_PROJECT}" == "${target_repo^^}" ]] && return 0
         return 1
         ;;
       unset)
-        if [[ ! -f "${CONFIG_FILE}" && ! -f "${BASE_CONFIG_FILE}" ]]; then
-          return 1
-        fi
-        local primary_project
-        primary_project=$(yq -r '.tracker.jira.project // empty' "${CONFIG_FILE}" 2>/dev/null || true)
-        if [[ -z "${primary_project}" && -f "${BASE_CONFIG_FILE}" ]]; then
-          primary_project=$(yq -r '.tracker.jira.project // empty' "${BASE_CONFIG_FILE}" 2>/dev/null || true)
-        fi
-        [[ -n "${primary_project}" && "${primary_project,,}" == "${target_repo,,}" ]]
+        [[ -n "${JIRA_PRIMARY_PROJECT}" && "${JIRA_PRIMARY_PROJECT}" == "${target_repo^^}" ]]
         return $?
         ;;
       *)
@@ -1567,7 +1736,11 @@ if [[ "${PROPOSAL_COUNT}" -gt 0 ]]; then
 fi
 echo "All ${PROPOSAL_COUNT} proposal(s) validated"
 
-JIRA_CREATEMETA_VALIDATED="false"
+# Three-state: "unknown" until tracker_validate_create runs, then "ok" or
+# "failed". A failed check is not retried for the remaining proposals, so a
+# misconfigured project costs one CLI/createmeta probe per run, not one per
+# proposal.
+JIRA_CREATEMETA_STATE="unknown"
 
 ISSUE_LINKS=""
 EVIDENCE_NOTES=""
@@ -1649,7 +1822,14 @@ if [[ "${PROPOSAL_COUNT}" -gt 0 ]]; then
     fi
 
     # Build the issue body from the four sections, plus the dedup receipt.
-    BODY=$(jq -r --arg url "${ORIGINATING_URL}" --arg tracker "${FULLSEND_TRACKER}" --arg tr "${TARGET_REPO}" --arg forge "${FULLSEND_FORGE}" --arg gl_host "${GITLAB_HOST:-${CI_SERVER_HOST:-}}" "
+    # Numeric forge references become full URLs. On GitHub use the run's
+    # server origin (GITHUB_SERVER_URL), so a GitHub Enterprise deployment
+    # links to its own repos rather than github.com.
+    GH_ORIGIN=""
+    if [[ "${FULLSEND_FORGE}" == "github" ]]; then
+      GH_ORIGIN=$(_github_server_url 2>/dev/null || echo "https://github.com")
+    fi
+    BODY=$(jq -r --arg url "${ORIGINATING_URL}" --arg tracker "${FULLSEND_TRACKER}" --arg tr "${TARGET_REPO}" --arg forge "${FULLSEND_FORGE}" --arg gl_host "${GITLAB_HOST:-${CI_SERVER_HOST:-}}" --arg gh_origin "${GH_ORIGIN}" "
       .proposals[$i] |
       \"## What happened\n\n\" + .what_happened +
       \"\n\n## What could go better\n\n\" + .what_could_go_better +
@@ -1665,7 +1845,7 @@ if [[ "${PROPOSAL_COUNT}" -gt 0 ]]; then
               (if \$forge == \"gitlab\" then
                 (if (\$gl_host // \"\") != \"\" then \"https://\" + \$gl_host + \"/\" + \$tr + \"/-/issues/\" + tostring
                  else \$tr + \"#\" + tostring end)
-               else \"https://github.com/\" + \$tr + \"/issues/\" + tostring end)
+               else (if \$gh_origin != \"\" then \$gh_origin else \"https://github.com\" end) + \"/\" + \$tr + \"/issues/\" + tostring end)
              else \"#\" + tostring end)
           else tostring end
         ) | join(\", \")) +
@@ -1684,14 +1864,18 @@ if [[ "${PROPOSAL_COUNT}" -gt 0 ]]; then
 
     # Jira rerun protection: skip if an issue with the same summary exists.
     if [[ "${FULLSEND_TRACKER}" == "jira" ]]; then
-      if [[ "${JIRA_CREATEMETA_VALIDATED}" != "true" ]]; then
-        if ! tracker_validate_create; then
-          echo "::warning::Jira project validation failed for ${RETRO_JIRA_PROJECT} — cannot create issues"
-          FAILED_PROPOSALS="${FAILED_PROPOSALS}
-- **${TITLE}** (\`${RETRO_JIRA_PROJECT}\`)"
-          continue
+      if [[ "${JIRA_CREATEMETA_STATE}" == "unknown" ]]; then
+        if tracker_validate_create; then
+          JIRA_CREATEMETA_STATE="ok"
+        else
+          JIRA_CREATEMETA_STATE="failed"
         fi
-        JIRA_CREATEMETA_VALIDATED="true"
+      fi
+      if [[ "${JIRA_CREATEMETA_STATE}" != "ok" ]]; then
+        echo "::warning::Jira project validation failed for ${RETRO_JIRA_PROJECT} — cannot create issues"
+        FAILED_PROPOSALS="${FAILED_PROPOSALS}
+- **${TITLE}** (\`${RETRO_JIRA_PROJECT}\`)"
+        continue
       fi
 
       if ! EXISTING_URL=$(tracker_find_existing_issue "${TITLE}"); then
