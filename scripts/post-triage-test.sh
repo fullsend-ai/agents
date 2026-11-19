@@ -2152,6 +2152,19 @@ else
   echo "PASS: state-github-unclosed-details-escaped"
 fi
 
+# An HTML comment the agent left open would hide the lists and "Next steps"
+# up to the state marker's "-->": every "<!--" in the agent's comment is
+# escaped, and the only live one is the marker's.
+run_state_case "state-github-unclosed-html-comment-escaped" "$(sufficient_with ',"open_causes":[{"cause":"a cause","evidence":"e","verified":true}],"ruled_out":[]' $'Analysis.\n<!-- note to self\nmore')"
+body="$(posted_body "${GH_LOG}")"
+if [[ ${STATE_RC} -ne 0 ]] || [[ "$(printf '%s' "${body}" | grep -oF '<!--' | wc -l | tr -d ' ')" -ne 1 ]] \
+  || [[ "${body}" != *'&lt;!-- note to self'* || "${body}" != *'**Next steps:**'* ]] \
+  || [[ "$(printf '%s' "${body}" | grep -F '<!--')" != '<!-- triage-state-v1:'* ]]; then
+  state_fail "state-github-unclosed-html-comment-escaped" "expected the agent's \"<!--\" escaped and only the marker live (rc ${STATE_RC}): ${body}"
+else
+  echo "PASS: state-github-unclosed-html-comment-escaped"
+fi
+
 # Off the state path, neutralize escapes only a "Previous run" fold summary,
 # so the post-script's own <details> blocks (prerequisites, split) still
 # render.

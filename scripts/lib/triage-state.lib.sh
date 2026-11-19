@@ -129,14 +129,16 @@ triage_state_dropped() {
 # state, and step 2e reads a <details> block whose summary reads "Previous
 # run" as history, so no spelling of one may appear above the marker; and a
 # <details> left open would fold the lists and "Next steps" out of sight.
-# None of this text holds a <details> block of the post-script's own.
+# Every "<!--" is escaped too, so an HTML comment left open cannot hide
+# them either. None of this text holds a <details> block or an HTML
+# comment of the post-script's own.
 triage_state_compose() {
   jq -rn --argjson state "$1" --arg agent_in "$2" --arg footer_raw "$3" \
     --argjson cap "${TRIAGE_STATE_READABLE_CAP}" \
     --argjson extra_max "${TRIAGE_STATE_MAX_EXTRA_FOOTER}" '
     def nofold: gsub("(?i)<(?=(summary|details)\\b)"; "&lt;");
-    ($agent_in | nofold) as $agent | ($footer_raw | nofold) as $footer_in |
     def safe: gsub("<!--"; "&lt;!--") | nofold;
+    ($agent_in | safe) as $agent | ($footer_raw | safe) as $footer_in |
     def clip($n): if length > $n then .[0:($n - 1)] + "…" else . end;
     def line($full; $name_max):
       "- " + (.cause | clip($name_max) | safe)
