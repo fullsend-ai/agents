@@ -186,6 +186,17 @@ run_test "jira-pr-url-with-fullsend-dir" 0 "Pre-retro validation complete." \
   JIRA_BASE_URL="https://test.atlassian.net" RETRO_JIRA_PROJECT="PROJ" \
   ORIGINATING_URL="https://github.com/test-org/test-repo/pull/42"
 
+# Client-credentials runs must not mint at source time. Pre-retro makes no
+# Jira call, so a mint here is a live token exchange performed for nothing
+# (and, before the fix, a transient Atlassian failure failed the pre-step).
+# run_test fails on any curl invocation, so the exchange is caught here even
+# though the mock would answer it.
+run_test "jira-client-credentials-pre-retro-no-mint" 0 "Pre-retro validation complete." \
+  FULLSEND_TRACKER=jira FULLSEND_DIR="${TMPDIR}/dot-fullsend" \
+  FULLSEND_JIRA_CLIENT_ID="client-id" FULLSEND_JIRA_CLIENT_SECRET="client-secret" \
+  JIRA_BASE_URL="https://test.atlassian.net" RETRO_JIRA_PROJECT="PROJ" \
+  ORIGINATING_URL="https://github.com/test-org/test-repo/pull/42"
+
 run_test "jira-issue-url" 0 "Retro target: https://test.atlassian.net/browse/PROJ-123" \
   FULLSEND_TRACKER=jira FULLSEND_DIR="${TMPDIR}/dot-fullsend" JIRA_TOKEN="test-token" \
   JIRA_BASE_URL="https://test.atlassian.net" RETRO_JIRA_PROJECT="PROJ" \

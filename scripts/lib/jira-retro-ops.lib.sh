@@ -108,9 +108,13 @@ if [[ "${RETRO_MODE}" != "summary_only" ]]; then
   }
 fi
 
-if [[ "${RETRO_MODE}" != "summary_only" && "${JIRA_AUTH_MODE}" == "client" ]]; then
-  jira_auth_mint || exit 1
-fi
+# Client-credentials tokens are minted on demand, not here: pre-retro bundles
+# this library only to validate the URL, and makes no Jira call, so minting at
+# source time would exchange a live token (and fail the pre-step on a
+# transient Atlassian error) for nothing, then mint a second token in
+# post-retro. jira_auth_curl mints before its first call, and
+# jira_auth_fullsend hands the client credentials to the CLI to mint for
+# itself. This matches _jira_auth_init in jira-prioritize-ops.lib.sh.
 
 if [[ -n "${RETRO_JIRA_PROJECT}" && ! "${RETRO_JIRA_PROJECT}" =~ ^[A-Z][A-Z0-9_]*$ ]]; then
   echo "ERROR: RETRO_JIRA_PROJECT must be a Jira project key (e.g. PROJ)" >&2
