@@ -112,6 +112,24 @@ echo "fullsend \$*" >> "${FULLSEND_LOG}"
 echo "token=\${FULLSEND_JIRA_TOKEN-unset} email=\${FULLSEND_JIRA_EMAIL-unset}" >> "${FULLSEND_ENV_LOG}"
 if [[ "\$1" == "issues" ]] && [[ "\$2" == "create" ]]; then
   if [[ "\$3" == "--help" ]]; then
+    case "\${FULLSEND_MOCK_CREATE_HELP:-}" in
+      missing-fullsend-dir)
+        echo "Usage: fullsend issues create [flags]"
+        echo "--tracker"
+        exit 0
+        ;;
+      missing-tracker)
+        echo "Usage: fullsend issues create [flags]"
+        echo "--fullsend-dir"
+        exit 0
+        ;;
+      unrelated-usage)
+        echo "Usage: fullsend issues something-else [flags]"
+        echo "--fullsend-dir"
+        echo "--tracker"
+        exit 0
+        ;;
+    esac
     echo "Usage: fullsend issues create [flags]"
     echo "--fullsend-dir"
     echo "--tracker"
@@ -3391,6 +3409,21 @@ else
   FAILURES=$((FAILURES + 1))
 fi
 unset JIRA_MOCK_REQUIRED_FIELD
+
+# 24b. Help output must confirm the create command and both options used.
+for jira_help_case in missing-fullsend-dir missing-tracker unrelated-usage; do
+  export FULLSEND_MOCK_CREATE_HELP="${jira_help_case}"
+  run_test_stdout "jira/cli-help-${jira_help_case}" \
+    "${FIXTURE_ONE_PROPOSAL}" \
+    "does not support 'issues create --tracker jira --fullsend-dir'"
+  if grep -F 'fullsend issues create' "${FULLSEND_LOG}" 2>/dev/null | grep -qvF -- '--help'; then
+    echo "FAIL: jira/cli-help-${jira_help_case}-no-create — create called with incomplete CLI support"
+    FAILURES=$((FAILURES + 1))
+  else
+    echo "PASS: jira/cli-help-${jira_help_case}-no-create"
+  fi
+done
+unset FULLSEND_MOCK_CREATE_HELP
 
 # 25. Numeric forge references on GitHub Enterprise link to the run's server.
 export GITHUB_SERVER_URL="https://ghe.example.com"
