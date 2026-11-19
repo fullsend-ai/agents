@@ -581,6 +581,70 @@ run_test_stdout "label-actions-completed-control-label-refused" \
   '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_crash"},"comment":"## Triage Summary\n\nReady.","label_actions":{"reason":"Tried to set completed label.","actions":[{"action":"add","label":"completed"}]}}' \
   "::warning::Refused to add control label 'completed' -- control labels are managed by the triage pipeline"
 
+# ready-for-triage dispatches triage, so label_actions must never add or
+# remove it (#2082). Shared with the GitLab and Jira sections below.
+READY_FOR_TRIAGE_ADD_FIXTURE='{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_crash"},"comment":"## Triage Summary\n\nReady.","label_actions":{"reason":"Tried to re-dispatch triage.","actions":[{"action":"add","label":"ready-for-triage"}]}}'
+READY_FOR_TRIAGE_REMOVE_FIXTURE='{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_crash"},"comment":"## Triage Summary\n\nReady.","label_actions":{"reason":"Tried to remove ready-for-triage.","actions":[{"action":"remove","label":"ready-for-triage"}]}}'
+
+# run_refused_label_test NAME JSON EXPECTED_STDOUT LABEL LOG... — expect
+# EXPECTED_STDOUT in the output and LABEL in none of the call logs, so the
+# label was neither added nor removed on the tracker.
+run_refused_label_test() {
+  local test_name="$1"
+  local json_content="$2"
+  local expected_stdout="$3"
+  local label="$4"
+  shift 4
+
+  local run_dir="${TMPDIR}/run-${test_name}"
+  mkdir -p "${run_dir}/iteration-1/output"
+  echo "${json_content}" > "${run_dir}/iteration-1/output/agent-result.json"
+  local log
+  for log in "$@"; do
+    : > "${log}"
+  done
+
+  local exit_code=0
+  (cd "${run_dir}" && bash "${POST_SCRIPT}") > "${TMPDIR}/stdout.log" 2>&1 || exit_code=$?
+
+  if [[ ${exit_code} -ne 0 ]]; then
+    echo "FAIL: ${test_name} — exit code ${exit_code}"
+    cat "${TMPDIR}/stdout.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if ! grep -qF -- "${expected_stdout}" "${TMPDIR}/stdout.log"; then
+    echo "FAIL: ${test_name} — expected stdout pattern '${expected_stdout}' not found"
+    echo "Actual stdout:"
+    cat "${TMPDIR}/stdout.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  for log in "$@"; do
+    if grep -qF -- "${label}" "${log}"; then
+      echo "FAIL: ${test_name} — label '${label}' was sent to the tracker"
+      echo "Actual calls:"
+      cat "${log}"
+      FAILURES=$((FAILURES + 1))
+      return
+    fi
+  done
+
+  echo "PASS: ${test_name}"
+}
+
+run_refused_label_test "label-actions-add-ready-for-triage-refused" \
+  "${READY_FOR_TRIAGE_ADD_FIXTURE}" \
+  "::warning::Refused to add control label 'ready-for-triage' -- control labels are managed by the triage pipeline" \
+  "ready-for-triage" "${GH_LOG}"
+
+run_refused_label_test "label-actions-remove-ready-for-triage-refused" \
+  "${READY_FOR_TRIAGE_REMOVE_FIXTURE}" \
+  "::warning::Refused to remove control label 'ready-for-triage' -- control labels are managed by the triage pipeline" \
+  "ready-for-triage" "${GH_LOG}"
+
 run_test "label-actions-absent-still-posts-comment" \
   '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_crash"},"comment":"## Triage Summary\n\nReady."}' \
   "fullsend post-comment --repo test-org/test-repo --number 42 --marker <!-- fullsend:triage-agent -->"
@@ -2145,6 +2209,17 @@ run_gitlab_test_stdout "gitlab-control-label-refused" \
   '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_crash"},"comment":"## Triage Summary\n\nReady.","label_actions":{"reason":"Tried to set control label.","actions":[{"action":"add","label":"ready-to-code"}]}}' \
   "::warning::Refused to add control label 'ready-to-code' -- control labels are managed by the triage pipeline"
 
+# GitLab label_actions never add or remove ready-for-triage (#2082).
+run_refused_label_test "gitlab-label-actions-add-ready-for-triage-refused" \
+  "${READY_FOR_TRIAGE_ADD_FIXTURE}" \
+  "::warning::Refused to add control label 'ready-for-triage' -- control labels are managed by the triage pipeline" \
+  "ready-for-triage" "${CURL_LOG}" "${GH_LOG}"
+
+run_refused_label_test "gitlab-label-actions-remove-ready-for-triage-refused" \
+  "${READY_FOR_TRIAGE_REMOVE_FIXTURE}" \
+  "::warning::Refused to remove control label 'ready-for-triage' -- control labels are managed by the triage pipeline" \
+  "ready-for-triage" "${CURL_LOG}" "${GH_LOG}"
+
 # GitLab in-progress action.
 run_gitlab_test "gitlab-in-progress-posts-sticky-comment" \
   '{"action":"in-progress","reasoning":"MR !50 fixes the reported bug","pull_requests":[{"url":"https://gitlab.com/test-group/test-project/-/merge_requests/50"}],"comment":"An open MR is already addressing this issue."}' \
@@ -2492,6 +2567,17 @@ run_jira_test "jira-split-dispatches-triage" \
 run_jira_test_stdout "jira-split-dispatch-logged" \
   '{"action":"split","reasoning":"bundles two independent features","sub_issues":[{"title":"Feature A","body":"Do A"},{"title":"Feature B","body":"Do B"}],"comment":"Splitting into two sub-issues."}' \
   "Dispatching triage for sub-issue:"
+
+# Jira label_actions never add or remove ready-for-triage (#2082).
+run_refused_label_test "jira-label-actions-add-ready-for-triage-refused" \
+  "${READY_FOR_TRIAGE_ADD_FIXTURE}" \
+  "::warning::Refused to add control label 'ready-for-triage' -- control labels are managed by the triage pipeline" \
+  "ready-for-triage" "${JIRA_CURL_LOG}" "${GH_LOG}"
+
+run_refused_label_test "jira-label-actions-remove-ready-for-triage-refused" \
+  "${READY_FOR_TRIAGE_REMOVE_FIXTURE}" \
+  "::warning::Refused to remove control label 'ready-for-triage' -- control labels are managed by the triage pipeline" \
+  "ready-for-triage" "${JIRA_CURL_LOG}" "${GH_LOG}"
 
 # Jira split with multi-paragraph body produces ADF with separate paragraph nodes.
 # Verifies that newlines in sub-issue bodies are converted to hardBreak / separate
