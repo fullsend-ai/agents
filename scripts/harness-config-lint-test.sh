@@ -928,7 +928,7 @@ test_positive_fixtures() {
           continue
         }
         # Pass path via environment variable to avoid injection from special characters
-        SCHEMA_PATH="${actual_schema_path}" yq -i ".validation_loop.schema = env(SCHEMA_PATH)" \
+        SCHEMA_PATH="${actual_schema_path}" yq -i ".validation_loop.schema = strenv(SCHEMA_PATH)" \
           "${test_dir}/examples/test-harness/harness/${fixture_name}" || {
           echo "Failed to modify fixture YAML with absolute path"
           found_error=1
