@@ -237,25 +237,48 @@ forge_parse_issue_url() {
   JIRA_ISSUE_NUM="${ISSUE_NUMBER##*-}"
 }
 
-# Resolve a custom field by exact name. Fail closed unless it is a unique
-# customfield_[0-9]+ of the expected schema type — never Rank, Priority, or
-# system fields.
+# Resolve a custom field by exact name and schema type. Another field may
+# share the name with a different type (some JIRA instances have a site-wide
+# Impact select next to a different Impact number). Uniqueness is among
+# matches of the expected type. Never Rank, Priority, or system fields.
 _jira_custom_field_id() {
   local fields_json="$1"
   local name="$2"
   local expected_type="$3"
-  local matches count id type
-  matches=$(echo "${fields_json}" | jq -c --arg n "${name}" '[.[] | select(.name == $n)]') || {
+  local named typed count named_count id type found_id found_type
+  named=$(echo "${fields_json}" | jq -c --arg n "${name}" '[.[] | select(.name == $n)]') || {
     echo "ERROR: failed to parse Jira field list while looking up '${name}'" >&2
     return 1
   }
-  count=$(echo "${matches}" | jq 'length')
+  typed=$(echo "${named}" | jq -c --arg t "${expected_type}" '[.[] | select(.schema.type == $t)]') || {
+    echo "ERROR: failed to parse Jira field list while looking up '${name}'" >&2
+    return 1
+  }
+  count=$(echo "${typed}" | jq 'length')
+  if [[ "${count}" -eq 0 ]]; then
+    named_count=$(echo "${named}" | jq 'length')
+    if [[ "${named_count}" -eq 0 ]]; then
+      echo "ERROR: Jira field '${name}' not found or not unique (matches=0). Create one custom field named exactly '${name}' before running prioritize on Jira." >&2
+      return 1
+    fi
+    found_id=$(echo "${named}" | jq -r '
+      ([.[] | select(.id | test("^customfield_[0-9]+$"))] | .[0].id)
+      // .[0].id // empty')
+    if [[ ! "${found_id}" =~ ^customfield_[0-9]+$ ]]; then
+      echo "ERROR: Jira field '${name}' resolved to '${found_id}', which is not a custom field — refusing to write" >&2
+      return 1
+    fi
+    found_type=$(echo "${named}" | jq -r --arg id "${found_id}" \
+      '.[] | select(.id == $id) | .schema.type // empty')
+    echo "ERROR: Jira field '${name}' (${found_id}) has schema type '${found_type}', expected ${expected_type}" >&2
+    return 1
+  fi
   if [[ "${count}" -ne 1 ]]; then
     echo "ERROR: Jira field '${name}' not found or not unique (matches=${count}). Create one custom field named exactly '${name}' before running prioritize on Jira." >&2
     return 1
   fi
-  id=$(echo "${matches}" | jq -r '.[0].id // empty')
-  type=$(echo "${matches}" | jq -r '.[0].schema.type // empty')
+  id=$(echo "${typed}" | jq -r '.[0].id // empty')
+  type=$(echo "${typed}" | jq -r '.[0].schema.type // empty')
   if [[ ! "${id}" =~ ^customfield_[0-9]+$ ]]; then
     echo "ERROR: Jira field '${name}' resolved to '${id}', which is not a custom field — refusing to write" >&2
     return 1
