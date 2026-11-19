@@ -1157,7 +1157,7 @@ PUSH_OUTPUT="$(forge_push_branch "${BRANCH}" 2>&1)" && PUSH_RC=0 || PUSH_RC=$?
 print_sanitized_gha_log "${PUSH_OUTPUT}"
 
 if [ "${PUSH_RC}" -ne 0 ]; then
-  if echo "${PUSH_OUTPUT}" | grep -qi "non-fast-forward\|rejected\|fetch first\|not a fast forward"; then
+  if echo "${PUSH_OUTPUT}" | "${_POST_FAILURE_GREP}" -qi "non-fast-forward\|rejected\|fetch first\|not a fast forward"; then
     gha_echo warning "Plain push failed (non-fast-forward) — retrying with --force-with-lease"
     # The lease and the commit check need the current remote tip (#409, #342).
     # In a shallow clone a plain fetch pulls in old target-branch history,

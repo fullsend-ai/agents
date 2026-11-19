@@ -1285,6 +1285,28 @@ for hook_mode in absent success failure; do
   fi
 done
 
+# Even a hostile PATH present before library loading must not select filters.
+_filter_tmp="$(mktemp -d)"
+for _filter in sed awk tail cat grep; do
+  printf '#!/usr/bin/env bash\nprintf "untrusted filter invoked\\n" >> "%s"\nexit 99\n' \
+    "${_filter_tmp}/invocations" > "${_filter_tmp}/${_filter}"
+  chmod +x "${_filter_tmp}/${_filter}"
+done
+_filter_actual="$(
+  export PATH="${_filter_tmp}:${PATH}"
+  unset POST_FAILURE_REPORT_SH_LOADED
+  source "${SCRIPT_DIR}/lib/post-failure-report.lib.sh"
+  PUSH_TOKEN='arbitrary-filter-test-credential'
+  sanitize_failure_detail '::warning::arbitrary-filter-test-credential' 1
+)"
+if [ "${_filter_actual}" != '[REDACTED]' ] || [ -e "${_filter_tmp}/invocations" ]; then
+  echo "FAIL: sanitizer-ignores-hostile-starting-path"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: sanitizer-ignores-hostile-starting-path"
+fi
+rm -rf "${_filter_tmp}"
+
 echo ""
 if [ ${FAILURES} -gt 0 ]; then
   echo "${FAILURES} test(s) failed"

@@ -1137,6 +1137,14 @@ patch_added_lines() {
 [[ -n "${POST_FAILURE_REPORT_SH_LOADED:-}" ]] && return 0
 POST_FAILURE_REPORT_SH_LOADED=1
 
+# Resolve trusted system filters before repo-installed tools can change PATH.
+# Raw diagnostics may contain credentials, including ones redacted by callers.
+_POST_FAILURE_SED="$(command -p -v sed)"
+_POST_FAILURE_AWK="$(command -p -v awk)"
+_POST_FAILURE_TAIL="$(command -p -v tail)"
+_POST_FAILURE_CAT="$(command -p -v cat)"
+_POST_FAILURE_GREP="$(command -p -v grep)"
+
 # shellcheck source=forge-transient-retry.lib.sh
 # BEGIN bundled: lib/forge-transient-retry.lib.sh
 # forge-transient-retry.lib.sh — Retry forge CLI/API calls on 5xx/timeouts.
@@ -1307,7 +1315,7 @@ _sanitize_workflow_value() {
 # stripping mid-string :: (e.g. std::string in compiler output).
 sanitize_comment_workflow_commands() {
   local value="$1"
-  value="$(printf '%s\n' "${value}" | sed -E \
+  value="$(printf '%s\n' "${value}" | "${_POST_FAILURE_SED}" -E \
     -e 's/^::(warning|error|notice|debug|group|endgroup):://')"
   value="${value//%0A/}"
   value="${value//%0a/}"
@@ -1341,7 +1349,7 @@ gha_echo() {
 }
 
 _redact_multiline_pem() {
-  awk '
+  "${_POST_FAILURE_AWK}" '
     # OpenSSH/RSA/EC/DSA/PKCS8 PEM headers end in "...private key-----".
     # OpenPGP'"'"'s ASCII-armor format instead ends in "...private key
     # block-----" (issue #239) -- the optional "( block)?" covers both
@@ -1387,7 +1395,7 @@ sanitize_failure_detail() {
   local max_lines="${2:-${POST_FAILURE_DETAIL_MAX_LINES}}"
 
   detail="$(printf '%s\n' "${detail}" \
-    | sed -E \
+    | "${_POST_FAILURE_SED}" -E \
       -e 's/gh[pousr]_[A-Za-z0-9_]{20,}/[REDACTED]/g' \
       -e 's/github_pat_[A-Za-z0-9_]+/[REDACTED]/g' \
       -e 's/glpat-[A-Za-z0-9_-]{20,}/[REDACTED]/g' \
@@ -1409,7 +1417,7 @@ sanitize_failure_detail() {
   detail="$(sanitize_comment_workflow_commands "${detail}")"
 
   if [ "${max_lines}" -gt 0 ]; then
-    detail="$(printf '%s\n' "${detail}" | tail -n "${max_lines}")"
+    detail="$(printf '%s\n' "${detail}" | "${_POST_FAILURE_TAIL}" -n "${max_lines}")"
   fi
 
   printf '%s' "${detail}"
@@ -1423,13 +1431,13 @@ set_post_failure() {
 categorize_push_failure() {
   local push_output="$1"
 
-  if echo "${push_output}" | grep -qiE \
+  if echo "${push_output}" | "${_POST_FAILURE_GREP}" -qiE \
     'workflow.*without.*workflows?[[:space:]]+permission|refusing to allow.*GitHub App.*workflow'; then
     echo "push-workflow-permission"
     return 0
   fi
 
-  if echo "${push_output}" | grep -qiE \
+  if echo "${push_output}" | "${_POST_FAILURE_GREP}" -qiE \
     'non-fast-forward|rejected|fetch first|protected branch|GH006|permission denied|not a fast forward|rule violations'; then
     echo "push-rejected"
     return 0
@@ -1459,7 +1467,7 @@ post_failure_category_label() {
 post_failure_security_note() {
   case "$1" in
     push-workflow-permission)
-      cat <<'EOF'
+      "${_POST_FAILURE_CAT}" <<'EOF'
 > **Security boundary:** the coder app intentionally lacks `workflows` write permission. Changes to `.github/workflows/` must be made outside the agent (e.g., via a manual PR). Re-run the agent without workflow file changes, or apply those changes separately.
 EOF
       ;;
@@ -1503,8 +1511,8 @@ build_post_failure_comment() {
   fi
 
   if [ -n "${sanitized_detail}" ]; then
-    indented_detail="$(printf '%s\n' "${sanitized_detail}" | sed 's/^/    /')"
-    detail_block="$(cat <<EOF
+    indented_detail="$(printf '%s\n' "${sanitized_detail}" | "${_POST_FAILURE_SED}" 's/^/    /')"
+    detail_block="$("${_POST_FAILURE_CAT}" <<EOF
 
 **Details:**
 ${indented_detail}
@@ -1521,7 +1529,7 @@ EOF
   fi
 
   if [ "${category}" = "uncommitted-work" ]; then
-    cat <<EOF
+    "${_POST_FAILURE_CAT}" <<EOF
 ⚠️ **${agent_kind} agent killed before committing** — uncommitted work discarded (exit code ${exit_code})
 
 The ${agent_kind} agent left uncommitted changes in the extracted repo and produced no commit to push. The run was likely killed (timeout) before \`git commit\` executed, so this work was discarded and no PR was opened.
@@ -1535,7 +1543,7 @@ EOF
     return 0
   fi
 
-  cat <<EOF
+  "${_POST_FAILURE_CAT}" <<EOF
 ⚠️ **Post-${agent_kind} script failed** — ${label} (exit code ${exit_code})
 
 The ${agent_kind} agent completed, but the post-${agent_kind} script failed before finishing.
@@ -3566,7 +3574,7 @@ ${REBASE_OUTPUT}"
   print_sanitized_gha_log "${PUSH_OUTPUT}"
 
   if [ "${PUSH_RC}" -ne 0 ]; then
-    if echo "${PUSH_OUTPUT}" | grep -qi "non-fast-forward\|rejected\|fetch first\|not a fast forward"; then
+    if echo "${PUSH_OUTPUT}" | "${_POST_FAILURE_GREP}" -qi "non-fast-forward\|rejected\|fetch first\|not a fast forward"; then
       gha_echo warning "Plain push failed (non-fast-forward) — retrying with --force-with-lease"
       FORCE_PUSH_OUTPUT=""
       if ! FORCE_PUSH_OUTPUT="$(forge_push_branch "${BRANCH}" --force-with-lease 2>&1)"; then

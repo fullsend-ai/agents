@@ -3681,7 +3681,7 @@ if [[ "\$1" == "remote" && "\$2" == "set-url" ]]; then
   exit 0
 fi
 if [[ "\$1" == "push" && -n "\${MOCK_JIRA_PUSH_FAIL:-}" ]]; then
-  echo "forced local push failure" >&2
+  echo "\${MOCK_JIRA_PUSH_ERROR:-forced local push failure}" >&2
   exit 1
 fi
 exec ${JIRA_REAL_GIT} "\$@"
@@ -4030,31 +4030,38 @@ else
 fi
 
 # A push failure happens after step 4 prepends repo-installed tools to PATH.
-# A shadow awk must never receive the saved Jira token during redaction.
-JIRA_INT_AWK_LOG="${JIRA_INT_TMPDIR}/shadow-awk.log"
-JIRA_REAL_AWK="$(command -v awk)"
+# Shadow filters record stdin: they must never see unredacted diagnostics.
+JIRA_INT_FILTER_LOG="${JIRA_INT_TMPDIR}/shadow-filter.log"
+: > "${JIRA_INT_FILTER_LOG}"
 mkdir -p "${JIRA_INT_TMPDIR}/.local/bin"
-cat > "${JIRA_INT_TMPDIR}/.local/bin/awk" <<SHADOWEOF
+for _filter in sed awk tail cat grep; do
+  _real_filter="$(command -p -v "${_filter}")"
+  cat > "${JIRA_INT_TMPDIR}/.local/bin/${_filter}" <<SHADOWEOF
 #!/usr/bin/env bash
 if [ -n "\${REDACT_LITERAL_TOKEN:-}" ]; then
-  printf 'credential exposed\n' >> "${JIRA_INT_AWK_LOG}"
+  printf 'credential exported\n' >> "${JIRA_INT_FILTER_LOG}"
 fi
-exec "${JIRA_REAL_AWK}" "\$@"
+/usr/bin/tee -a "${JIRA_INT_FILTER_LOG}" | "${_real_filter}" "\$@"
 SHADOWEOF
-chmod +x "${JIRA_INT_TMPDIR}/.local/bin/awk"
-run_jira_int "jira-push-failure-shadow-awk" github MOCK_JIRA_PUSH_FAIL=1
+  chmod +x "${JIRA_INT_TMPDIR}/.local/bin/${_filter}"
+done
+# The diagnostic contains arbitrary token text that the regex rules cannot
+# recognize. Saved Jira credentials are redacted later by the shared writer.
+_jira_raw_detail='forced local push failure: fake-jira-token filter-probe-client-secret'
+run_jira_int "jira-push-failure-shadow-filters" github MOCK_JIRA_PUSH_FAIL=1 \
+  "MOCK_JIRA_PUSH_ERROR=${_jira_raw_detail}"
 rm -rf "${JIRA_INT_TMPDIR}/.local"
 if [ "${JIRA_INT_RC}" -eq 0 ]; then
-  jira_int_fail "jira-push-failure-keeps-token-from-shadow-awk" "expected push failure"
+  jira_int_fail "jira-push-failure-keeps-detail-from-shadow-filters" "expected push failure"
 elif ! grep -qF 'forced local push failure' "${JIRA_INT_OUT}"; then
-  jira_int_fail "jira-push-failure-keeps-token-from-shadow-awk" "did not reach push after tool setup"
-elif [ -s "${JIRA_INT_AWK_LOG}" ]; then
-  jira_int_fail "jira-push-failure-keeps-token-from-shadow-awk" "redaction exposed credentials to PATH-resolved awk"
+  jira_int_fail "jira-push-failure-keeps-detail-from-shadow-filters" "did not reach push after tool setup"
+elif grep -qE 'fake-jira-token|filter-probe-client-secret|credential exported' "${JIRA_INT_FILTER_LOG}"; then
+  jira_int_fail "jira-push-failure-keeps-detail-from-shadow-filters" "untrusted filter received raw diagnostic or credential environment"
 elif ! grep -qF -- "${JIRA_FAILURE_MARKER}" "${JIRA_INT_FULLSEND_LOG}" \
      || ! grep -qF 'env-token=fake-jira-token' "${JIRA_INT_FULLSEND_LOG}"; then
-  jira_int_fail "jira-push-failure-keeps-token-from-shadow-awk" "trusted CLI did not receive the failure comment"
+  jira_int_fail "jira-push-failure-keeps-detail-from-shadow-filters" "trusted CLI did not receive the failure comment"
 else
-  echo "PASS: jira-push-failure-keeps-token-from-shadow-awk"
+  echo "PASS: jira-push-failure-keeps-detail-from-shadow-filters"
 fi
 
 # Renaming a non-conforming agent branch runs `git branch -M`, which triggers

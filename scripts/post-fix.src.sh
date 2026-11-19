@@ -1195,7 +1195,7 @@ ${REBASE_OUTPUT}"
   print_sanitized_gha_log "${PUSH_OUTPUT}"
 
   if [ "${PUSH_RC}" -ne 0 ]; then
-    if echo "${PUSH_OUTPUT}" | grep -qi "non-fast-forward\|rejected\|fetch first\|not a fast forward"; then
+    if echo "${PUSH_OUTPUT}" | "${_POST_FAILURE_GREP}" -qi "non-fast-forward\|rejected\|fetch first\|not a fast forward"; then
       gha_echo warning "Plain push failed (non-fast-forward) — retrying with --force-with-lease"
       FORCE_PUSH_OUTPUT=""
       if ! FORCE_PUSH_OUTPUT="$(forge_push_branch "${BRANCH}" --force-with-lease 2>&1)"; then
