@@ -901,31 +901,50 @@ test_positive_fixtures() {
         continue
       }
 
-      # For absolute-path fixture, create the actual directory structure and file
+      # For absolute-path fixture, create the actual directory structure and file inside FIXTURE_ROOT_TEMP
       if [[ "${fixture_name}" == "schema-with-absolute-path-example.yaml" ]]; then
-        # Create the temporary directory structure for the absolute path
-        local temp_schemas_dir="/tmp/shared/schemas"
-        mkdir -p "${temp_schemas_dir}" || {
-          echo "Failed to create temporary directory ${temp_schemas_dir}"
+        # Create the schema directory inside FIXTURE_ROOT_TEMP for isolation
+        local abs_schema_dir="${test_dir}/example-abs-schema-dir/schemas"
+        mkdir -p "${abs_schema_dir}" || {
+          echo "Failed to create temporary directory ${abs_schema_dir}"
           found_error=1
           continue
         }
         # Create the actual JSON schema file
-        printf '{"type": "object"}\n' > "${temp_schemas_dir}/test-schema.json" || {
-          echo "Failed to create schema file at ${temp_schemas_dir}/test-schema.json"
+        printf '{"type": "object"}\n' > "${abs_schema_dir}/test-schema.json" || {
+          echo "Failed to create schema file at ${abs_schema_dir}/test-schema.json"
           found_error=1
           continue
         }
-      fi
+        # Get the absolute path
+        local actual_schema_path
+        actual_schema_path="$(cd "${abs_schema_dir}" && pwd)/test-schema.json"
 
-      cp "${fixture_file}" "${test_dir}/examples/test-harness/harness/" || {
-        echo "Failed to copy examples fixture ${fixture_name} to temporary directory"
-        found_error=1
-        continue
-      }
-      # Copy schema files from test-fixtures/harness-config-good-examples/
-      if [[ -f "${examples_fixtures_good_dir}/test-schema.json" ]]; then
-        cp "${examples_fixtures_good_dir}/test-schema.json" "${test_dir}/examples/test-harness/schemas/" 2>/dev/null || true
+        # Copy the fixture YAML and modify it to use the generated absolute path
+        cp "${fixture_file}" "${test_dir}/examples/test-harness/harness/${fixture_name}" || {
+          echo "Failed to copy examples fixture ${fixture_name} to temporary directory"
+          found_error=1
+          continue
+        }
+        # Replace the placeholder path with the actual absolute path
+        # Use sed with | as delimiter since path contains /
+        sed -i "s|/tmp/shared/schemas/test-schema.json|${actual_schema_path}|g" \
+          "${test_dir}/examples/test-harness/harness/${fixture_name}" || {
+          echo "Failed to modify fixture YAML with absolute path"
+          found_error=1
+          continue
+        }
+      else
+        # For non-absolute-path fixtures, use the standard copy
+        cp "${fixture_file}" "${test_dir}/examples/test-harness/harness/" || {
+          echo "Failed to copy examples fixture ${fixture_name} to temporary directory"
+          found_error=1
+          continue
+        }
+        # Copy schema files from test-fixtures/harness-config-good-examples/
+        if [[ -f "${examples_fixtures_good_dir}/test-schema.json" ]]; then
+          cp "${examples_fixtures_good_dir}/test-schema.json" "${test_dir}/examples/test-harness/schemas/" 2>/dev/null || true
+        fi
       fi
 
       # Run all three tests on this fixture
