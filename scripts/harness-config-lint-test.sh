@@ -881,10 +881,10 @@ test_positive_fixtures() {
     "schema-with-consecutive-dots.yaml"
   )
 
-  # Test positive examples/*/harness fixtures with looser validation rules
-  local examples_fixtures_dir="${REPO_ROOT}/examples/test-harness/harness"
-  if [[ -d "${examples_fixtures_dir}" ]]; then
-    for fixture_file in "${examples_fixtures_dir}"/*.yaml; do
+  # Test positive examples/*/harness fixtures from test-fixtures with looser validation rules
+  local examples_fixtures_good_dir="${SCRIPT_DIR}/test-fixtures/harness-config-good-examples"
+  if [[ -d "${examples_fixtures_good_dir}" ]]; then
+    for fixture_file in "${examples_fixtures_good_dir}"/*.yaml; do
       [[ -f "${fixture_file}" ]] || continue
       local fixture_name
       fixture_name="$(basename "${fixture_file}")"
@@ -894,20 +894,38 @@ test_positive_fixtures() {
       # Create a temporary subdirectory under root temp for this fixture (auto-cleaned via EXIT trap)
       local test_dir
       FIXTURE_COUNTER=$((FIXTURE_COUNTER + 1))
-      test_dir="${FIXTURE_ROOT_TEMP}/positive-${FIXTURE_COUNTER}-${fixture_name%.*}"
+      test_dir="${FIXTURE_ROOT_TEMP}/positive-examples-${FIXTURE_COUNTER}-${fixture_name%.*}"
       mkdir -p "${test_dir}/examples/test-harness/harness" "${test_dir}/examples/test-harness/schemas" || {
         echo "Failed to create temporary directory for examples fixture ${fixture_name}"
         found_error=1
         continue
       }
+
+      # For absolute-path fixture, create the actual directory structure and file
+      if [[ "${fixture_name}" == "schema-with-absolute-path-example.yaml" ]]; then
+        # Create the temporary directory structure for the absolute path
+        local temp_schemas_dir="/tmp/shared/schemas"
+        mkdir -p "${temp_schemas_dir}" || {
+          echo "Failed to create temporary directory ${temp_schemas_dir}"
+          found_error=1
+          continue
+        }
+        # Create the actual JSON schema file
+        printf '{"type": "object"}\n' > "${temp_schemas_dir}/test-schema.json" || {
+          echo "Failed to create schema file at ${temp_schemas_dir}/test-schema.json"
+          found_error=1
+          continue
+        }
+      fi
+
       cp "${fixture_file}" "${test_dir}/examples/test-harness/harness/" || {
         echo "Failed to copy examples fixture ${fixture_name} to temporary directory"
         found_error=1
         continue
       }
-      # Copy schema files from examples/test-harness/schemas
-      if [[ -d "${examples_fixtures_dir}/../schemas" ]]; then
-        cp -r "${examples_fixtures_dir}/../schemas"/* "${test_dir}/examples/test-harness/schemas/" 2>/dev/null || true
+      # Copy schema files from test-fixtures/harness-config-good-examples/
+      if [[ -f "${examples_fixtures_good_dir}/test-schema.json" ]]; then
+        cp "${examples_fixtures_good_dir}/test-schema.json" "${test_dir}/examples/test-harness/schemas/" 2>/dev/null || true
       fi
 
       # Run all three tests on this fixture
