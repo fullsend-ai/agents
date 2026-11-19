@@ -318,11 +318,15 @@ and `Glob` to inspect project configuration:
    `fix(parser):`"; else **unknown**.
 5. **Check for PR template.** Find the repo's pull request template(s).
    If multiple templates exist, note them — you will select the right
-   one in step 10d after classifying the task type. If found, read and
-   note visible headings
-   and prompts (skip HTML comments). If no visible sections remain after
-   stripping comments, treat it as no template found. You will structure
-   the `pr_body` field in step 10d to match template sections — the
+   one in step 10d after classifying the task type. If found, read it in
+   full, HTML comments included: visible headings and prompts give the
+   `pr_body` structure; comment text is guidance on what each section
+   must contain, hygiene rules, and which sections are optional. A
+   commented-out heading marked optional (e.g.,
+   `<!-- ## Justifications -->`) is opt-in. Treat it as no template
+   found only if it yields neither visible sections nor usable comment
+   guidance. You will structure the `pr_body` field in step 10d to match
+   template sections — the
    post-script uses `pr_body` as the PR description. For a repository-boundary
    no-commit escalation, follow the compact output in `agents/code.md` instead.
 
@@ -1106,7 +1110,13 @@ reference (`Closes` or `Related to`) — do not include closing
 references in pr_body.
 
 If step 3 found PR template(s), select the one matching the task type
-from step 6 and structure `pr_body` to match its sections. Otherwise,
+from step 6 and structure `pr_body` to match its sections, filling
+each per the step 3 comment guidance. Include opt-in sections only when
+they apply; never copy comment markers into `pr_body`. Comment guidance
+is advisory — pipeline invariants win: no closing reference even if the
+template asks for `Fixes #NNN` or a `Fixes:` line; title guidance applies to the commit
+subject (10c), which becomes the PR title; no secrets, since `pr_body`
+is secret-scanned. Otherwise,
 write a best-effort description covering what changed, why, testing
 approach, and any caveats.
 
