@@ -866,13 +866,12 @@ if [[ "${RETRO_MODE}" != "summary_only" ]]; then
   }
 fi
 
-# Client-credentials tokens are minted on demand, not here: pre-retro bundles
-# this library only to validate the URL, and makes no Jira call, so minting at
-# source time would exchange a live token (and fail the pre-step on a
-# transient Atlassian error) for nothing, then mint a second token in
-# post-retro. jira_auth_curl mints before its first call, and
-# jira_auth_fullsend hands the client credentials to the CLI to mint for
-# itself. This matches _jira_auth_init in jira-prioritize-ops.lib.sh.
+# Client-credentials tokens are not minted at source time: pre-retro bundles
+# this library only to validate the URL, and makes no Jira call. post-retro
+# calls _retro_jira_init once, in the main shell, before the proposal loop.
+# Minting there (rather than here or per call) is what keeps the token out of
+# the subshells: the cache lives in this process, and every REST call runs in
+# a command substitution that would otherwise exchange a new token each time.
 
 if [[ -n "${RETRO_JIRA_PROJECT}" && ! "${RETRO_JIRA_PROJECT}" =~ ^[A-Z][A-Z0-9_]*$ ]]; then
   echo "ERROR: RETRO_JIRA_PROJECT must be a Jira project key (e.g. PROJ)" >&2
@@ -886,6 +885,13 @@ if [[ -z "${RETRO_JIRA_LABELS}" ]]; then
   echo "INFO: RETRO_JIRA_LABELS is empty — Jira issues will be created without labels" >&2
 fi
 RETRO_JIRA_MAX_PAGES="${RETRO_JIRA_MAX_PAGES:-50}"
+# Used as an arithmetic bound, so anything outside a plain positive integer is
+# refused: 0 yields a silent "truncated" duplicate search and a failing
+# createmeta, and bash arithmetic would evaluate the contents of the value.
+if [[ ! "${RETRO_JIRA_MAX_PAGES}" =~ ^[1-9][0-9]*$ ]]; then
+  echo "ERROR: RETRO_JIRA_MAX_PAGES must be a positive integer (got: $(_gha_sanitize "${RETRO_JIRA_MAX_PAGES}"))" >&2
+  exit 1
+fi
 
 # --- Configuration and REST routing ---
 
@@ -979,6 +985,26 @@ _retro_jira_rest_root() {
   printf '%s/ex/jira/%s/rest/api/3' "${gateway}" "${cloud}"
 }
 
+# Resolve the REST root once per run, in the calling shell. Every REST call
+# below runs inside a command substitution, so a root resolved there is lost
+# with the subshell and repeats 2-4 yq reads and an unauthenticated
+# tenant_info request per call. Called from post-retro after configuration is
+# parsed and before the proposal loop, as jira-prioritize-ops.lib.sh does
+# with its cloud-ID cache.
+_RETRO_JIRA_REST_ROOT=""
+_retro_jira_init() {
+  [[ "${RETRO_MODE}" == "summary_only" ]] && return 0
+  # Mint in the calling shell so the token cache survives the subshells.
+  jira_auth_mint || return 1
+  local root=""
+  # A resolution failure is not fatal here: _retro_jira_api re-resolves it and
+  # reports the error for the proposal it affects, as it did before caching.
+  if root=$(_retro_jira_rest_root); then
+    _RETRO_JIRA_REST_ROOT="${root}"
+  fi
+  return 0
+}
+
 # --- Jira REST calls ---
 
 _retro_jira_api() {
@@ -986,8 +1012,10 @@ _retro_jira_api() {
   shift
   local endpoint="$1"
   shift
-  local rest_root rc=0
-  rest_root=$(_retro_jira_rest_root) || return 1
+  local rest_root="${_RETRO_JIRA_REST_ROOT:-}" rc=0
+  if [[ -z "${rest_root}" ]]; then
+    rest_root=$(_retro_jira_rest_root) || return 1
+  fi
   _retro_jira_xtrace_off
   jira_auth_curl "${JIRA_TOKEN:-}" "${JIRA_USER_EMAIL:-}" \
     --fail --silent --show-error \
@@ -1006,8 +1034,10 @@ _retro_jira_api_with_status() {
   shift
   local endpoint="$1"
   shift
-  local err_file raw http_code body rest_root rc=0
-  rest_root=$(_retro_jira_rest_root) || return 1
+  local err_file raw http_code body rest_root="${_RETRO_JIRA_REST_ROOT:-}" rc=0
+  if [[ -z "${rest_root}" ]]; then
+    rest_root=$(_retro_jira_rest_root) || return 1
+  fi
   err_file=$(mktemp)
   _retro_jira_xtrace_off
   raw=$(jira_auth_curl "${JIRA_TOKEN:-}" "${JIRA_USER_EMAIL:-}" \
@@ -1531,9 +1561,18 @@ else
   CONFIG_WORKSPACE="$(forge_get_config_workspace)"
 fi
 CONFIG_FILE="${CONFIG_WORKSPACE}/config.yaml"
-if [[ ! -f "${CONFIG_FILE}" && ! -f "${CONFIG_WORKSPACE}/config.base.yaml" ]]; then
+if [[ "${FULLSEND_TRACKER}" != "jira" && ! -f "${CONFIG_FILE}" && ! -f "${CONFIG_WORKSPACE}/config.base.yaml" ]]; then
   # Per-repo mode: config is under .fullsend/
   CONFIG_FILE="${CONFIG_WORKSPACE}/.fullsend/config.yaml"
+fi
+# For a Jira tracker there is no .fullsend/ fallback: the CLI treats
+# --fullsend-dir as the directory that holds config.yaml, and the Jira REST
+# routing reads the same path through _retro_jira_config_value. Accepting a
+# nested config here alone would pass the allowlist with a config the CLI and
+# the REST calls cannot see. Say so instead of denying every proposal with the
+# allowlist warning.
+if [[ "${FULLSEND_TRACKER}" == "jira" && ! -f "${CONFIG_FILE}" && ! -f "${CONFIG_WORKSPACE}/config.base.yaml" ]]; then
+  echo "::warning::no config.yaml in FULLSEND_DIR (${CONFIG_WORKSPACE}) — FULLSEND_DIR must be the .fullsend directory itself, which holds config.yaml with the tracker.jira block; the fullsend CLI and Jira REST routing read that path. Cross-repo issue creation is disabled."
 fi
 # A configuration preset (config.base.yaml) sits beside the overlay. As in
 # fullsend's layered config, an overlay that sets tracker replaces the base
@@ -1724,6 +1763,19 @@ is_target_allowed() {
 # File an issue for each proposal.
 PROPOSAL_COUNT=$(jq '.proposals | length' "${RESULT_FILE}")
 echo "Found ${PROPOSAL_COUNT} proposal(s)"
+
+# Resolve Jira REST routing and mint client-credentials tokens once, in this
+# shell, before the proposal loop. The REST calls run in command substitutions,
+# so doing this per call would exchange a new OAuth token and re-discover the
+# cloud ID for every request. Skipped when there is nothing to file, so a run
+# with no proposals makes no Jira calls at all.
+if [[ "${FULLSEND_TRACKER}" == "jira" ]] && [[ "${RETRO_MODE}" != "summary_only" ]] \
+  && [[ "${PROPOSAL_COUNT}" -gt 0 ]] && declare -f _retro_jira_init >/dev/null 2>&1; then
+  if ! _retro_jira_init; then
+    echo "ERROR: cannot initialize Jira REST access — no proposals will be filed" >&2
+    exit 1
+  fi
+fi
 
 # Validate all proposals before filing any to avoid partial state.
 # Guard on PROPOSAL_COUNT > 0: `seq 0 $((PROPOSAL_COUNT - 1))` with

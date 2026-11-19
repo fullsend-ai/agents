@@ -101,9 +101,18 @@ else
   CONFIG_WORKSPACE="$(forge_get_config_workspace)"
 fi
 CONFIG_FILE="${CONFIG_WORKSPACE}/config.yaml"
-if [[ ! -f "${CONFIG_FILE}" && ! -f "${CONFIG_WORKSPACE}/config.base.yaml" ]]; then
+if [[ "${FULLSEND_TRACKER}" != "jira" && ! -f "${CONFIG_FILE}" && ! -f "${CONFIG_WORKSPACE}/config.base.yaml" ]]; then
   # Per-repo mode: config is under .fullsend/
   CONFIG_FILE="${CONFIG_WORKSPACE}/.fullsend/config.yaml"
+fi
+# For a Jira tracker there is no .fullsend/ fallback: the CLI treats
+# --fullsend-dir as the directory that holds config.yaml, and the Jira REST
+# routing reads the same path through _retro_jira_config_value. Accepting a
+# nested config here alone would pass the allowlist with a config the CLI and
+# the REST calls cannot see. Say so instead of denying every proposal with the
+# allowlist warning.
+if [[ "${FULLSEND_TRACKER}" == "jira" && ! -f "${CONFIG_FILE}" && ! -f "${CONFIG_WORKSPACE}/config.base.yaml" ]]; then
+  echo "::warning::no config.yaml in FULLSEND_DIR (${CONFIG_WORKSPACE}) — FULLSEND_DIR must be the .fullsend directory itself, which holds config.yaml with the tracker.jira block; the fullsend CLI and Jira REST routing read that path. Cross-repo issue creation is disabled."
 fi
 # A configuration preset (config.base.yaml) sits beside the overlay. As in
 # fullsend's layered config, an overlay that sets tracker replaces the base
@@ -294,6 +303,19 @@ is_target_allowed() {
 # File an issue for each proposal.
 PROPOSAL_COUNT=$(jq '.proposals | length' "${RESULT_FILE}")
 echo "Found ${PROPOSAL_COUNT} proposal(s)"
+
+# Resolve Jira REST routing and mint client-credentials tokens once, in this
+# shell, before the proposal loop. The REST calls run in command substitutions,
+# so doing this per call would exchange a new OAuth token and re-discover the
+# cloud ID for every request. Skipped when there is nothing to file, so a run
+# with no proposals makes no Jira calls at all.
+if [[ "${FULLSEND_TRACKER}" == "jira" ]] && [[ "${RETRO_MODE}" != "summary_only" ]] \
+  && [[ "${PROPOSAL_COUNT}" -gt 0 ]] && declare -f _retro_jira_init >/dev/null 2>&1; then
+  if ! _retro_jira_init; then
+    echo "ERROR: cannot initialize Jira REST access — no proposals will be filed" >&2
+    exit 1
+  fi
+fi
 
 # Validate all proposals before filing any to avoid partial state.
 # Guard on PROPOSAL_COUNT > 0: `seq 0 $((PROPOSAL_COUNT - 1))` with
