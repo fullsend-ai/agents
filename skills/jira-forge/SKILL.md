@@ -95,6 +95,38 @@ so use `orderBy=-created` when you only need the latest replies.
 Gone) cause curl to exit non-zero instead of silently returning an error body
 that could be mistaken for an empty result set.
 
+## Parent Issue
+
+Jira records an issue's parent in its `parent` field: a sub-task's parent
+issue, or the epic a story or task belongs to. The parent can be in another
+project. Read the parent's key first; empty output means the issue has no
+parent. Then fetch the parent's summary, description, and status. The same
+response carries the parent's own `parent` field, which names the next
+ancestor. Replace `<parent-key>` with the key printed by the previous command.
+`pipefail` makes a failed request exit non-zero instead of looking like an
+issue with no parent; treat a non-zero exit as a failed read.
+
+```bash
+set -o pipefail
+JIRA_EMAIL="${JIRA_USER_EMAIL:-}"; JIRA_EMAIL="${JIRA_EMAIL//[[:space:]]/}"
+JIRA_AUTH_FLAG=--oauth2-bearer; test -n "${JIRA_EMAIL}" && JIRA_AUTH_FLAG=--user
+JIRA_TOKEN_NOW="$(cat /sandbox/fullsend-jira/token 2>/dev/null)"; JIRA_TOKEN_NOW="${JIRA_TOKEN_NOW:-${JIRA_TOKEN}}"
+JIRA_AUTH="${JIRA_EMAIL:+${JIRA_EMAIL}:}${JIRA_TOKEN_NOW}"
+ISSUE_KEY="${ISSUE_URL##*/browse/}"
+
+# Key of the issue's parent (empty when it has none)
+curl --fail-with-body --silent "${JIRA_AUTH_FLAG}" "${JIRA_AUTH}" \
+  "${JIRA_API_URL:-${JIRA_BASE_URL}}/rest/api/3/issue/${ISSUE_KEY}?fields=parent" \
+  | jq -r '.fields.parent.key // empty'
+
+# The parent's content, plus its own parent's key for the next hop
+curl --fail-with-body --silent "${JIRA_AUTH_FLAG}" "${JIRA_AUTH}" \
+  "${JIRA_API_URL:-${JIRA_BASE_URL}}/rest/api/3/issue/<parent-key>?fields=summary,description,status,issuetype,parent" \
+  | jq '{key, summary: .fields.summary, status: .fields.status.name,
+      type: .fields.issuetype.name, next_parent: .fields.parent.key,
+      description: ([.fields.description | .. | .text? // empty] | join(" "))}'
+```
+
 ## Searching for Duplicates and Related Issues
 
 ```bash
