@@ -447,13 +447,13 @@ check_schema_files_at_path() {
     return 0
   fi
 
-  # Skip ${VAR} schema paths - these are runtime variables and cannot be validated at lint time
-  if [[ "${schema_path}" == *\$\{* ]]; then
-    return 0
-  fi
-
   # For harness/ files (published as URL bases): Apply stricter validateBaseRelPath rules
   if [[ "${is_harness_dir}" == "true" ]]; then
+    # Reject ${VAR} schema paths in published harness/ files (consumers fetch literal ${...} URL)
+    if [[ "${schema_path}" == *\$\{* ]]; then
+      echo "${harness_name}: ${location} schema path cannot contain \${VAR} (not allowed in published harness/): ${schema_path}"
+      return 1
+    fi
     # Rule 1: Reject absolute paths (must be relative for URL-base consumption)
     if [[ "${schema_path}" == /* ]]; then
       echo "${harness_name}: ${location} schema path must be relative (not absolute): ${schema_path}"
@@ -463,6 +463,11 @@ check_schema_files_at_path() {
     if [[ "${schema_path}" =~ (^|/)\.\.(/|$) ]]; then
       echo "${harness_name}: ${location} schema path contains .. traversal (not allowed): ${schema_path}"
       return 1
+    fi
+  else
+    # For examples/ files: Skip ${VAR} schema paths - these are runtime variables and cannot be validated at lint time
+    if [[ "${schema_path}" == *\$\{* ]]; then
+      return 0
     fi
   fi
 
@@ -716,6 +721,7 @@ test_negative_fixtures() {
     "schema-internal-dotdot-path.yaml:test_schema_files_exist_and_valid:schema-internal-dotdot-path\.yaml.*schema path contains.*\\..*traversal.*not allowed"
     "forge-literal-null-schema.yaml:test_schema_files_exist_and_valid:forge-literal-null-schema\.yaml.*schema file not found"
     "schema-traversal-to-sibling-example.yaml:test_schema_files_exist_and_valid:schema-traversal-to-sibling-example\.yaml.*schema path escapes bundle root via"
+    "schema-env-var.yaml:test_schema_files_exist_and_valid:schema-env-var\.yaml.*schema path cannot contain.*VAR.*not allowed in published harness"
   )
 
   for fixture_spec in "${expected_failures[@]}"; do
