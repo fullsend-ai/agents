@@ -1789,15 +1789,22 @@ triage_state_compose() {
         | ($c | last_at("\n")) as $i
         | (if ($i // 0) > $n / 2 then $c[0:$i] else $c end) + "…"
       end;
-    # The fence a Markdown code block opened in this text and did not close
-    # (``` or ~~~, up to three spaces in), or null.
+    # The fence run that opens a code block on this line (``` or ~~~, up to
+    # three spaces in), or nothing. A backtick run opens one only when the
+    # rest of the line has no backtick (CommonMark): "```make test``` …" is
+    # an inline code span, not a fence.
+    def opener: (capture("^ {0,3}(?<f>`{3,})[^`]*$") // capture("^ {0,3}(?<f>~{3,})")) | .f;
+    # The fence a Markdown code block opened in this text and did not close,
+    # or null.
     def open_fence:
       reduce (split("\n")[]) as $l (null;
-        if . == null then ([$l | capture("^ {0,3}(?<f>`{3,}|~{3,})")] | .[0].f // null)
+        if . == null then ([$l | opener] | .[0] // null)
         elif (. as $f | $l | test("^ {0,3}" + $f[0:1] + "{" + ($f | length | tostring) + ",}\\s*$")) then null
         else . end);
-    # The longest fence-opening run in this text, so a closing fence always
-    # has room.
+    # The longest leading backtick or tilde run in this text, plus one, so a
+    # closing fence always has room. Every such run counts, inline code
+    # spans too: a cut inside "```make test```" leaves "```make…", which
+    # does open a fence.
     def fence_room:
       [split("\n")[] | capture("^ {0,3}(?<f>`{3,}|~{3,})") | .f | length] | (max // 0) + 1;
     # Cut to $n characters like cutline, then close a code block the cut

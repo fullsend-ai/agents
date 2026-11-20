@@ -2165,6 +2165,37 @@ else
   echo "PASS: state-github-unclosed-html-comment-escaped"
 fi
 
+# A line that starts with an inline ``` code span is not a fence: no closing
+# fence is added after it, so the lists render as Markdown.
+span_out="$(SCRIPT_DIR="${SCRIPT_DIR}" bash -c 'source "${SCRIPT_DIR}/lib/triage-state.lib.sh"; triage_state_compose "$1" "$2" "$3"' _ \
+  '{"open_causes":[{"cause":"a cause","evidence":"e","verified":true}],"ruled_out":[]}' $'Summary.\n\n```make test``` reproduces it.' $'\n\n---\n**Next steps:**\n- one' 2>&1)" || true
+if [[ "${span_out}" == $'Summary.\n\n```make test``` reproduces it.\n\n**Open causes:**'* ]] \
+  && [[ "$(printf '%s\n' "${span_out}" | grep -cE '^ {0,3}(`{3,}|~{3,})[[:space:]]*$')" -eq 0 ]]; then
+  echo "PASS: state-inline-code-span-not-a-fence"
+else
+  state_fail "state-inline-code-span-not-a-fence" "expected no fence added after an inline code span: ${span_out}"
+fi
+
+# A cut inside an inline-span line leaves a fence opener ("```yyy…"): the
+# closing fence the cut path adds still fits the readable cap.
+cut_agent="\`\`\`$(printf 'y%.0s' $(seq 1 5000))\`\`\` z"
+cut_out="$(SCRIPT_DIR="${SCRIPT_DIR}" bash -c 'source "${SCRIPT_DIR}/lib/triage-state.lib.sh"; triage_state_compose "$1" "$2" "$3"' _ \
+  '{"open_causes":[{"cause":"a cause","evidence":"e","verified":true}],"ruled_out":[]}' "${cut_agent}" $'\n\n---\n**Next steps:**\n- one' 2>&1)" || true
+if [[ ${#cut_out} -le 4000 && "${cut_out}" == *$'…\n```\n'* && "${cut_out}" == *'**Next steps:**'* ]]; then
+  echo "PASS: state-cut-span-closer-fits-cap"
+else
+  state_fail "state-cut-span-closer-fits-cap" "expected the cut span line closed within 4000 characters (got ${#cut_out}): ${cut_out: -200}"
+fi
+
+# A real fence left open is still closed, with a backtick or tilde info string.
+fence_out="$(SCRIPT_DIR="${SCRIPT_DIR}" bash -c 'source "${SCRIPT_DIR}/lib/triage-state.lib.sh"; triage_state_compose "$1" "$2" "$3"' _ \
+  '{"open_causes":[{"cause":"a cause","evidence":"e","verified":true}],"ruled_out":[]}' $'Log:\n~~~ text `x`\nline' $'\n\n---\n**Next steps:**\n- one' 2>&1)" || true
+if [[ "${fence_out}" == $'Log:\n~~~ text `x`\nline\n~~~\n\n**Open causes:**'* ]]; then
+  echo "PASS: state-open-tilde-fence-closed"
+else
+  state_fail "state-open-tilde-fence-closed" "expected the open ~~~ fence closed before the lists: ${fence_out}"
+fi
+
 # Off the state path, neutralize escapes only a "Previous run" fold summary,
 # so the post-script's own <details> blocks (prerequisites, split) still
 # render.
