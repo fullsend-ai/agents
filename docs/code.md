@@ -417,8 +417,11 @@ vars. Key differences from single-forge setup:
   are retried for all methods; HTTP 500–504 and network failures are retried for
   idempotent methods. There is no additional shell retry. A rerun after an
   ambiguous comment POST failure relies on the sticky-marker property lookup
-  to find a comment the earlier request may have created. Every Jira
-  write has the Jira token and saved OAuth client secret redacted from its text.
+  to find a comment the earlier request may have created. Jira comment bodies
+  have the token and saved OAuth client secret redacted before delivery. The
+  shared comment writer captures CLI stdout and stderr, removes the saved
+  token, email, OAuth client ID and secret (including normalized values), and
+  sanitizes workflow commands before logging, preserving the CLI exit status.
   Failure details use the same bounded regex/literal-token sanitizer as forge
   failure comments, rather than `scan_public_text`. Failures can occur before
   the public-text scanner is initialized; the scanner remains required for

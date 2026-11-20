@@ -1139,11 +1139,19 @@ POST_FAILURE_REPORT_SH_LOADED=1
 
 # Resolve trusted system filters before repo-installed tools can change PATH.
 # Raw diagnostics may contain credentials, including ones redacted by callers.
-_POST_FAILURE_SED="$(command -p -v sed)"
-_POST_FAILURE_AWK="$(command -p -v awk)"
-_POST_FAILURE_TAIL="$(command -p -v tail)"
-_POST_FAILURE_CAT="$(command -p -v cat)"
-_POST_FAILURE_GREP="$(command -p -v grep)"
+_post_failure_system_filter() {
+  local tool="$1" resolved=""
+  if ! resolved="$(command -p -v "${tool}")" || [[ "${resolved}" != /* ]] || [ ! -x "${resolved}" ]; then
+    printf 'ERROR: required system filter %s is unavailable in the system default PATH\n' "${tool}" >&2
+    return 1
+  fi
+  printf '%s' "${resolved}"
+}
+_POST_FAILURE_SED="$(_post_failure_system_filter sed)" || { return 1 2>/dev/null || exit 1; }
+_POST_FAILURE_AWK="$(_post_failure_system_filter awk)" || { return 1 2>/dev/null || exit 1; }
+_POST_FAILURE_TAIL="$(_post_failure_system_filter tail)" || { return 1 2>/dev/null || exit 1; }
+_POST_FAILURE_CAT="$(_post_failure_system_filter cat)" || { return 1 2>/dev/null || exit 1; }
+_POST_FAILURE_GREP="$(_post_failure_system_filter grep)" || { return 1 2>/dev/null || exit 1; }
 
 # shellcheck source=forge-transient-retry.lib.sh
 # BEGIN bundled: lib/forge-transient-retry.lib.sh

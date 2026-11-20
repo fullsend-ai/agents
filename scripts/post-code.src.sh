@@ -373,11 +373,26 @@ _post_jira_code_comment_inner() {
   # One CLI invocation: the Jira client owns HTTP retries, including for
   # no-op and failure comments. A rerun after an ambiguous POST 5xx relies
   # on the CLI's sticky-marker property lookup to find a created comment.
-  printf '%s' "${body}" | jira_auth_fullsend "${_jira_fullsend_bin}" \
+  local output="" write_rc=0 email="" token=""
+  output="$(printf '%s' "${body}" | jira_auth_fullsend "${_jira_fullsend_bin}" \
     "${_jira_token_saved}" "${_jira_email_saved:-}" \
     issues post-comment --tracker jira --fullsend-dir "${FULLSEND_DIR}" \
     --project "${project}" --number "${number}" \
-    --marker "${marker}" --result -
+    --marker "${marker}" --result - 2>&1)" || write_rc=$?
+  # Redact both successful output and error diagnostics inside Bash before
+  # logging. Include raw and normalized values used by the CLI.
+  email="$(jira_auth_email "${_jira_email_saved:-}")"
+  token="$(_jira_auth_trim "${_jira_token_saved}")"
+  local credential
+  for credential in "${_jira_token_saved}" "${token}" "${_jira_email_saved:-}" "${email}" \
+    "${_jira_client_id_saved}" "${_JIRA_AUTH_CLIENT_ID:-}" \
+    "${_jira_client_secret_saved}" "${_JIRA_AUTH_CLIENT_SECRET:-}"; do
+    output="$(_redact_literal_token "${output}" "${credential}")"
+  done
+  if [ -n "${output}" ]; then
+    print_sanitized_gha_log "${output}"
+  fi
+  return "${write_rc}"
 }
 
 # Called by the shared failure reporter with a sanitized body. Return failure

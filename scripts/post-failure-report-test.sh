@@ -1285,6 +1285,46 @@ for hook_mode in absent success failure; do
   fi
 done
 
+# Missing or invalid system-filter lookups fail clearly before traps exist.
+for _lookup_tool in sed awk tail cat grep; do
+  for _lookup_mode in missing empty relative nonexecutable; do
+    for _lookup_target in sourced bundled; do
+      _lookup_rc=0
+      _lookup_output="$(LOOKUP_TOOL="${_lookup_tool}" LOOKUP_MODE="${_lookup_mode}" LOOKUP_TARGET="${_lookup_target}" bash -c '
+        set -euo pipefail
+        command() {
+          if [ "${1:-}" = -p ] && [ "${2:-}" = -v ] && [ "${3:-}" = "$LOOKUP_TOOL" ]; then
+            case "$LOOKUP_MODE" in
+              missing) return 1 ;;
+              empty) return 0 ;;
+              relative) printf "%s" "$LOOKUP_TOOL" ;;
+              nonexecutable) printf "/nonexistent/system-filter" ;;
+            esac
+          else
+            builtin command "$@"
+          fi
+        }
+        if [ "$LOOKUP_TARGET" = bundled ]; then
+          export -f command
+          bash "$2"
+        else
+          source "$1"
+        fi
+        echo SOURCE_CONTINUED
+      ' _ "${SCRIPT_DIR}/lib/post-failure-report.lib.sh" "${SCRIPT_DIR}/validate-code-output.sh" 2>&1)" || _lookup_rc=$?
+      if [ "${_lookup_rc}" -ne 1 ] \
+           || ! grep -qF "required system filter ${_lookup_tool} is unavailable" <<< "${_lookup_output}" \
+           || grep -qF SOURCE_CONTINUED <<< "${_lookup_output}" \
+           || grep -qF "return:" <<< "${_lookup_output}"; then
+        echo "FAIL: system-filter-${_lookup_tool}-${_lookup_mode}-${_lookup_target}"
+        FAILURES=$((FAILURES + 1))
+      else
+        echo "PASS: system-filter-${_lookup_tool}-${_lookup_mode}-${_lookup_target}"
+      fi
+    done
+  done
+done
+
 # Even a hostile PATH present before library loading must not select filters.
 _filter_tmp="$(mktemp -d)"
 for _filter in sed awk tail cat grep; do

@@ -3772,6 +3772,15 @@ for arg in "\$@"; do
   PREV="\${arg}"
 done
 echo "fullsend \$* env-token=\${FULLSEND_JIRA_TOKEN:-unset} env-email=\${FULLSEND_JIRA_EMAIL-unset} env-client-id=\${FULLSEND_JIRA_CLIENT_ID-unset} env-client-secret=\${FULLSEND_JIRA_CLIENT_SECRET:+set} <<BODY:\${BODY}:BODY>>" >> "${JIRA_INT_FULLSEND_LOG}"
+if [[ -n "\${MOCK_FULLSEND_DIAGNOSTICS:-}" && "\$1 \$2" == "issues post-comment" ]]; then
+  echo "CLI stdout: \${FULLSEND_JIRA_TOKEN:-} \${FULLSEND_JIRA_EMAIL:-} \${FULLSEND_JIRA_CLIENT_ID:-} \${FULLSEND_JIRA_CLIENT_SECRET:-}"
+  echo "::error::CLI stderr: \${FULLSEND_JIRA_TOKEN:-} \${FULLSEND_JIRA_EMAIL:-} \${FULLSEND_JIRA_CLIENT_ID:-} \${FULLSEND_JIRA_CLIENT_SECRET:-}" >&2
+  TRIMMED_TOKEN="\${FULLSEND_JIRA_TOKEN:-}"
+  TRIMMED_TOKEN="\${TRIMMED_TOKEN#"\${TRIMMED_TOKEN%%[![:space:]]*}"}"
+  TRIMMED_TOKEN="\${TRIMMED_TOKEN%"\${TRIMMED_TOKEN##*[![:space:]]}"}"
+  echo "CLI normalized token: \${TRIMMED_TOKEN}"
+
+fi
 # Count from the durable call log: every retry starts a new CLI process.
 ATTEMPT=\$(grep -c '^fullsend issues post-comment' "${JIRA_INT_FULLSEND_LOG}")
 if [ "\${ATTEMPT}" -le "\${MOCK_FULLSEND_TRANSIENT_FAILURES:-0}" ]; then
@@ -4421,11 +4430,13 @@ fi
 
 # Every caller must guard tracing, including early failures before setup ends.
 for _trace_outcome in noop failure; do
-  for _trace_auth in token client; do
+  for _trace_auth in token padded-token client; do
     for _trace_delivery in success failure; do
       _trace_env=("${JIRA_CLIENT_ENV[@]}")
-      if [ "${_trace_auth}" = token ]; then
-        _trace_env=("JIRA_TOKEN=${JIRA_XTRACE_TOKEN_VALUE}" "FULLSEND_JIRA_TOKEN=${JIRA_XTRACE_TOKEN_VALUE}"
+      if [ "${_trace_auth}" != client ]; then
+        _trace_token="${JIRA_XTRACE_TOKEN_VALUE}"
+        [ "${_trace_auth}" = padded-token ] && _trace_token="  ${_trace_token}  "
+        _trace_env=("JIRA_TOKEN=${_trace_token}" "FULLSEND_JIRA_TOKEN=${_trace_token}"
           "JIRA_USER_EMAIL=${JIRA_XTRACE_EMAIL_VALUE}" "FULLSEND_JIRA_EMAIL=${JIRA_XTRACE_EMAIL_VALUE}")
       fi
       _trace_name="jira-trace-${_trace_outcome}-${_trace_auth}-${_trace_delivery}"
@@ -4433,14 +4444,14 @@ for _trace_outcome in noop failure; do
       [ "${_trace_delivery}" = failure ] && _trace_fail=1
       if [ "${_trace_outcome}" = noop ]; then
         JIRA_INT_XTRACE=1 JIRA_INT_NO_BRANCH=1 run_jira_int "${_trace_name}" github \
-          "${_trace_env[@]}" "MOCK_FULLSEND_FAIL=${_trace_fail}"
+          "${_trace_env[@]}" "MOCK_FULLSEND_FAIL=${_trace_fail}" MOCK_FULLSEND_DIAGNOSTICS=1
         _trace_rc=0
         _trace_marker="${JIRA_OUTCOME_MARKER}"
         _trace_warning='Failed to post no-op comment'
       else
         JIRA_INT_XTRACE=1 JIRA_INT_RESULT_JSON="${JIRA_BRANCH_FAIL_RESULT}" \
           run_jira_int "${_trace_name}" github "${_trace_env[@]}" \
-            CODE_ALLOWED_TARGET_BRANCHES=main "MOCK_FULLSEND_FAIL=${_trace_fail}"
+            CODE_ALLOWED_TARGET_BRANCHES=main "MOCK_FULLSEND_FAIL=${_trace_fail}" MOCK_FULLSEND_DIAGNOSTICS=1
         _trace_rc=1
         _trace_marker="${JIRA_FAILURE_MARKER}"
         _trace_warning='Post-code failure for TESTPROJ-42'
@@ -4458,7 +4469,10 @@ for _trace_outcome in noop failure; do
          ' "${JIRA_INT_OUT}" \
          || grep -qF "${JIRA_XTRACE_TOKEN_VALUE}" "${JIRA_INT_OUT}" \
          || grep -qF "${JIRA_XTRACE_EMAIL_VALUE}" "${JIRA_INT_OUT}" \
-         || grep -qF "${JIRA_CLIENT_SECRET_VALUE}" "${JIRA_INT_OUT}"; then
+         || grep -qF "${JIRA_CLIENT_SECRET_VALUE}" "${JIRA_INT_OUT}" \
+         || ! grep -q 'CLI stdout:.*\[REDACTED\]' "${JIRA_INT_OUT}" \
+         || ! grep -q 'CLI stderr:.*\[REDACTED\]' "${JIRA_INT_OUT}" \
+         || grep -q '^::error::CLI stderr:' "${JIRA_INT_OUT}"; then
         jira_int_fail "${_trace_name}" "wrong status/write/marker, missing restored trace, or credential in trace"
       elif { [ "${_trace_delivery}" = failure ] && ! grep -qF "${_trace_warning}" "${JIRA_INT_OUT}"; } \
            || { [ "${_trace_delivery}" = success ] && grep -qF "${_trace_warning}" "${JIRA_INT_OUT}"; }; then
