@@ -290,7 +290,11 @@ forward-compatible override when set, but the harness itself only ever sets
 
 A `sufficient` result carries `triage_summary.open_causes` and
 `triage_summary.ruled_out`, each a list of `{cause, evidence, verified}`.
-The post-script lists both under the comment (one line per cause,
+The shipped prompt always emits both. The output schema does not require
+them yet, so results from older or custom prompts, and fullsend's
+behaviour fixtures, stay valid; a `sufficient` result without
+`open_causes` is posted without a triage state. They become required once
+those fixtures carry them. The post-script lists both under the comment (one line per cause,
 unverified causes marked, **Ruled out** left out when empty) and stores the
 same lists as data for the next run (fullsend-ai/agents#2042):
 
