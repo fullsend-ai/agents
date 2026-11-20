@@ -3535,7 +3535,7 @@ else
 fi
 export FULLSEND_FORGE="github"
 
-# 21. Comment truncation at 32000 chars for Jira-originated runs
+# 21. Comment truncation at the Jira 32000-byte cap for Jira-originated runs
 ORIGINATING_URL="https://mock.atlassian.net/browse/PROJ-123" \
   run_test_stdout "jira/comment-truncated-at-32000" \
   "${FIXTURE_OVERSIZED}" \
@@ -3551,6 +3551,45 @@ if grep -qF "...(truncated)" "${FULLSEND_STDIN_LOG}" 2>/dev/null; then
   echo "PASS: jira/comment-truncated-marker"
 else
   echo "FAIL: jira/comment-truncated-marker — missing truncation notice"
+  FAILURES=$((FAILURES + 1))
+fi
+
+# 21b. The Jira comment cap is in bytes, not characters: the CLI converts the
+# comment to ADF and MarkdownToADF refuses anything over 32768 bytes. A
+# summary of 32000 two-byte characters is 64000 bytes but only 32000
+# characters, so a character-count cut leaves it over the limit and the post
+# fails after the issues were already filed.
+JIRA_WIDE_SUMMARY=$(jq -nr '"é" * 32000')
+FIXTURE_JIRA_WIDE_COMMENT=$(jq -nc --arg s "${JIRA_WIDE_SUMMARY}" '{summary: $s, proposals: []}')
+ORIGINATING_URL="https://mock.atlassian.net/browse/PROJ-123" \
+  run_test_stdout "jira/comment-truncated-bytes" \
+  "${FIXTURE_JIRA_WIDE_COMMENT}" \
+  "Posting summary comment on PROJ#PROJ-123"
+JIRA_WIDE_COMMENT_BYTES=$(wc -c < "${FULLSEND_STDIN_LOG}" | tr -d '[:space:]')
+if [[ "${JIRA_WIDE_COMMENT_BYTES}" -le 32768 ]]; then
+  echo "PASS: jira/comment-truncated-bytes-under-cap (${JIRA_WIDE_COMMENT_BYTES} bytes)"
+else
+  echo "FAIL: jira/comment-truncated-bytes-under-cap — comment is ${JIRA_WIDE_COMMENT_BYTES} bytes (limit 32768)"
+  FAILURES=$((FAILURES + 1))
+fi
+if [[ "${JIRA_WIDE_COMMENT_BYTES}" -gt 31000 ]]; then
+  echo "PASS: jira/comment-truncated-bytes-near-cap (${JIRA_WIDE_COMMENT_BYTES} bytes)"
+else
+  echo "FAIL: jira/comment-truncated-bytes-near-cap — comment shrank to ${JIRA_WIDE_COMMENT_BYTES} bytes"
+  FAILURES=$((FAILURES + 1))
+fi
+if grep -qF "...(truncated)" "${FULLSEND_STDIN_LOG}" 2>/dev/null; then
+  echo "PASS: jira/comment-truncated-bytes-marker"
+else
+  echo "FAIL: jira/comment-truncated-bytes-marker — truncation marker missing from the comment"
+  FAILURES=$((FAILURES + 1))
+fi
+# The cut must land on a code-point boundary; a split two-byte character
+# leaves invalid UTF-8, which iconv rejects.
+if iconv -f UTF-8 -t UTF-8 "${FULLSEND_STDIN_LOG}" > /dev/null 2>&1; then
+  echo "PASS: jira/comment-truncated-bytes-valid-utf8"
+else
+  echo "FAIL: jira/comment-truncated-bytes-valid-utf8 — truncation split a multi-byte character"
   FAILURES=$((FAILURES + 1))
 fi
 

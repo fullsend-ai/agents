@@ -78,6 +78,7 @@ Retro can deliver findings and improvement proposals to Jira Cloud instead of (o
 - **Idempotency & retry protection:** Before filing an issue in Jira, retro checks for an existing issue in `RETRO_JIRA_PROJECT` with an identical summary; reruns that produce different titles can still create duplicates.
 - **Traceability:** Created Jira issues preserve the originating GitHub/GitLab PR URL in the body footer, and the retro summary comment links back to all created Jira issues.
 - **Body size:** The `fullsend` CLI rejects a Jira body over 32 KiB before converting the Markdown, so an oversized proposal body is truncated at a character boundary, marked as truncated, and keeps the originating-URL footer. The issue is still filed; the full text remains on the originating PR/MR.
+- **Comment size:** The same 32 KiB limit applies to the summary comment posted back to a Jira-originated issue, and it is measured in bytes. An oversized summary is truncated on a character boundary under that cap (leaving room for the CLI's marker neutralization) and marked as truncated.
 - **Preflight validation:** Checks Jira create metadata (`createmeta`) before creating issues. Fails with a warning and reports uncreated proposals in the summary if the issue type is missing or requires fields retro does not provide.
 - **Labels:** Applied by an issue update after creation, which Jira validates against the issue's edit screen. An issue type whose edit screen has no Labels field gets no labels and a warning; the issue is still filed.
 

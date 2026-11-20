@@ -1870,21 +1870,28 @@ JIRA_CREATEMETA_STATE="unknown"
 # added, and the create then fails with no issue filed.
 RETRO_JIRA_BODY_MAX_BYTES=32768
 
-# Print $1 truncated to RETRO_JIRA_BODY_MAX_BYTES bytes, re-appending $2 (the
-# originating-URL footer) verbatim and marking where the text was cut. The CLI
-# limit is in bytes, so the over-limit test measures under LC_ALL=C, where
-# string length counts bytes rather than characters. The cut itself steps over
-# whole code points in jq, so a multi-byte character is never split.
-_retro_jira_fit_body() {
+# fullsend's `issues post-comment --tracker jira` caps a comment at
+# jira.MaxMarkdownBytes (32768 bytes) too, but only on the update path: a new
+# comment is neutralized (NeutralizeMarkersADF, which grows every fullsend
+# marker opener by four bytes) and then converted with MarkdownToADF, which
+# refuses a body over the limit. That error is not a 401/403, so an oversized
+# summary fails the post after the issues were already filed. Stay under the
+# cap with headroom for neutralization.
+RETRO_JIRA_COMMENT_MAX_BYTES=32000
+
+# Print $1 truncated to $2 bytes and append $3 (the truncation marker). The
+# limits callers enforce are in bytes, so the over-limit test measures under
+# LC_ALL=C, where string length counts bytes rather than characters. The cut
+# itself steps over whole code points in jq, so a multi-byte character is
+# never split.
+_retro_fit_bytes() {
   local LC_ALL=C
-  local body="$1" footer="$2" marker budget kept
-  if [[ "${#body}" -le "${RETRO_JIRA_BODY_MAX_BYTES}" ]]; then
-    printf '%s' "${body}"
+  local text="$1" budget="$2" marker="$3" kept
+  if [[ "${#text}" -le ${budget} ]]; then
+    printf '%s' "${text}"
     return 0
   fi
-  marker=$'\n\n_(truncated to fit the Jira issue body limit; see the originating PR/issue for the full text)_'
-  budget=$((RETRO_JIRA_BODY_MAX_BYTES - ${#marker} - ${#footer}))
-  kept=$(printf '%s' "${body}" | jq -Rrs --argjson budget "${budget}" '
+  kept=$(printf '%s' "${text}" | jq -Rrs --argjson budget "${budget}" '
     # Keep the longest prefix whose UTF-8 encoding fits in $budget bytes. The
     # cumulative widths increase strictly, so counting the offsets inside the
     # budget gives the number of code points that fit; jq then slices strings
@@ -1896,7 +1903,30 @@ _retro_jira_fit_body() {
        | map(select(. <= $budget))
        | length) as $n
     | $s[0:$n]')
-  printf '%s%s%s' "${kept}" "${marker}" "${footer}"
+  printf '%s%s' "${kept}" "${marker}"
+}
+
+# Print $1 truncated to RETRO_JIRA_BODY_MAX_BYTES bytes, re-appending $2 (the
+# originating-URL footer) verbatim and marking where the text was cut.
+_retro_jira_fit_body() {
+  local LC_ALL=C
+  local body="$1" footer="$2" marker budget
+  if [[ "${#body}" -le "${RETRO_JIRA_BODY_MAX_BYTES}" ]]; then
+    printf '%s' "${body}"
+    return 0
+  fi
+  marker=$'\n\n_(truncated to fit the Jira issue body limit; see the originating PR/issue for the full text)_'
+  budget=$((RETRO_JIRA_BODY_MAX_BYTES - ${#marker} - ${#footer}))
+  _retro_fit_bytes "${body}" "${budget}" "${marker}"
+  printf '%s' "${footer}"
+}
+
+# Print $1 truncated to RETRO_JIRA_COMMENT_MAX_BYTES bytes, appending $2 (the
+# truncation suffix).
+_retro_jira_fit_comment() {
+  local LC_ALL=C
+  local comment="$1" suffix="$2"
+  _retro_fit_bytes "${comment}" "$((RETRO_JIRA_COMMENT_MAX_BYTES - ${#suffix}))" "${suffix}"
 }
 
 ISSUE_LINKS=""
@@ -2160,11 +2190,17 @@ if [[ -n "${RECEIPT_SKIPPED}" ]]; then
 fi
 
 if [[ "${RETRO_MODE}" != "issues_only" ]]; then
-  # Truncate to forge-specific comment limit.
-  MAX_COMMENT_LEN=$(forge_get_comment_max_len)
-  if [[ ${#COMMENT} -gt ${MAX_COMMENT_LEN} ]]; then
-    TRUNCATION_SUFFIX=$'\n\n...(truncated)'
-    COMMENT="${COMMENT:0:$((MAX_COMMENT_LEN - ${#TRUNCATION_SUFFIX}))}"${TRUNCATION_SUFFIX}
+  # Truncate to the forge-specific comment limit. Jira's limit is enforced by
+  # the CLI in bytes, so that path measures bytes and cuts on a code-point
+  # boundary; the forge limits count characters.
+  TRUNCATION_SUFFIX=$'\n\n...(truncated)'
+  if [[ "${JIRA_ORIGINATING:-false}" == "true" ]]; then
+    COMMENT=$(_retro_jira_fit_comment "${COMMENT}" "${TRUNCATION_SUFFIX}")
+  else
+    MAX_COMMENT_LEN=$(forge_get_comment_max_len)
+    if [[ ${#COMMENT} -gt ${MAX_COMMENT_LEN} ]]; then
+      COMMENT="${COMMENT:0:$((MAX_COMMENT_LEN - ${#TRUNCATION_SUFFIX}))}"${TRUNCATION_SUFFIX}
+    fi
   fi
 
   echo "Posting summary comment on ${ORIGINATING_REPO}#${ORIGINATING_NUMBER}"
