@@ -1147,10 +1147,20 @@ _post_failure_system_filter() {
   fi
   printf '%s' "${resolved}"
 }
+# In executed bundles, return is invalid and exit is reached.
+# shellcheck disable=SC2317
 _POST_FAILURE_SED="$(_post_failure_system_filter sed)" || { return 1 2>/dev/null || exit 1; }
+# In executed bundles, return is invalid and exit is reached.
+# shellcheck disable=SC2317
 _POST_FAILURE_AWK="$(_post_failure_system_filter awk)" || { return 1 2>/dev/null || exit 1; }
+# In executed bundles, return is invalid and exit is reached.
+# shellcheck disable=SC2317
 _POST_FAILURE_TAIL="$(_post_failure_system_filter tail)" || { return 1 2>/dev/null || exit 1; }
+# In executed bundles, return is invalid and exit is reached.
+# shellcheck disable=SC2317
 _POST_FAILURE_CAT="$(_post_failure_system_filter cat)" || { return 1 2>/dev/null || exit 1; }
+# In executed bundles, return is invalid and exit is reached.
+# shellcheck disable=SC2317
 _POST_FAILURE_GREP="$(_post_failure_system_filter grep)" || { return 1 2>/dev/null || exit 1; }
 
 # shellcheck source=forge-transient-retry.lib.sh
