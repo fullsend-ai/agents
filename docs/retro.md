@@ -77,6 +77,7 @@ Retro can deliver findings and improvement proposals to Jira Cloud instead of (o
 - **Configurable output modes:** `RETRO_MODE` supports `all` (default: creates Jira issues and posts summary comment), `summary_only` (posts summary comment with proposals listed without creating issues), or `issues_only` (creates issues without posting summary; exits non-zero if proposals fail or are skipped).
 - **Idempotency & retry protection:** Before filing an issue in Jira, retro checks for an existing issue in `RETRO_JIRA_PROJECT` with an identical summary; reruns that produce different titles can still create duplicates.
 - **Traceability:** Created Jira issues preserve the originating GitHub/GitLab PR URL in the body footer, and the retro summary comment links back to all created Jira issues.
+- **Body size:** The `fullsend` CLI rejects a Jira body over 32 KiB before converting the Markdown, so an oversized proposal body is truncated at a character boundary, marked as truncated, and keeps the originating-URL footer. The issue is still filed; the full text remains on the originating PR/MR.
 - **Preflight validation:** Checks Jira create metadata (`createmeta`) before creating issues. Fails with a warning and reports uncreated proposals in the summary if the issue type is missing or requires fields retro does not provide.
 - **Labels:** Applied by an issue update after creation, which Jira validates against the issue's edit screen. An issue type whose edit screen has no Labels field gets no labels and a warning; the issue is still filed.
 
