@@ -13,7 +13,7 @@ allowed_remote_resources:
 # EVAL_MODEL=opus) gets Opus. On the Claude runtime, the review personas
 # resolve their model inside the sandbox instead; eval/harness/review.yaml
 # covers them. To run the parent on Opus on purpose, pass a full id, e.g.
-# EVAL_MODEL=claude-opus-4-6; on the Claude runtime the review personas
+# EVAL_MODEL=claude-opus-5-5; on the Claude runtime the review personas
 # stay on Sonnet 5.5 through that overlay. A pinned alias has no
 # fallback: a Vertex project that does not serve claude-sonnet-5-5 fails
 # the run instead of silently using another model.
