@@ -97,3 +97,26 @@ go run ./cmd/fullsend admin foreign list --org halfsend-01
 
 The test Apps and actor permissions must also be present on the dev pool
 organizations. Stage organization permissions are intentionally out of scope.
+
+## On the GitHub emulator
+
+The `behaviour-github-emulator` workflow runs this suite against the
+[GitHub emulator](https://github.com/fullsend-ai/github-emulator), on hosted
+VMs. Every pull request runs it, forks included, with no repository secrets
+and no `/ok-to-test`.
+
+- The job builds fullsend `main` and reads the emulator pin from that
+  checkout, so both repositories run the same emulator release. A dispatch
+  input can name another fullsend revision.
+- The job splits the suite into shards. Each shard sets `BEHAVIOUR_FEATURES`
+  to space-separated godog paths relative to `behaviour/`, for example
+  `features/fix.feature` or `features/triage.feature:3`. When it is unset or
+  empty, the suite runs every feature.
+- The live suite (`behaviour-tests.yml`) still runs as before. It is the only
+  place scenarios that need a real model run: today, the custom-persona
+  scenario behind the `review-skill-overrides` capability.
+
+To run the same job locally, follow
+[Running against a GitHub emulator](https://github.com/fullsend-ai/fullsend/blob/main/docs/guides/dev/behaviour-testing.md#running-against-a-github-emulator)
+in fullsend's behaviour testing guide, with
+`BT_SUITE=agents AGENTS_DIR=<this checkout>`.

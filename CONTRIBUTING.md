@@ -88,6 +88,13 @@ workflow-approval prompt (the "Approve and run workflows" button). Approving
 that prompt lets `pull_request`-triggered workflows start, but a fork PR's
 functional tests still need `/ok-to-test <sha>`.
 
+The `behaviour-github-emulator` check runs on every pull request, forks
+included, without `/ok-to-test`: it runs the behaviour suite on a GitHub
+emulator and needs no secrets (see
+[On the GitHub emulator](docs/behaviour-testing.md#on-the-github-emulator)).
+`/ok-to-test <sha>` is still needed for the live `Functional Tests` and
+`Behaviour Tests` workflows.
+
 ### Merging
 
 - PRs require approval from a maintainer before merging.
