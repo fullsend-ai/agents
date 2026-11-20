@@ -297,23 +297,20 @@ GitHub/GitLab auth vars:
 | `FULLSEND_JIRA_TOKEN` | Jira API token, set as a repository secret (static-token mode). The harness maps it to `JIRA_TOKEN` in `env.runner` for post-script mutations, and the builtin `jira` provider reads it for sandbox reads; the sandbox receives the provider's opaque placeholder instead of the real token. The legacy `JIRA_TOKEN` secret is no longer read. Leave it unset when using client credentials. |
 | `FULLSEND_JIRA_CLIENT_ID`, `FULLSEND_JIRA_CLIENT_SECRET` | OAuth 2.0 client credentials of an Atlassian service account, set as repository secrets instead of `FULLSEND_JIRA_TOKEN`. The harness maps both to `env.runner` only: the pre- and post-scripts mint a short-lived token for their REST calls (sent to `JIRA_API_URL`, which is then required) and pass the client variables to `fullsend issues`, and `fullsend run` mints and refreshes the sandbox token for the `jira` provider. The secret never reaches the sandbox. Setting them together with `FULLSEND_JIRA_TOKEN`, or setting only one of them, fails the run. |
 | `FULLSEND_JIRA_EMAIL` | Optional repository secret. Email of a bot-user account. When set, requests use Basic auth with email and token; when unset or empty (a service account), Bearer auth with the token. The harness maps it to `JIRA_USER_EMAIL` in `env.runner`, and `fullsend run` sets `JIRA_USER_EMAIL` from it so the sandbox gets it through `env/jira/triage.env`. The legacy `JIRA_USER_EMAIL` secret is no longer read. |
-| `FULLSEND_DIR` | The `.fullsend` directory. The post-script passes it to `fullsend issues post-comment --fullsend-dir`, which reads the Jira site and API gateway from `tracker.jira` in its `config.yaml`. The harness passes `${FULLSEND_DIR}` through to `env.runner` from the host environment, so the operator must set it. |
+| `FULLSEND_DIR` | The `.fullsend` directory. The post-script passes it to `fullsend issues post-comment --fullsend-dir` and `fullsend issues transition --fullsend-dir`, which read the Jira site and API gateway from `tracker.jira` in its `config.yaml`. The harness passes `${FULLSEND_DIR}` through to `env.runner` from the host environment, so the operator must set it. |
 | `JIRA_BASE_URL` | Base URL of the Jira Cloud site (e.g. `https://<site>.atlassian.net`). Used for browse links. |
 | `JIRA_API_URL` | Where the post-script curl helpers and the sandboxed skills send REST calls. `fullsend run` sets it to the Atlassian API gateway for the site (`https://api.atlassian.com/ex/jira/<cloudId>`), which accepts both bot-account and service-account tokens. When it is unset, token mode falls back to `JIRA_BASE_URL` and OAuth mode fails, because the site URL rejects minted tokens. |
 
-Jira triage requires a fullsend release that includes the config-backed Jira
-commands
+Jira triage requires [Fullsend v0.56.1](https://github.com/fullsend-ai/fullsend/releases/tag/v0.56.1)
+or later, which includes the config-backed Jira commands
 ([fullsend-ai/fullsend#9078](https://github.com/fullsend-ai/fullsend/pull/9078)),
-so that `fullsend issues post-comment --tracker jira --fullsend-dir` can read
-`tracker.jira` from `FULLSEND_DIR`.
-
-**Upgrade requirement:** Jira triage also needs a fullsend release that
-includes [fullsend-ai/fullsend#9411](https://github.com/fullsend-ai/fullsend/issues/9411).
-With it, `fullsend run` sets `JIRA_USER_EMAIL` from `FULLSEND_JIRA_EMAIL`. The
-legacy `JIRA_TOKEN` and `JIRA_USER_EMAIL` secrets are no longer read. The
-sandbox's builtin `jira` provider, in either credential mode, needs a fullsend
-release that includes
-[fullsend-ai/fullsend#9233](https://github.com/fullsend-ai/fullsend/pull/9233).
+the shared `fullsend issues transition` command
+([fullsend-ai/fullsend#9437](https://github.com/fullsend-ai/fullsend/pull/9437)),
+`JIRA_USER_EMAIL` wiring from `FULLSEND_JIRA_EMAIL`
+([fullsend-ai/fullsend#9411](https://github.com/fullsend-ai/fullsend/issues/9411)),
+and the sandbox's builtin `jira` provider
+([fullsend-ai/fullsend#9233](https://github.com/fullsend-ai/fullsend/pull/9233)).
+The legacy `JIRA_TOKEN` and `JIRA_USER_EMAIL` secrets are no longer read.
 
 Closing an issue (`duplicate`, `not-planned`, `completed`, `split` actions) performs a
 Jira workflow transition rather than a status field write, since Jira has no
@@ -331,11 +328,25 @@ If the relevant variable is unset when that action fires, the post-script
 fails loudly rather than silently skipping the close (for `completed`,
 `JIRA_COMPLETED_TRANSITION` falls back to `JIRA_SPLIT_TRANSITION` with a notice
 if set). Set all four to the same transition name if your Jira workflow doesn't
-distinguish between them. When a configured transition name is not present in
-the issue's workflow, `completed` and `split` actions fall back to an available
-positive Done-category transition (preferring `"Done"`, `"Closed"`, `"Resolved"`,
-or `"Complete"`), strictly excluding rejection transitions like `"Won't Do"`,
-`"Not Planned"`, or `"Duplicate"`.
+distinguish between them.
+
+Transitions are executed through `fullsend issues transition --tracker jira`
+(requires [Fullsend v0.56.1](https://github.com/fullsend-ai/fullsend/releases/tag/v0.56.1)
+or later). If the issue is already in a `done`-category status matching the
+configured transition name (or the destination status name of that transition
+when uniquely offered), the transition is skipped idempotently. Otherwise, if the
+configured transition name is available in the workflow, the post-script runs
+`fullsend issues transition --transition <name>`. When the configured transition
+name is missing for `completed` or `split`, the post-script emits a warning and
+falls back to `fullsend issues transition --state closed`, which skips issues
+already in a `done`-category status, applies the single available
+`done`-category transition (failing loudly if multiple `done`-category
+transitions are ambiguous), and fills a required resolution by ID only when Jira
+offers a single allowed value with no default. Workflows with multiple
+`done`-category transitions should set `JIRA_COMPLETED_TRANSITION` and
+`JIRA_SPLIT_TRANSITION` explicitly. Because `post-triage.sh` does not pass
+`--resolution`, any close transition that requires a resolution must either
+define a default value or offer a single allowed value.
 
 Cross-project issue creation for Jira prerequisites is gated by a
 `tracker.jira.allowed_targets.projects` list of Jira project keys in

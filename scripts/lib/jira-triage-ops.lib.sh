@@ -3,11 +3,13 @@
 # jira-triage-ops.lib.sh — Jira Cloud tracker operations for triage scripts.
 #
 # Bundled into pre-triage.sh and post-triage.sh via triage-ops.lib.sh.
-# Labels, transitions, and cross-project issue creation use curl against
-# the Jira Cloud REST API v3. Comment posting shells out to
-# `fullsend issues post-comment --tracker jira`, which handles Jira's
-# markdown-to-ADF conversion and marker-based find-and-update semantics
-# that raw REST calls would otherwise have to reimplement.
+# Labels, components, read-only status/transition pre-flight checks, and
+# cross-project issue creation use curl against the Jira Cloud REST API v3.
+# Comment posting shells out to `fullsend issues post-comment --tracker jira`,
+# which handles Jira's markdown-to-ADF conversion and marker-based
+# find-and-update semantics, and close transitions shell out to
+# `fullsend issues transition --tracker jira` (Fullsend v0.56.1+) so triage
+# and core fullsend share one transition and resolution policy.
 #
 # Jira Cloud only (v1): the issue host must match *.atlassian.net. Jira
 # Server/Data Center is not supported.
@@ -379,6 +381,20 @@ _jira_post_comment() {
     --marker "${marker}" --result -
 }
 
+# Execute a Jira workflow transition through the fullsend CLI (v0.56.1+),
+# which reads the Jira site and API gateway from tracker.jira in FULLSEND_DIR
+# and shares the upstream transition and resolution policy.
+_jira_transition() {
+  _jira_require_vars || return 1
+  if [[ -z "${FULLSEND_DIR:-}" ]]; then
+    echo "ERROR: FULLSEND_DIR is not set; the fullsend CLI needs it for the tracker.jira settings" >&2
+    return 1
+  fi
+  jira_auth_fullsend fullsend "${JIRA_TOKEN:-}" "${JIRA_USER_EMAIL:-}" \
+    issues transition --tracker jira --fullsend-dir "${FULLSEND_DIR}" \
+    --project "${REPO}" --number "${JIRA_ISSUE_NUM}" "$@"
+}
+
 # --- Issues ---
 
 tracker_close_issue() {
@@ -399,7 +415,7 @@ tracker_close_issue() {
   if [[ -z "${transition_name}" && "${reason}" == "completed" && -n "${JIRA_SPLIT_TRANSITION:-}" ]]; then
     transition_var="JIRA_SPLIT_TRANSITION"
     transition_name="${JIRA_SPLIT_TRANSITION}"
-    echo "NOTICE: JIRA_COMPLETED_TRANSITION is not set; falling back to JIRA_SPLIT_TRANSITION ('${transition_name}')"
+    echo "NOTICE: JIRA_COMPLETED_TRANSITION is not set; falling back to JIRA_SPLIT_TRANSITION ('$(_gha_sanitize "${transition_name}")')"
   fi
 
   if [[ -z "${transition_name}" ]]; then
@@ -407,157 +423,63 @@ tracker_close_issue() {
     return 1
   fi
 
-  local rejection_re="won.?t (do|fix|implement)|not.?planned|duplicate|obsolete|reject|cancel|invalid|cannot reproduce|abandon|declin|defer|not a bug|as designed|out of scope"
-  local dup_name="${JIRA_DUPLICATE_TRANSITION:-}"
-  local not_planned_name="${JIRA_NOT_PLANNED_TRANSITION:-}"
-
-  # Idempotency pre-flight: check if the issue is already in the matching terminal status.
-  local current_status_json current_category="" current_status_name="" current_resolution_name=""
-  local is_rejection_resolution=0
-  current_status_json=$(_jira_api GET "/issue/${ISSUE_NUMBER}?fields=status,resolution" 2>/dev/null) || true
+  # Idempotency pre-flight: skip when the issue is already in the configured
+  # terminal status (matching the configured transition name directly).
+  local current_status_json current_category="" current_status_name=""
+  current_status_json=$(_jira_api GET "/issue/${ISSUE_NUMBER}?fields=status" 2>/dev/null) || true
   if [[ -n "${current_status_json}" ]]; then
-    current_category=$(echo "${current_status_json}" | jq -r '.fields.status.statusCategory.key // empty')
-    current_status_name=$(echo "${current_status_json}" | jq -r '.fields.status.name // empty')
-    current_resolution_name=$(echo "${current_status_json}" | jq -r '.fields.resolution.name // empty')
-    if [[ -n "${current_resolution_name}" ]] && echo "${current_resolution_name}" | grep -qiE "${rejection_re}"; then
-      is_rejection_resolution=1
-    fi
-    if [[ "${current_category}" == "done" ]]; then
-      if [[ -n "${current_status_name}" && "${current_status_name,,}" == "${transition_name,,}" ]]; then
-        echo "Issue ${ISSUE_NUMBER} is already in status '${current_status_name}' (${current_category}); skipping transition for reason '${reason}'"
-        return 0
-      fi
-
-      local is_rejection_status=${is_rejection_resolution}
-      if echo "${current_status_name}" | grep -qiE "${rejection_re}"; then
-        is_rejection_status=1
-      elif [[ -n "${dup_name}" && "${dup_name,,}" != "${transition_name,,}" && "${current_status_name,,}" == "${dup_name,,}" ]]; then
-        is_rejection_status=1
-      elif [[ -n "${not_planned_name}" && "${not_planned_name,,}" != "${transition_name,,}" && "${current_status_name,,}" == "${not_planned_name,,}" ]]; then
-        is_rejection_status=1
-      fi
-
-      if [[ "${reason}" == "completed" || "${reason}" == "split" ]]; then
-        if [[ ${is_rejection_status} -eq 0 ]]; then
-          echo "Issue ${ISSUE_NUMBER} is already in status '${current_status_name}' (done); skipping transition for reason '${reason}'"
-          return 0
-        fi
-      fi
-    fi
-  fi
-
-  local transitions
-  transitions=$(_jira_api GET "/issue/${ISSUE_NUMBER}/transitions?expand=transitions.fields" 2>/dev/null) || {
-    echo "ERROR: failed to list transitions for issue ${ISSUE_NUMBER}" >&2
-    return 1
-  }
-  local transition_id target_status_name=""
-  transition_id=$(echo "${transitions}" | jq -r --arg name "${transition_name}" \
-    '[.transitions[] | select(.name == $name)][0].id // empty')
-  if [[ -n "${transition_id}" && "${current_category:-}" == "done" && -n "${current_status_name:-}" ]]; then
-    target_status_name=$(echo "${transitions}" | jq -r --arg id "${transition_id}" '.transitions[] | select(.id == $id) | (.to.name // empty)')
-    if [[ -n "${target_status_name}" && "${target_status_name,,}" == "${current_status_name,,}" ]]; then
-      echo "Issue ${ISSUE_NUMBER} is already in target status '${current_status_name}' (done); skipping transition for reason '${reason}'"
+    current_category=$(echo "${current_status_json}" | jq -r '.fields.status.statusCategory.key // empty' 2>/dev/null) || current_category=""
+    current_status_name=$(echo "${current_status_json}" | jq -r '.fields.status.name // empty' 2>/dev/null) || current_status_name=""
+    if [[ "${current_category}" == "done" && -n "${current_status_name}" && "${current_status_name,,}" == "${transition_name,,}" ]]; then
+      echo "Issue ${ISSUE_NUMBER} is already in status '$(_gha_sanitize "${current_status_name}")' (${current_category}); skipping transition for reason '${reason}'"
       return 0
     fi
   fi
 
-  # Fallback resolution when configured transition name is not directly available
-  local fallback_resolution_name=""
-  if [[ -z "${transition_id}" ]]; then
-    if [[ "${reason}" == "split" && "${current_category:-}" == "done" && -n "${current_status_name:-}" ]]; then
-      if ! { [[ -n "${dup_name}" && "${dup_name,,}" != "${transition_name,,}" && "${current_status_name,,}" == "${dup_name,,}" ]]; } \
-        && ! { [[ -n "${not_planned_name}" && "${not_planned_name,,}" != "${transition_name,,}" && "${current_status_name,,}" == "${not_planned_name,,}" ]]; }; then
-        echo "Issue ${ISSUE_NUMBER} is already in status '${current_status_name}' (done); skipping transition for reason '${reason}'"
-        return 0
-      fi
-    fi
-
-    if [[ "${reason}" == "completed" || "${reason}" == "split" ]]; then
-      local fallback_json
-      fallback_json=$(echo "${transitions}" | jq -c \
-        --arg dup "${dup_name}" \
-        --arg not_planned "${not_planned_name}" \
-        --arg target "${transition_name}" \
-        --arg reject_re "${rejection_re}" '
-        def is_positive_resolution:
-          test("^(done|fixed|resolved|completed?)$"; "i");
-        def positive_res_name($t):
-          if ($t.fields?.resolution? == null) or ((($t.fields.resolution.allowedValues // []) | length) == 0) then ""
-          else
-            (
-              [$t.fields.resolution.allowedValues[]?.name? | strings | select((test($reject_re; "i") | not) and is_positive_resolution)]
-              | (.[0] // "") as $first_pos
-              | ([.[] | select(ascii_downcase == "done")][0] // $first_pos)
-            )
-          end;
-        def screen_eligible:
-          if ((.hasScreen // false) | not) then true
-          else
-            ((.fields? // {}) | type == "object" and length > 0)
-            and (([.fields | to_entries[] | select(.key != "resolution" and (.value.required // false) == true)] | length) == 0)
-            and (
-              if (.fields.resolution?.required? // false) then
-                (positive_res_name(.) != "")
-              else
-                true
-              end
-            )
-          end;
-        [ .transitions[]
-          | select((.to.statusCategory.key // "") == "done")
-          | (.name // "") as $n
-          | (.to.name // "") as $to
-          | select(
-              ($dup != "" and ($dup | ascii_downcase) != ($target | ascii_downcase) and (($n | ascii_downcase) == ($dup | ascii_downcase) or ($to | ascii_downcase) == ($dup | ascii_downcase))) or
-              ($not_planned != "" and ($not_planned | ascii_downcase) != ($target | ascii_downcase) and (($n | ascii_downcase) == ($not_planned | ascii_downcase) or ($to | ascii_downcase) == ($not_planned | ascii_downcase))) or
-              ($n | test($reject_re; "i")) or
-              ($to | test($reject_re; "i"))
-              | not
-            )
-          | select(screen_eligible)
-        ] as $done_transitions
-        | [$done_transitions[] | (.to.name // "") as $to | (.name // "") as $n | select(if $to != "" then ($to | test("(?i)^(done|closed|resolved|complete(d)?)$")) else ($n | test("(?i)^(done|closed|resolved|complete(d)?)$")) end)] as $tier1
-        | [$done_transitions[] | (.to.name // "") as $to | (.name // "") as $n | select(if $to != "" then ($to | test("(?i)\\b(done|close(d)?|resolve(d)?|complete(d)?|finish(ed)?|fixed)\\b")) else ($n | test("(?i)\\b(done|close(d)?|resolve(d)?|complete(d)?|finish(ed)?|fixed)\\b")) end)] as $tier2
-        | (
-            [$tier1[] | select((.hasScreen // false) == false)]
-            + [$tier1[] | select((.hasScreen // false) == true)]
-            + [$tier2[] | select((.hasScreen // false) == false)]
-            + [$tier2[] | select((.hasScreen // false) == true)]
-          )[0] // empty
-        | {id: (.id // ""), name: (.name // ""), resolution_name: positive_res_name(.)}
-      ')
-      if [[ -n "${fallback_json}" ]]; then
-        transition_id=$(jq -r '.id // empty' <<< "${fallback_json}")
-        local fallback_name
-        fallback_name=$(jq -r '.name // empty' <<< "${fallback_json}")
-        fallback_resolution_name=$(jq -r '.resolution_name // empty' <<< "${fallback_json}")
-        if [[ -n "${transition_id}" ]]; then
-          echo "::warning::Transition '$(_gha_sanitize "${transition_name}")' (from ${transition_var}) is not available on issue ${ISSUE_NUMBER}; falling back to '$(_gha_sanitize "${fallback_name}")'"
-          transition_name="${fallback_name}"
-        fi
-      fi
-    fi
-  fi
-
-  if [[ -z "${transition_id}" ]]; then
-    echo "ERROR: transition '${transition_name}' (from ${transition_var}) is not available on issue ${ISSUE_NUMBER}" >&2
+  local transitions
+  transitions=$(_jira_api GET "/issue/${ISSUE_NUMBER}/transitions" 2>/dev/null) || {
+    echo "ERROR: failed to list transitions for issue ${ISSUE_NUMBER}" >&2
+    return 1
+  }
+  local matching_count target_status_name=""
+  matching_count=$(echo "${transitions}" | jq -r --arg name "${transition_name}" \
+    'if (type == "object" and (.transitions | type) == "array") then [.transitions[] | select(.name == $name)] | length else error("expected transitions array") end' 2>/dev/null) || {
+    echo "ERROR: unexpected transitions response for issue ${ISSUE_NUMBER}" >&2
+    return 1
+  }
+  if [[ ! "${matching_count}" =~ ^[0-9]+$ ]]; then
+    echo "ERROR: unexpected transitions response for issue ${ISSUE_NUMBER}" >&2
     return 1
   fi
 
-  local transition_payload
-  if [[ -n "${fallback_resolution_name}" ]]; then
-    transition_payload=$(jq -cn --arg id "${transition_id}" --arg res "${fallback_resolution_name}" \
-      '{transition:{id:$id},fields:{resolution:{name:$res}}}')
-  else
-    transition_payload=$(jq -cn --arg id "${transition_id}" '{transition:{id:$id}}')
+  if [[ "${matching_count}" -eq 1 && "${current_category:-}" == "done" && -n "${current_status_name:-}" ]]; then
+    target_status_name=$(echo "${transitions}" | jq -r --arg name "${transition_name}" \
+      '[.transitions[] | select(.name == $name)][0].to.name // empty' 2>/dev/null) || target_status_name=""
+    if [[ -n "${target_status_name}" && "${target_status_name,,}" == "${current_status_name,,}" ]]; then
+      echo "Issue ${ISSUE_NUMBER} is already in target status '$(_gha_sanitize "${current_status_name}")' (done); skipping transition for reason '${reason}'"
+      return 0
+    fi
   fi
 
-  if ! _jira_api POST "/issue/${ISSUE_NUMBER}/transitions" \
-    --data "${transition_payload}" > /dev/null; then
-    echo "ERROR: failed to transition issue ${ISSUE_NUMBER} via '${transition_name}'" >&2
-    return 1
+  if [[ "${matching_count}" -gt 0 ]]; then
+    if ! _jira_transition --transition "${transition_name}"; then
+      echo "ERROR: failed to transition issue ${ISSUE_NUMBER} via '$(_gha_sanitize "${transition_name}")'" >&2
+      return 1
+    fi
+    return 0
   fi
+
+  if [[ "${reason}" == "completed" || "${reason}" == "split" ]]; then
+    echo "::warning::Transition '$(_gha_sanitize "${transition_name}")' (from ${transition_var}) is not available on issue ${ISSUE_NUMBER}; falling back to 'fullsend issues transition --state closed'"
+    if ! _jira_transition --state closed; then
+      echo "ERROR: failed to close issue ${ISSUE_NUMBER} via 'fullsend issues transition --state closed'" >&2
+      return 1
+    fi
+    return 0
+  fi
+
+  echo "ERROR: transition '$(_gha_sanitize "${transition_name}")' (from ${transition_var}) is not available on issue ${ISSUE_NUMBER}" >&2
+  return 1
 }
 
 _text_to_adf() {
