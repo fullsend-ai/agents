@@ -39,7 +39,7 @@ fi
 # the label-existence guard in post-triage.sh allows them through.
 if [[ "\$1" == "api" ]] && [[ "\$2" == *"/labels" ]] && [[ "\$*" == *"--paginate"* ]] && [[ "\$*" != *"-f "* ]] && [[ "\$*" != *"-X "* ]]; then
   # Return labels used by the test fixtures, one per line (--jq '.[].name').
-  printf '%s\n' "area/api" "area/cli" "priority/high" "component/parser" "enhancement" "bug" "documentation" "pr-open" "needs-design" "skip-triage"
+  printf '%s\n' "area/api" "area/cli" "priority/high" "component/parser" "enhancement" "bug" "documentation" "pr-open" "needs-design" "skip-triage" "ready-for-triage"
   exit 0
 fi
 # For issue create, return a fake URL on stdout so callers can capture it.
@@ -581,6 +581,17 @@ run_test_stdout "label-actions-completed-control-label-refused" \
   '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_crash"},"comment":"## Triage Summary\n\nReady.","label_actions":{"reason":"Tried to set completed label.","actions":[{"action":"add","label":"completed"}]}}' \
   "::warning::Refused to add control label 'completed' -- control labels are managed by the triage pipeline"
 
+# ready-for-triage dispatches triage, so the agent adding it to the issue it
+# is triaging would start its own next run (#2082).
+run_test_stdout "label-actions-ready-for-triage-refused" \
+  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_crash"},"comment":"## Triage Summary\n\nReady.","label_actions":{"reason":"Re-run triage.","actions":[{"action":"add","label":"ready-for-triage"}]}}' \
+  "::warning::Refused to add control label 'ready-for-triage' -- control labels are managed by the triage pipeline"
+
+# A remove of ready-for-triage is refused too, like every control label.
+run_test_stdout "label-actions-ready-for-triage-remove-refused" \
+  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_crash"},"comment":"## Triage Summary\n\nReady.","label_actions":{"reason":"Clear the trigger.","actions":[{"action":"remove","label":"ready-for-triage"}]}}' \
+  "::warning::Refused to remove control label 'ready-for-triage' -- control labels are managed by the triage pipeline"
+
 run_test "label-actions-absent-still-posts-comment" \
   '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_crash"},"comment":"## Triage Summary\n\nReady."}' \
   "fullsend post-comment --repo test-org/test-repo --number 42 --marker <!-- fullsend:triage-agent -->"
@@ -645,6 +656,11 @@ run_test_no_pattern() {
 
   echo "PASS: ${test_name}"
 }
+
+# The refused ready-for-triage add makes no label call (#2082).
+run_test_no_pattern "label-actions-ready-for-triage-not-applied" \
+  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_crash"},"comment":"## Triage Summary\n\nReady.","label_actions":{"reason":"Re-run triage.","actions":[{"action":"add","label":"ready-for-triage"}]}}' \
+  "labels[]=ready-for-triage"
 
 run_test_no_pattern "label-actions-all-refused-no-reason" \
   '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_crash"},"comment":"## Triage Summary\n\nReady.","label_actions":{"reason":"Should not appear.","actions":[{"action":"add","label":"ready-to-code"}]}}' \
@@ -1928,7 +1944,7 @@ fi
 # Return labels list for the project (only page 1).
 if [[ "${URL}" =~ /labels\? ]] && [[ "${METHOD}" == "GET" ]]; then
   if [[ "${URL}" =~ page=1(&|$) ]] || [[ ! "${URL}" =~ page=[0-9] ]]; then
-    echo '[{"name":"area/api"},{"name":"area/cli"},{"name":"priority/high"},{"name":"component/parser"},{"name":"enhancement"},{"name":"bug"},{"name":"documentation"},{"name":"pr-open"}]'
+    echo '[{"name":"area/api"},{"name":"area/cli"},{"name":"priority/high"},{"name":"component/parser"},{"name":"enhancement"},{"name":"bug"},{"name":"documentation"},{"name":"pr-open"},{"name":"ready-for-triage"}]'
   else
     echo '[]'
   fi
@@ -2144,6 +2160,11 @@ run_gitlab_test "gitlab-label-actions-applied" \
 run_gitlab_test_stdout "gitlab-control-label-refused" \
   '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_crash"},"comment":"## Triage Summary\n\nReady.","label_actions":{"reason":"Tried to set control label.","actions":[{"action":"add","label":"ready-to-code"}]}}' \
   "::warning::Refused to add control label 'ready-to-code' -- control labels are managed by the triage pipeline"
+
+# GitLab: ready-for-triage refused (#2082).
+run_gitlab_test_stdout "gitlab-ready-for-triage-refused" \
+  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_crash"},"comment":"## Triage Summary\n\nReady.","label_actions":{"reason":"Re-run triage.","actions":[{"action":"add","label":"ready-for-triage"}]}}' \
+  "::warning::Refused to add control label 'ready-for-triage' -- control labels are managed by the triage pipeline"
 
 # GitLab in-progress action.
 run_gitlab_test "gitlab-in-progress-posts-sticky-comment" \
@@ -2483,6 +2504,12 @@ run_jira_test "jira-completed-transitions" \
 run_jira_test "jira-split-closes-via-transition" \
   '{"action":"split","reasoning":"bundles two independent features","sub_issues":[{"title":"Feature A","body":"Do A"},{"title":"Feature B","body":"Do B"}],"comment":"Splitting into two sub-issues."}' \
   '{"transition":{"id":"51"}}'
+
+# Jira: ready-for-triage in label_actions is refused like on GitHub and
+# GitLab (#2082); the split's own sub-issue label (below) is unaffected.
+run_jira_test_stdout "jira-ready-for-triage-refused" \
+  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_crash"},"comment":"## Triage Summary\n\nReady.","label_actions":{"reason":"Re-run triage.","actions":[{"action":"add","label":"ready-for-triage"}]}}' \
+  "::warning::Refused to add control label 'ready-for-triage' -- control labels are managed by the triage pipeline"
 
 # Jira split: triage dispatch adds ready-for-triage label to created sub-issues (#1123).
 run_jira_test "jira-split-dispatches-triage" \
