@@ -1072,6 +1072,187 @@ _retro_jira_api_with_status() {
   printf '%s' "${body}"
 }
 
+# --- Originating-issue context for the sandbox ---
+#
+# A Jira-originated retro runs in a sandbox with no route to Atlassian and no
+# Jira credential, so pre-retro fetches the originating issue and its comments
+# here, on the host, and the harness mounts the result into the sandbox
+# (harness/retro.yaml host_files -> /sandbox/workspace/jira-origin.json, read
+# by the agent as RETRO_JIRA_CONTEXT). Nothing in the sandbox talks to Jira.
+RETRO_JIRA_CONTEXT_FILE="${RETRO_JIRA_CONTEXT_FILE:-/tmp/retro-jira-context.json}"
+RETRO_JIRA_CONTEXT_MAX_BYTES="${RETRO_JIRA_CONTEXT_MAX_BYTES:-262144}"
+RETRO_JIRA_CONTEXT_MAX_PAGES="${RETRO_JIRA_CONTEXT_MAX_PAGES:-10}"
+RETRO_JIRA_CONTEXT_COMMENT_CHARS="${RETRO_JIRA_CONTEXT_COMMENT_CHARS:-4000}"
+RETRO_JIRA_CONTEXT_DESCRIPTION_CHARS="${RETRO_JIRA_CONTEXT_DESCRIPTION_CHARS:-20000}"
+# Used as an arithmetic bound, so refuse anything but a positive integer, as
+# RETRO_JIRA_MAX_PAGES does.
+if [[ ! "${RETRO_JIRA_CONTEXT_MAX_PAGES}" =~ ^[1-9][0-9]*$ ]]; then
+  echo "ERROR: RETRO_JIRA_CONTEXT_MAX_PAGES must be a positive integer (got: $(_gha_sanitize "${RETRO_JIRA_CONTEXT_MAX_PAGES}"))" >&2
+  exit 1
+fi
+
+# Print the ADF document on stdin as plain text. Jira stores rich text as
+# Atlassian Document Format; the agent needs readable prose. Unknown node
+# types fall back to their children, so a new node type degrades to text
+# rather than disappearing.
+_retro_jira_adf() {
+  jq -r '
+    def flatten:
+      if type == "string" then .
+      elif type == "array" then map(flatten) | join("")
+      elif type == "object" then
+        (if .type == "text" then (.text // "")
+         elif .type == "hardBreak" then "\n"
+         elif .type == "paragraph" then ((.content // [] | flatten) + "\n")
+         elif .type == "heading" then
+           (("#" * ((.attrs.level // 1) | tonumber)) + " " + ((.content // [] | flatten)) + "\n")
+         elif .type == "codeBlock" then ("```\n" + ((.content // [] | flatten)) + "```\n")
+         elif .type == "listItem" then ("- " + ((.content // [] | flatten)))
+         elif .type == "mention" then ("@" + (.attrs.text // .attrs.displayName // "user"))
+         elif .type == "inlineCard" then ((.attrs.url // "") + "\n")
+         elif .type == "rule" then "---\n"
+         else (.content // [] | flatten) end)
+      else "" end;
+    flatten
+  ' 2>/dev/null
+}
+
+# Fetch every comment on an issue, oldest first, into a JSON array file.
+# Pagination is bounded by RETRO_JIRA_CONTEXT_MAX_PAGES and a truncated read
+# is reported rather than silently dropped.
+_retro_jira_fetch_comments() {
+  local key="$1" out="$2" start=0 page resp count total
+  printf '[]' > "${out}"
+  for ((page = 1; page <= RETRO_JIRA_CONTEXT_MAX_PAGES; page++)); do
+    resp=$(_retro_jira_api GET "/issue/${key}/comment?maxResults=100&startAt=${start}") || return 1
+    count=$(printf '%s' "${resp}" | jq -r '(.comments // []) | length') || return 1
+    if ! printf '%s' "${resp}" | jq -c '(.comments // [])' \
+      | jq -sc '.[0] + .[1]' "${out}" - > "${out}.tmp"; then
+      echo "ERROR: Jira comment fetch returned a malformed response" >&2
+      rm -f "${out}.tmp"
+      return 1
+    fi
+    mv "${out}.tmp" "${out}"
+    total=$(printf '%s' "${resp}" | jq -r '.total // empty')
+    start=$((start + count))
+    if [[ "${count}" -eq 0 ]] || [[ -n "${total}" && "${start}" -ge "${total}" ]]; then
+      return 0
+    fi
+  done
+  echo "WARNING: Jira comments stopped after ${RETRO_JIRA_CONTEXT_MAX_PAGES} pages; the sandbox context is truncated" >&2
+  return 0
+}
+
+# Build the sandbox context file for the originating Jira issue. Prints the
+# path written. Fails closed: the agent must not run a retrospective it
+# cannot read.
+_retro_jira_write_context() {
+  local key="$1" file="${RETRO_JIRA_CONTEXT_FILE}"
+  local raw_issue comments_file tmp
+  if [[ ! "${key}" =~ ^[A-Z][A-Z0-9_]*-[0-9]+$ ]]; then
+    echo "ERROR: cannot read a Jira issue key from '$(_gha_sanitize "${key}")'" >&2
+    return 1
+  fi
+  if [[ -z "${JIRA_BASE_URL:-}" ]]; then
+    echo "ERROR: JIRA_BASE_URL is not set" >&2
+    return 1
+  fi
+  raw_issue=$(_retro_jira_api GET "/issue/${key}?fields=summary,description,status,issuetype,labels,created,updated,reporter,assignee,project,issuelinks,parent") || {
+    echo "ERROR: failed to read Jira issue ${key}" >&2
+    return 1
+  }
+  comments_file=$(mktemp)
+  if ! _retro_jira_fetch_comments "${key}" "${comments_file}"; then
+    rm -f "${comments_file}"
+    echo "ERROR: failed to read comments on Jira issue ${key}" >&2
+    return 1
+  fi
+  tmp=$(mktemp)
+  if ! jq -n \
+    --arg key "${key}" \
+    --arg url "${JIRA_BASE_URL}/browse/${key}" \
+    --argjson issue "${raw_issue}" \
+    --slurpfile comments "${comments_file}" \
+    --argjson comment_chars "${RETRO_JIRA_CONTEXT_COMMENT_CHARS}" \
+    --argjson description_chars "${RETRO_JIRA_CONTEXT_DESCRIPTION_CHARS}" \
+    --arg generated_by "retro pre-script (host-side fetch; the sandbox has no Jira access)" '
+    # Jira stores rich text as ADF. Keep unknown node types as their text
+    # children so a schema addition degrades instead of disappearing.
+    def adf:
+      if type == "string" then .
+      elif type == "array" then map(adf) | join("")
+      elif type == "object" then
+        (if .type == "text" then (.text // "")
+         elif .type == "hardBreak" then "\n"
+         elif .type == "paragraph" then ((.content // [] | adf) + "\n")
+         elif .type == "heading" then
+           (("#" * ((.attrs.level // 1) | tonumber)) + " " + ((.content // [] | adf)) + "\n")
+         elif .type == "codeBlock" then ("```\n" + ((.content // [] | adf)) + "```\n")
+         elif .type == "listItem" then ("- " + ((.content // [] | adf)))
+         elif .type == "mention" then ("@" + (.attrs.text // .attrs.displayName // "user"))
+         elif .type == "inlineCard" then ((.attrs.url // "") + "\n")
+         elif .type == "rule" then "---\n"
+         else (.content // [] | adf) end)
+      else "" end;
+    def text_or_null:
+      if . == null then "" else (adf | gsub("\\n{3,}"; "\n\n") | ltrimstr("\n") | rtrimstr("\n")) end;
+    def clip(n): if length > n then .[0:n] + "\n…(truncated)" else . end;
+    ($issue.fields // {}) as $f |
+    {
+      source: "jira",
+      generated_by: $generated_by,
+      issue: {
+        key: $key,
+        url: $url,
+        summary: ($f.summary // ""),
+        project: ($f.project.key // ""),
+        issue_type: ($f.issuetype.name // ""),
+        status: ($f.status.name // ""),
+        labels: (($f.labels // []) | map(select(type == "string"))),
+        created: ($f.created // ""),
+        updated: ($f.updated // ""),
+        reporter: ($f.reporter.displayName // ""),
+        assignee: ($f.assignee.displayName // ""),
+        parent: ($f.parent.key // ""),
+        links: (($f.issuelinks // [])
+          | map({type: (.type.name // ""), key: (((.outwardIssue // .inwardIssue) // {}).key // "")})
+          | map(select(.key != ""))),
+        description: (($f.description | text_or_null) | clip($description_chars)),
+        description_truncated: ((($f.description | text_or_null) | length) > $description_chars)
+      },
+      comments: (($comments[0] // [])
+        | map({
+            id: (.id // ""),
+            author: (.author.displayName // ""),
+            created: (.created // ""),
+            body: ((.body | text_or_null) | clip($comment_chars))
+          })),
+      comments_truncated: false
+    }' > "${tmp}"; then
+    rm -f "${comments_file}" "${tmp}"
+    echo "ERROR: failed to assemble the Jira context file" >&2
+    return 1
+  fi
+  rm -f "${comments_file}"
+  # Keep the file under the size cap by dropping the oldest comments first:
+  # the newest discussion is what a retrospective needs most.
+  while [[ "$(wc -c < "${tmp}" | tr -d '[:space:]')" -gt "${RETRO_JIRA_CONTEXT_MAX_BYTES}" ]] \
+    && [[ "$(jq '.comments | length' "${tmp}")" -gt 0 ]]; do
+    if ! jq '(.comments | length) as $n
+      | .comments = .comments[(if $n > 4 then ($n / 4 | floor) else 1 end):]
+      | .comments_truncated = true' "${tmp}" > "${tmp}.cut"; then
+      rm -f "${tmp}" "${tmp}.cut"
+      echo "ERROR: failed to trim the Jira context file" >&2
+      return 1
+    fi
+    mv "${tmp}.cut" "${tmp}"
+  done
+  chmod 600 "${tmp}"
+  mkdir -p "$(dirname "${file}")"
+  mv "${tmp}" "${file}"
+  printf '%s' "${file}"
+}
+
 _retro_jql_quote() {
   local val="$1"
   val="${val//\\/\\\\}"

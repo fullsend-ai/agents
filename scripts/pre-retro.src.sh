@@ -44,6 +44,32 @@ fi
 
 echo "::notice::Retro target: $(_gha_sanitize "${ORIGINATING_URL}")"
 
+# A Jira-originated run analyzes a work item the sandbox cannot reach: it has
+# no Atlassian route and no Jira credential. Fetch the issue and its comments
+# here, on the host, into the context file the harness mounts into the
+# sandbox (harness/retro.yaml host_files, exposed as RETRO_JIRA_CONTEXT).
+# Fail closed: a retrospective that cannot read its subject would file
+# proposals it cannot substantiate.
+if [[ "${JIRA_ORIGINATING:-false}" == "true" ]]; then
+  if [[ "${JIRA_AUTH_MODE:-none}" == "none" ]]; then
+    echo "ERROR: a Jira-originated retro needs JIRA_TOKEN, or FULLSEND_JIRA_CLIENT_ID and FULLSEND_JIRA_CLIENT_SECRET" >&2
+    exit 1
+  fi
+  _retro_jira_xtrace_off
+  _retro_jira_mint_rc=0
+  jira_auth_mint || _retro_jira_mint_rc=$?
+  _retro_jira_xtrace_restore
+  if [[ "${_retro_jira_mint_rc}" -ne 0 ]]; then
+    echo "ERROR: failed to obtain a Jira access token for the originating-issue fetch" >&2
+    exit 1
+  fi
+  if ! JIRA_CONTEXT_PATH=$(_retro_jira_write_context "${ORIGINATING_NUMBER}"); then
+    echo "ERROR: failed to fetch Jira issue ${ORIGINATING_NUMBER} for the retrospective" >&2
+    exit 1
+  fi
+  echo "::notice::Jira issue context for ${ORIGINATING_NUMBER} written to ${JIRA_CONTEXT_PATH}"
+fi
+
 if [[ -n "${RETRO_COMMENT:-}" ]]; then
   echo "Retro triggered on-demand with comment."
 else

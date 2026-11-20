@@ -22,11 +22,38 @@ FORGE_LOG="${TMPDIR}/forge-calls.log"
 OUT="${TMPDIR}/out.log"
 mkdir -p "${MOCK_BIN}"
 
-# Mock gh and curl: record every call.
-for tool in gh curl; do
-  printf '#!/usr/bin/env bash\necho "%s $*" >> %q\nexit 0\n' "${tool}" "${FORGE_LOG}" > "${MOCK_BIN}/${tool}"
-  chmod +x "${MOCK_BIN}/${tool}"
+# Mock gh: record every call.
+printf '#!/usr/bin/env bash
+echo "gh $*" >> %q
+exit 0
+' "${FORGE_LOG}" > "${MOCK_BIN}/gh"
+chmod +x "${MOCK_BIN}/gh"
+
+# Mock curl: record every call, and answer tenant_info, issue, and comment endpoints
+# when pre-retro fetches the Jira context.
+cat > "${MOCK_BIN}/curl" <<CURLEOF
+#!/usr/bin/env bash
+echo "curl \$*" >> "${FORGE_LOG}"
+url=""
+for arg in "\$@"; do
+  case "\$arg" in
+    https://*) url="\$arg" ;;
+  esac
 done
+case "\$url" in
+  */_edge/tenant_info)
+    echo '{"cloudId":"11111111-2222-3333-4444-555555555555"}'
+    ;;
+  */rest/api/3/issue/*/comment*)
+    echo '{"startAt":0,"maxResults":100,"total":1,"comments":[{"id":"1","author":{"displayName":"User"},"created":"2026-11-20T00:00:00.000+0000","body":{"type":"doc","version":1,"content":[{"type":"paragraph","content":[{"type":"text","text":"Test comment"}]}]}}]}'
+    ;;
+  */rest/api/3/issue/*)
+    echo '{"key":"PROJ-123","fields":{"summary":"Test issue","description":{"type":"doc","version":1,"content":[{"type":"paragraph","content":[{"type":"text","text":"Test description"}]}]},"status":{"name":"Open"},"issuetype":{"name":"Task"},"labels":["test"],"project":{"key":"PROJ"}}}'
+    ;;
+esac
+exit 0
+CURLEOF
+chmod +x "${MOCK_BIN}/curl"
 
 # run_test NAME EXPECTED_EXIT EXPECTED_PATTERN [VAR=value ...] — run
 # pre-retro in a clean environment (GitHub forge by default; later
@@ -56,7 +83,15 @@ run_test() {
     FAILURES=$((FAILURES + 1))
     return
   fi
-  if [[ -s "${FORGE_LOG}" ]]; then
+  # Jira-originated runs make host-side Jira REST reads to fetch issue context;
+  # forge calls (gh or non-Jira curl) must never occur.
+  local unexpected=0
+  if grep -qvE 'curl.*(atlassian\.net|api\.atlassian\.com)' "${FORGE_LOG}" 2>/dev/null; then
+    unexpected=1
+  elif [[ "${test_name}" != jira-* ]] && [[ -s "${FORGE_LOG}" ]]; then
+    unexpected=1
+  fi
+  if [[ "${unexpected}" -eq 1 ]]; then
     echo "FAIL: ${test_name} — unexpected forge calls:"
     cat "${FORGE_LOG}"
     FAILURES=$((FAILURES + 1))
@@ -88,7 +123,15 @@ run_test_unbound_forge_tokens() {
     FAILURES=$((FAILURES + 1))
     return
   fi
-  if [[ -s "${FORGE_LOG}" ]]; then
+  # Jira-originated runs make host-side Jira REST reads to fetch issue context;
+  # forge calls (gh or non-Jira curl) must never occur.
+  local unexpected=0
+  if grep -qvE 'curl.*(atlassian\.net|api\.atlassian\.com)' "${FORGE_LOG}" 2>/dev/null; then
+    unexpected=1
+  elif [[ "${test_name}" != jira-* ]] && [[ -s "${FORGE_LOG}" ]]; then
+    unexpected=1
+  fi
+  if [[ "${unexpected}" -eq 1 ]]; then
     echo "FAIL: ${test_name} — unexpected forge calls:"
     cat "${FORGE_LOG}"
     FAILURES=$((FAILURES + 1))
