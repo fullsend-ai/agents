@@ -1836,6 +1836,42 @@ run_validated_dir_test "validated-dir-neither-filename" \
   "" \
   "true"
 
+# ---------------------------------------------------------------------------
+# RETRO_MODE on a forge tracker
+# RETRO_MODE applies to the GitHub/GitLab filing path, not only to Jira:
+# summary_only must file nothing, and issues_only must file issues without
+# posting the summary comment.
+# ---------------------------------------------------------------------------
+
+unset FULLSEND_TRACKER
+
+# summary_only: no issue is created and the proposal is listed in the summary.
+export RETRO_MODE="summary_only"
+run_test_no_gh_call "github-summary-only-no-issue" \
+  "${FIXTURE_ONE_PROPOSAL}" \
+  "gh issue create" \
+  "Mode is summary_only — skipping issue creation for proposal[0]"
+assert_file_contains "github-summary-only-in-summary" "${GH_STDIN_LOG}" \
+  "### Proposals (issue creation disabled)"
+assert_file_contains "github-summary-only-proposal-listed" "${GH_STDIN_LOG}" \
+  "- **Improve error handling in widget service** (\`test-org/target-repo\`)"
+
+# issues_only: the issue is filed and no summary comment is posted.
+export RETRO_MODE="issues_only"
+run_test "github-issues-only-files-issue" \
+  "${FIXTURE_ONE_PROPOSAL}" \
+  "gh issue create"
+assert_file_contains "github-issues-only-skips-comment" "${TMPDIR}/stdout.log" \
+  "Mode is issues_only — skipping summary comment posting"
+if [[ -s "${GH_STDIN_LOG}" ]]; then
+  echo "FAIL: github-issues-only-no-comment — a summary comment body was posted"
+  cat "${GH_STDIN_LOG}"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: github-issues-only-no-comment"
+fi
+unset RETRO_MODE
+
 # ===========================================================================
 # GitLab test cases (FULLSEND_FORGE=gitlab)
 # ===========================================================================
