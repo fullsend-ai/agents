@@ -107,6 +107,12 @@ overlays:
   - when: '(has(event.source) && event.source.system == "github") || (!has(event.source) && runtime.forge == "github")'
     providers:
       - github-ro
+      # Credential-less: lets curl download images attached to the issue
+      # (agents/triage.md Step 1a).
+      - providers/github-attachments.yaml
+    openshell:
+      profiles:
+        - profiles/fullsend-github-attachments.yaml
     skills:
       - skills/github-forge
       - skills/issue-labels/github
