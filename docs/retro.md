@@ -54,7 +54,7 @@ See [Customizing with AGENTS.md](https://fullsend.sh/docs/guides/user/customizin
 | Variable | Description | Default | Valid values |
 |----------|-------------|---------|--------------|
 | `FULLSEND_FORGE` | Forge platform. Set automatically by the harness `forge.<platform>.env` section. | (set by harness) | `"github"`, `"gitlab"` |
-| `FULLSEND_TRACKER` | Target tracker for proposals. Defaults to `FULLSEND_FORGE`. | (matches `FULLSEND_FORGE`) | `"github"`, `"gitlab"`, `"jira"` |
+| `FULLSEND_TRACKER` | Target tracker for proposals. Defaults to `FULLSEND_FORGE`. | (matches `FULLSEND_FORGE`) | `"jira"`, or the same value as `FULLSEND_FORGE` (cross-forge filing is not supported) |
 | `RETRO_MODE` | Output mode. `all` creates issues and posts summary; `summary_only` disables issue creation and lists proposals in the summary; `issues_only` files issues without posting a summary. | `"all"` | `"all"`, `"summary_only"`, `"issues_only"` |
 | `RETRO_JIRA_PROJECT` | Jira project key where proposal issues are filed when `FULLSEND_TRACKER=jira`. | none (required for Jira issue creation) | Jira project key (e.g. `"PROJ"`) |
 | `RETRO_JIRA_ISSUE_TYPE` | Issue type name for created Jira issues. | `"Task"` | e.g. `"Task"`, `"Improvement"` |
@@ -66,7 +66,7 @@ See [Customizing with AGENTS.md](https://fullsend.sh/docs/guides/user/customizin
 | `JIRA_USER_EMAIL` | Bot-user email. When set, uses Basic auth with email and token; when unset or empty, uses Bearer auth. | none | Email address |
 | `RETRO_JIRA_MAX_PAGES` | Maximum pages fetched per paginated Jira read. | `50` | Positive integer |
 
-REST reads (create metadata, duplicate search, label updates) are routed the same way as the `fullsend` CLI, as described in [Jira REST routing](#jira-rest-routing).
+REST reads (create metadata, issue edit metadata, duplicate search, label updates) are routed the same way as the `fullsend` CLI, as described in [Jira REST routing](#jira-rest-routing).
 
 ### Jira integration
 
@@ -78,6 +78,7 @@ Retro can deliver findings and improvement proposals to Jira Cloud instead of (o
 - **Idempotency & retry protection:** Before filing an issue in Jira, retro checks for an existing issue in `RETRO_JIRA_PROJECT` with an identical summary; reruns that produce different titles can still create duplicates.
 - **Traceability:** Created Jira issues preserve the originating GitHub/GitLab PR URL in the body footer, and the retro summary comment links back to all created Jira issues.
 - **Preflight validation:** Checks Jira create metadata (`createmeta`) before creating issues. Fails with a warning and reports uncreated proposals in the summary if the issue type is missing or requires fields retro does not provide.
+- **Labels:** Applied by an issue update after creation, which Jira validates against the issue's edit screen. An issue type whose edit screen has no Labels field gets no labels and a warning; the issue is still filed.
 
 To have retrospectives triggered by PR/MR close file their proposals in Jira, set `FULLSEND_TRACKER=jira` and the Jira variables in the runner env by extending the harness with `base:` composition. This configures the destination, not the event trigger; the repo must have the standard retro harness dispatch enabled (the dispatch mechanism that routes PR close events and `/fs-retro` comments to this harness). PR close triggers retro whether merged or not, and `/fs-retro` remains available for manual runs. A Jira issue URL as `ORIGINATING_URL` is supported only for a manually dispatched run; automatic Jira issue polling/dispatch is not implemented.
 

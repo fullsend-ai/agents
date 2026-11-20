@@ -9,7 +9,8 @@
 #   FULLSEND_FORGE  — "github" or "gitlab"
 #
 # Optional env vars:
-#   FULLSEND_TRACKER    — "github", "gitlab", or "jira" (defaults to FULLSEND_FORGE)
+#   FULLSEND_TRACKER    — "jira", or the same value as FULLSEND_FORGE
+#                         (defaults to FULLSEND_FORGE)
 #   RETRO_MODE          — "all" (default), "summary_only", or "issues_only"
 #   RETRO_JIRA_PROJECT  — Jira project key for created issues (when FULLSEND_TRACKER=jira)
 #   FULLSEND_DIR        — .fullsend directory (when FULLSEND_TRACKER=jira)
@@ -309,11 +310,19 @@ echo "Found ${PROPOSAL_COUNT} proposal(s)"
 # so doing this per call would exchange a new OAuth token and re-discover the
 # cloud ID for every request. Skipped when there is nothing to file, so a run
 # with no proposals makes no Jira calls at all.
+#
+# A failure here (for example a transient token-endpoint error) is not fatal to
+# the run: it marks every proposal as not filed and still posts the summary
+# comment, as the other Jira failures below do. Only issues_only exits non-zero,
+# and it does so through the usual proposal-failure path.
+JIRA_INIT_STATE="skipped"
 if [[ "${FULLSEND_TRACKER}" == "jira" ]] && [[ "${RETRO_MODE}" != "summary_only" ]] \
   && [[ "${PROPOSAL_COUNT}" -gt 0 ]] && declare -f _retro_jira_init >/dev/null 2>&1; then
-  if ! _retro_jira_init; then
-    echo "ERROR: cannot initialize Jira REST access — no proposals will be filed" >&2
-    exit 1
+  if _retro_jira_init; then
+    JIRA_INIT_STATE="ok"
+  else
+    JIRA_INIT_STATE="failed"
+    echo "::warning::cannot initialize Jira REST access (token mint or routing) — no proposals will be filed; the summary comment is still posted"
   fi
 fi
 
@@ -470,6 +479,12 @@ if [[ "${PROPOSAL_COUNT}" -gt 0 ]]; then
 
     # Jira rerun protection: skip if an issue with the same summary exists.
     if [[ "${FULLSEND_TRACKER}" == "jira" ]]; then
+      if [[ "${JIRA_INIT_STATE}" != "ok" ]]; then
+        echo "::warning::Jira REST access was not initialized — cannot create an issue for proposal[$i] (${SAFE_TITLE})"
+        FAILED_PROPOSALS="${FAILED_PROPOSALS}
+- **${TITLE}** (\`${RETRO_JIRA_PROJECT}\`)"
+        continue
+      fi
       if [[ "${JIRA_CREATEMETA_STATE}" == "unknown" ]]; then
         if tracker_validate_create; then
           JIRA_CREATEMETA_STATE="ok"
@@ -522,7 +537,7 @@ if [[ "${PROPOSAL_COUNT}" -gt 0 ]]; then
       ISSUE_LABELS="ready-for-triage"
     fi
     ISSUE_URL=$(forge_create_issue "${TARGET_REPO}" "${TITLE}" "${BODY}" "${ISSUE_LABELS}") || CREATE_RC=$?
-    if [[ ${CREATE_RC} -ne 0 ]] && ! [[ "${FULLSEND_TRACKER}" == "jira" && ${CREATE_RC} -eq 2 ]]; then
+    if [[ ${CREATE_RC} -ne 0 ]]; then
       SAFE_OUTPUT=$(_gha_sanitize "${ISSUE_URL}")
       if [[ "${FULLSEND_TRACKER}" == "jira" ]]; then
         echo "::warning::Failed to create Jira issue in ${RETRO_JIRA_PROJECT} for proposal[$i] (${SAFE_TITLE}): ${SAFE_OUTPUT}"
@@ -536,9 +551,15 @@ if [[ "${PROPOSAL_COUNT}" -gt 0 ]]; then
       continue
     fi
 
-    if [[ ${CREATE_RC} -eq 2 ]]; then
-      SAFE_URL=$(_gha_sanitize "${ISSUE_URL}")
-      echo "::warning::Issue created but failed to apply label in Jira for proposal[$i] (${SAFE_TITLE}): ${SAFE_URL}"
+    # Jira labels are applied here, in this shell, because Jira validates the
+    # update against the issue edit screen: the probe behind it is cached for
+    # the remaining proposals only if it runs outside the create's subshell.
+    # A failed label update leaves the issue filed, so it is only a warning.
+    if [[ "${FULLSEND_TRACKER}" == "jira" ]]; then
+      if ! tracker_apply_labels "${ISSUE_URL}" "${ISSUE_LABELS}"; then
+        SAFE_URL=$(_gha_sanitize "${ISSUE_URL}")
+        echo "::warning::Issue created but failed to apply label in Jira for proposal[$i] (${SAFE_TITLE}): ${SAFE_URL}"
+      fi
     fi
 
     echo "Created: ${ISSUE_URL}"

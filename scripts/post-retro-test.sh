@@ -206,6 +206,10 @@ fi
 if [[ "${URL}" == "https://auth.atlassian.com/oauth/token" ]]; then
   # Emulate --write-out '\n%{http_code}': _jira_auth_mint_now reads the status
   # from the last line of the response.
+  if [[ "${JIRA_MOCK_TOKEN_FAIL:-}" == "1" ]]; then
+    printf '%s\n%s' '{"error":"invalid_client"}' '500'
+    exit 0
+  fi
   printf '%s\n%s' '{"access_token":"mock-access-token","expires_in":3600,"token_type":"Bearer"}' '200'
   exit 0
 fi
@@ -213,6 +217,15 @@ fi
 # Jira Cloud REST API
 if [[ "${URL}" == *"/rest/api/3/"* ]]; then
   case "${URL}" in
+    # Jira validates label updates against the edit screen, not the create
+    # screen, so the edit metadata decides label support.
+    */issue/PROJ-*/editmeta)
+      if [[ "${JIRA_MOCK_NO_EDIT_LABELS:-}" == "1" ]]; then
+        echo '{"fields":{"summary":{"required":true},"description":{"required":false}}}'
+      else
+        echo '{"fields":{"summary":{"required":true},"description":{"required":false},"labels":{"required":false,"schema":{"type":"array"}}}}'
+      fi
+      ;;
     */issue/createmeta/PROJ/issuetypes\?*)
       if [[ "${JIRA_MOCK_CREATEMETA_PAGES:-}" == "1" ]]; then
         META_START=$(printf '%s' "$*" | sed -n 's/.*startAt=\([0-9][0-9]*\).*/\1/p')
@@ -230,7 +243,7 @@ if [[ "${URL}" == *"/rest/api/3/"* ]]; then
         echo '{"fields":[{"fieldId":"summary","required":true,"hasDefaultValue":false},{"fieldId":"customfield_10050","required":true,"hasDefaultValue":false}]}'
       elif [[ "${JIRA_MOCK_NO_DESCRIPTION:-}" == "1" ]]; then
         echo '{"fields":[{"fieldId":"summary","required":true,"hasDefaultValue":false},{"fieldId":"labels","required":false,"hasDefaultValue":false}]}'
-      elif [[ "${JIRA_MOCK_NO_LABELS:-}" == "1" ]]; then
+      elif [[ "${JIRA_MOCK_CREATE_NO_LABELS:-}" == "1" ]]; then
         echo '{"fields":[{"fieldId":"summary","required":true,"hasDefaultValue":false},{"fieldId":"description","required":false,"hasDefaultValue":false}]}'
       else
         echo '{"fields":[{"fieldId":"summary","required":true,"hasDefaultValue":false},{"fieldId":"description","required":false,"hasDefaultValue":false},{"fieldId":"labels","required":false,"hasDefaultValue":false},{"fieldId":"reporter","required":true,"hasDefaultValue":true}]}'
@@ -2825,18 +2838,86 @@ export JIRA_TOKEN="fake-jira-token"
 export FULLSEND_JIRA_CLIENT_ID=""
 export FULLSEND_JIRA_CLIENT_SECRET=""
 
-# 8c. A create screen without a Labels field omits labels instead of failing.
-export JIRA_MOCK_NO_LABELS="1"
-run_test_stdout "jira/create-screen-without-labels" \
+# 8b2. A failed Jira init (here a token-endpoint error) must not stop the run
+# before the summary comment: every proposal is reported as not filed and the
+# summary is still posted.
+export JIRA_TOKEN=""
+export FULLSEND_JIRA_CLIENT_ID="client-id"
+export FULLSEND_JIRA_CLIENT_SECRET="client-secret"
+export JIRA_MOCK_TOKEN_FAIL="1"
+run_test_stdout "jira/init-failure-still-posts-summary" \
   "${FIXTURE_ONE_PROPOSAL}" \
-  "has no Labels field on its create screen; labels will be omitted"
-if grep -qF -- '--request PUT' "${CURL_LOG}" 2>/dev/null; then
-  echo "FAIL: jira/create-screen-without-labels-no-label-write — label PUT issued without a Labels field"
+  "cannot initialize Jira REST access"
+if grep -qF "### Proposals not filed (issue creation failed)" "${GH_STDIN_LOG}" 2>/dev/null \
+  && grep -qF '**Improve error handling in widget service**' "${GH_STDIN_LOG}" 2>/dev/null; then
+  echo "PASS: jira/init-failure-summary-posted"
+else
+  echo "FAIL: jira/init-failure-summary-posted — summary comment missing or proposal not listed"
+  cat "${GH_STDIN_LOG}" 2>/dev/null || true
+  FAILURES=$((FAILURES + 1))
+fi
+if grep -F 'fullsend issues create' "${FULLSEND_LOG}" 2>/dev/null | grep -qvF -- '--help'; then
+  echo "FAIL: jira/init-failure-no-create — create attempted without Jira REST access"
   FAILURES=$((FAILURES + 1))
 else
-  echo "PASS: jira/create-screen-without-labels-no-label-write"
+  echo "PASS: jira/init-failure-no-create"
 fi
-unset JIRA_MOCK_NO_LABELS
+unset JIRA_MOCK_TOKEN_FAIL
+export JIRA_TOKEN="fake-jira-token"
+export FULLSEND_JIRA_CLIENT_ID=""
+export FULLSEND_JIRA_CLIENT_SECRET=""
+
+# 8c. Labels are applied with an issue update, which Jira validates against the
+# edit screen: an issue type whose edit screen has no Labels field gets no
+# label write, and the issue is still filed.
+export JIRA_MOCK_NO_EDIT_LABELS="1"
+run_test_stdout "jira/edit-screen-without-labels" \
+  "${FIXTURE_ONE_PROPOSAL}" \
+  "has no Labels field on its edit screen; labels will be omitted"
+if grep -qF -- '--request PUT' "${CURL_LOG}" 2>/dev/null; then
+  echo "FAIL: jira/edit-screen-without-labels-no-label-write — label PUT issued without an edit-screen Labels field"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: jira/edit-screen-without-labels-no-label-write"
+fi
+if grep -qF "Created: https://mock.atlassian.net/browse/PROJ-100" "${TMPDIR}/stdout.log" 2>/dev/null; then
+  echo "PASS: jira/edit-screen-without-labels-still-created"
+else
+  echo "FAIL: jira/edit-screen-without-labels-still-created — issue was not filed"
+  FAILURES=$((FAILURES + 1))
+fi
+unset JIRA_MOCK_NO_EDIT_LABELS
+
+# 8c2. A create screen without a Labels field does not block the label write:
+# the update is checked against the edit screen, which lists Labels here.
+export JIRA_MOCK_CREATE_NO_LABELS="1"
+run_test_stdout "jira/create-screen-without-labels-still-labelled" \
+  "${FIXTURE_ONE_PROPOSAL}" \
+  "Created: https://mock.atlassian.net/browse/PROJ-100"
+if grep -qF -- '--request PUT' "${CURL_LOG}" 2>/dev/null \
+  && grep -qF '/issue/PROJ-100' "${CURL_LOG}" 2>/dev/null; then
+  echo "PASS: jira/create-screen-without-labels-still-labelled-put"
+else
+  echo "FAIL: jira/create-screen-without-labels-still-labelled-put — label PUT was skipped"
+  cat "${CURL_LOG}" 2>/dev/null || true
+  FAILURES=$((FAILURES + 1))
+fi
+unset JIRA_MOCK_CREATE_NO_LABELS
+
+# 8c3. The edit-screen probe runs once per run, not once per proposal.
+JIRA_LABEL_TWO_PROPOSAL_FIXTURE=$(printf '%s' "${FIXTURE_ONE_PROPOSAL}" \
+  | jq -c '.proposals += [(.proposals[0] | .title = "Second proposal title")]')
+run_test_stdout "jira/editmeta-probe-cached" \
+  "${JIRA_LABEL_TWO_PROPOSAL_FIXTURE}" \
+  "Post-retro complete."
+JIRA_EDITMETA_PROBES=$(grep -cF '/editmeta' "${CURL_LOG}" 2>/dev/null || true)
+if [[ "${JIRA_EDITMETA_PROBES}" -eq 1 ]]; then
+  echo "PASS: jira/editmeta-probe-cached-once"
+else
+  echo "FAIL: jira/editmeta-probe-cached-once — ${JIRA_EDITMETA_PROBES} editmeta probe(s) for 2 proposals"
+  grep -F '/editmeta' "${CURL_LOG}" 2>/dev/null || true
+  FAILURES=$((FAILURES + 1))
+fi
 
 # 8d. A failed create is reported under "Proposals not filed" instead of
 # silently disappearing from the summary.
@@ -2958,6 +3039,14 @@ if grep -qF "Proposals not filed" "${GH_STDIN_LOG}" 2>/dev/null; then
   FAILURES=$((FAILURES + 1))
 else
   echo "PASS: jira/label-fail-not-under-failed"
+fi
+
+if grep -qF "Issue created but failed to apply label in Jira" "${TMPDIR}/stdout.log" 2>/dev/null; then
+  echo "PASS: jira/label-fail-warned"
+else
+  echo "FAIL: jira/label-fail-warned — label failure was not reported"
+  cat "${TMPDIR}/stdout.log" 2>/dev/null || true
+  FAILURES=$((FAILURES + 1))
 fi
 unset JIRA_MOCK_LABEL_FAIL
 

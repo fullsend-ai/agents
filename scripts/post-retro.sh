@@ -10,7 +10,8 @@
 #   FULLSEND_FORGE  — "github" or "gitlab"
 #
 # Optional env vars:
-#   FULLSEND_TRACKER    — "github", "gitlab", or "jira" (defaults to FULLSEND_FORGE)
+#   FULLSEND_TRACKER    — "jira", or the same value as FULLSEND_FORGE
+#                         (defaults to FULLSEND_FORGE)
 #   RETRO_MODE          — "all" (default), "summary_only", or "issues_only"
 #   RETRO_JIRA_PROJECT  — Jira project key for created issues (when FULLSEND_TRACKER=jira)
 #   FULLSEND_DIR        — .fullsend directory (when FULLSEND_TRACKER=jira)
@@ -484,7 +485,11 @@ case "${FULLSEND_TRACKER}" in
 #                            Bearer auth with a service-account token.
 #   RETRO_JIRA_ISSUE_TYPE  — issue type name for created issues (default: "Task")
 #   RETRO_JIRA_LABELS      — comma-separated allowlist of labels that retro may
-#                            apply to Jira issues (default: "ready-for-triage")
+#                            apply to Jira issues (default: "ready-for-triage").
+#                            Labels are added by an issue update, which Jira
+#                            checks against the issue edit screen, so an issue
+#                            type whose edit screen has no Labels field gets no
+#                            labels and a warning.
 #   RETRO_JIRA_MAX_PAGES   — maximum pages fetched per paginated Jira read (default: 50)
 #   RETRO_MODE             — "all" (default), "summary_only", or "issues_only"
 #
@@ -1132,6 +1137,35 @@ _retro_jira_filter_labels() {
   '
 }
 
+# Jira validates a label update against the issue's edit screen, not the create
+# screen createmeta reports: an issue type can offer Labels at creation and
+# still refuse the update, or omit it at creation and accept the update. Label
+# support is therefore decided from `GET /issue/{key}/editmeta`, probed once
+# per run and cached, because tracker_apply_labels runs in the calling shell.
+_RETRO_JIRA_LABELS_EDITABLE="unknown"
+
+# Fail (non-zero) when the issue's edit screen has no Labels field, so no
+# update is sent that Jira would reject.
+_retro_jira_labels_editable() {
+  local key="$1" editmeta
+  case "${_RETRO_JIRA_LABELS_EDITABLE}" in
+    yes) return 0 ;;
+    no) return 1 ;;
+  esac
+  if ! editmeta=$(_retro_jira_api GET "/issue/${key}/editmeta"); then
+    # Unknown rather than blocked: the update below reports its own failure.
+    echo "WARNING: cannot read Jira edit metadata for ${key}; attempting the label update anyway" >&2
+    return 0
+  fi
+  if printf '%s' "${editmeta}" | jq -e '((.fields // {}) | type == "object") and ((.fields // {}) | has("labels"))' >/dev/null 2>&1; then
+    _RETRO_JIRA_LABELS_EDITABLE="yes"
+    return 0
+  fi
+  _RETRO_JIRA_LABELS_EDITABLE="no"
+  echo "WARNING: issue type '$(_gha_sanitize "${RETRO_JIRA_ISSUE_TYPE}")' in Jira project ${RETRO_JIRA_PROJECT} has no Labels field on its edit screen; labels will be omitted" >&2
+  return 1
+}
+
 _retro_jira_add_labels() {
   local key="$1" labels="$2"
   local labels_json ops
@@ -1143,6 +1177,9 @@ _retro_jira_add_labels() {
     if [[ -n "${labels}" && -n "${RETRO_JIRA_LABELS}" ]]; then
       echo "WARNING: no requested Jira labels are allowed by RETRO_JIRA_LABELS; issue will be created without labels" >&2
     fi
+    return 0
+  fi
+  if ! _retro_jira_labels_editable "${key}"; then
     return 0
   fi
   ops=$(printf '%s' "${labels_json}" | jq '{update:{labels:[.[] | {add:.}]}}')
@@ -1224,11 +1261,9 @@ tracker_validate_create() {
     echo "ERROR: issue type '$(_gha_sanitize "${RETRO_JIRA_ISSUE_TYPE}")' in Jira project ${RETRO_JIRA_PROJECT} has no Description field on its create screen" >&2
     return 1
   fi
-  RETRO_JIRA_LABELS_AVAILABLE=true
-  if ! printf '%s' "${meta}" | jq -e 'any(.[]; (.fieldId // .key) == "labels")' >/dev/null; then
-    RETRO_JIRA_LABELS_AVAILABLE=false
-    echo "WARNING: issue type '$(_gha_sanitize "${RETRO_JIRA_ISSUE_TYPE}")' in Jira project ${RETRO_JIRA_PROJECT} has no Labels field on its create screen; labels will be omitted" >&2
-  fi
+  # Labels are not checked here: they are written by an issue update, which
+  # Jira validates against the edit screen, not this create screen. See
+  # tracker_apply_labels.
 }
 
 tracker_find_existing_issue() {
@@ -1267,6 +1302,9 @@ tracker_find_existing_issue() {
 }
 
 forge_create_issue() {
+  # The fourth argument is the label list, which post-retro applies with
+  # tracker_apply_labels after the create (labels are an edit-screen field).
+  # shellcheck disable=SC2034
   local _repo="$1" title="$2" body="$3" labels="${4:-ready-for-triage}"
   if [[ -z "${body}" || "${body}" == "-" ]]; then
     body=$(cat)
@@ -1296,20 +1334,28 @@ forge_create_issue() {
     echo "ERROR: forge_create_issue: fullsend issues create returned no valid issue key" >&2
     return 1
   fi
-  local label_failed=false
-  if [[ "${RETRO_JIRA_LABELS_AVAILABLE:-true}" == "true" ]] && [[ -n "${labels}" ]]; then
-    if ! _retro_jira_add_labels "${key}" "${labels}"; then
-      echo "WARNING: forge_create_issue: failed to add labels to ${key} (issue created without labels)" >&2
-      label_failed=true
-    fi
-  fi
   if [[ -n "${url}" ]]; then
     echo "${url}"
   else
     echo "${JIRA_BASE_URL}/browse/${key}"
   fi
-  [[ "${label_failed}" == "true" ]] && return 2
-  return 0
+}
+
+# Apply RETRO_JIRA_LABELS to a created issue. post-retro calls this in its own
+# shell, after a successful create, so the edit-screen probe in
+# _retro_jira_labels_editable is cached for the proposals that follow:
+# forge_create_issue runs in a command substitution, whose variable state does
+# not survive.
+#
+# Usage: tracker_apply_labels <issue-url> <labels>
+tracker_apply_labels() {
+  local url="$1" labels="$2" key
+  key="${url##*/}"
+  if [[ ! "${key}" =~ ^${RETRO_JIRA_PROJECT}-[0-9]+$ ]]; then
+    echo "ERROR: tracker_apply_labels: cannot read a ${RETRO_JIRA_PROJECT} issue key from '$(_gha_sanitize "${url}")'" >&2
+    return 1
+  fi
+  _retro_jira_add_labels "${key}" "${labels}"
 }
 
 forge_create_label() {
@@ -1769,11 +1815,19 @@ echo "Found ${PROPOSAL_COUNT} proposal(s)"
 # so doing this per call would exchange a new OAuth token and re-discover the
 # cloud ID for every request. Skipped when there is nothing to file, so a run
 # with no proposals makes no Jira calls at all.
+#
+# A failure here (for example a transient token-endpoint error) is not fatal to
+# the run: it marks every proposal as not filed and still posts the summary
+# comment, as the other Jira failures below do. Only issues_only exits non-zero,
+# and it does so through the usual proposal-failure path.
+JIRA_INIT_STATE="skipped"
 if [[ "${FULLSEND_TRACKER}" == "jira" ]] && [[ "${RETRO_MODE}" != "summary_only" ]] \
   && [[ "${PROPOSAL_COUNT}" -gt 0 ]] && declare -f _retro_jira_init >/dev/null 2>&1; then
-  if ! _retro_jira_init; then
-    echo "ERROR: cannot initialize Jira REST access — no proposals will be filed" >&2
-    exit 1
+  if _retro_jira_init; then
+    JIRA_INIT_STATE="ok"
+  else
+    JIRA_INIT_STATE="failed"
+    echo "::warning::cannot initialize Jira REST access (token mint or routing) — no proposals will be filed; the summary comment is still posted"
   fi
 fi
 
@@ -1930,6 +1984,12 @@ if [[ "${PROPOSAL_COUNT}" -gt 0 ]]; then
 
     # Jira rerun protection: skip if an issue with the same summary exists.
     if [[ "${FULLSEND_TRACKER}" == "jira" ]]; then
+      if [[ "${JIRA_INIT_STATE}" != "ok" ]]; then
+        echo "::warning::Jira REST access was not initialized — cannot create an issue for proposal[$i] (${SAFE_TITLE})"
+        FAILED_PROPOSALS="${FAILED_PROPOSALS}
+- **${TITLE}** (\`${RETRO_JIRA_PROJECT}\`)"
+        continue
+      fi
       if [[ "${JIRA_CREATEMETA_STATE}" == "unknown" ]]; then
         if tracker_validate_create; then
           JIRA_CREATEMETA_STATE="ok"
@@ -1982,7 +2042,7 @@ if [[ "${PROPOSAL_COUNT}" -gt 0 ]]; then
       ISSUE_LABELS="ready-for-triage"
     fi
     ISSUE_URL=$(forge_create_issue "${TARGET_REPO}" "${TITLE}" "${BODY}" "${ISSUE_LABELS}") || CREATE_RC=$?
-    if [[ ${CREATE_RC} -ne 0 ]] && ! [[ "${FULLSEND_TRACKER}" == "jira" && ${CREATE_RC} -eq 2 ]]; then
+    if [[ ${CREATE_RC} -ne 0 ]]; then
       SAFE_OUTPUT=$(_gha_sanitize "${ISSUE_URL}")
       if [[ "${FULLSEND_TRACKER}" == "jira" ]]; then
         echo "::warning::Failed to create Jira issue in ${RETRO_JIRA_PROJECT} for proposal[$i] (${SAFE_TITLE}): ${SAFE_OUTPUT}"
@@ -1996,9 +2056,15 @@ if [[ "${PROPOSAL_COUNT}" -gt 0 ]]; then
       continue
     fi
 
-    if [[ ${CREATE_RC} -eq 2 ]]; then
-      SAFE_URL=$(_gha_sanitize "${ISSUE_URL}")
-      echo "::warning::Issue created but failed to apply label in Jira for proposal[$i] (${SAFE_TITLE}): ${SAFE_URL}"
+    # Jira labels are applied here, in this shell, because Jira validates the
+    # update against the issue edit screen: the probe behind it is cached for
+    # the remaining proposals only if it runs outside the create's subshell.
+    # A failed label update leaves the issue filed, so it is only a warning.
+    if [[ "${FULLSEND_TRACKER}" == "jira" ]]; then
+      if ! tracker_apply_labels "${ISSUE_URL}" "${ISSUE_LABELS}"; then
+        SAFE_URL=$(_gha_sanitize "${ISSUE_URL}")
+        echo "::warning::Issue created but failed to apply label in Jira for proposal[$i] (${SAFE_TITLE}): ${SAFE_URL}"
+      fi
     fi
 
     echo "Created: ${ISSUE_URL}"

@@ -10,7 +10,8 @@
 #
 # Optional env vars:
 #   RETRO_COMMENT   — The /retro comment text (empty for automatic triggers)
-#   FULLSEND_TRACKER — "github", "gitlab", or "jira" (defaults to FULLSEND_FORGE)
+#   FULLSEND_TRACKER — "jira", or the same value as FULLSEND_FORGE
+#                      (defaults to FULLSEND_FORGE)
 #   FULLSEND_DIR    — .fullsend directory (required when FULLSEND_TRACKER=jira)
 #
 # When FULLSEND_TRACKER=jira, scripts/lib/jira-retro-ops.lib.sh (sourced

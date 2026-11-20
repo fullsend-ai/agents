@@ -31,7 +31,11 @@
 #                            Bearer auth with a service-account token.
 #   RETRO_JIRA_ISSUE_TYPE  — issue type name for created issues (default: "Task")
 #   RETRO_JIRA_LABELS      — comma-separated allowlist of labels that retro may
-#                            apply to Jira issues (default: "ready-for-triage")
+#                            apply to Jira issues (default: "ready-for-triage").
+#                            Labels are added by an issue update, which Jira
+#                            checks against the issue edit screen, so an issue
+#                            type whose edit screen has no Labels field gets no
+#                            labels and a warning.
 #   RETRO_JIRA_MAX_PAGES   — maximum pages fetched per paginated Jira read (default: 50)
 #   RETRO_MODE             — "all" (default), "summary_only", or "issues_only"
 #
@@ -374,6 +378,35 @@ _retro_jira_filter_labels() {
   '
 }
 
+# Jira validates a label update against the issue's edit screen, not the create
+# screen createmeta reports: an issue type can offer Labels at creation and
+# still refuse the update, or omit it at creation and accept the update. Label
+# support is therefore decided from `GET /issue/{key}/editmeta`, probed once
+# per run and cached, because tracker_apply_labels runs in the calling shell.
+_RETRO_JIRA_LABELS_EDITABLE="unknown"
+
+# Fail (non-zero) when the issue's edit screen has no Labels field, so no
+# update is sent that Jira would reject.
+_retro_jira_labels_editable() {
+  local key="$1" editmeta
+  case "${_RETRO_JIRA_LABELS_EDITABLE}" in
+    yes) return 0 ;;
+    no) return 1 ;;
+  esac
+  if ! editmeta=$(_retro_jira_api GET "/issue/${key}/editmeta"); then
+    # Unknown rather than blocked: the update below reports its own failure.
+    echo "WARNING: cannot read Jira edit metadata for ${key}; attempting the label update anyway" >&2
+    return 0
+  fi
+  if printf '%s' "${editmeta}" | jq -e '((.fields // {}) | type == "object") and ((.fields // {}) | has("labels"))' >/dev/null 2>&1; then
+    _RETRO_JIRA_LABELS_EDITABLE="yes"
+    return 0
+  fi
+  _RETRO_JIRA_LABELS_EDITABLE="no"
+  echo "WARNING: issue type '$(_gha_sanitize "${RETRO_JIRA_ISSUE_TYPE}")' in Jira project ${RETRO_JIRA_PROJECT} has no Labels field on its edit screen; labels will be omitted" >&2
+  return 1
+}
+
 _retro_jira_add_labels() {
   local key="$1" labels="$2"
   local labels_json ops
@@ -385,6 +418,9 @@ _retro_jira_add_labels() {
     if [[ -n "${labels}" && -n "${RETRO_JIRA_LABELS}" ]]; then
       echo "WARNING: no requested Jira labels are allowed by RETRO_JIRA_LABELS; issue will be created without labels" >&2
     fi
+    return 0
+  fi
+  if ! _retro_jira_labels_editable "${key}"; then
     return 0
   fi
   ops=$(printf '%s' "${labels_json}" | jq '{update:{labels:[.[] | {add:.}]}}')
@@ -466,11 +502,9 @@ tracker_validate_create() {
     echo "ERROR: issue type '$(_gha_sanitize "${RETRO_JIRA_ISSUE_TYPE}")' in Jira project ${RETRO_JIRA_PROJECT} has no Description field on its create screen" >&2
     return 1
   fi
-  RETRO_JIRA_LABELS_AVAILABLE=true
-  if ! printf '%s' "${meta}" | jq -e 'any(.[]; (.fieldId // .key) == "labels")' >/dev/null; then
-    RETRO_JIRA_LABELS_AVAILABLE=false
-    echo "WARNING: issue type '$(_gha_sanitize "${RETRO_JIRA_ISSUE_TYPE}")' in Jira project ${RETRO_JIRA_PROJECT} has no Labels field on its create screen; labels will be omitted" >&2
-  fi
+  # Labels are not checked here: they are written by an issue update, which
+  # Jira validates against the edit screen, not this create screen. See
+  # tracker_apply_labels.
 }
 
 tracker_find_existing_issue() {
@@ -509,6 +543,9 @@ tracker_find_existing_issue() {
 }
 
 forge_create_issue() {
+  # The fourth argument is the label list, which post-retro applies with
+  # tracker_apply_labels after the create (labels are an edit-screen field).
+  # shellcheck disable=SC2034
   local _repo="$1" title="$2" body="$3" labels="${4:-ready-for-triage}"
   if [[ -z "${body}" || "${body}" == "-" ]]; then
     body=$(cat)
@@ -538,20 +575,28 @@ forge_create_issue() {
     echo "ERROR: forge_create_issue: fullsend issues create returned no valid issue key" >&2
     return 1
   fi
-  local label_failed=false
-  if [[ "${RETRO_JIRA_LABELS_AVAILABLE:-true}" == "true" ]] && [[ -n "${labels}" ]]; then
-    if ! _retro_jira_add_labels "${key}" "${labels}"; then
-      echo "WARNING: forge_create_issue: failed to add labels to ${key} (issue created without labels)" >&2
-      label_failed=true
-    fi
-  fi
   if [[ -n "${url}" ]]; then
     echo "${url}"
   else
     echo "${JIRA_BASE_URL}/browse/${key}"
   fi
-  [[ "${label_failed}" == "true" ]] && return 2
-  return 0
+}
+
+# Apply RETRO_JIRA_LABELS to a created issue. post-retro calls this in its own
+# shell, after a successful create, so the edit-screen probe in
+# _retro_jira_labels_editable is cached for the proposals that follow:
+# forge_create_issue runs in a command substitution, whose variable state does
+# not survive.
+#
+# Usage: tracker_apply_labels <issue-url> <labels>
+tracker_apply_labels() {
+  local url="$1" labels="$2" key
+  key="${url##*/}"
+  if [[ ! "${key}" =~ ^${RETRO_JIRA_PROJECT}-[0-9]+$ ]]; then
+    echo "ERROR: tracker_apply_labels: cannot read a ${RETRO_JIRA_PROJECT} issue key from '$(_gha_sanitize "${url}")'" >&2
+    return 1
+  fi
+  _retro_jira_add_labels "${key}" "${labels}"
 }
 
 forge_create_label() {
