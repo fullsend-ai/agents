@@ -57,13 +57,15 @@ OLDMASK=$(umask); umask 077; printf 'header = "PRIVATE-TOKEN: %s"\n' "${GITLAB_T
 
 # MR metadata: title, description, author, labels, draft status, head SHA.
 # Saved to a file, not captured in a variable and piped inside $( ), so
-# the field reads below stay in the scanner's accepted dialect.
+# the field reads below stay in the scanner's accepted dialect. pr.json
+# is the forge-neutral name pr-review step 3d fences title/description/
+# labels from (map `.description` where step 3d says `.body`).
 curl --fail --silent --show-error \
   -K /tmp/gitlab-api.curlrc \
   "https://<GITLAB_HOST>/api/v4/projects/<REPO_ENCODED>/merge_requests/<MR_IID>" \
-  > /sandbox/workspace/mr-data.json
-HEAD_SHA=$(jq -r '.sha' /sandbox/workspace/mr-data.json)
-IS_DRAFT=$(jq -r '.draft' /sandbox/workspace/mr-data.json)
+  > /sandbox/workspace/pr.json
+HEAD_SHA=$(jq -r '.sha' /sandbox/workspace/pr.json)
+IS_DRAFT=$(jq -r '.draft' /sandbox/workspace/pr.json)
 
 # MR changes (includes diff per file), saved for later Bash calls
 # (shell variables do not survive between calls; files do)
@@ -84,7 +86,7 @@ jq -r '.changes[].new_path' /sandbox/workspace/mr-changes.json
 # Per-file diffs from the changes payload, written to disk for the sub-agents
 # to Read; generated files dropped. An empty file is a tool failure.
 jq -r '.changes[] | select(.new_path | test("(^|/)(vendor|node_modules)/|(package-lock\\.json|go\\.sum|yarn\\.lock|\\.pb\\.go)$") | not)
-  | "### File: \(.new_path)\n\(.diff)"' /sandbox/workspace/mr-changes.json > /sandbox/workspace/pr-diff.txt
+  | "### File: \(.new_path | @json | .[1:-1])\n\(.diff)"' /sandbox/workspace/mr-changes.json > /sandbox/workspace/pr-diff.txt
 test -s /sandbox/workspace/pr-diff.txt || echo "EMPTY DIFF — produce a failure result (reason tool-failure)"
 ```
 
@@ -139,16 +141,38 @@ timed out — scrub the token: `: > /tmp/pr-head.curlrc`.
 OLDMASK=$(umask); umask 077; printf 'header = "PRIVATE-TOKEN: %s"\n' "${GITLAB_TOKEN}" > /tmp/gitlab-api.curlrc; umask "$OLDMASK"
 
 # Fetch linked issue metadata. Step 2b resolves bare `#N` and
-# same-repository issue URLs only.
+# same-repository issue URLs only. Persisted so step 3d can fence its
+# title/description the same way as pr.json.
 curl --fail --silent --show-error \
   -K /tmp/gitlab-api.curlrc \
   "https://<GITLAB_HOST>/api/v4/projects/<REPO_ENCODED>/issues/<issue-iid>" \
-  | jq '{title, description}'
+  | jq '{title, description}' > /sandbox/workspace/issue.json
 
-# Fetch issue notes (comments)
-curl --fail --silent --show-error \
-  -K /tmp/gitlab-api.curlrc \
-  "https://<GITLAB_HOST>/api/v4/projects/<REPO_ENCODED>/issues/<issue-iid>/notes"
+# Fetch issue notes (comments): every page, oldest first, then bodies
+# only as one JSON array. System notes ("changed the description") are
+# dropped, since the `system` flag does not survive the projection. A
+# page that fails leaves issue-comments.json empty, never truncated.
+# Persisted like issue.json: any commenter writes these, and step 3d
+# fences a value only from a file jq wrote, never from retyped text:
+#   jq -r '.[]' issue-comments.json > value.txt    (all, one block)
+#   jq -r '.[0]' issue-comments.json > value.txt   (one note, 0-based)
+NOTES_PAGE=/sandbox/workspace/issue-notes.page
+NOTES_ALL=/sandbox/workspace/issue-notes.all
+NOTES_OK=false
+page=1
+: > "$NOTES_ALL"; : > /sandbox/workspace/issue-comments.json
+while curl --fail --silent --show-error -K /tmp/gitlab-api.curlrc \
+  "https://<GITLAB_HOST>/api/v4/projects/<REPO_ENCODED>/issues/<issue-iid>/notes?sort=asc&per_page=100&page=${page}" \
+  > "$NOTES_PAGE" && jq -e 'type == "array"' "$NOTES_PAGE" >/dev/null; do
+  cat "$NOTES_PAGE" >> "$NOTES_ALL"
+  if jq -e 'length < 100' "$NOTES_PAGE" >/dev/null; then NOTES_OK=true; break; fi
+  page=$(( page + 1 ))
+done
+if test "$NOTES_OK" = true; then
+  jq -s '[.[][] | select(.system | not) | .body]' "$NOTES_ALL" > /sandbox/workspace/issue-comments.json
+else
+  echo "issue notes: page ${page} failed; issue-comments.json left empty" >&2
+fi
 
 : > /tmp/gitlab-api.curlrc
 ```
