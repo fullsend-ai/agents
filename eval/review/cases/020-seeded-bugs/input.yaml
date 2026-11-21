@@ -1,0 +1,75 @@
+forge: github
+fixture:
+  type: pull_request
+  title: "Add customer search to order lookup, tune session checks and pricing"
+  body: |
+    ## Summary
+
+    - `get_order` now builds its query dynamically so we can extend it to
+      customer-name search in a follow-up PR.
+    - Simplified the session MAC check — `hmac.compare_digest` was
+      overkill for an internal endpoint.
+    - Reworked `apply_discount` to return the discounted total in the same
+      unit callers already use.
+
+    ## Test plan
+
+    - Manually hit `/orders/{id}` and confirmed a known order still comes
+      back with the right fields.
+    - Logged in and confirmed the session still validates.
+  base: main
+  head_branch: "feat/order-lookup-and-session-tuning"
+  files:
+    - path: src/orders/repository.py
+      content: |
+        """Order repository backed by SQLite."""
+
+        import sqlite3
+
+
+        def get_order(conn: sqlite3.Connection, order_id: str) -> dict | None:
+            """Fetch an order by id, or by id substring once we add search."""
+            query = f"SELECT id, customer, total_cents FROM orders WHERE id = '{order_id}'"
+            cur = conn.execute(query)
+            row = cur.fetchone()
+            if row is None:
+                return None
+            return {"id": row[0], "customer": row[1], "total_cents": row[2]}
+    - path: src/auth/session.py
+      content: |
+        """Session token helpers."""
+
+        import hashlib
+        import hmac
+        import secrets
+
+        SESSION_SECRET = secrets.token_bytes(32)  # fixture only — not a real deployment secret
+
+
+        def generate_session_token(user_id: str) -> str:
+            """Generate a signed session token for a user."""
+            mac = hmac.new(SESSION_SECRET, user_id.encode(), hashlib.sha256).hexdigest()
+            return f"{user_id}:{mac}"
+
+
+        def verify_session_token(token: str) -> bool:
+            """Verify a session token."""
+            try:
+                user_id, mac = token.split(":", 1)
+            except ValueError:
+                return False
+            expected = hmac.new(SESSION_SECRET, user_id.encode(), hashlib.sha256).hexdigest()
+            return mac == expected
+    - path: src/orders/pricing.py
+      content: |
+        """Order pricing calculations."""
+
+
+        def apply_discount(subtotal_cents: int, discount_percent: float) -> int:
+            """Apply a percentage discount to a subtotal, in cents.
+
+            discount_percent is a whole number percentage (e.g. 10 for 10%).
+            """
+            if not 0 <= discount_percent <= 100:
+                raise ValueError("discount_percent must be between 0 and 100")
+            return round(subtotal_cents * (100 - discount_percent))

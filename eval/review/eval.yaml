@@ -93,9 +93,18 @@ dataset:
       rejects every listed category. Categories are matched only in the
       current section of the review agent's sticky comment, not in its
       previous-run history, formal reviews or other comments.
+      findings.must_report and findings.must_not_raise anchor a finding to
+      the code: each entry is {file, match?, min_severity?, description?}.
+      A posted finding on that file at or above min_severity (default info
+      for must_report, high for must_not_raise) whose category or sticky
+      bullet text contains a `match` alternative ("a | b", whole words,
+      case-insensitive; empty matches any finding on the file) satisfies a
+      must_report entry and violates a must_not_raise entry. Severity,
+      category and file come from the sticky's review-findings-v2 marker.
       review_expectations specifies which edits
       those findings must concern for the review_quality judge.
-    - repo/: Directory with the base repo contents (pushed to main before the PR).
+    - repo/: Directory (or symlink into ../../repos/) with the base repo
+      contents (pushed to main before the PR).
 
 outputs:
   - path: output
@@ -184,7 +193,9 @@ judges:
   - name: finding_expectations
     description: Required findings must appear and forbidden findings must not appear
     check: |
+      import base64
       import json
+      import re
       raw = outputs["files"].get("output/fixture-state.json")
       if not raw:
           return False, "fixture-state.json not found"
@@ -193,7 +204,26 @@ judges:
       required = [finding.lower() for finding in expected.get("required", [])]
       required_any = [finding.lower() for finding in expected.get("required_any", [])]
       forbidden = [finding.lower() for finding in expected.get("forbidden", [])]
-      if not (required or required_any or forbidden):
+      # Anchored ground truth: a finding on a given file, at or above a
+      # severity, about a given thing. A malformed entry fails loudly
+      # instead of being skipped, so a typo can't make a case vacuous.
+      severity_rank = {"info": 0, "low": 1, "medium": 2, "high": 3, "critical": 4}
+      anchored = []
+      for key, default_floor in (("must_report", "info"), ("must_not_raise", "high")):
+          entries = expected.get(key) or []
+          if not isinstance(entries, list):
+              return False, f"findings.{key} must be a list"
+          for i, entry in enumerate(entries):
+              if not isinstance(entry, dict):
+                  return False, f"Malformed findings.{key}[{i}]: {entry!r}"
+              floor = str(entry.get("min_severity", default_floor)).lower()
+              if (set(entry) - {"file", "match", "min_severity", "description"}
+                      or not isinstance(entry.get("file"), str) or not entry["file"].strip()
+                      or not isinstance(entry.get("match", ""), str)
+                      or floor not in severity_rank):
+                  return False, f"Malformed findings.{key}[{i}]: {entry!r}"
+              anchored.append((key, entry["file"].strip(), entry.get("match", ""), floor))
+      if not (required or required_any or forbidden or anchored):
           return True, "No finding expectations specified"
       # Only the evaluated run's write-up counts. fullsend post-review puts
       # the review in one sticky comment whose first line is its marker
@@ -218,7 +248,8 @@ judges:
           return False, f"Findings not attributable to this run: expected one review-agent sticky comment, found {len(stickies)}"
       # Edits keep earlier runs below the first history sentinel; only the
       # section above it is this run's (pre-review reads it the same way).
-      review_text = stickies[0].split("<!-- sticky:history-start -->", 1)[0].lower()
+      current = stickies[0].split("<!-- sticky:history-start -->", 1)[0]
+      review_text = current.lower()
       missing = [finding for finding in required if f"[{finding}]" not in review_text]
       missing_any = bool(required_any) and not any(
           f"[{finding}]" in review_text for finding in required_any
@@ -226,7 +257,94 @@ judges:
       present = [finding for finding in forbidden if f"[{finding}]" in review_text]
       if missing or missing_any or present:
           return False, f"Finding mismatch: missing={missing}, missing_any={required_any if missing_any else []}, forbidden_present={present}"
-      return True, f"Finding expectations met: required={required}, required_any={required_any}, forbidden={forbidden}"
+      met = f"Finding expectations met: required={required}, required_any={required_any}, forbidden={forbidden}"
+      if not anchored:
+          return True, met
+      # Severity, category and file come from the review-findings marker,
+      # which post-review builds from the findings JSON, not from prose. It
+      # is left out when a dimension sub-agent failed or the agent reported
+      # a failure; there is nothing to grade then, so abstain, as
+      # expected_review_action does.
+      projections = [
+          line.rstrip("\r") for line in current.split("\n")
+          if line.startswith("<!-- fullsend:review-findings-v2:")
+      ]
+      if not projections:
+          return None, "Not scored: no review-findings marker in the current sticky section"
+      if len(projections) != 1:
+          return False, f"Expected one review-findings marker in the current sticky section, found {len(projections)}"
+      match = re.fullmatch(r"<!-- fullsend:review-findings-v2:([A-Za-z0-9+/]+={0,2}) -->", projections[0])
+      if not match:
+          return False, "Malformed review-findings marker"
+      try:
+          projection = json.loads(base64.b64decode(match.group(1), validate=True))
+      except ValueError as err:
+          return False, f"Could not decode the review-findings marker: {err}"
+      posted = projection.get("findings") if isinstance(projection, dict) else None
+      if not isinstance(posted, list):
+          return False, "The review-findings marker has no findings list"
+      posted = [f for f in posted if isinstance(f, dict)]
+
+      def norm(path):
+          path = str(path or "").strip()
+          return path[2:] if path.startswith("./") else path
+
+      # The marker carries no description, so the words come from the
+      # sticky's "- **[category]** `file:line` — description" bullets and
+      # their indented Remediation lines (skills/pr-review/SKILL.md).
+      bullets, open_bullet = [], None
+      for line in current.split("\n"):
+          line = line.rstrip("\r")
+          head = re.match(r"\s*[-*]\s+\*\*\[([^\]\n]+)\]\*\*\s*`([^`\n]+)`(.*)$", line)
+          if head:
+              loc = re.fullmatch(r"(.+?)(?::(\d+)(?:-\d+)?)?", head.group(2).strip())
+              line_no = int(loc.group(2)) if loc.group(2) else None
+              open_bullet = [head.group(1).strip().lower(), norm(loc.group(1)), line_no, head.group(3)]
+              bullets.append(open_bullet)
+          elif open_bullet and line[:1] in (" ", "\t") and line.strip():
+              open_bullet[3] += "\n" + line
+          else:
+              open_bullet = None
+
+      def words(finding):
+          # ponytail: a bullet joins its finding on file + category, and line
+          # when both carry one; two same-category findings on one file with
+          # no line share their text. Stamp the finding id on the bullet if
+          # that ever matters.
+          category = str(finding.get("category") or "").lower()
+          line_no = finding.get("line")
+          text = [category]
+          for b_category, b_file, b_line, b_text in bullets:
+              if (b_category == category and b_file == norm(finding.get("file"))
+                      and (b_line is None or line_no is None or b_line == line_no)):
+                  text.append(b_text)
+          return "\n".join(text)
+
+      def mentions(pattern, text):
+          # Whole words: "md5" matches "hashlib.md5" but not "md5sum".
+          alternatives = [a.strip() for a in pattern.split("|") if a.strip()]
+          return not alternatives or any(
+              re.search(r"(?<!\w)" + r"\s+".join(re.escape(t) for t in a.split()) + r"(?!\w)", text, re.I)
+              for a in alternatives
+          )
+
+      not_reported, raised = [], []
+      for key, file, pattern, floor in anchored:
+          hits = [
+              f for f in posted
+              if norm(f.get("file")) == norm(file)
+              and severity_rank.get(str(f.get("severity")).lower(), -1) >= severity_rank[floor]
+              and mentions(pattern, words(f))
+          ]
+          label = f"{file} [{pattern or 'any finding'} >= {floor}]"
+          if key == "must_report" and not hits:
+              not_reported.append(label)
+          if key == "must_not_raise" and hits:
+              raised.append(label)
+      if not_reported or raised:
+          summary = [f"{f.get('file')} {f.get('category')} {f.get('severity')}" for f in posted]
+          return False, f"Anchored finding mismatch: not_reported={not_reported}, raised={raised} (posted: {summary})"
+      return True, f"{met}; {len(anchored)} anchored finding expectation(s) met"
 
   - name: risk_label_present
     description: When risk_label_required is set, at least one risk/* label must be present

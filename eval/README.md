@@ -309,12 +309,16 @@ Each case directory under `eval/<agent>/cases/` contains:
 - `annotations.yaml` — expected outcomes (labels, final `state`, review
   expectations, and for review cases an optional `review_action` list of
   actions allowed in the review-findings marker, which can keep an agent's
-  approve after a post-review downgrade) and the report-only budgets:
+  approve after a post-review downgrade, and `findings` ground truth;
+  `findings.must_report` / `findings.must_not_raise` anchor a finding to a
+  file and a severity floor, as described in `eval/review/eval.yaml`'s
+  dataset schema) and the report-only budgets:
   `max_cost_usd`, plus `max_turns` where the eval has a `max_turns` judge.
   Set `release: true` to include the case in `EVAL_TIER=release` runs (see
   [Tiers](#tiers) above).
 - `repo/` (optional) — base repo contents pushed to main before the
-  fixture is created
+  fixture is created, either inline or a symlink to a fixture repo
+  shared by several cases under `eval/<agent>/repos/`
 
 Every file, endpoint, symbol and label that a case's issue or PR refers
 to must exist in its fixture repo (`repo/`, plus the PR's files) or in
