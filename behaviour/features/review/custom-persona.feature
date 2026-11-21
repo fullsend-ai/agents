@@ -30,9 +30,12 @@ Feature: Review personas come from the staged skill files
   as sub-agents/behaviour-canary.md. It is always: true and its when
   names behaviour-canary.txt, so it is selected. It builds a marker from
   line 1 of that file (the pull request step writes "behaviour test", so
-  the marker is CANARY-behaviour-test) and returns it in its finding.
-  The review run's log streams each sub-agent's reply, so finding the
-  marker there proves the persona was dispatched and ran on the pull
+  the marker is CANARY-behaviour-test), runs echo with the marker as its
+  only argument, and then returns the marker in its finding. The review
+  run's log always shows a tool call's command line, but not always a
+  sub-agent's reply: the orchestrator may paraphrase the finding and the
+  challenger may remove it. So the marker in the log, from the echo
+  call, proves that the persona was dispatched and ran on the pull
   request. The marker is computed rather than written in the persona
   file because another persona reading the canary file must not satisfy
   the check. The posted review text is written by the model, which may
@@ -91,7 +94,7 @@ Feature: Review personas come from the staged skill files
       categories:
         - doc-style
       failure_severity: info
-      tools: Read, Grep, Glob
+      tools: Read, Grep, Glob, Bash
       ---
 
       # Behaviour canary
@@ -102,7 +105,10 @@ Feature: Review personas come from the staged skill files
       CANARY, a hyphen, then that line with every space replaced by a
       hyphen.
 
-      Return one JSON array with exactly one finding and nothing else:
+      Run the Bash tool with the command echo followed by the marker as
+      its only argument. Run no other Bash command.
+
+      Then return one JSON array with exactly one finding and nothing else:
       severity "low", category "doc-style", file "behaviour-canary.txt",
       line 1, actionable false, and a description that starts with the
       marker, then ": line 1 has no heading."
