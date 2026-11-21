@@ -172,6 +172,8 @@ thresholds:
     min_pass_rate: 1.0
   expected_review_action:
     min_pass_rate: 1.0
+  cause_lists:
+    min_pass_rate: 1.0
 EOF
 
 # state_action_summary <name> <expected_state value> <expected_review_action value>
@@ -184,12 +186,16 @@ judges:
     scored_cases: 1
   expected_review_action:
     scored_cases: 1
+  cause_lists:
+    scored_cases: 1
 per_case:
   001-a:
     expected_state:
       value: $2
     expected_review_action:
       value: $3
+    cause_lists:
+      value: $2
 EOF
   echo "$file"
 }
@@ -199,6 +205,7 @@ run_agg "${TMPDIR}/eval-state-action.yaml" \
 expect "expected_state false in 2 of 3 runs fails; expected_review_action false once passes" 1 \
   '^expected_state .*false in 2\+ runs: 001-a -> FAIL$' \
   '^expected_review_action .*nightly pass rate 1.00 over 1 case\(s\) -> PASS$' \
+  '^cause_lists .*false in 2\+ runs: 001-a -> FAIL$' \
   '^NIGHTLY VERDICT: FAIL$'
 
 # --- Quality judges -----------------------------------------------------

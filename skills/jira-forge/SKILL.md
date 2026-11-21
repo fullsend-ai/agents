@@ -66,9 +66,21 @@ ISSUE_KEY="${ISSUE_URL##*/browse/}"
 curl --fail-with-body --silent "${JIRA_AUTH_FLAG}" "${JIRA_AUTH}" \
   "${JIRA_API_URL:-${JIRA_BASE_URL}}/rest/api/3/issue/${ISSUE_KEY}"
 
-# List issue comments (newest first, so the most recent reply is on page one)
+# List issue comments (newest first, so the most recent reply is on page one).
+# expand=properties adds each comment's entity properties: a comment fullsend
+# posted with a marker carries it as properties[] key "fullsend.sticky-marker",
+# value {"marker": "<!-- fullsend:... -->"}, not in the comment body (check the
+# body too if the property is missing). In a fullsend comment's body (Atlassian
+# Document Format), a horizontal rule is a "rule" node and a folded "Previous
+# run" block is an "expand" node whose attrs.title starts with "Previous run".
 curl --fail-with-body --silent "${JIRA_AUTH_FLAG}" "${JIRA_AUTH}" \
-  "${JIRA_API_URL:-${JIRA_BASE_URL}}/rest/api/3/issue/${ISSUE_KEY}/comment?orderBy=-created&maxResults=50"
+  "${JIRA_API_URL:-${JIRA_BASE_URL}}/rest/api/3/issue/${ISSUE_KEY}/comment?orderBy=-created&maxResults=50&expand=properties"
+
+# The account this credential belongs to: the one fullsend posts results as.
+# Compare its accountId with a comment's author.accountId to tell
+# fullsend's own comments from anyone else's.
+curl --fail-with-body --silent "${JIRA_AUTH_FLAG}" "${JIRA_AUTH}" \
+  "${JIRA_API_URL:-${JIRA_BASE_URL}}/rest/api/3/myself"
 
 # List open issues in the project
 curl --fail-with-body --silent "${JIRA_AUTH_FLAG}" "${JIRA_AUTH}" \
@@ -89,7 +101,10 @@ nothing.
 the previous response's `nextPageToken` field. Stop when the field is absent
 or null. Comment listing is a separate endpoint and still uses
 `startAt`/`maxResults`; a single page returns at most `maxResults` comments,
-so use `orderBy=-created` when you only need the latest replies.
+so use `orderBy=-created` when you only need the latest replies. To read
+every comment, repeat the request with `&startAt=N`, adding each page's
+comment count to `N`, until `startAt + maxResults >= total` or a page comes
+back empty.
 
 **Error handling:** Always use `--fail-with-body` so HTTP errors (e.g. 410
 Gone) cause curl to exit non-zero instead of silently returning an error body
