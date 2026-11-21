@@ -12,3 +12,4 @@ c 2 4 features/review/post-review-outcomes.feature:30 features/review/post-revie
 d 2 4 features/review/post-review-outcomes.feature:63 features/review/post-review-outcomes.feature:87
 e 3 6 features/prioritize.feature features/triage.feature
 # Scratch change to exercise the e2e authorization gate; not for merge.
+# Second scratch line, so the first commit is no longer the head.
