@@ -926,10 +926,18 @@ is_bot_user() {
 # unlike agent-result.json (PR #1296 auth-bypass finding: a non-bot
 # TRIGGER_SOURCE alone does not prove the run's instruction was a rebase
 # request, so callers must check this in addition to TRIGGER_SOURCE).
+#
+# Accepted phrasings (issue #2054): "rebase", any "conflict" wording
+# ("resolve conflicts", "fix merge conflicts"), the observed "confilct"
+# misspelling, and an explicit "sync with <branch>". A bare "sync" is not
+# enough (too generic for an authorization gate).
 is_human_rebase_request() {
   local instruction
   instruction="$(printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]')"
-  [[ "${instruction}" == *"rebase"* || "${instruction}" == *"merge conflict"* ]]
+  [[ "${instruction}" == *"rebase"* \
+    || "${instruction}" == *"conflict"* \
+    || "${instruction}" == *"confilct"* \
+    || "${instruction}" == *"sync with"* ]]
 }
 
 # is_human_squash_request INSTRUCTION — true if a harness-captured human

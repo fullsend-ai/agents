@@ -143,6 +143,12 @@ When a PR falls behind its target branch, comment `/fs-fix rebase` (or
 rebases the PR branch onto the target; the post-script force-pushes with
 `--force-with-lease`.
 
+The post-script only publishes the rebase when the `/fs-fix` text contains
+`rebase`, `conflict` (for example `resolve conflicts`, `fix merge
+conflicts`), or `sync with` (for example `sync with main`). A bare `sync`
+is not enough. If the agent rebased but the request did not match, the
+post-script fails with a diagnostic and does not push.
+
 The agent rebases on an explicit human `/fs-fix` rebase request, or when
 the forge reports a real merge conflict and `FIX_CONFLICT_UPDATE_STRATEGY`
 is `rebase`. Automatic review-triggered fixes do not rebase merely because
