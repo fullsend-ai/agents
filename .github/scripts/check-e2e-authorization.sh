@@ -30,6 +30,10 @@
 # authorized (reason=ok_to_test) only when the PR head sha, read when this
 # script runs, equals the named sha. Any other head means the
 # PR changed since the review (reason=stale_ok_to_test). No timing is used.
+# The sha may be followed by the word `live` (`/ok-to-test <sha> live`): the
+# same checks apply, and an authorized run also sets live=true, which asks the
+# caller for the live behaviour suite (real models and App installations).
+# Any other word after the sha is reason=missing_sha.
 #
 # Security tradeoff: trusted bots bypass the /ok-to-test gate entirely.
 # A compromise of the bot's GitHub App credentials would auto-qualify its PRs
@@ -51,8 +55,9 @@
 #     comment and its body are read from the API; it must belong to
 #     PR_NUMBER and to COMMENTER_LOGIN.
 #
-# Writes authorized, reason, label_removed and head_sha to GITHUB_OUTPUT when
-# set. head_sha is the current PR head in /ok-to-test mode once the commenter
+# Writes authorized, reason, label_removed, head_sha and live to GITHUB_OUTPUT
+# when set. live is true only for an authorized `/ok-to-test <sha> live`.
+# head_sha is the current PR head in /ok-to-test mode once the commenter
 # passes the role check, and empty otherwise. Exits 0 always; callers inspect
 # outputs.
 
@@ -78,9 +83,10 @@ write_error_output() {
       echo "reason=error"
       echo "label_removed=false"
       echo "head_sha="
+      echo "live=false"
     } >>"${GITHUB_OUTPUT}"
   fi
-  printf 'authorized=false reason=error label_removed=false head_sha=\n'
+  printf 'authorized=false reason=error label_removed=false head_sha= live=false\n'
 }
 
 write_outputs() {
@@ -90,10 +96,11 @@ write_outputs() {
       echo "reason=${reason}"
       echo "label_removed=${label_removed}"
       echo "head_sha=${head_sha}"
+      echo "live=${live}"
     } >>"${GITHUB_OUTPUT}"
   fi
-  printf 'authorized=%s reason=%s label_removed=%s head_sha=%s\n' \
-    "${authorized}" "${reason}" "${label_removed}" "${head_sha}"
+  printf 'authorized=%s reason=%s label_removed=%s head_sha=%s live=%s\n' \
+    "${authorized}" "${reason}" "${label_removed}" "${head_sha}" "${live}"
 }
 
 trap 'write_error_output; exit 0' ERR
@@ -192,6 +199,7 @@ label_removed=false
 authorized=false
 reason="unauthorized"
 head_sha=""
+live=false
 
 # --- /ok-to-test command mode -------------------------------------------------
 # Kept at top level (not in a function) so the ERR trap covers every API call.
@@ -228,10 +236,12 @@ if [[ "${EVENT_NAME:-}" == "issue_comment" ]]; then
   else
     first_line="${comment_body%%$'\n'*}"
     first_line="${first_line%$'\r'}"
-    ok_to_test_re='^/ok-to-test[[:space:]]+([0-9a-fA-F]{40})[[:space:]]*$'
+    ok_to_test_re='^/ok-to-test[[:space:]]+([0-9a-fA-F]{40})([[:space:]]+live)?[[:space:]]*$'
     named_sha=""
+    wants_live=false
     if [[ "${first_line}" =~ ${ok_to_test_re} ]]; then
       named_sha="$(tr '[:upper:]' '[:lower:]' <<<"${BASH_REMATCH[1]}")"
+      [[ -n "${BASH_REMATCH[2]}" ]] && wants_live=true
     fi
 
     pr_json="$(gh api "repos/${REPOSITORY}/pulls/${PR_NUMBER}")"
@@ -242,6 +252,7 @@ if [[ "${EVENT_NAME:-}" == "issue_comment" ]]; then
     elif [[ "${head_sha}" == "${named_sha}" ]]; then
       authorized=true
       reason="ok_to_test"
+      live="${wants_live}"
     else
       # The head is not the commit the maintainer reviewed.
       reason="stale_ok_to_test"
