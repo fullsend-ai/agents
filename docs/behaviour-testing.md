@@ -160,12 +160,11 @@ and no `/ok-to-test`.
   Each line reads `<shard> <workers> <runners> <feature[:line]>...`, with
   feature paths relative to `behaviour/`. Each shard sets `BEHAVIOUR_FEATURES`
   to its space-separated godog paths, for example `features/fix.feature` or
-  `features/triage.feature:3`. When it is unset or empty, the suite runs every
-  feature.
+  `features/triage.feature:3`. When `BEHAVIOUR_FEATURES` is unset or empty,
+  the suite runs every feature.
 - A feature that is not listed in `behaviour/shards.txt` does not run on the
-  emulator, so it does not run on pull requests. Only the workflow reads the
-  file, and no test checks that every feature is listed: add a new feature to
-  a shard. The exception is a scenario that needs a real model, such as
+  emulator, so it does not run on pull requests. No test checks that every
+  feature is listed, so add each new feature to a shard. The exception is a scenario that needs a real model, such as
   `review/custom-persona.feature`, which runs only in the live suite; the
   comment at the top of `shards.txt` says why.
 - The live suite (`behaviour-tests.yml`) runs in the merge queue, on push to
@@ -174,7 +173,7 @@ and no `/ok-to-test`.
   It is the only place scenarios that need a real model run: today, the
   custom-persona scenario behind the `review-skill-overrides` capability.
 
-When the check fails, follow
+If the check fails, see
 [When the check fails](https://github.com/fullsend-ai/fullsend/blob/main/docs/guides/dev/behaviour-testing.md#when-the-check-fails)
 in fullsend's behaviour testing guide. In this repository, each shard uploads
 its logs as the artifact `behaviour-github-emulator-logs-<shard>`, and the
