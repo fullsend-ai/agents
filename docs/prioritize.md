@@ -4,7 +4,7 @@
 
 Scores an issue using the RICE framework (Reach, Impact, Confidence, Effort) and produces scores with reasoning for project board ranking. Supports GitHub and GitLab forges. A Jira Cloud forge exists in the harness but is **dark**: it is not dispatched, does not change `/fs-prioritize` on GitHub or GitLab, and is used only when `FULLSEND_FORGE=jira`.
 
-On GitHub, scores are written to Projects V2 custom fields and posted as a reasoning comment. On GitLab, scores are posted as a sticky issue comment. GitLab custom fields API integration is deferred — the Issues API silently ignores unknown keys, and the correct Custom Fields API requires Premium/Ultimate with runtime field ID resolution.
+On GitHub, scores are written to Projects V2 custom fields and posted as a reasoning comment. On GitLab, scores are posted as an issue comment; each run adds a new comment rather than editing the earlier one. GitLab custom fields API integration is deferred — the Issues API silently ignores unknown keys, and the correct Custom Fields API requires Premium/Ultimate with runtime field ID resolution.
 
 On Jira, when that forge is explicitly selected, five custom fields on the `Prioritization` tab are written, resolved by exact name: `Reach`, `Impact`, `Effort`, and `RICE Score` (number/float) and `Confidence` (a shared select list: `50% (Low)`, `75% (Medium)`, `100% (High)`). Jira admins keep Confidence as that select; it cannot become a number without breaking other projects. The agent Confidence float is used as-is in `RICE Score = (Reach × Impact × Confidence) / Effort`. The same float is mapped onto those three options only for the Confidence field (`< 0.4` → Low, `< 0.7` → Medium, otherwise High). The sticky comment still prints the unmapped floats, the formula, and reasoning. Rank, Priority, and other Jira fields are never written. GitHub and GitLab `/fs-prioritize` are unchanged. The post-script fails closed if any of the five fields is missing, duplicated among the expected schema type, not a custom field, or the wrong schema type. A second field with the same name but a different type is ignored.
 
@@ -43,10 +43,10 @@ skill data.
 The prioritize agent does not apply or consume control labels. It reads the
 issue content and produces a score. On GitHub, the project board is updated
 directly via Projects V2 custom fields. On GitLab, scores are posted as
-a sticky comment on the issue. On Jira (opt-in forge only), the five
+a new comment on the issue each run. On Jira (opt-in forge only), the five
 RICE custom fields are updated (Confidence mapped onto the shared select)
-and the sticky comment carries the unmapped floats; Rank and Priority
-are not written.
+and the sticky comment carries the unmapped floats; Rank and Priority are
+not written.
 
 ## Configuration
 
