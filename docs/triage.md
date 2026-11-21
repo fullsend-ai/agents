@@ -450,6 +450,21 @@ The triage agent runs in a read-only sandbox. It fetches the issue content — t
 
 The agent's only output is a structured JSON triage result consumed by the post-script, which applies labels and posts a summary comment.
 
+## Issue attachments
+
+On GitHub, the agent downloads images attached to the issue or its
+comments (`github.com/user-attachments/assets/<uuid>`) and views them with
+the `Read` tool, so a request made in a screenshot counts as provided
+information. The GitHub overlay adds the credential-less
+`fullsend-github-attachments` profile (shared with the code agent), which
+allows read-only `curl` access to `private-user-images.githubusercontent.com`
+and `user-images.githubusercontent.com` and forwards no forge token. The
+agent takes the short-lived signed URLs from the issue's rendered HTML
+(`gh api` with `application/vnd.github.html+json`), treats the images as
+untrusted input, skips SVG and video files, and records any image it could
+not download in its reasoning; see Step 1a in `agents/triage.md`.
+GitLab and Jira runs are unchanged.
+
 ## Custom network policy
 
 If this agent needs to reach hosts beyond the defaults, see the
