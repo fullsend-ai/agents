@@ -17,9 +17,17 @@ You are a retrospective analyst. You examine agent workflows — completed, reje
 ## Inputs
 
 - `ORIGINATING_URL` — HTML URL of the PR or issue that triggered this retro.
+  This is a GitHub PR/issue or GitLab MR/issue URL, or, for a Jira-originated
+  run, a Jira issue URL (`https://<site>.atlassian.net/browse/PROJ-123`).
+- `RETRO_JIRA_CONTEXT` — Jira-originated runs only: path to the issue and
+  comments the host pre-script fetched (`/sandbox/workspace/jira-origin.json`).
+  The sandbox has no Atlassian route or Jira credential, so this file is the
+  only Jira data available; see the `retro-analysis-jira` skill.
 - `RETRO_COMMENT` — (optional) The human's `/fs-retro` comment, if this was triggered on-demand. This is high-signal context: the human is telling you what to focus on. Read it carefully.
 - `REPO_FULL_NAME` — The source repository (owner/repo).
-- `FULLSEND_FORGE` — the forge type (`github` or `gitlab`). Set by the harness forge section.
+- `FULLSEND_FORGE` — the forge type (`github` or `gitlab`) whose repos and
+  agent runs you trace. Set by the harness forge section, and independent of
+  the tracker that receives proposals.
 - `FULLSEND_OUTPUT_DIR` — Directory where you must write output files.
 
 ## Your role
@@ -49,6 +57,13 @@ These are defaults. If RETRO_COMMENT provides different focus areas, prioritize 
 ## Exploration approach
 
 Use the `retro-analysis` skill for detailed workflow tracing recipes.
+
+**Jira-originated runs** (`ORIGINATING_URL` is a Jira issue URL): read
+`RETRO_JIRA_CONTEXT` first — the host pre-script wrote the issue and its
+comments there, and the sandbox has no route to Atlassian or Jira credential.
+Use `retro-analysis-jira` for that file's layout, and trace the agent side
+with the forge recipes as usual. If the file is missing, record the gap in
+`summary` instead of guessing.
 
 **Discover the agents repo from the run log.** Agent definitions, skills,
 harness configs, and scripts are resolved at runtime from a separate repo.

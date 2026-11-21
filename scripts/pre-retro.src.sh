@@ -10,6 +10,14 @@
 #
 # Optional env vars:
 #   RETRO_COMMENT   — The /retro comment text (empty for automatic triggers)
+#   FULLSEND_TRACKER — "jira", or the same value as FULLSEND_FORGE
+#                      (defaults to FULLSEND_FORGE)
+#   FULLSEND_DIR    — .fullsend directory (required when FULLSEND_TRACKER=jira)
+#
+# When FULLSEND_TRACKER=jira, scripts/lib/jira-retro-ops.lib.sh (sourced
+# through retro-ops.lib.sh) also enforces JIRA_BASE_URL, RETRO_JIRA_PROJECT
+# and a Jira credential, and reads tracker.jira from FULLSEND_DIR's config.
+# RETRO_MODE=summary_only relaxes those requirements: no issue is filed.
 
 set -euo pipefail
 
@@ -22,8 +30,45 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/lib/retro-ops.lib.sh"
 
 forge_validate_originating_url
+forge_parse_originating_url
+forge_mask_token
+
+if [[ "${FULLSEND_TRACKER}" == "jira" ]]; then
+  if [[ "${RETRO_MODE:-all}" != "summary_only" || "${JIRA_ORIGINATING:-false}" == "true" ]]; then
+    if [[ -z "${FULLSEND_DIR:-}" ]]; then
+      echo "ERROR: FULLSEND_DIR must be set when FULLSEND_TRACKER=jira (the fullsend CLI reads tracker.jira from its config.yaml)" >&2
+      exit 1
+    fi
+  fi
+fi
 
 echo "::notice::Retro target: $(_gha_sanitize "${ORIGINATING_URL}")"
+
+# A Jira-originated run analyzes a work item the sandbox cannot reach: it has
+# no Atlassian route and no Jira credential. Fetch the issue and its comments
+# here, on the host, into the context file the harness mounts into the
+# sandbox (harness/retro.yaml host_files, exposed as RETRO_JIRA_CONTEXT).
+# Fail closed: a retrospective that cannot read its subject would file
+# proposals it cannot substantiate.
+if [[ "${JIRA_ORIGINATING:-false}" == "true" ]]; then
+  if [[ "${JIRA_AUTH_MODE:-none}" == "none" ]]; then
+    echo "ERROR: a Jira-originated retro needs JIRA_TOKEN, or FULLSEND_JIRA_CLIENT_ID and FULLSEND_JIRA_CLIENT_SECRET" >&2
+    exit 1
+  fi
+  _retro_jira_xtrace_off
+  _retro_jira_mint_rc=0
+  jira_auth_mint || _retro_jira_mint_rc=$?
+  _retro_jira_xtrace_restore
+  if [[ "${_retro_jira_mint_rc}" -ne 0 ]]; then
+    echo "ERROR: failed to obtain a Jira access token for the originating-issue fetch" >&2
+    exit 1
+  fi
+  if ! JIRA_CONTEXT_PATH=$(_retro_jira_write_context "${ORIGINATING_NUMBER}"); then
+    echo "ERROR: failed to fetch Jira issue ${ORIGINATING_NUMBER} for the retrospective" >&2
+    exit 1
+  fi
+  echo "::notice::Jira issue context for ${ORIGINATING_NUMBER} written to ${JIRA_CONTEXT_PATH}"
+fi
 
 if [[ -n "${RETRO_COMMENT:-}" ]]; then
   echo "Retro triggered on-demand with comment."

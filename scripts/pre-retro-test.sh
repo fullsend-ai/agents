@@ -22,11 +22,38 @@ FORGE_LOG="${TMPDIR}/forge-calls.log"
 OUT="${TMPDIR}/out.log"
 mkdir -p "${MOCK_BIN}"
 
-# Mock gh and curl: record every call.
-for tool in gh curl; do
-  printf '#!/usr/bin/env bash\necho "%s $*" >> %q\nexit 0\n' "${tool}" "${FORGE_LOG}" > "${MOCK_BIN}/${tool}"
-  chmod +x "${MOCK_BIN}/${tool}"
+# Mock gh: record every call.
+printf '#!/usr/bin/env bash
+echo "gh $*" >> %q
+exit 0
+' "${FORGE_LOG}" > "${MOCK_BIN}/gh"
+chmod +x "${MOCK_BIN}/gh"
+
+# Mock curl: record every call, and answer tenant_info, issue, and comment endpoints
+# when pre-retro fetches the Jira context.
+cat > "${MOCK_BIN}/curl" <<CURLEOF
+#!/usr/bin/env bash
+echo "curl \$*" >> "${FORGE_LOG}"
+url=""
+for arg in "\$@"; do
+  case "\$arg" in
+    https://*) url="\$arg" ;;
+  esac
 done
+case "\$url" in
+  */_edge/tenant_info)
+    echo '{"cloudId":"11111111-2222-3333-4444-555555555555"}'
+    ;;
+  */rest/api/3/issue/*/comment*)
+    echo '{"startAt":0,"maxResults":100,"total":1,"comments":[{"id":"1","author":{"displayName":"User"},"created":"2026-11-20T00:00:00.000+0000","body":{"type":"doc","version":1,"content":[{"type":"paragraph","content":[{"type":"text","text":"Test comment"}]}]}}]}'
+    ;;
+  */rest/api/3/issue/*)
+    echo '{"key":"PROJ-123","fields":{"summary":"Test issue","description":{"type":"doc","version":1,"content":[{"type":"paragraph","content":[{"type":"text","text":"Test description"}]}]},"status":{"name":"Open"},"issuetype":{"name":"Task"},"labels":["test"],"project":{"key":"PROJ"}}}'
+    ;;
+esac
+exit 0
+CURLEOF
+chmod +x "${MOCK_BIN}/curl"
 
 # run_test NAME EXPECTED_EXIT EXPECTED_PATTERN [VAR=value ...] — run
 # pre-retro in a clean environment (GitHub forge by default; later
@@ -56,7 +83,55 @@ run_test() {
     FAILURES=$((FAILURES + 1))
     return
   fi
-  if [[ -s "${FORGE_LOG}" ]]; then
+  # Jira-originated runs make host-side Jira REST reads to fetch issue context;
+  # forge calls (gh or non-Jira curl) must never occur.
+  local unexpected=0
+  if grep -qvE 'curl.*(atlassian\.net|api\.atlassian\.com)' "${FORGE_LOG}" 2>/dev/null; then
+    unexpected=1
+  elif [[ "${test_name}" != jira-* ]] && [[ -s "${FORGE_LOG}" ]]; then
+    unexpected=1
+  fi
+  if [[ "${unexpected}" -eq 1 ]]; then
+    echo "FAIL: ${test_name} — unexpected forge calls:"
+    cat "${FORGE_LOG}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  echo "PASS: ${test_name}"
+}
+
+run_test_unbound_forge_tokens() {
+  local test_name="$1" expected="$2" pattern="$3"
+  shift 3
+  : > "${FORGE_LOG}"
+  local rc=0
+  env -i \
+    PATH="${MOCK_BIN}:${PATH}" \
+    FULLSEND_FORGE="github" \
+    "$@" \
+    bash "${PRE_SCRIPT}" > "${OUT}" 2>&1 || rc=$?
+
+  if [[ "${rc}" -ne "${expected}" ]]; then
+    echo "FAIL: ${test_name} — exit code ${rc}, expected ${expected}"
+    cat "${OUT}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  if ! grep -qF -- "${pattern}" "${OUT}"; then
+    echo "FAIL: ${test_name} — expected output '${pattern}' not found"
+    cat "${OUT}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  # Jira-originated runs make host-side Jira REST reads to fetch issue context;
+  # forge calls (gh or non-Jira curl) must never occur.
+  local unexpected=0
+  if grep -qvE 'curl.*(atlassian\.net|api\.atlassian\.com)' "${FORGE_LOG}" 2>/dev/null; then
+    unexpected=1
+  elif [[ "${test_name}" != jira-* ]] && [[ -s "${FORGE_LOG}" ]]; then
+    unexpected=1
+  fi
+  if [[ "${unexpected}" -eq 1 ]]; then
     echo "FAIL: ${test_name} — unexpected forge calls:"
     cat "${FORGE_LOG}"
     FAILURES=$((FAILURES + 1))
@@ -141,6 +216,88 @@ run_test "gitlab-no-ci-server-host-fails-closed" 1 "CI_SERVER_HOST is not set" \
 run_test "gitlab-invalid-ci-server-host-fails" 1 "CI_SERVER_HOST contains invalid characters" \
   FULLSEND_FORGE=gitlab CI_SERVER_HOST="gitlab.example.com/evil" \
   ORIGINATING_URL="https://gitlab.example.com/group/project/-/issues/7"
+
+# --- Jira tracker ---
+
+run_test "jira-missing-fullsend-dir-fails" 1 "FULLSEND_DIR must be set when FULLSEND_TRACKER=jira" \
+  FULLSEND_TRACKER=jira JIRA_TOKEN="test-token" JIRA_BASE_URL="https://test.atlassian.net" \
+  RETRO_JIRA_PROJECT="PROJ" \
+  ORIGINATING_URL="https://github.com/test-org/test-repo/pull/42"
+
+run_test "jira-pr-url-with-fullsend-dir" 0 "Pre-retro validation complete." \
+  FULLSEND_TRACKER=jira FULLSEND_DIR="${TMPDIR}/dot-fullsend" JIRA_TOKEN="test-token" \
+  JIRA_BASE_URL="https://test.atlassian.net" RETRO_JIRA_PROJECT="PROJ" \
+  ORIGINATING_URL="https://github.com/test-org/test-repo/pull/42"
+
+# Client-credentials runs must not mint at source time. Pre-retro makes no
+# Jira call, so a mint here is a live token exchange performed for nothing
+# (and, before the fix, a transient Atlassian failure failed the pre-step).
+# run_test fails on any curl invocation, so the exchange is caught here even
+# though the mock would answer it.
+run_test "jira-client-credentials-pre-retro-no-mint" 0 "Pre-retro validation complete." \
+  FULLSEND_TRACKER=jira FULLSEND_DIR="${TMPDIR}/dot-fullsend" \
+  FULLSEND_JIRA_CLIENT_ID="client-id" FULLSEND_JIRA_CLIENT_SECRET="client-secret" \
+  JIRA_BASE_URL="https://test.atlassian.net" RETRO_JIRA_PROJECT="PROJ" \
+  ORIGINATING_URL="https://github.com/test-org/test-repo/pull/42"
+
+run_test "jira-issue-url" 0 "Retro target: https://test.atlassian.net/browse/PROJ-123" \
+  FULLSEND_TRACKER=jira FULLSEND_DIR="${TMPDIR}/dot-fullsend" JIRA_TOKEN="test-token" \
+  JIRA_BASE_URL="https://test.atlassian.net" RETRO_JIRA_PROJECT="PROJ" \
+  ORIGINATING_URL="https://test.atlassian.net/browse/PROJ-123"
+
+run_test "jira-token-masked" 0 "::add-mask::secret-jira-token" \
+  GITHUB_ACTIONS=true \
+  FULLSEND_TRACKER=jira FULLSEND_DIR="${TMPDIR}/dot-fullsend" JIRA_TOKEN="secret-jira-token" \
+  JIRA_BASE_URL="https://test.atlassian.net" RETRO_JIRA_PROJECT="PROJ" \
+  ORIGINATING_URL="https://test.atlassian.net/browse/PROJ-123"
+
+run_test_unbound_forge_tokens "jira-origin-gha-no-forge-token" 0 "::add-mask::secret-jira-token" \
+  GITHUB_ACTIONS=true \
+  FULLSEND_TRACKER=jira FULLSEND_DIR="${TMPDIR}/dot-fullsend" JIRA_TOKEN="secret-jira-token" \
+  JIRA_BASE_URL="https://test.atlassian.net" RETRO_JIRA_PROJECT="PROJ" \
+  ORIGINATING_URL="https://test.atlassian.net/browse/PROJ-123"
+
+run_test_unbound_forge_tokens "jira-origin-gha-gitlab-forge-no-token" 0 "::add-mask::secret-jira-token" \
+  GITHUB_ACTIONS=true FULLSEND_FORGE=gitlab \
+  FULLSEND_TRACKER=jira FULLSEND_DIR="${TMPDIR}/dot-fullsend" JIRA_TOKEN="secret-jira-token" \
+  JIRA_BASE_URL="https://test.atlassian.net" RETRO_JIRA_PROJECT="PROJ" \
+  ORIGINATING_URL="https://test.atlassian.net/browse/PROJ-123"
+
+run_test "jira-token-not-masked-without-gha" 0 "Retro target: https://test.atlassian.net/browse/PROJ-123" \
+  FULLSEND_TRACKER=jira FULLSEND_DIR="${TMPDIR}/dot-fullsend" JIRA_TOKEN="secret-jira-token" \
+  JIRA_BASE_URL="https://test.atlassian.net" RETRO_JIRA_PROJECT="PROJ" \
+  ORIGINATING_URL="https://test.atlassian.net/browse/PROJ-123"
+if grep -qF "::add-mask::secret-jira-token" "${OUT}" 2>/dev/null; then
+  echo "FAIL: jira-token-not-masked-without-gha — token masked when GITHUB_ACTIONS is unset"
+  FAILURES=$((FAILURES + 1))
+fi
+
+run_test "jira-untrusted-host-fails" 1 "ORIGINATING_URL Jira host 'evil.example' is not in the allowed host list" \
+  FULLSEND_TRACKER=jira FULLSEND_DIR="${TMPDIR}/dot-fullsend" JIRA_TOKEN="test-token" \
+  JIRA_BASE_URL="https://test.atlassian.net" RETRO_JIRA_PROJECT="PROJ" \
+  ORIGINATING_URL="https://evil.example/browse/PROJ-123"
+
+run_test "jira-tenant-mismatch-fails" 1 "does not match JIRA_BASE_URL" \
+  FULLSEND_TRACKER=jira FULLSEND_DIR="${TMPDIR}/dot-fullsend" JIRA_TOKEN="test-token" \
+  JIRA_BASE_URL="https://test.atlassian.net" RETRO_JIRA_PROJECT="PROJ" \
+  ORIGINATING_URL="https://other.atlassian.net/browse/PROJ-123"
+
+# RETRO_JIRA_MAX_PAGES bounds a bash arithmetic loop, so anything outside a
+# plain positive integer is refused: 0 silently truncates every duplicate
+# search, and a non-numeric value would be evaluated as arithmetic.
+run_test "jira-zero-max-pages-fails" 1 "RETRO_JIRA_MAX_PAGES must be a positive integer" \
+  FULLSEND_TRACKER=jira FULLSEND_DIR="${TMPDIR}/dot-fullsend" JIRA_TOKEN="test-token" \
+  JIRA_BASE_URL="https://test.atlassian.net" RETRO_JIRA_PROJECT="PROJ" RETRO_JIRA_MAX_PAGES=0 \
+  ORIGINATING_URL="https://github.com/test-org/test-repo/pull/42"
+
+run_test "jira-nonnumeric-max-pages-fails" 1 "RETRO_JIRA_MAX_PAGES must be a positive integer" \
+  FULLSEND_TRACKER=jira FULLSEND_DIR="${TMPDIR}/dot-fullsend" JIRA_TOKEN="test-token" \
+  JIRA_BASE_URL="https://test.atlassian.net" RETRO_JIRA_PROJECT="PROJ" "RETRO_JIRA_MAX_PAGES=x[1]" \
+  ORIGINATING_URL="https://github.com/test-org/test-repo/pull/42"
+
+run_test "jira-summary-only-forge-no-credentials" 0 "Pre-retro validation complete." \
+  FULLSEND_TRACKER=jira RETRO_MODE="summary_only" \
+  ORIGINATING_URL="https://github.com/test-org/test-repo/pull/42"
 
 # --- Summary ---
 

@@ -5,6 +5,12 @@
 
 set -euo pipefail
 
+# GitHub Actions sets GITHUB_ACTIONS=true in every step, and the Jira
+# client-credentials cases assert that a minted token is masked with the
+# GHA-only ::add-mask:: command. Set it explicitly so those assertions do not
+# depend on the caller's environment.
+export GITHUB_ACTIONS="${GITHUB_ACTIONS:-true}"
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=test-lib.sh
 source "${SCRIPT_DIR}/test-lib.sh"
