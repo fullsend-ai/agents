@@ -102,6 +102,18 @@ emulator and needs no secrets (see
 `/ok-to-test <sha>` is still needed for the `Functional Tests` workflow, and
 `/ok-to-test <sha> live` runs the live `Behaviour Tests` workflow as well.
 
+### Re-running CI after a workflow-file fix
+
+GitHub Actions re-runs pin the workflow file to the run's original trigger
+commit — including merge-queue (`merge_group`) runs. They do not pick up
+workflow-file changes that have since landed on `main`.
+
+When a CI infrastructure fix merges to `main` while your PR still has a
+failing (or queued) run from before that fix, do not use "Re-run failed
+jobs" expecting the new workflow. Push a fresh commit instead — rebase onto
+`main` or create an empty commit — so GitHub starts a new run against the
+updated workflow file.
+
 ### Merging
 
 - PRs require approval from a maintainer before merging.
