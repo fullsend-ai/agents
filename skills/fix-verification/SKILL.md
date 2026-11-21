@@ -105,13 +105,22 @@ run the fallback as described above.
 echo "::notice::STEP 7c: Tests and linters"
 ```
 
-Discover build/test commands: Read Makefile, package.json, pyproject.toml, or equivalent. Run test command (e.g., `make test`, `npm test`, `go test ./...`, `pytest`), then lint command (e.g., `make lint`, `golangci-lint run`, `eslint`, `ruff`) as separate invocations (not `&&`-chained; lint runs even if tests fail).
+You MUST run both **tests** and **linters** using the exact commands
+from the `fix-review` skill's step 3 (package manager included). Do not
+substitute `npx lint-staged` for `pnpm lint-staged`. Run them separately
+(not `&&`-chained; lint runs even if tests fail).
 
-If tests fail: read output, fix, re-run secret scan (7a) then tests (7c). Don't re-run pre-commit — 7b is closed for this iteration whether you spent the budget or skipped it. Retry limit: `MAX_RETRIES` (default: 1).
+Linting is separate from pre-commit (7b). If the command reads the git
+index (`lint-staged`, or docs say to stage first), `git add` intended
+files with explicit paths (never `git add -A` / `.` / `--all`) then
+run it. Do not substitute a full-tree lint (`pnpm lint:fix`).
+Otherwise run it now and stage in 8a.
+
+If tests or linters fail: read output, fix, re-run secret scan (7a) then 7c. Don't re-run pre-commit — 7b is closed for this iteration whether you spent the budget or skipped it. Retry limit: `MAX_RETRIES` (default: 1).
 
 **7d. Self-review**
 
-Run `git diff`. Check for: unrelated changes, debug prints/TODOs, secrets, protected paths.
+Review `git diff` and `git diff --cached`. Check for: unrelated changes, debug prints/TODOs, secrets, protected paths. Revert extras.
 
 ### 8. Commit
 
@@ -121,7 +130,8 @@ echo "::notice::STEP 8: Commit"
 
 **8a. Stage files**
 
-`git add` only files you modified.
+`git add` only files you modified (explicit paths). If 7c already
+staged them, re-add so auto-fixes are included.
 
 **8b. Scan staged content**
 
