@@ -1,0 +1,9 @@
+---
+validation_loop:
+  script: scripts/validate-output-schema.sh
+  schema: schemas/review-result.schema.json
+overlays:
+  - when: 'runtime.forge == "github"'
+    env:
+      runner:
+        FULLSEND_OUTPUT_SCHEMA: "bad-overlay-path"

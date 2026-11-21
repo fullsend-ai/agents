@@ -1,0 +1,9 @@
+---
+# Negative fixture: examples/*/harness should NOT allow traversal to sibling bundles
+# This fixture is at examples/test-example/harness/schema-traversal-to-sibling-example.yaml
+# and tries to reference ../test-example-other/schemas/schema.json
+# This should fail containment check: even though the path is relative and normalizes,
+# it escapes the bundle root (test-example) to access a sibling (test-example-other)
+validation_loop:
+  script: scripts/validate-output-schema.sh
+  schema: ../test-example-other/schemas/schema.json
