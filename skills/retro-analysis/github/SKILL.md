@@ -95,7 +95,7 @@ gh api \
 # this proposal routes to, and not org:, which reaches private/unrelated repos).
 # No is:open — the close-reason rules (duplicate / not planned / completed) must
 # apply across layers, so this returns closed issues too, with state_reason and
-# closed_at projected for the 30-day not-planned rule.
+# closed_at projected. Run the closed-candidate recipe below on each closed hit.
 gh api \
   "search/issues?q=<subsystem+or+root-cause+keywords>+repo:fullsend-ai/fullsend+repo:<agents-repo>+repo:$REPO_FULL_NAME+is:issue&per_page=20" \
   --jq '.items[] | {repo: (.repository_url | sub(".*/repos/"; "")), number: .number, title: .title, state: .state, state_reason: .state_reason, closed_at: .closed_at, url: .html_url, body: .body}'
@@ -105,6 +105,78 @@ gh api \
 gh api \
   "search/issues?q=<fix+keywords>+repo:<target_repo>+is:issue+is:closed&per_page=20" \
   --jq '.items[] | {repo: (.repository_url | sub(".*/repos/"; "")), number: .number, title: .title, state: .state, state_reason: .state_reason, closed_at: .closed_at, url: .html_url, body: .body}'
+
+# Closed-candidate recipe: run on every closed same-topic hit from either pass.
+# The search API returns no comments and no closing PR, and state_reason alone
+# cannot tell a fix from a rejection recorded as completed. This returns the
+# closer (a merged PR or a commit is a real fix), PRs linked to the issue, and
+# two comments at or before closure: closingComment, the last comment by an
+# author with write, maintain, or admin permission on the candidate's
+# repository, and closerComment, the last comment by the user who closed the
+# issue. Only closingComment is an authoritative rejection (see the closed-issue
+# rules in the parent skill); closerComment is context only and never replaces
+# it. Comments are paged forward in full, so a long thread cannot hide either.
+# authorAssociation only pre-filters which authors get a permission lookup
+# (organization membership and read-only collaborators do not imply write
+# access); a lookup that fails or returns nothing counts as no access.
+# The timeline window holds closed events and other items; the jq keeps the
+# last closed event.
+cand_file=$(mktemp)
+gh api graphql --paginate --slurp -f query='
+  query($owner: String!, $name: String!, $number: Int!, $endCursor: String) {
+    repository(owner: $owner, name: $name) {
+      issue(number: $number) {
+        stateReason
+        closedAt
+        timelineItems(last: 100) {
+          nodes {
+            ... on ClosedEvent {
+              actor { login }
+              closer {
+                __typename
+                ... on PullRequest { number merged url }
+                ... on Commit { oid url }
+              }
+            }
+          }
+        }
+        closedByPullRequestsReferences(first: 10, includeClosedPrs: true) {
+          nodes { number merged url }
+        }
+        comments(first: 100, after: $endCursor) {
+          pageInfo { hasNextPage endCursor }
+          nodes { author { login } authorAssociation createdAt body }
+        }
+      }
+    }
+  }' -f owner=<owner> -f name=<repo> -F number=<candidate-number> > "${cand_file}"
+roles='{}'
+for login in $(jq -r '.[0].data.repository.issue.closedAt as $at
+    | [.[].data.repository.issue.comments.nodes[]
+       | select($at != null and .createdAt <= $at and .author != null)
+       | select((.authorAssociation // "" | ascii_downcase) | IN("owner", "member", "collaborator"))
+       | .author.login] | unique | .[]' "${cand_file}"); do
+  role=$(gh api "repos/<owner>/<repo>/collaborators/${login}/permission" --jq '.role_name' 2>/dev/null || true)
+  roles=$(printf '%s' "${roles}" | jq --arg u "${login}" --arg r "${role:-none}" '. + {($u): $r}')
+done
+jq --argjson roles "${roles}" '.[0].data.repository.issue as $i
+    | $i.closedAt as $at
+    | ([$i.timelineItems.nodes[] | select(has("closer"))] | last // {}) as $ev
+    | def role: $roles[.author.login // ""] // "none";
+      def maintainer: role | IN("admin", "maintain", "write");
+      [.[].data.repository.issue.comments.nodes[]
+        | select($at != null and .createdAt <= $at and .author != null)] as $before
+    | {stateReason: $i.stateReason, closedAt: $at,
+       closedBy: $ev.actor.login, closer: $ev.closer,
+       linkedPullRequests: $i.closedByPullRequestsReferences.nodes,
+       closingComment: ([$before[] | select(maintainer)] | last
+         | if . then {author: .author.login, permission: role,
+                      maintainer: true, createdAt, body}
+           else null end),
+       closerComment: ([$before[] | select(.author.login == $ev.actor.login)] | last
+         | if . then {author: .author.login, authorAssociation,
+                      maintainer: maintainer, createdAt, body}
+           else null end)}' "${cand_file}"
 
 # Follow a duplicate chain to its canonical. GitHub's native "close as duplicate"
 # stores the canonical as structured data (GraphQL Issue.duplicateOf), NOT as
