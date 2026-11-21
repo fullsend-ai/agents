@@ -48,8 +48,9 @@ PR/MR gate below cannot silently miss it.
 
 A PR/MR authored by the pipeline's own coder bot counts for this gate the same as
 a human-authored one — the work is in flight either way. (The code agent's
-pre-check filters bot PRs/MRs out, but that filter answers a different question:
-whether to skip dispatching a *new* implementation.)
+pre-check excludes coder-bot PRs/MRs on explicit `/fs-code` runs and for draft
+PRs/MRs; on label-triggered runs it also considers open non-draft coder-bot
+PRs/MRs that close the issue.)
 
 Compare issue titles and descriptions for semantic overlap. An issue is a duplicate if it describes the same root problem as an issue that is still open, even if the symptoms or wording differ. Closed issues are never duplicate targets: closed issues you see while checking tracked work (Step 2d) or in a listing that includes closed issues (`--state all`) are context only. Never set `duplicate_of` to a closed issue. If the same problem was reported in an issue that is now closed, you may mention it in `comment`; choose among the other actions, and use how the closed issue was resolved as evidence for that choice (Step 2d).
 
