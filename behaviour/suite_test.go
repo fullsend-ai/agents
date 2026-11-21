@@ -3,6 +3,7 @@
 package behaviour_test
 
 import (
+	"os"
 	"path/filepath"
 	"runtime"
 	"testing"
@@ -18,7 +19,7 @@ func TestBehaviour(t *testing.T) {
 
 	root := filepath.Dir(sourceFile)
 	behaviourtest.RunSuite(t, behaviourtest.SuiteOptions{
-		FeaturePaths: []string{filepath.Join(root, "features")},
+		FeaturePaths: featurePaths(root, os.Getenv("BEHAVIOUR_FEATURES")),
 		FixturesRoot: "behaviour",
 	})
 }
