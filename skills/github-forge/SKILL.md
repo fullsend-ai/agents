@@ -39,6 +39,27 @@ gh api graphql -F owner="OWNER" -F name="REPO" -F number:=ISSUE_NUMBER -f query=
   }' --jq '.data.repository.issue.subIssues.nodes'
 ```
 
+## Parent Issue
+
+A GitHub sub-issue has at most one parent issue, which can be in another
+repository. This query returns the parent's title, body, and state. Empty
+output means the issue has no parent. Treat a non-zero exit or a GraphQL
+error as a failed read.
+
+```bash
+gh api graphql -F owner="OWNER" -F name="REPO" -F number=ISSUE_NUMBER -f query='
+  query($owner: String!, $name: String!, $number: Int!) {
+    repository(owner: $owner, name: $name) {
+      issue(number: $number) {
+        parent { number title body state url repository { nameWithOwner } }
+      }
+    }
+  }' --jq '.data.repository.issue.parent'
+```
+
+To read the next ancestor, run the query again with the parent's `number` and
+with OWNER and REPO taken from its `repository.nameWithOwner`.
+
 ## Pull Requests
 
 ```bash
