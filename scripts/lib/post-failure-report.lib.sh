@@ -11,6 +11,32 @@
 [[ -n "${POST_FAILURE_REPORT_SH_LOADED:-}" ]] && return 0
 POST_FAILURE_REPORT_SH_LOADED=1
 
+# Resolve trusted system filters before repo-installed tools can change PATH.
+# Raw diagnostics may contain credentials, including ones redacted by callers.
+_post_failure_system_filter() {
+  local tool="$1" resolved=""
+  if ! resolved="$(command -p -v "${tool}")" || [[ "${resolved}" != /* ]] || [ ! -x "${resolved}" ]; then
+    printf 'ERROR: required system filter %s is unavailable in the system default PATH\n' "${tool}" >&2
+    return 1
+  fi
+  printf '%s' "${resolved}"
+}
+# In executed bundles, return is invalid and exit is reached.
+# shellcheck disable=SC2317
+_POST_FAILURE_SED="$(_post_failure_system_filter sed)" || { return 1 2>/dev/null || exit 1; }
+# In executed bundles, return is invalid and exit is reached.
+# shellcheck disable=SC2317
+_POST_FAILURE_AWK="$(_post_failure_system_filter awk)" || { return 1 2>/dev/null || exit 1; }
+# In executed bundles, return is invalid and exit is reached.
+# shellcheck disable=SC2317
+_POST_FAILURE_TAIL="$(_post_failure_system_filter tail)" || { return 1 2>/dev/null || exit 1; }
+# In executed bundles, return is invalid and exit is reached.
+# shellcheck disable=SC2317
+_POST_FAILURE_CAT="$(_post_failure_system_filter cat)" || { return 1 2>/dev/null || exit 1; }
+# In executed bundles, return is invalid and exit is reached.
+# shellcheck disable=SC2317
+_POST_FAILURE_GREP="$(_post_failure_system_filter grep)" || { return 1 2>/dev/null || exit 1; }
+
 # shellcheck source=forge-transient-retry.lib.sh
 source "${BASH_SOURCE[0]%/*}/forge-transient-retry.lib.sh"
 
@@ -39,7 +65,7 @@ _sanitize_workflow_value() {
 # stripping mid-string :: (e.g. std::string in compiler output).
 sanitize_comment_workflow_commands() {
   local value="$1"
-  value="$(printf '%s\n' "${value}" | sed -E \
+  value="$(printf '%s\n' "${value}" | "${_POST_FAILURE_SED}" -E \
     -e 's/^::(warning|error|notice|debug|group|endgroup):://')"
   value="${value//%0A/}"
   value="${value//%0a/}"
@@ -73,7 +99,7 @@ gha_echo() {
 }
 
 _redact_multiline_pem() {
-  awk '
+  "${_POST_FAILURE_AWK}" '
     # OpenSSH/RSA/EC/DSA/PKCS8 PEM headers end in "...private key-----".
     # OpenPGP'"'"'s ASCII-armor format instead ends in "...private key
     # block-----" (issue #239) -- the optional "( block)?" covers both
@@ -107,31 +133,10 @@ _redact_literal_token() {
     return 0
   fi
 
-  export REDACT_LITERAL_TOKEN="${token}"
-  awk '
-    BEGIN {
-      token = ENVIRON["REDACT_LITERAL_TOKEN"]
-      repl = "[REDACTED]"
-    }
-    {
-      s = $0
-      while ((i = index(s, token)) > 0) {
-        s = substr(s, 1, i - 1) repl substr(s, i + length(token))
-      }
-      print s
-    }
-  ' <<< "${detail}" | {
-    local line result=""
-    while IFS= read -r line || [ -n "${line}" ]; do
-      if [ -n "${result}" ]; then
-        result="${result}"$'\n'"${line}"
-      else
-        result="${line}"
-      fi
-    done
-    printf '%s' "${result}"
-  }
-  unset REDACT_LITERAL_TOKEN
+  # Keep credentials inside Bash: PATH may include repo-installed tools by
+  # the time a failure is reported. Quoting the pattern makes glob characters
+  # in tokens literal, and replacement text is not scanned again.
+  printf '%s' "${detail//"${token}"/[REDACTED]}"
 }
 
 # Strip tokens and truncate noisy command output before posting publicly.
@@ -140,7 +145,7 @@ sanitize_failure_detail() {
   local max_lines="${2:-${POST_FAILURE_DETAIL_MAX_LINES}}"
 
   detail="$(printf '%s\n' "${detail}" \
-    | sed -E \
+    | "${_POST_FAILURE_SED}" -E \
       -e 's/gh[pousr]_[A-Za-z0-9_]{20,}/[REDACTED]/g' \
       -e 's/github_pat_[A-Za-z0-9_]+/[REDACTED]/g' \
       -e 's/glpat-[A-Za-z0-9_-]{20,}/[REDACTED]/g' \
@@ -162,7 +167,7 @@ sanitize_failure_detail() {
   detail="$(sanitize_comment_workflow_commands "${detail}")"
 
   if [ "${max_lines}" -gt 0 ]; then
-    detail="$(printf '%s\n' "${detail}" | tail -n "${max_lines}")"
+    detail="$(printf '%s\n' "${detail}" | "${_POST_FAILURE_TAIL}" -n "${max_lines}")"
   fi
 
   printf '%s' "${detail}"
@@ -176,13 +181,13 @@ set_post_failure() {
 categorize_push_failure() {
   local push_output="$1"
 
-  if echo "${push_output}" | grep -qiE \
+  if echo "${push_output}" | "${_POST_FAILURE_GREP}" -qiE \
     'workflow.*without.*workflows?[[:space:]]+permission|refusing to allow.*GitHub App.*workflow'; then
     echo "push-workflow-permission"
     return 0
   fi
 
-  if echo "${push_output}" | grep -qiE \
+  if echo "${push_output}" | "${_POST_FAILURE_GREP}" -qiE \
     'non-fast-forward|rejected|fetch first|protected branch|GH006|permission denied|not a fast forward|rule violations'; then
     echo "push-rejected"
     return 0
@@ -212,7 +217,7 @@ post_failure_category_label() {
 post_failure_security_note() {
   case "$1" in
     push-workflow-permission)
-      cat <<'EOF'
+      "${_POST_FAILURE_CAT}" <<'EOF'
 > **Security boundary:** the coder app intentionally lacks `workflows` write permission. Changes to `.github/workflows/` must be made outside the agent (e.g., via a manual PR). Re-run the agent without workflow file changes, or apply those changes separately.
 EOF
       ;;
@@ -256,8 +261,8 @@ build_post_failure_comment() {
   fi
 
   if [ -n "${sanitized_detail}" ]; then
-    indented_detail="$(printf '%s\n' "${sanitized_detail}" | sed 's/^/    /')"
-    detail_block="$(cat <<EOF
+    indented_detail="$(printf '%s\n' "${sanitized_detail}" | "${_POST_FAILURE_SED}" 's/^/    /')"
+    detail_block="$("${_POST_FAILURE_CAT}" <<EOF
 
 **Details:**
 ${indented_detail}
@@ -274,7 +279,7 @@ EOF
   fi
 
   if [ "${category}" = "uncommitted-work" ]; then
-    cat <<EOF
+    "${_POST_FAILURE_CAT}" <<EOF
 ⚠️ **${agent_kind} agent killed before committing** — uncommitted work discarded (exit code ${exit_code})
 
 The ${agent_kind} agent left uncommitted changes in the extracted repo and produced no commit to push. The run was likely killed (timeout) before \`git commit\` executed, so this work was discarded and no PR was opened.
@@ -288,7 +293,7 @@ EOF
     return 0
   fi
 
-  cat <<EOF
+  "${_POST_FAILURE_CAT}" <<EOF
 ⚠️ **Post-${agent_kind} script failed** — ${label} (exit code ${exit_code})
 
 The ${agent_kind} agent completed, but the post-${agent_kind} script failed before finishing.
@@ -438,26 +443,38 @@ report_post_failure_to_issue() {
   fi
   POST_FAILURE_REPORTED=true
 
+  local category="${POST_FAILURE_CATEGORY:-post-script-error}"
+  local detail="${POST_FAILURE_DETAIL:-Post-code script failed before push or PR creation completed.}"
+  local body
+  # REPO_FULL_NAME is required by post-code.src.sh setup.
+  # Reporting must not replace the original failure, even if rendering fails.
+  # shellcheck disable=SC2153
+  if ! body="$(build_post_failure_comment \
+    "code" "${exit_code}" "${category}" "${detail}" \
+    "${REPO_FULL_NAME}" "/fs-code")"; then
+    gha_echo warning "Could not build the post-code failure comment; see workflow logs"
+    return 0
+  fi
+
   # An external tracker may have no corresponding target-forge issue. The
   # workflow status notification remains the source-of-truth; do not guess a
-  # target issue number and risk commenting on unrelated work.
+  # target issue number and risk commenting on unrelated work. A caller that
+  # can write to the tracker defines post_external_failure_comment
+  # (post-code does, for Jira); its result never changes this exit path.
   if [ "${EXTERNAL_WORK_ITEM:-false}" = "true" ]; then
+    if declare -F post_external_failure_comment >/dev/null 2>&1 \
+       && post_external_failure_comment "${body}"; then
+      return 0
+    fi
     gha_echo warning "Post-code failure for ${WORK_ITEM_KEY:-external work item}; see workflow logs"
     return 0
   fi
 
   _post_failure_ensure_token
 
-  local category="${POST_FAILURE_CATEGORY:-post-script-error}"
-  local detail="${POST_FAILURE_DETAIL:-Post-code script failed before push or PR creation completed.}"
-  local body
+  # ISSUE_NUMBER is required by post-code.src.sh for forge work items.
   # shellcheck disable=SC2153
   safe_issue_number="$(_sanitize_workflow_value "${ISSUE_NUMBER}")"
-  # ISSUE_NUMBER and REPO_FULL_NAME are required by post-code.src.sh before sourcing.
-  # shellcheck disable=SC2153
-  body="$(build_post_failure_comment \
-    "code" "${exit_code}" "${category}" "${detail}" \
-    "${REPO_FULL_NAME}" "/fs-code")"
 
   gha_echo warning "Posting failure comment to issue #${safe_issue_number}..."
   if declare -F forge_post_issue_comment >/dev/null 2>&1; then

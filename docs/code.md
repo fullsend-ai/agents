@@ -73,13 +73,21 @@ This separation ensures the agent never has direct write access to the repositor
 
 When the fix belongs in another repository, the agent reports the upstream
 repository, file, and required change without making a commit or restructuring
-this repository. On GitHub/GitLab source issues, the no-PR path sanitizes
-`pr_body`, keeps only its last 30 lines by default, and posts it as "Agent
-context" under a generic "No PR created — agent determined no changes needed"
-notice with retry guidance. Keep escalation text under 25 lines, put the
-repository, file, and required change first, and omit the normal PR template.
-External-tracker runs (such as Jira) emit only a generic notice; the upstream
-explanation remains in the agent's final message in the run transcript.
+this repository. The agent also sets `no_pr_reason` to a short explanation
+whenever it stops without a commit for another reason (gate label, already
+fixed, blocked, missing acceptance criteria). On GitHub, GitLab and Jira
+source issues, the no-PR path prefers `no_pr_reason`, falling back to `pr_body` for older
+agent outputs. It sanitizes and secret-scans the complete selected explanation,
+then keeps its first 30 lines and adds a `... truncated` marker when more lines
+remain. This fixed agent-context limit is independent of
+`POST_FAILURE_DETAIL_MAX_LINES`, which controls failure-log tails. It posts the
+result as "Agent context" under a generic "No PR created — agent determined no
+changes needed" notice with retry guidance.
+Keep escalation text under 25 lines, put the repository, file, and required
+change first, and omit the normal PR template. On a Jira issue the notice
+goes to an outcome comment with its own marker, so a rerun edits it and it
+never replaces the PR/MR link comment. Other external trackers emit only a
+generic notice in the job log.
 
 If the target is referenced by a pinned SHA and the upstream fix has not
 landed in a newer commit reachable from the intended upstream reference, the
@@ -102,7 +110,7 @@ text scan. If a text scan finds a secret or cannot complete, the issue comment
 omits optional context, and the PR/MR description uses a generic fallback. A
 rejected PR body falls back to the normalized commit body only if that text
 passes the same scan. Raw text-scan diagnostics are not logged.
-Jira-source no-PR runs still emit only their existing generic notice.
+The Jira no-PR notice gets the same sanitization and context secret scan.
 
 ### Reruns on an open pull request
 
@@ -390,13 +398,34 @@ vars. Key differences from single-forge setup:
   The post-script takes the Jira credentials out of its environment before
   it runs any git command, so repo-controlled hooks, including the one that
   fires when it renames the agent branch, cannot read them from their
-  environment or from a parent's `/proc/<pid>/environ`; only this Jira write
-  receives them. These are the same account the Jira poller treats as its own, so the update does not
+  environment or from a parent's `/proc/<pid>/environ`; only the Jira writes
+  receive them. These are the same account the Jira poller treats as its own, so the update does not
   dispatch agents. If the Jira write fails,
   the step fails, even though the PR/MR already exists. The branch, commits,
   PR/MR, review and merge stay on the code host: GitHub targets get a GitHub
   PR and GitLab targets get a GitLab MR. For GitLab targets the GitLab host
   is taken from `CI_SERVER_HOST`, because `ISSUE_URL` is the Jira URL.
+  A clean no-op writes the notice and agent's explanation to a comment with
+  the marker `<!-- fullsend:code-agent-outcome -->`. A post-script failure
+  writes its category and sanitized detail under the separate marker
+  `<!-- fullsend:code-agent-failure -->`, including a refused rerun that would
+  replace another author's commits. Retries update the matching comment;
+  neither comment replaces the PR/MR link. A later successful run leaves
+  earlier no-op or failure comments alongside its link. These writes are best-effort: a
+  failed write is a warning and the run keeps its exit code. No-op and failure comments
+  each invoke the CLI once and rely on its HTTP retry policy: 429 responses
+  are retried for all methods; HTTP 500–504 and network failures are retried for
+  idempotent methods. There is no additional shell retry. A rerun after an
+  ambiguous comment POST failure relies on the sticky-marker property lookup
+  to find a comment the earlier request may have created. Jira comment bodies
+  have the token and saved OAuth client secret redacted before delivery. The
+  shared comment writer captures CLI stdout and stderr, removes the saved
+  token, email, OAuth client ID and secret (including normalized values), and
+  sanitizes workflow commands before logging, preserving the CLI exit status.
+  Failure details use the same bounded regex/literal-token sanitizer as forge
+  failure comments, rather than `scan_public_text`. Failures can occur before
+  the public-text scanner is initialized; the scanner remains required for
+  optional agent context on the no-op path.
 - **Policy** is `policies/base.yaml` for all forges. Network access is
   provided by profiles (`fullsend-gitlab-code` for GitLab). Custom
   harnesses using `base:` composition should override at the forge level

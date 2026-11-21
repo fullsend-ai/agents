@@ -2826,7 +2826,7 @@ _rerun_commit() {
 seed_rerun_repo() {
   local run_dir="$1" clone="$2" author="$3"
   local bare="${run_dir}/remote.git" seed="${run_dir}/seed" repo="${run_dir}/repo"
-  local branch="agent/99-rerun" bot="${RERUN_BOT_EMAIL}"
+  local branch="${4:-agent/99-rerun}" bot="${RERUN_BOT_EMAIL}"
   mkdir -p "${run_dir}"
   sec_fixture_git init -q --bare -b main "${bare}"
   sec_fixture_git init -q -b main "${seed}"
@@ -3727,10 +3727,12 @@ JIRA_INT_FULLSEND_DIR="${JIRA_INT_TMPDIR}/dot-fullsend"
 mkdir -p "${JIRA_INT_MOCK_BIN}"
 JIRA_REAL_GIT="$(which git)"
 
+# MOCK_GITLEAKS_FINDING=1 makes `gitleaks detect` report a finding.
 for _tool in sleep gitleaks; do
   cat > "${JIRA_INT_MOCK_BIN}/${_tool}" <<'MOCKEOF'
 #!/usr/bin/env bash
 if [ "${1:-}" = version ]; then echo 8.30.1; fi
+if [ "${1:-}" = detect ] && [ -n "${MOCK_GITLEAKS_FINDING:-}" ]; then exit 2; fi
 exit 0
 MOCKEOF
   chmod +x "${JIRA_INT_MOCK_BIN}/${_tool}"
@@ -3740,6 +3742,10 @@ cat > "${JIRA_INT_MOCK_BIN}/git" <<MOCKEOF
 #!/usr/bin/env bash
 if [[ "\$1" == "remote" && "\$2" == "set-url" ]]; then
   exit 0
+fi
+if [[ "\$1" == "push" && -n "\${MOCK_JIRA_PUSH_FAIL:-}" ]]; then
+  echo "\${MOCK_JIRA_PUSH_ERROR:-forced local push failure}" >&2
+  exit 1
 fi
 exec ${JIRA_REAL_GIT} "\$@"
 MOCKEOF
@@ -3754,7 +3760,9 @@ case "\$1 \$2" in
   "api repos/"*) echo "main"; exit 0 ;;
   "pr list")     if [[ -n "\${MOCK_EXISTING_PR:-}" ]]; then echo "7"; fi; exit 0 ;;
   "pr view")
-    if [[ " \$* " == *" state,isDraft "* ]]; then
+    if printf '%s\n' "\$@" | grep -qx body; then
+      echo '{"body":"Related to https://test.atlassian.net/browse/TESTPROJ-42"}'
+    elif [[ " \$* " == *" state,isDraft "* ]]; then
       if [[ -n "\${MOCK_READINESS_FAIL:-}" ]]; then exit 1; fi
       if [[ -n "\${MOCK_PR_DETAILS:-}" ]]; then
         echo "\${MOCK_PR_DETAILS}"
@@ -3827,6 +3835,21 @@ for arg in "\$@"; do
   PREV="\${arg}"
 done
 echo "fullsend \$* env-token=\${FULLSEND_JIRA_TOKEN:-unset} env-email=\${FULLSEND_JIRA_EMAIL-unset} env-client-id=\${FULLSEND_JIRA_CLIENT_ID-unset} env-client-secret=\${FULLSEND_JIRA_CLIENT_SECRET:+set} <<BODY:\${BODY}:BODY>>" >> "${JIRA_INT_FULLSEND_LOG}"
+if [[ -n "\${MOCK_FULLSEND_DIAGNOSTICS:-}" && "\$1 \$2" == "issues post-comment" ]]; then
+  echo "CLI stdout: \${FULLSEND_JIRA_TOKEN:-} \${FULLSEND_JIRA_EMAIL:-} \${FULLSEND_JIRA_CLIENT_ID:-} \${FULLSEND_JIRA_CLIENT_SECRET:-}"
+  echo "::error::CLI stderr: \${FULLSEND_JIRA_TOKEN:-} \${FULLSEND_JIRA_EMAIL:-} \${FULLSEND_JIRA_CLIENT_ID:-} \${FULLSEND_JIRA_CLIENT_SECRET:-}" >&2
+  TRIMMED_TOKEN="\${FULLSEND_JIRA_TOKEN:-}"
+  TRIMMED_TOKEN="\${TRIMMED_TOKEN#"\${TRIMMED_TOKEN%%[![:space:]]*}"}"
+  TRIMMED_TOKEN="\${TRIMMED_TOKEN%"\${TRIMMED_TOKEN##*[![:space:]]}"}"
+  echo "CLI normalized token: \${TRIMMED_TOKEN}"
+
+fi
+# Count from the durable call log: every retry starts a new CLI process.
+ATTEMPT=\$(grep -c '^fullsend issues post-comment' "${JIRA_INT_FULLSEND_LOG}")
+if [ "\${ATTEMPT}" -le "\${MOCK_FULLSEND_TRANSIENT_FAILURES:-0}" ]; then
+  echo "\${MOCK_FULLSEND_TRANSIENT_ERROR:-Error: posting comment: jira api: 503 temporary upstream failure}" >&2
+  exit 1
+fi
 if [[ -n "\${MOCK_FULLSEND_FAIL:-}" ]]; then
   echo "Error: Jira API returned 401" >&2
   exit 1
@@ -3851,6 +3874,10 @@ setup_jira_int_repo() {
   local run_dir="$1"
   local branch_name="$2"
   local repo_dir="${run_dir}/repo"
+  if [ -n "${JIRA_INT_RERUN:-}" ]; then
+    seed_rerun_repo "${run_dir}" shallow human "${branch_name}"
+    return 0
+  fi
   ${JIRA_REAL_GIT} init -q --bare -b main "${run_dir}/remote.git"
   ${JIRA_REAL_GIT} clone -q "${run_dir}/remote.git" "${repo_dir}" 2>/dev/null
   ${JIRA_REAL_GIT} -C "${repo_dir}" config user.email "test@example.com"
@@ -3864,6 +3891,15 @@ setup_jira_int_repo() {
     ${JIRA_REAL_GIT} -C "${repo_dir}" add .pre-commit-config.yaml
     ${JIRA_REAL_GIT} -C "${repo_dir}" commit -q -m "chore: pre-commit config"
     ${JIRA_REAL_GIT} -C "${repo_dir}" push -q origin main
+  fi
+  if [ -n "${JIRA_INT_RESULT_JSON:-}" ]; then
+    mkdir -p "${run_dir}/iteration-1/output"
+    printf '%s\n' "${JIRA_INT_RESULT_JSON}" > "${run_dir}/iteration-1/output/agent-result.json"
+  fi
+  # JIRA_INT_NO_BRANCH=1 leaves the repo on main with no agent commit (the
+  # agent stopped without creating a feature branch).
+  if [ -n "${JIRA_INT_NO_BRANCH:-}" ]; then
+    return 0
   fi
   ${JIRA_REAL_GIT} -C "${repo_dir}" checkout -q -b "${branch_name}"
   echo "changed content" > "${repo_dir}/file.txt"
@@ -3970,6 +4006,8 @@ jira_int_fail() {
 }
 
 JIRA_CODE_MARKER="--marker <!-- fullsend:code-agent -->"
+JIRA_OUTCOME_MARKER="--marker <!-- fullsend:code-agent-outcome -->"
+JIRA_FAILURE_MARKER="--marker <!-- fullsend:code-agent-failure -->"
 
 # GitHub target: PR on GitHub, stage update with the PR URL on the Jira issue.
 run_jira_int "jira-github-target" github
@@ -4061,6 +4099,41 @@ elif ! grep -qF "env-token=fake-jira-token" "${JIRA_INT_FULLSEND_LOG}"; then
 else
   echo "PASS: jira-token-hidden-from-prepush-hook"
   echo "PASS: jira-path-shadowed-fullsend-not-used"
+fi
+
+# A push failure happens after step 4 prepends repo-installed tools to PATH.
+# Shadow filters record stdin: they must never see unredacted diagnostics.
+JIRA_INT_FILTER_LOG="${JIRA_INT_TMPDIR}/shadow-filter.log"
+: > "${JIRA_INT_FILTER_LOG}"
+mkdir -p "${JIRA_INT_TMPDIR}/.local/bin"
+for _filter in sed awk tail cat grep; do
+  _real_filter="$(command -p -v "${_filter}")"
+  cat > "${JIRA_INT_TMPDIR}/.local/bin/${_filter}" <<SHADOWEOF
+#!/usr/bin/env bash
+if [ -n "\${REDACT_LITERAL_TOKEN:-}" ]; then
+  printf 'credential exported\n' >> "${JIRA_INT_FILTER_LOG}"
+fi
+/usr/bin/tee -a "${JIRA_INT_FILTER_LOG}" | "${_real_filter}" "\$@"
+SHADOWEOF
+  chmod +x "${JIRA_INT_TMPDIR}/.local/bin/${_filter}"
+done
+# The diagnostic contains arbitrary token text that the regex rules cannot
+# recognize. Saved Jira credentials are redacted later by the shared writer.
+_jira_raw_detail='forced local push failure: fake-jira-token filter-probe-client-secret'
+run_jira_int "jira-push-failure-shadow-filters" github MOCK_JIRA_PUSH_FAIL=1 \
+  "MOCK_JIRA_PUSH_ERROR=${_jira_raw_detail}"
+rm -rf "${JIRA_INT_TMPDIR}/.local"
+if [ "${JIRA_INT_RC}" -eq 0 ]; then
+  jira_int_fail "jira-push-failure-keeps-detail-from-shadow-filters" "expected push failure"
+elif ! grep -qF 'forced local push failure' "${JIRA_INT_OUT}"; then
+  jira_int_fail "jira-push-failure-keeps-detail-from-shadow-filters" "did not reach push after tool setup"
+elif grep -qE 'fake-jira-token|filter-probe-client-secret|credential exported' "${JIRA_INT_FILTER_LOG}"; then
+  jira_int_fail "jira-push-failure-keeps-detail-from-shadow-filters" "untrusted filter received raw diagnostic or credential environment"
+elif ! grep -qF -- "${JIRA_FAILURE_MARKER}" "${JIRA_INT_FULLSEND_LOG}" \
+     || ! grep -qF 'env-token=fake-jira-token' "${JIRA_INT_FULLSEND_LOG}"; then
+  jira_int_fail "jira-push-failure-keeps-detail-from-shadow-filters" "trusted CLI did not receive the failure comment"
+else
+  echo "PASS: jira-push-failure-keeps-detail-from-shadow-filters"
 fi
 
 # Renaming a non-conforming agent branch runs `git branch -M`, which triggers
@@ -4251,6 +4324,437 @@ if [ "${JIRA_INT_RC}" -eq 0 ] || [ -s "${JIRA_INT_FULLSEND_LOG}" ]; then
   jira_int_fail "jira-key-mismatch-not-written" "expected failure with no Jira write"
 else
   echo "PASS: jira-key-mismatch-not-written (expected failure, got exit ${JIRA_INT_RC})"
+fi
+
+# No-PR outcomes reach the Jira issue (#1953). A run that stops without a
+# feature branch writes the no-op reason, with the agent's no_pr_reason as
+# context, to its own sticky outcome comment, never to the PR-link comment.
+JIRA_NOOP_RESULT='{"target_branch":"main","no_pr_reason":"Stopped: the issue has no acceptance criteria."}'
+for _jira_noop_forge in github gitlab; do
+  JIRA_INT_NO_BRANCH=1 JIRA_INT_RESULT_JSON="${JIRA_NOOP_RESULT}" \
+    run_jira_int "jira-noop-${_jira_noop_forge}" "${_jira_noop_forge}"
+  _jira_noop_name="jira-noop-reason-to-jira-${_jira_noop_forge}"
+  if [ "${JIRA_INT_RC}" -ne 0 ]; then
+    jira_int_fail "${_jira_noop_name}" "post-code failed"
+  elif [ "$(grep -c "^fullsend issues post-comment" "${JIRA_INT_FULLSEND_LOG}")" -ne 1 ] \
+       || ! grep -qF -- "--tracker jira --fullsend-dir ${JIRA_INT_FULLSEND_DIR} --project TESTPROJ --number 42" "${JIRA_INT_FULLSEND_LOG}" \
+       || ! grep -qF -- "${JIRA_OUTCOME_MARKER}" "${JIRA_INT_FULLSEND_LOG}" \
+       || grep -qF -- "${JIRA_CODE_MARKER}" "${JIRA_INT_FULLSEND_LOG}" \
+       || ! grep -qF "env-token=fake-jira-token" "${JIRA_INT_FULLSEND_LOG}"; then
+    jira_int_fail "${_jira_noop_name}" "expected one sticky outcome comment written with the Jira credentials"
+  elif ! grep -qF "No PR created" "${JIRA_INT_FULLSEND_LOG}" \
+       || ! grep -qF "evaluated TESTPROJ-42" "${JIRA_INT_FULLSEND_LOG}" \
+       || ! grep -qF "Agent did not create a feature branch (current: 'main')" "${JIRA_INT_FULLSEND_LOG}" \
+       || ! grep -qF "Stopped: the issue has no acceptance criteria." "${JIRA_INT_FULLSEND_LOG}"; then
+    jira_int_fail "${_jira_noop_name}" "Jira comment lacks the no-op reason or agent context"
+  elif grep -qE "^gh (issue|pr) (comment|create)" "${JIRA_INT_FORGE_LOG}" \
+       || grep -qE "/(notes|merge_requests)( |$)" "${JIRA_INT_FORGE_LOG}"; then
+    jira_int_fail "${_jira_noop_name}" "wrote to the code host for a Jira no-op"
+  else
+    echo "PASS: ${_jira_noop_name}"
+  fi
+done
+
+# Prefer the new field when both are present; preserve old-output compatibility.
+for _reason_case in preferred legacy absent; do
+  case "${_reason_case}" in
+    preferred) _reason_json='{"target_branch":"main","no_pr_reason":"Explicit stop reason","pr_body":"Legacy stop reason"}'; _reason_expected='Explicit stop reason' ;;
+    legacy) _reason_json='{"target_branch":"main","pr_body":"Legacy stop reason"}'; _reason_expected='Legacy stop reason' ;;
+    absent) _reason_json='{"target_branch":"main"}'; _reason_expected="Agent did not create a feature branch" ;;
+  esac
+  JIRA_INT_NO_BRANCH=1 JIRA_INT_RESULT_JSON="${_reason_json}" \
+    run_jira_int "jira-reason-${_reason_case}" github
+  if [ "${JIRA_INT_RC}" -ne 0 ] || ! grep -qF "${_reason_expected}" "${JIRA_INT_FULLSEND_LOG}"; then
+    jira_int_fail "jira-reason-${_reason_case}" "expected selected reason"
+  elif [ "${_reason_case}" = preferred ] && grep -qF 'Legacy stop reason' "${JIRA_INT_FULLSEND_LOG}"; then
+    jira_int_fail "jira-reason-${_reason_case}" "legacy field overrode explicit reason"
+  else
+    echo "PASS: jira-reason-${_reason_case}"
+  fi
+done
+
+# Keep the reason at the beginning of long explanations, including legacy output.
+for _reason_field in no_pr_reason pr_body; do
+  for _reason_lines in 30 31 45; do
+    _reason_json="$(jq -nc --arg field "${_reason_field}" --argjson count "${_reason_lines}" \
+      '{target_branch:"main", ($field): (["Stop reason comes first"] + [range(2; $count + 1) | "Unblock step \(.)"] | join("\n"))}')"
+    _reason_name="jira-reason-head-${_reason_field}-${_reason_lines}"
+    JIRA_INT_NO_BRANCH=1 JIRA_INT_RESULT_JSON="${_reason_json}" \
+      run_jira_int "${_reason_name}" github
+    if [ "${JIRA_INT_RC}" -ne 0 ] \
+         || ! grep -qF 'Stop reason comes first' "${JIRA_INT_FULLSEND_LOG}" \
+         || ! grep -qF 'Unblock step 30' "${JIRA_INT_FULLSEND_LOG}" \
+         || grep -qF 'Unblock step 31' "${JIRA_INT_FULLSEND_LOG}"; then
+      jira_int_fail "${_reason_name}" "expected the first 30 lines of agent context"
+    elif [ "${_reason_lines}" -gt 30 ] && ! grep -qF '... truncated' "${JIRA_INT_FULLSEND_LOG}"; then
+      jira_int_fail "${_reason_name}" "missing truncation marker"
+    elif [ "${_reason_lines}" -eq 30 ] && grep -qF '... truncated' "${JIRA_INT_FULLSEND_LOG}"; then
+      jira_int_fail "${_reason_name}" "unexpected truncation marker"
+    else
+      echo "PASS: ${_reason_name}"
+    fi
+  done
+done
+
+# Agent context that fails the secret scan is left out of the Jira comment;
+# the generic reason is still written.
+JIRA_INT_NO_BRANCH=1 JIRA_INT_RESULT_JSON="${JIRA_NOOP_RESULT}" \
+  run_jira_int "jira-noop-secret" github MOCK_GITLEAKS_FINDING=1
+if [ "${JIRA_INT_RC}" -ne 0 ]; then
+  jira_int_fail "jira-noop-secret-context-omitted" "post-code failed"
+elif ! grep -qF "Agent did not create a feature branch" "${JIRA_INT_FULLSEND_LOG}"; then
+  jira_int_fail "jira-noop-secret-context-omitted" "no-op reason not written to Jira"
+elif grep -qF "Agent context" "${JIRA_INT_FULLSEND_LOG}" \
+     || grep -qF "acceptance criteria" "${JIRA_INT_FULLSEND_LOG}"; then
+  jira_int_fail "jira-noop-secret-context-omitted" "context that failed the secret scan reached Jira"
+else
+  echo "PASS: jira-noop-secret-context-omitted"
+fi
+
+# Known tokens in the context, including the Jira token itself, are redacted
+# before the Jira write.
+JIRA_INT_NO_BRANCH=1 \
+  JIRA_INT_RESULT_JSON='{"target_branch":"main","no_pr_reason":"Blocked. token ghp_abcdefghijklmnopqrstuvwxyz0123456789\nleak: fake-jira-token"}' \
+  run_jira_int "jira-noop-redacted" github
+if [ "${JIRA_INT_RC}" -ne 0 ]; then
+  jira_int_fail "jira-noop-context-sanitized" "post-code failed"
+elif grep -qF "ghp_abcdefghijklmnopqrstuvwxyz0123456789" "${JIRA_INT_FULLSEND_LOG}" \
+     || grep -qF "leak: fake-jira-token" "${JIRA_INT_FULLSEND_LOG}" \
+     || ! grep -qF "leak: [REDACTED]" "${JIRA_INT_FULLSEND_LOG}"; then
+  jira_int_fail "jira-noop-context-sanitized" "token in agent context was not redacted"
+else
+  echo "PASS: jira-noop-context-sanitized"
+fi
+
+# The no-op Jira write is best-effort: a failed write still exits 0.
+JIRA_INT_NO_BRANCH=1 run_jira_int "jira-noop-write-failure" github MOCK_FULLSEND_FAIL=1
+if [ "${JIRA_INT_RC}" -ne 0 ]; then
+  jira_int_fail "jira-noop-write-failure-still-succeeds" "expected exit 0, got ${JIRA_INT_RC}"
+elif ! grep -qF "Failed to post no-op comment to Jira issue TESTPROJ-42" "${JIRA_INT_OUT}" \
+     || [ "$(grep -c "^fullsend issues post-comment" "${JIRA_INT_FULLSEND_LOG}")" -ne 1 ] \
+     || grep -qF "Transient forge error" "${JIRA_INT_OUT}"; then
+  jira_int_fail "jira-noop-write-failure-still-succeeds" "missing write attempt or warning"
+else
+  echo "PASS: jira-noop-write-failure-still-succeeds"
+fi
+
+# The CLI owns HTTP retries. Even transient failures must invoke it only
+# once for both best-effort outcomes, preserving the original run status.
+for _jira_outcome in noop failure; do
+  for _jira_error in 'jira api: 503 temporary upstream failure' 'context deadline exceeded'; do
+    if [ "${_jira_outcome}" = noop ]; then
+      JIRA_INT_NO_BRANCH=1 JIRA_INT_RESULT_JSON="${JIRA_NOOP_RESULT}" \
+        run_jira_int "jira-noop-single-call-${_jira_error%% *}" github \
+          MOCK_FULLSEND_TRANSIENT_FAILURES=3 MOCK_FULLSEND_TRANSIENT_ERROR="${_jira_error}" \
+          FORGE_TRANSIENT_RETRY_ATTEMPTS=3 FORGE_TRANSIENT_RETRY_BASE_DELAY=0
+      _jira_expected_rc=0
+      _jira_expected_marker="${JIRA_OUTCOME_MARKER}"
+      _jira_expected_warning='Failed to post no-op comment'
+    else
+      JIRA_INT_RESULT_JSON='{"target_branch":"release"}' \
+        run_jira_int "jira-failure-single-call-${_jira_error%% *}" github CODE_ALLOWED_TARGET_BRANCHES=main \
+          MOCK_FULLSEND_TRANSIENT_FAILURES=3 MOCK_FULLSEND_TRANSIENT_ERROR="${_jira_error}" \
+          FORGE_TRANSIENT_RETRY_ATTEMPTS=3 FORGE_TRANSIENT_RETRY_BASE_DELAY=0
+      _jira_expected_rc=1
+      _jira_expected_marker="${JIRA_FAILURE_MARKER}"
+      _jira_expected_warning='Post-code failure for TESTPROJ-42'
+    fi
+    if [ "${JIRA_INT_RC}" -ne "${_jira_expected_rc}" ] \
+       || [ "$(grep -c '^fullsend issues post-comment' "${JIRA_INT_FULLSEND_LOG}")" -ne 1 ] \
+       || ! grep -qF -- "${_jira_expected_marker}" "${JIRA_INT_FULLSEND_LOG}" \
+       || ! grep -qF "${_jira_expected_warning}" "${JIRA_INT_OUT}" \
+       || grep -qF 'Transient forge error' "${JIRA_INT_OUT}"; then
+      jira_int_fail "jira-${_jira_outcome}-single-call: ${_jira_error}" "expected one CLI call, fallback warning and original exit status"
+    else
+      echo "PASS: jira-${_jira_outcome}-single-call: ${_jira_error}"
+    fi
+  done
+done
+
+# A post-script failure is written to the Jira issue. Branch validation fails
+# before the agent branch is checked, so this also proves the trusted CLI is
+# resolved before the failure trap can need it.
+JIRA_BRANCH_FAIL_RESULT='{"target_branch":"release"}'
+JIRA_INT_RESULT_JSON="${JIRA_BRANCH_FAIL_RESULT}" \
+  run_jira_int "jira-post-failure" github CODE_ALLOWED_TARGET_BRANCHES=main
+if [ "${JIRA_INT_RC}" -ne 1 ]; then
+  jira_int_fail "jira-post-failure-to-jira" "expected exit 1, got ${JIRA_INT_RC}"
+elif [ "$(grep -c "^fullsend issues post-comment" "${JIRA_INT_FULLSEND_LOG}")" -ne 1 ] \
+     || ! grep -qF -- "${JIRA_FAILURE_MARKER}" "${JIRA_INT_FULLSEND_LOG}" \
+     || grep -qF -- "${JIRA_CODE_MARKER}" "${JIRA_INT_FULLSEND_LOG}" \
+     || ! grep -qF "Branch validation failed" "${JIRA_INT_FULLSEND_LOG}" \
+     || ! grep -qF "Agent requested branch 'release' but allowed branches are: main" "${JIRA_INT_FULLSEND_LOG}"; then
+  jira_int_fail "jira-post-failure-to-jira" "failure category and detail not written to Jira"
+elif grep -q "^gh issue comment" "${JIRA_INT_FORGE_LOG}"; then
+  jira_int_fail "jira-post-failure-to-jira" "commented on a GitHub issue for a Jira work item"
+else
+  echo "PASS: jira-post-failure-to-jira"
+fi
+
+# Every caller must guard tracing, including early failures before setup ends.
+for _trace_outcome in noop failure; do
+  for _trace_auth in token padded-token client; do
+    for _trace_delivery in success failure; do
+      _trace_env=("${JIRA_CLIENT_ENV[@]}")
+      if [ "${_trace_auth}" != client ]; then
+        _trace_token="${JIRA_XTRACE_TOKEN_VALUE}"
+        [ "${_trace_auth}" = padded-token ] && _trace_token="  ${_trace_token}  "
+        _trace_env=("JIRA_TOKEN=${_trace_token}" "FULLSEND_JIRA_TOKEN=${_trace_token}"
+          "JIRA_USER_EMAIL=${JIRA_XTRACE_EMAIL_VALUE}" "FULLSEND_JIRA_EMAIL=${JIRA_XTRACE_EMAIL_VALUE}")
+      fi
+      _trace_name="jira-trace-${_trace_outcome}-${_trace_auth}-${_trace_delivery}"
+      _trace_fail=""
+      [ "${_trace_delivery}" = failure ] && _trace_fail=1
+      if [ "${_trace_outcome}" = noop ]; then
+        JIRA_INT_XTRACE=1 JIRA_INT_NO_BRANCH=1 run_jira_int "${_trace_name}" github \
+          "${_trace_env[@]}" "MOCK_FULLSEND_FAIL=${_trace_fail}" MOCK_FULLSEND_DIAGNOSTICS=1
+        _trace_rc=0
+        _trace_marker="${JIRA_OUTCOME_MARKER}"
+        _trace_warning='Failed to post no-op comment'
+      else
+        JIRA_INT_XTRACE=1 JIRA_INT_RESULT_JSON="${JIRA_BRANCH_FAIL_RESULT}" \
+          run_jira_int "${_trace_name}" github "${_trace_env[@]}" \
+            CODE_ALLOWED_TARGET_BRANCHES=main "MOCK_FULLSEND_FAIL=${_trace_fail}" MOCK_FULLSEND_DIAGNOSTICS=1
+        _trace_rc=1
+        _trace_marker="${JIRA_FAILURE_MARKER}"
+        _trace_warning='Post-code failure for TESTPROJ-42'
+      fi
+      _trace_write_rc=0
+      [ "${_trace_delivery}" = failure ] && _trace_write_rc=1
+      if [ "${JIRA_INT_RC}" -ne "${_trace_rc}" ] \
+         || ! grep -q '^+ SCRIPT_DIR_POST=' "${JIRA_INT_OUT}" \
+         || [ "$(grep -c '^fullsend issues post-comment' "${JIRA_INT_FULLSEND_LOG}")" -ne 1 ] \
+         || ! grep -qF -- "${_trace_marker}" "${JIRA_INT_FULLSEND_LOG}" \
+         || ! awk -v rc="${_trace_write_rc}" '
+           /^\++ post_jira_code_comment / { writer=1 }
+           writer && /^\++ return / { if ($NF == rc) restored=1; writer=0 }
+           END { exit !restored }
+         ' "${JIRA_INT_OUT}" \
+         || grep -qF "${JIRA_XTRACE_TOKEN_VALUE}" "${JIRA_INT_OUT}" \
+         || grep -qF "${JIRA_XTRACE_EMAIL_VALUE}" "${JIRA_INT_OUT}" \
+         || grep -qF "${JIRA_CLIENT_SECRET_VALUE}" "${JIRA_INT_OUT}" \
+         || ! grep -q 'CLI stdout:.*\[REDACTED\]' "${JIRA_INT_OUT}" \
+         || ! grep -q 'CLI stderr:.*\[REDACTED\]' "${JIRA_INT_OUT}" \
+         || grep -q '^::error::CLI stderr:' "${JIRA_INT_OUT}"; then
+        jira_int_fail "${_trace_name}" "wrong status/write/marker, missing restored trace, or credential in trace"
+      elif { [ "${_trace_delivery}" = failure ] && ! grep -qF "${_trace_warning}" "${JIRA_INT_OUT}"; } \
+           || { [ "${_trace_delivery}" = success ] && grep -qF "${_trace_warning}" "${JIRA_INT_OUT}"; }; then
+        jira_int_fail "${_trace_name}" "delivery failure must warn; successful delivery must not"
+      else
+        echo "PASS: ${_trace_name}"
+      fi
+    done
+  done
+done
+
+# A saved OAuth secret appearing in failure detail is redacted literally.
+# The invalid target branch is included in the branch-validation diagnostic.
+_jira_secret_result="$(jq -cn --arg branch "${JIRA_CLIENT_SECRET_VALUE}" '{target_branch:$branch}')"
+for _secret_padding in plain padded; do
+  _secret_env="${JIRA_CLIENT_SECRET_VALUE}"
+  [ "${_secret_padding}" = padded ] && _secret_env="  ${JIRA_CLIENT_SECRET_VALUE}"$'\n'
+  JIRA_INT_RESULT_JSON="${_jira_secret_result}" run_jira_int "jira-failure-redacts-client-secret-${_secret_padding}" github \
+    "${JIRA_CLIENT_ENV[@]}" "FULLSEND_JIRA_CLIENT_SECRET=${_secret_env}" CODE_ALLOWED_TARGET_BRANCHES=main
+  if [ "${JIRA_INT_RC}" -ne 1 ] \
+     || grep -qF "${JIRA_CLIENT_SECRET_VALUE}" "${JIRA_INT_FULLSEND_LOG}" \
+     || ! grep -qF '[REDACTED]' "${JIRA_INT_FULLSEND_LOG}" \
+     || ! grep -qF -- "${JIRA_FAILURE_MARKER}" "${JIRA_INT_FULLSEND_LOG}"; then
+    jira_int_fail "jira-failure-redacts-client-secret-${_secret_padding}" "expected redacted failure body with original status"
+  else
+    echo "PASS: jira-failure-redacts-client-secret-${_secret_padding}"
+  fi
+done
+
+# The shared writer retains upstream OAuth support on both new outcomes.
+for _jira_client_outcome in noop failure; do
+  if [ "${_jira_client_outcome}" = noop ]; then
+    JIRA_INT_NO_BRANCH=1 run_jira_int "jira-client-noop" github "${JIRA_CLIENT_ENV[@]}"
+    _jira_client_expected_rc=0
+    _jira_client_marker="${JIRA_OUTCOME_MARKER}"
+  else
+    JIRA_INT_RESULT_JSON="${JIRA_BRANCH_FAIL_RESULT}" \
+      run_jira_int "jira-client-failure" github "${JIRA_CLIENT_ENV[@]}" CODE_ALLOWED_TARGET_BRANCHES=main
+    _jira_client_expected_rc=1
+    _jira_client_marker="${JIRA_FAILURE_MARKER}"
+  fi
+  if [ "${JIRA_INT_RC}" -ne "${_jira_client_expected_rc}" ] \
+     || [ "$(grep -c '^fullsend issues post-comment' "${JIRA_INT_FULLSEND_LOG}")" -ne 1 ] \
+     || ! grep -qF -- "${_jira_client_marker}" "${JIRA_INT_FULLSEND_LOG}" \
+     || ! grep -qF 'env-token=unset env-email=unset env-client-id=client-id-1 env-client-secret=set' "${JIRA_INT_FULLSEND_LOG}" \
+     || grep -qF "${JIRA_CLIENT_SECRET_VALUE}" "${JIRA_INT_OUT}" "${JIRA_INT_FULLSEND_LOG}"; then
+    jira_int_fail "jira-client-${_jira_client_outcome}" "expected OAuth delivery with the outcome marker and original status"
+  else
+    echo "PASS: jira-client-${_jira_client_outcome}"
+  fi
+done
+
+# A failed Jira write on the failure path is a warning; the run still fails.
+# (The ERR-trap exit-code contract is proven by failure-hook-keeps-exit-code.)
+JIRA_INT_RESULT_JSON="${JIRA_BRANCH_FAIL_RESULT}" \
+  run_jira_int "jira-post-failure-write-failure" github CODE_ALLOWED_TARGET_BRANCHES=main MOCK_FULLSEND_FAIL=1
+if [ "${JIRA_INT_RC}" -ne 1 ]; then
+  jira_int_fail "jira-post-failure-write-failure-warns" "expected exit 1, got ${JIRA_INT_RC}"
+elif ! grep -qF "Post-code failure for TESTPROJ-42; see workflow logs" "${JIRA_INT_OUT}"; then
+  jira_int_fail "jira-post-failure-write-failure-warns" "missing Jira write-failure warning"
+else
+  echo "PASS: jira-post-failure-write-failure-warns"
+fi
+
+# Setup fails before any repository Git command. The failure helper and
+# trusted CLI must already be available; success must not print the fallback.
+run_jira_int "jira-early-setup-failure" github REPO_DIR=missing-repo
+if [ "${JIRA_INT_RC}" -ne 1 ] \
+   || [ "$(grep -c '^fullsend issues post-comment' "${JIRA_INT_FULLSEND_LOG}")" -ne 1 ] \
+   || ! grep -qF -- "${JIRA_FAILURE_MARKER}" "${JIRA_INT_FULLSEND_LOG}" \
+   || ! grep -qF 'Extracted repo not found at missing-repo' "${JIRA_INT_FULLSEND_LOG}" \
+   || grep -qF 'see workflow logs' "${JIRA_INT_OUT}"; then
+  jira_int_fail "jira-early-setup-failure" "expected one delivered setup failure without log fallback"
+else
+  echo "PASS: jira-early-setup-failure"
+fi
+
+# Exercise the real #1467 author guard against a local bare remote, starting
+# from a shallow clone. Both delivery outcomes must preserve the human commit.
+for _jira_refusal_write in success failure; do
+  _jira_refusal_name="jira-human-commit-refused-${_jira_refusal_write}"
+  _jira_refusal_fail=""
+  if [ "${_jira_refusal_write}" = failure ]; then _jira_refusal_fail=1; fi
+  JIRA_INT_RERUN=1 run_jira_int "${_jira_refusal_name}" github \
+    MOCK_EXISTING_PR=1 GIT_BOT_EMAIL="${RERUN_BOT_EMAIL}" MOCK_FULLSEND_FAIL="${_jira_refusal_fail}"
+  _jira_refusal_remote="${JIRA_INT_TMPDIR}/run-${_jira_refusal_name}/remote.git"
+  if [ "${JIRA_INT_RC}" -ne 1 ] \
+     || [ "$(${JIRA_REAL_GIT} -C "${_jira_refusal_remote}" rev-parse refs/heads/agent/TESTPROJ-42-fix)" != "${RERUN_BEFORE}" ] \
+     || [ "$(grep -c '^fullsend issues post-comment' "${JIRA_INT_FULLSEND_LOG}")" -ne 1 ] \
+     || ! grep -qF -- "${JIRA_FAILURE_MARKER}" "${JIRA_INT_FULLSEND_LOG}" \
+     || grep -qF -- "${JIRA_CODE_MARKER}" "${JIRA_INT_FULLSEND_LOG}" \
+     || grep -qF -- "${JIRA_OUTCOME_MARKER}" "${JIRA_INT_FULLSEND_LOG}" \
+     || ! grep -qF 'Push rejected' "${JIRA_INT_FULLSEND_LOG}" \
+     || ! grep -qF "commit ${RERUN_BEFORE:0:7} by Human Dev" "${JIRA_INT_FULLSEND_LOG}" \
+     || ! grep -qF 'Close the pull request and run the code agent again' "${JIRA_INT_FULLSEND_LOG}" \
+     || grep -q '^gh issue comment' "${JIRA_INT_FORGE_LOG}"; then
+    jira_int_fail "${_jira_refusal_name}" "expected unchanged remote and one detailed Jira refusal"
+  elif { [ "${_jira_refusal_write}" = failure ] && ! grep -qF 'see workflow logs' "${JIRA_INT_OUT}"; } \
+       || { [ "${_jira_refusal_write}" = success ] && grep -qF 'see workflow logs' "${JIRA_INT_OUT}"; }; then
+    jira_int_fail "${_jira_refusal_name}" "log fallback must match delivery failure"
+  else
+    echo "PASS: ${_jira_refusal_name}"
+  fi
+done
+
+# New no-op and failure callers must reject mismatched destinations before
+# issuing any tracker or forge write, while preserving their own exit status.
+for _jira_bad_dest in \
+  'url|FULLSEND_WORK_ITEM_URL=https://other.example/browse/TESTPROJ-42' \
+  'key|FULLSEND_WORK_ITEM_KEY=TESTPROJ-7' \
+  'host|JIRA_BASE_URL=https://other.atlassian.net'; do
+  for _jira_bad_path in noop failure; do
+    _jira_bad_name="jira-${_jira_bad_path}-rejects-${_jira_bad_dest%%|*}"
+    if [ "${_jira_bad_path}" = noop ]; then
+      JIRA_INT_NO_BRANCH=1 run_jira_int "${_jira_bad_name}" github "${_jira_bad_dest#*|}"
+      _jira_bad_rc=0
+      _jira_bad_warning='Failed to post no-op comment'
+    else
+      JIRA_INT_RESULT_JSON="${JIRA_BRANCH_FAIL_RESULT}" run_jira_int "${_jira_bad_name}" github \
+        CODE_ALLOWED_TARGET_BRANCHES=main "${_jira_bad_dest#*|}"
+      _jira_bad_rc=1
+      _jira_bad_warning='see workflow logs'
+    fi
+    if [ "${JIRA_INT_RC}" -ne "${_jira_bad_rc}" ] \
+       || [ -s "${JIRA_INT_FULLSEND_LOG}" ] \
+       || grep -qE '^gh (issue comment|pr create|pr comment)' "${JIRA_INT_FORGE_LOG}" \
+       || ! grep -qF "${_jira_bad_warning}" "${JIRA_INT_OUT}"; then
+      jira_int_fail "${_jira_bad_name}" "expected zero writes, warning and preserved status"
+    else
+      echo "PASS: ${_jira_bad_name}"
+    fi
+  done
+done
+
+# Other external trackers keep the log-only behaviour on both paths.
+JIRA_EXT_TRACKER_ENV=(FULLSEND_TRACKER=linear FULLSEND_WORK_ITEM_SOURCE=linear
+  CODE_ALLOWED_TARGET_BRANCHES=main)
+# The work-item URL stays a valid Jira Cloud URL, so only the tracker guard
+# keeps these runs from writing to Jira.
+JIRA_INT_NO_BRANCH=1 run_jira_int "external-tracker-noop" github "${JIRA_EXT_TRACKER_ENV[@]}"
+_ext_noop_rc="${JIRA_INT_RC}"
+_ext_noop_writes="$(cat "${JIRA_INT_FULLSEND_LOG}"; grep "^gh issue comment" "${JIRA_INT_FORGE_LOG}" || true)"
+JIRA_INT_RESULT_JSON="${JIRA_BRANCH_FAIL_RESULT}" \
+  run_jira_int "external-tracker-failure" github "${JIRA_EXT_TRACKER_ENV[@]}"
+if [ "${_ext_noop_rc}" -ne 0 ] || [ "${JIRA_INT_RC}" -ne 1 ]; then
+  jira_int_fail "external-tracker-log-only" "expected exits 0 (no-op) and 1 (failure), got ${_ext_noop_rc} and ${JIRA_INT_RC}"
+elif [ -n "${_ext_noop_writes}" ] || [ -s "${JIRA_INT_FULLSEND_LOG}" ] \
+     || grep -q "^gh issue comment" "${JIRA_INT_FORGE_LOG}" \
+     || grep -qF "Jira issue" "${JIRA_INT_OUT}"; then
+  jira_int_fail "external-tracker-log-only" "wrote a comment for a non-Jira external tracker"
+else
+  echo "PASS: external-tracker-log-only"
+fi
+
+# Library contract: under the ERR trap, a tracker hook that fails does not
+# change the exit code of the failed command, and receives the sanitized
+# failure comment.
+_trap_hook_body="${JIRA_INT_TMPDIR}/trap-hook-body.txt"
+_trap_script="${JIRA_INT_TMPDIR}/trap-hook.sh"
+# A separate process: `|| ...` on a subshell would disable errexit inside it.
+cat > "${_trap_script}" <<'TRAPEOF'
+set -euo pipefail
+# shellcheck source=/dev/null
+source "$1"
+EXTERNAL_WORK_ITEM=true
+WORK_ITEM_KEY=TESTPROJ-42
+REPO_FULL_NAME=test-org/test-repo
+_body_file="$2"
+post_external_failure_comment() {
+  printf '%s' "$1" > "${_body_file}"
+  return 1
+}
+trap 'report_post_failure_to_issue' ERR
+set_post_failure push-failed "remote rejected ghp_abcdefghijklmnopqrstuvwxyz0123456789"
+(exit 3)
+echo "not reached"
+TRAPEOF
+_trap_rc=0
+bash "${_trap_script}" "${SCRIPT_DIR}/lib/post-failure-report.lib.sh" "${_trap_hook_body}" \
+  > "${JIRA_INT_TMPDIR}/trap-hook.log" 2>&1 || _trap_rc=$?
+if [ "${_trap_rc}" -ne 3 ]; then
+  echo "FAIL: failure-hook-keeps-exit-code — expected exit 3, got ${_trap_rc}"
+  cat "${JIRA_INT_TMPDIR}/trap-hook.log"
+  FAILURES=$((FAILURES + 1))
+elif ! grep -qF "Push failed" "${_trap_hook_body}" \
+     || ! grep -qF "exit code 3" "${_trap_hook_body}" \
+     || grep -qF "ghp_abcdefghijklmnopqrstuvwxyz0123456789" "${_trap_hook_body}"; then
+  echo "FAIL: failure-hook-keeps-exit-code — hook did not get the sanitized failure comment"
+  cat "${_trap_hook_body}"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: failure-hook-keeps-exit-code"
+fi
+
+# A failure in body construction is also best-effort, before any hook runs.
+cat > "${_trap_script}" <<'TRAPEOF'
+set -euo pipefail
+# shellcheck source=/dev/null
+source "$1"
+EXTERNAL_WORK_ITEM=true
+WORK_ITEM_KEY=TESTPROJ-42
+REPO_FULL_NAME=test-org/test-repo
+build_post_failure_comment() { return 7; }
+post_external_failure_comment() { echo UNEXPECTED_WRITE; }
+trap 'report_post_failure_to_issue' ERR
+(exit 3)
+echo UNEXPECTED_CONTINUE
+TRAPEOF
+_trap_rc=0
+bash "${_trap_script}" "${SCRIPT_DIR}/lib/post-failure-report.lib.sh" \
+  > "${JIRA_INT_TMPDIR}/trap-builder.log" 2>&1 || _trap_rc=$?
+if [ "${_trap_rc}" -ne 3 ] \
+   || ! grep -qF 'Could not build the post-code failure comment' "${JIRA_INT_TMPDIR}/trap-builder.log" \
+   || grep -q 'UNEXPECTED_' "${JIRA_INT_TMPDIR}/trap-builder.log"; then
+  echo "FAIL: failure-builder-keeps-exit-code — expected original exit 3 and no write"
+  cat "${JIRA_INT_TMPDIR}/trap-builder.log"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: failure-builder-keeps-exit-code"
 fi
 
 # Forge-originated run (fullsend run still exports FULLSEND_WORK_ITEM_SOURCE):
