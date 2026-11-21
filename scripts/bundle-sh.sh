@@ -212,8 +212,14 @@ bundle_src_file() {
 }
 
 if [[ -n "${output_path}" ]]; then
-  bundle_src_file > "${output_path}"
-  chmod +x "${output_path}"
+  # Write via a sibling temp file so a mid-bundle failure cannot truncate
+  # the destination. mv is atomic on the same filesystem.
+  output_dir="$(dirname "${output_path}")"
+  tmp_output="$(mktemp "${output_dir}/.bundle-sh.XXXXXX")"
+  trap 'rm -f "${tmp_output}"' EXIT
+  bundle_src_file > "${tmp_output}"
+  chmod +x "${tmp_output}"
+  mv "${tmp_output}" "${output_path}"
 else
   bundle_src_file
 fi
