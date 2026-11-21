@@ -27,6 +27,9 @@ Use this when a pull request needs the live suite before it reaches the merge
 queue: for example, a change to a scenario that needs a real model, such as
 `review/custom-persona.feature`, or to the live suite's own setup.
 
+You need write access (Write role or above) to the repository. Otherwise, ask
+someone who has it: a comment from anyone else does not start the run.
+
 1. Review the latest push to the pull request.
 2. Comment on the pull request:
 

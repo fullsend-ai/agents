@@ -77,8 +77,9 @@ Someone with write access reviews the latest push and comments on the PR:
 /ok-to-test <full 40-character sha of the latest push>
 ```
 
-The comment's first line must be `/ok-to-test` and the full sha; a short
-prefix is refused. `Functional Tests` runs only when that sha is still the PR
+The comment's first line must be `/ok-to-test <sha>`, or
+`/ok-to-test <sha> live` to also run the live behaviour suite, with the full
+sha; a short prefix is refused. `Functional Tests` runs only when that sha is still the PR
 head, and the `functional-tests-complete` check reports on that commit.
 **A later push needs a new comment** naming the new head. The `ok-to-test`
 label no longer starts a run.
@@ -98,7 +99,8 @@ The `behaviour-github-emulator` check runs on every pull request, forks
 included, without `/ok-to-test`: it runs the behaviour suite on a GitHub
 emulator and needs no secrets (see
 [On the GitHub emulator](docs/behaviour-testing.md#on-the-github-emulator)).
-`/ok-to-test <sha>` is still needed for the live `Functional Tests` workflow.
+`/ok-to-test <sha>` is still needed for the `Functional Tests` workflow, and
+`/ok-to-test <sha> live` runs the live `Behaviour Tests` workflow as well.
 
 ### Merging
 
