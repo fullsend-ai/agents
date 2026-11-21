@@ -129,7 +129,7 @@ finding from a dimension sub-agent has a category outside that persona's
 a persona with no valid `categories`, to the nearest category in the closed
 schema enum). Never remap the
 non-dimensional categories `scope-authorization-implicit`, `sub-agent-failure`,
-`protected-path`, or `provenance-warning` — they are valid as-is, and
+`protected-path`, `provenance-warning`, or `excluded-content` — they are valid as-is, and
 `sub-agent-failure` in particular must stay unchanged so step 6d withholds it
 and the post-script detects the incomplete review. Sub-agents are told to emit
 only valid categories; this remap is a safety net so a stray label does not

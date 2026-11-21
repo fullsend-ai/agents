@@ -152,6 +152,8 @@ exception: a prior finding this review reclassifies keeps its row in
 `findings`, with its `id`, at the new severity even when that is below
 the threshold. The post-script keeps that row in the ledger and drops it
 from the posted review.
+The `provenance-warning` and `excluded-content` process disclosures are
+exempt too: include them whenever their trigger condition holds.
 
 This filtering applies to the narrative body text and the structured
 findings equally. If filtering removes all findings from a
@@ -411,8 +413,8 @@ the run before both have happened.
 | Field         | Type    | Required | Description                                   |
 |---------------|---------|----------|-----------------------------------------------|
 | `severity`    | string  | yes      | One of: `critical`, `high`, `medium`, `low`, `info` |
-| `category`    | string  | yes      | A category from the dimension table in `pr-review` `references/re-review.md` (step 3a), or one of `protected-path`, `provenance-warning`, `scope-authorization-implicit`, `sub-agent-failure`. Any other value fails schema validation. |
-| `file`        | string  | yes      | File path (min 1 char)                        |
+| `category`    | string  | yes      | A category from the dimension table in `pr-review` `references/re-review.md` (step 3a), or one of `protected-path`, `provenance-warning`, `excluded-content`, `scope-authorization-implicit`, `sub-agent-failure`. Any other value fails schema validation. |
+| `file`        | string  | yes      | File path (min 1 char). Single-valued: a finding about N files is N findings |
 | `line`        | integer | no       | Line number (minimum 1)                       |
 | `description` | string  | yes      | Finding description (min 1 char)              |
 | `remediation` | string  | no       | Suggested fix                                 |

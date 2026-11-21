@@ -145,6 +145,7 @@ filter_findings_json() {
   echo "$result_json" | jq --argjson rank "$threshold_rank" '
     if .findings then
       .findings |= [.[] | select(
+        ((.category == "provenance-warning" or .category == "excluded-content") and .severity == "info") or
         (if .severity == "info" then 0
          elif .severity == "low" then 1
          elif .severity == "medium" then 2
@@ -221,18 +222,28 @@ filter_and_downgrade() {
 
   local filtered
   filtered="$(filter_findings_json "$result_json" "$threshold")"
-  local count
-  count="$(echo "$filtered" | jq 'if .findings then (.findings | length) else -1 end')"
+  # Findings that can justify a blocking verdict — the exempt info-level
+  # disclosures (provenance-warning, excluded-content) cannot, but a
+  # higher-severity finding in those categories can.
+  local blocking
+  blocking="$(echo "$filtered" | jq 'if .findings then ([.findings[] | select(((.category == "provenance-warning" or .category == "excluded-content") and .severity == "info") | not)] | length) else -1 end')"
 
-  if [ "$count" -eq 0 ]; then
+  if [ "$blocking" -eq 0 ]; then
     local action
     action="$(echo "$filtered" | jq -r '.action')"
     if [ "$action" = "request-changes" ] || [ "$action" = "reject" ]; then
-      echo "$filtered" | jq 'del(.findings) | .action = "comment"'
+      echo "$filtered" | jq 'if (.findings | length) == 0 then del(.findings) else . end | .action = "comment"'
       return
     fi
-    # For approve/comment, just remove the empty findings array
-    echo "$filtered" | jq 'del(.findings)'
+    if [ "$action" = "approve" ] && echo "$filtered" | jq -e 'any(.findings[]?; .category == "excluded-content")' >/dev/null; then
+      # Approve with only disclosures, one of them excluded-content → comment,
+      # disclosures kept. A provenance-warning alone keeps the approve.
+      echo "$filtered" | jq '.action = "comment"'
+      return
+    fi
+    # For approve/comment, just remove an empty findings array;
+    # disclosure-only arrays are kept.
+    echo "$filtered" | jq 'if (.findings | length) == 0 then del(.findings) else . end'
     return
   fi
   echo "$filtered"
@@ -299,6 +310,82 @@ APPROVE_ALL_INFO='{"action":"approve","body":"LGTM","head_sha":"abcdef0123456789
 ]}'
 run_downgrade_test "approve-all-filtered-removes-findings" \
   "$APPROVE_ALL_INFO" "low" "approve" "false"
+
+# --- Threshold-exempt process disclosures ---
+
+# info-level disclosures survive every threshold; the info style finding
+# next to them is still dropped
+DISCLOSURES_PLUS_INFO='{"action":"comment","findings":[
+  {"severity":"info","category":"excluded-content","file":"package-lock.json","description":"not reviewed"},
+  {"severity":"info","category":"provenance-warning","file":"N/A","description":"prior review discarded"},
+  {"severity":"info","category":"style","file":"b.go","description":"y"}
+]}'
+
+run_filter_test "disclosures-survive-threshold-low" \
+  "$DISCLOSURES_PLUS_INFO" "low" "2"
+
+run_filter_test "disclosures-survive-threshold-critical" \
+  "$DISCLOSURES_PLUS_INFO" "critical" "2"
+
+# Disclosure-only findings must not sustain a blocking verdict: action is
+# downgraded to comment but the disclosures are KEPT in the findings array
+DISCLOSURE_ONLY_RC='{"action":"request-changes","findings":[
+  {"severity":"info","category":"excluded-content","file":"package-lock.json","description":"not reviewed"}
+]}'
+
+run_downgrade_test "disclosure-only-request-changes-downgrades-keeps-findings" \
+  "$DISCLOSURE_ONLY_RC" "low" "comment" "true"
+
+DISCLOSURE_ONLY_REJECT='{"action":"reject","findings":[
+  {"severity":"info","category":"provenance-warning","file":"N/A","description":"prior review discarded"}
+]}'
+
+run_downgrade_test "disclosure-only-reject-downgrades-keeps-findings" \
+  "$DISCLOSURE_ONLY_REJECT" "low" "comment" "true"
+
+# An all-excluded PR whose only findings are disclosures must NOT approve
+# straight to ready-for-merge: approve is downgraded to comment (which the
+# label logic maps to requires-manual-review), disclosures KEPT.
+DISCLOSURE_ONLY_APPROVE='{"action":"approve","findings":[
+  {"severity":"info","category":"excluded-content","file":"package-lock.json","description":"not reviewed"}
+]}'
+
+run_downgrade_test "disclosure-only-approve-downgrades-keeps-findings" \
+  "$DISCLOSURE_ONLY_APPROVE" "low" "comment" "true"
+
+# A provenance-warning is a disclosure about prior context, not about
+# unreviewed content: alone it keeps the approve (and stays visible).
+PROVENANCE_ONLY_APPROVE='{"action":"approve","findings":[
+  {"severity":"info","category":"provenance-warning","file":"N/A","description":"prior review discarded"}
+]}'
+
+run_downgrade_test "provenance-only-approve-stays-approve" \
+  "$PROVENANCE_ONLY_APPROVE" "low" "approve" "true"
+
+# A disclosure plus a real above-threshold finding → no downgrade
+DISCLOSURE_PLUS_BLOCKING='{"action":"request-changes","findings":[
+  {"severity":"info","category":"excluded-content","file":"package-lock.json","description":"not reviewed"},
+  {"severity":"high","category":"security","file":"d.go","description":"w"}
+]}'
+
+run_downgrade_test "disclosure-plus-blocking-no-downgrade" \
+  "$DISCLOSURE_PLUS_BLOCKING" "low" "request-changes" "true"
+
+# The exemption is category AND info severity: a high-severity finding
+# in a disclosure category is a real finding — it filters by rank (so
+# threshold=critical drops it) and it sustains a blocking verdict.
+HIGH_EXCLUDED_CONTENT='{"action":"request-changes","findings":[
+  {"severity":"high","category":"excluded-content","file":"x.go","description":"real problem"}
+]}'
+
+run_filter_test "high-severity-disclosure-category-survives-low" \
+  "$HIGH_EXCLUDED_CONTENT" "low" "1"
+
+run_filter_test "high-severity-disclosure-category-not-exempt-at-critical" \
+  "$HIGH_EXCLUDED_CONTENT" "critical" "0"
+
+run_downgrade_test "high-severity-disclosure-category-blocks" \
+  "$HIGH_EXCLUDED_CONTENT" "low" "request-changes" "true"
 
 # ---------------------------------------------------------------------------
 # Severity-threshold downgrade tests with actionable findings: the severity
@@ -1246,19 +1333,25 @@ run_label_test_with_env_stdout() {
 
 run_label_test_with_env_stdout "severity-filter-downgrade-log-message" \
   '{"action":"request-changes","pr_number":99,"repo":"test-org/test-repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"Issues found","findings":[{"severity":"low","category":"style","file":"a.go","description":"minor"}]}' \
-  "All findings removed by severity filter" \
+  "No blocking findings after severity filter" \
   "REVIEW_FINDING_SEVERITY_THRESHOLD" "medium"
 
 # Actionable low findings below threshold → downgraded (threshold is absolute)
 run_label_test_with_env_stdout "severity-filter-actionable-still-downgrades" \
   '{"action":"request-changes","pr_number":99,"repo":"test-org/test-repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"Issues found","findings":[{"severity":"low","category":"naming-convention","file":"a.go","description":"rename type","remediation":"rename FooBar to fooBar","actionable":true}]}' \
-  "All findings removed by severity filter" \
+  "No blocking findings after severity filter" \
+  "REVIEW_FINDING_SEVERITY_THRESHOLD" "medium"
+
+# The real script: excluded-content-only approve is downgraded to comment
+run_label_test_with_env_stdout "severity-filter-excluded-content-approve-downgrades" \
+  '{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"Nothing reviewed","findings":[{"severity":"info","category":"excluded-content","file":"package-lock.json","description":"Excluded from line-by-line review (lockfile, +10/-2 lines); no model read its contents."}]}' \
+  "downgrading 'approve' to 'comment'" \
   "REVIEW_FINDING_SEVERITY_THRESHOLD" "medium"
 
 # Non-actionable low findings below threshold → downgraded
 run_label_test_with_env_stdout "severity-filter-non-actionable-downgrades" \
   '{"action":"request-changes","pr_number":99,"repo":"test-org/test-repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"Issues found","findings":[{"severity":"low","category":"style","file":"a.go","description":"minor","actionable":false}]}' \
-  "All findings removed by severity filter" \
+  "No blocking findings after severity filter" \
   "REVIEW_FINDING_SEVERITY_THRESHOLD" "medium"
 
 # --- Severity-threshold sanitization tests ---

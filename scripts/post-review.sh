@@ -1356,8 +1356,8 @@ fi
 # dropped, and a finding with no dimension is always kept. Runs after id
 # assignment so a row answering an open prior id keeps it; prior dispositions
 # are never touched. Orchestrator findings (protected-path, sub-agent-failure,
-# scope-authorization-implicit, provenance-warning) are exempt whatever their
-# dimension: the drop rewrites the same file UNFILTERED_RESULT_FILE points at,
+# scope-authorization-implicit, provenance-warning, excluded-content) are
+# exempt whatever their dimension: the drop rewrites the same file UNFILTERED_RESULT_FILE points at,
 # so dropping a protected-path finding would bypass the protected-path gate.
 # One ::warning:: names each dropped dimension with its count.
 # ---------------------------------------------------------------------------
@@ -1380,7 +1380,7 @@ if [[ -n "${STAGED_PERSONAS}" ]] && jq -e '.findings | type == "array"' "${RESUL
   CLEANUP_FILES+=("${DIMENSION_DROP_RESULT}")
   jq --argjson staged "${STAGED_PERSONAS}" --argjson prior "${PRIOR_LEDGER}" '
     def drop_exempt_category:
-      IN("protected-path", "sub-agent-failure", "scope-authorization-implicit", "provenance-warning");
+      IN("protected-path", "sub-agent-failure", "scope-authorization-implicit", "provenance-warning", "excluded-content");
     def keep:
       (.category | drop_exempt_category)
       or (.dimension | type) != "string"
@@ -1502,8 +1502,16 @@ if jq -e '.findings' "${RESULT_FILE}" >/dev/null 2>&1; then
   original_count=$(jq '.findings | length' "${RESULT_FILE}")
   FILTERED_RESULT=$(mktemp)
   CLEANUP_FILES+=("${FILTERED_RESULT}")
+  # The threshold is absolute: even actionable findings are filtered
+  # (#1046). provenance-warning and excluded-content are threshold-exempt
+  # process disclosures (see "Severity filtering" in agents/review.md) —
+  # dropping them here would undo the exemption the agent honors. The
+  # exemption covers only their normal info severity: a higher-severity
+  # finding that happens to use these categories is a real finding and
+  # filters (and blocks) like any other.
   jq --argjson rank "$threshold_rank" '
     .findings |= [.[] | select(
+      ((.category == "provenance-warning" or .category == "excluded-content") and .severity == "info") or
       (if .severity == "info" then 0
        elif .severity == "low" then 1
        elif .severity == "medium" then 2
@@ -1513,6 +1521,10 @@ if jq -e '.findings' "${RESULT_FILE}" >/dev/null 2>&1; then
     )]
   ' "${RESULT_FILE}" > "${FILTERED_RESULT}"
   filtered_count=$(jq '.findings | length' "${FILTERED_RESULT}")
+  # Findings that can justify a blocking verdict — the exempt info-level
+  # disclosures above cannot, but a higher-severity finding in those
+  # categories can.
+  blocking_count=$(jq '[.findings[] | select(((.category == "provenance-warning" or .category == "excluded-content") and .severity == "info") | not)] | length' "${FILTERED_RESULT}")
 
   if [ "${filtered_count}" -lt "${original_count}" ]; then
     echo "Severity filter (threshold=${EFFECTIVE_FINDING_SEVERITY_THRESHOLD}): kept ${filtered_count}/${original_count} findings"
@@ -1526,7 +1538,9 @@ if jq -e '.findings' "${RESULT_FILE}" >/dev/null 2>&1; then
     # would push descriptions and remediations through a single jq argv slot.
     # A row with no id keeps a null entry so it still counts as withheld.
     THRESHOLD_HIDDEN_IDS="$(jq -c --argjson rank "$threshold_rank" '
-      [ .findings[] | select(
+      [ .findings[]
+        | select(((.category == "provenance-warning" or .category == "excluded-content") and .severity == "info") | not)
+        | select(
           (if .severity == "info" then 0
            elif .severity == "low" then 1
            elif .severity == "medium" then 2
@@ -1537,29 +1551,41 @@ if jq -e '.findings' "${RESULT_FILE}" >/dev/null 2>&1; then
     ' "${RESULT_FILE}")"
 
     RESULT_FILE="${FILTERED_RESULT}"
-
-    # If filtering removed all findings, delete the empty findings array
-    # (minItems: 1 in the schema). For request-changes/reject, also
-    # downgrade to comment — zero findings with a blocking verdict is
-    # semantically wrong. The threshold is absolute: even actionable
-    # findings are filtered (#1046). Use "comment" (not "approve") so
-    # the PR gets requires-manual-review, not ready-for-merge.
-    if [ "${filtered_count}" -eq 0 ]; then
+    # Re-review promotion (below) treats a blocking verdict the filter
+    # emptied of blocking findings as filtered to zero; the exempt
+    # disclosures left behind do not change that.
+    if [ "${blocking_count}" -eq 0 ]; then
       REREVIEW_FILTERED_TO_ZERO=true
       REREVIEW_FILTER_ORIGINAL_ACTION=$(jq -r '.action' "${FILTERED_RESULT}")
-      DOWNGRADE_RESULT=$(mktemp)
-      CLEANUP_FILES+=("${DOWNGRADE_RESULT}")
-      if [ "${REREVIEW_FILTER_ORIGINAL_ACTION}" = "request-changes" ] || [ "${REREVIEW_FILTER_ORIGINAL_ACTION}" = "reject" ]; then
-        echo "All findings removed by severity filter — downgrading '${REREVIEW_FILTER_ORIGINAL_ACTION}' to 'comment'"
-        jq 'del(.findings) | .action = "comment"' "${FILTERED_RESULT}" > "${DOWNGRADE_RESULT}"
-      else
-        jq 'del(.findings)' "${FILTERED_RESULT}" > "${DOWNGRADE_RESULT}"
-      fi
-      RESULT_FILE="${DOWNGRADE_RESULT}"
     fi
-
   else
     rm -f "${FILTERED_RESULT}"
+  fi
+
+  # A blocking verdict with no blocking finding is semantically wrong:
+  # downgrade request-changes/reject to comment. Use "comment" (not
+  # "approve") so the PR gets requires-manual-review, not
+  # ready-for-merge. An entirely empty findings array is deleted
+  # (minItems: 1 in the schema); a disclosure-only array is kept — the
+  # disclosures must still reach the review.
+  if [ "${blocking_count}" -eq 0 ]; then
+    original_action=$(jq -r '.action' "${RESULT_FILE}")
+    DOWNGRADE_RESULT=$(mktemp)
+    CLEANUP_FILES+=("${DOWNGRADE_RESULT}")
+    if [ "${original_action}" = "request-changes" ] || [ "${original_action}" = "reject" ]; then
+      echo "No blocking findings after severity filter — downgrading '${original_action}' to 'comment'"
+      jq 'if (.findings | length) == 0 then del(.findings) else . end | .action = "comment"' "${RESULT_FILE}" > "${DOWNGRADE_RESULT}"
+    elif [ "${original_action}" = "approve" ] && jq -e 'any(.findings[]?; .category == "excluded-content")' "${RESULT_FILE}" >/dev/null; then
+      # Approve whose only findings are excluded-content disclosures:
+      # excluded content was not reviewed (all of it, on an all-excluded
+      # PR). Downgrade to comment so it gets requires-manual-review, not
+      # ready-for-merge. A provenance-warning alone keeps the approve.
+      echo "Approve with only disclosure findings — downgrading 'approve' to 'comment'"
+      jq '.action = "comment"' "${RESULT_FILE}" > "${DOWNGRADE_RESULT}"
+    else
+      jq 'if (.findings | length) == 0 then del(.findings) else . end' "${RESULT_FILE}" > "${DOWNGRADE_RESULT}"
+    fi
+    RESULT_FILE="${DOWNGRADE_RESULT}"
   fi
 fi
 
@@ -2484,7 +2510,7 @@ PRIOR_FINDINGS_PROJECTION="$(jq -c --slurpfile unfiltered "${UNFILTERED_RESULT_F
     (test("(^/|/$|//|(^|/)\\.\\.?(/|$)|[\\\\\\r\\n<>])") | not);
   def non_dimensional_category:
     type == "string" and IN(
-      "protected-path", "provenance-warning", "scope-authorization-implicit"
+      "protected-path", "provenance-warning", "excluded-content", "scope-authorization-implicit"
     );
   def challenger_failure:
     .category == "sub-agent-failure" and

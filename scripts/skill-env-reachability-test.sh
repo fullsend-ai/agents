@@ -144,6 +144,10 @@ declare -A KNOWN_GAPS=(
   ["pr-review/github:PI_CODING_AGENT_DIR"]="#1672 — pi provides its skill config dir at runtime, not through env.sandbox"
   ["pr-review/github:CLAUDE_CONFIG_DIR"]="#1672 — Claude provides its skill config dir at runtime, not through env.sandbox"
   ["pr-review/github:CODEX_HOME"]="#1672 — Codex provides its skill config dir at runtime, not through env.sandbox"
+  # The review orchestrator locates its own skill scripts the same way.
+  ["pr-review:CLAUDE_CONFIG_DIR"]="#1672 — Claude provides its skill config dir at runtime, not through env.sandbox"
+  ["pr-review:CODEX_HOME"]="#1672 — Codex provides its skill config dir at runtime, not through env.sandbox"
+  ["pr-review:PI_CODING_AGENT_DIR"]="#1672 — pi provides its skill config dir at runtime, not through env.sandbox"
   # Skills below reference these vars as ${VAR} expansions without
   # assigning them, and no delivering harness declares them in
   # env.sandbox.
