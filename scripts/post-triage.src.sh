@@ -53,6 +53,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/lib/triage-ops.lib.sh"
 # shellcheck source=lib/labels.lib.sh
 source "${SCRIPT_DIR}/lib/labels.lib.sh"
+# shellcheck source=lib/triage-state.lib.sh
+source "${SCRIPT_DIR}/lib/triage-state.lib.sh"
 
 # Find the triage result JSON — prefer the validated iteration when set.
 # Trust boundary: FULLSEND_VALIDATED_ITERATION_DIR is set by the fullsend CLI
@@ -129,6 +131,27 @@ is_control_label() {
 }
 
 # --- Action-specific validation and control labels ---
+
+# The triage state (open and ruled-out causes) of a sufficient result, which
+# the next triage run starts from, and the agent's own comment, which the
+# cause lists follow. Empty for every other action.
+TRIAGE_STATE=""
+AGENT_COMMENT=""
+TRIAGE_MARKER="<!-- fullsend:triage-agent -->"
+# Built before any label, comment or property on the issue is changed, so a
+# state that cannot be stored fails the run with the issue untouched.
+if [[ "${ACTION}" == "sufficient" ]]; then
+  if ! TRIAGE_STATE=$(triage_state_json "${RESULT_FILE}"); then
+    echo "::error::the triage state cannot be stored (see above); nothing was posted"
+    exit 1
+  fi
+  TRIAGE_DROPPED=$(triage_state_dropped "${RESULT_FILE}" "${TRIAGE_STATE}") || exit 1
+  if [[ -z "${TRIAGE_STATE}" ]]; then
+    echo "::warning::the result has no open cause with a name — posting without a triage state"
+  elif [[ "${TRIAGE_DROPPED}" -gt 0 ]]; then
+    echo "::warning::${TRIAGE_DROPPED} cause(s) in the result were not stored: an empty name, or past the 10 open / 25 ruled-out limits"
+  fi
+fi
 
 # Deferred label: when set, applied after label_actions so it fires last.
 # This prevents the ready-to-code webhook event from being superseded by
@@ -468,6 +491,13 @@ ${FAILED_CREATES}"
         fi
       fi
     fi
+
+    # The cause lists are rendered under the agent's comment when the
+    # comment is posted, and the same state is attached as data
+    # (lib/triage-state.lib.sh). A result without open causes, which the
+    # schema rejects, is posted without a state, and the next run rebuilds
+    # it from the comments.
+    AGENT_COMMENT="${COMMENT}"
 
     tracker_remove_label "blocked"
     tracker_remove_label "needs-info"
@@ -935,9 +965,35 @@ fi
 
 # --- Post comment ---
 
+# Only the post-script's own state marker may be live in a triage comment.
+# With a state, everything after the agent's comment is the footers: the
+# lists go between the two, and the readable text is held to the cap.
+if [[ -n "${TRIAGE_STATE}" ]]; then
+  # A literal split by length: the agent's text is never used as a pattern.
+  if [[ "${COMMENT:0:${#AGENT_COMMENT}}" != "${AGENT_COMMENT}" ]]; then
+    echo "::error::the comment no longer starts with the agent's comment; cannot place the cause lists"
+    exit 1
+  fi
+  FOOTER="${COMMENT:${#AGENT_COMMENT}}"
+  NEUTRAL_AGENT=$(triage_state_neutralize "${AGENT_COMMENT}") || exit 1
+  NEUTRAL_FOOTER=$(triage_state_neutralize "${FOOTER}") || exit 1
+  COMMENT=$(triage_state_compose "${TRIAGE_STATE}" "${NEUTRAL_AGENT}" "${NEUTRAL_FOOTER}") || exit 1
+  if [[ "${FULLSEND_TRACKER}" != "jira" ]]; then
+    COMMENT="${COMMENT}
+
+$(triage_state_marker "${TRIAGE_STATE}")"
+  fi
+else
+  COMMENT=$(triage_state_neutralize "${COMMENT}") || exit 1
+fi
+
 echo "Posting comment..."
 if [[ "${ACTION}" == "sufficient" ]]; then
-  tracker_post_sticky_comment "${COMMENT}" "<!-- fullsend:triage-agent -->"
+  tracker_post_sticky_comment "${COMMENT}" "${TRIAGE_MARKER}"
+  # On Jira the state is a property of the comment, set after it is posted.
+  if [[ -n "${TRIAGE_STATE}" && "${FULLSEND_TRACKER}" == "jira" ]]; then
+    tracker_store_triage_state "${TRIAGE_STATE}" "${TRIAGE_MARKER}"
+  fi
 elif [[ "${ACTION}" == "in-progress" ]]; then
   tracker_post_sticky_comment "${COMMENT}" "<!-- fullsend:triage-in-progress -->"
 else

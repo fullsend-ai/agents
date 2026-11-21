@@ -140,7 +140,15 @@
     },
     {
       "if": { "properties": { "action": { "const": "sufficient" } }, "required": ["action"] },
-      "then": { "required": ["clarity_scores", "triage_summary"] }
+      "then": {
+        "required": ["clarity_scores", "triage_summary"],
+        "properties": {
+          "triage_summary": {
+            "required": ["open_causes", "ruled_out"],
+            "properties": { "open_causes": { "minItems": 1 } }
+          }
+        }
+      }
     },
     {
       "if": { "properties": { "action": { "const": "in-progress" } }, "required": ["action"] },
@@ -213,7 +221,29 @@
         "promote_to_ready_to_code": {
           "type": "boolean",
           "description": "When TRIAGE_AUTO_CODE is discretionary, whether the post-script should apply ready-to-code for this sufficient result. Ignored in on/always and off/never modes. Omitted or false withholds promotion."
+        },
+        "open_causes": {
+          "description": "Causes still open after this run, most likely first (root_cause_hypothesis is the first). Required and non-empty on sufficient. The post-script lists them in the comment and stores them as the triage state the next run starts from.",
+          "type": "array",
+          "maxItems": 10,
+          "items": { "$ref": "#/$defs/cause" }
+        },
+        "ruled_out": {
+          "description": "Causes refuted with evidence, carried across runs, oldest first. Required on sufficient; may be empty.",
+          "type": "array",
+          "maxItems": 25,
+          "items": { "$ref": "#/$defs/cause" }
         }
+      },
+      "additionalProperties": false
+    },
+    "cause": {
+      "type": "object",
+      "required": ["cause", "evidence", "verified"],
+      "properties": {
+        "cause": { "type": "string", "minLength": 1, "maxLength": 200, "pattern": "\\S", "description": "The cause, as one short phrase. Line breaks are folded to spaces when stored." },
+        "evidence": { "type": "string", "minLength": 1, "maxLength": 300, "pattern": "\\S", "description": "What supports it (open) or refutes it (ruled out), or who claimed it when unverified. Line breaks are folded to spaces when stored." },
+        "verified": { "type": "boolean", "description": "True only when this run checked the evidence itself." }
       },
       "additionalProperties": false
     },

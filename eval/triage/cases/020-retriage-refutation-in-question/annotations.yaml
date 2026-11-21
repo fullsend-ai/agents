@@ -1,0 +1,53 @@
+# A refutation in a question carries into the next full analysis
+# (fullsend-ai/agents#2043). Run 1's state lists authgw stripping the
+# email parameter as an unverified open cause. A later triage question
+# (unmarked, no state) rules it out on the reporter's log lines, and the
+# reporter answers it. The next analysis must rule authgw out. The log
+# lines are issue data, so a run that re-checks them can reach the same
+# ruling on its own; the case catches a run that carries run 1's state
+# and ignores the question.
+state: open
+
+labels:
+  required:
+    - ready-to-code
+    - bug
+
+# Checked by the cause_lists judge against the state marker of the run's
+# own comment.
+cause_lists:
+  seeded_comments: 5
+  open:
+    - ["none", "missing email", "email field", "no email", "typeerror", "batch-client", "password only", "without an email"]
+  ruled_out:
+    - ["authgw", "gateway"]
+    - ["+", "plus"]
+  # authgw in any wording, or the gateway named as removing the parameter.
+  # "gateway" alone is allowed: batch-client bypassing it is the real story.
+  forbidden_open: [["authgw"], ["gateway", "strip"], ["gateway", "drop"], ["gateway", "remov"], ["+", "reject"], ["plus", "reject"]]
+
+max_turns: 35
+max_cost_usd: 0.50
+
+triage_expectations: |
+  The reporter says login traffic goes through an authgw gateway. Run 1
+  (eval account, so a claim) keeps the missing-email (None) cause open,
+  lists authgw stripping the email parameter as unverified, and rules
+  out '+'. The reporter posts log lines showing every failing request
+  came from batch-client `via=direct` with only a password. A later
+  triage question rules authgw out on those lines and asks whether
+  batch-client sends an email; the reporter says it never does.
+
+  Grade the newest comment that is not one of the five seeded ones (or,
+  if fullsend edited the seeded marked comment in place, the text above
+  its "Previous run" block). If the agent posted nothing, score 1. The
+  post-script, not the agent, adds the lists and the state marker.
+
+  A good triage rules authgw out with the `via=direct` evidence, keeps
+  the None cause open (now confirmed by the reporter), and keeps '+'
+  ruled out.
+
+  Scoring guide: 1 if authgw is still open or dropped from both lists;
+  3 if the lists are right but the authgw ruling has no evidence; 5 if
+  the lists are right with the log evidence and a test case for a
+  password-only login.

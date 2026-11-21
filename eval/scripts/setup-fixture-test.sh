@@ -56,6 +56,7 @@ case "${1:-} ${2:-}" in
     if [[ -n "${STUB_EXISTING_VISIBILITY:-}" ]]; then echo "$STUB_EXISTING_VISIBILITY"; exit 0; fi
     exit 1 ;;
   "issue create") echo "https://github.com/testorg/eval-case-deadbeef/issues/7" ;;
+  "issue comment") { cat; echo; echo "--- end"; } >> "${CAPTURE_DIR}/comment-bodies.log" ;;
   "pr create") echo "https://github.com/testorg/eval-case-deadbeef/pull/8" ;;
   *) exit 0 ;;
 esac
@@ -251,6 +252,79 @@ if [[ $RC -eq 1 ]] \
   pass "three failed pushes give up with no sleep after the last, nothing created afterwards, and the repo recorded for teardown"
 else
   fail "three failed pushes give up with no sleep after the last, nothing created afterwards, and the repo recorded for teardown (rc=$RC, output: $OUT, sleeps: $(sleep_calls "$ROOT" | tr '\n' ' '))"
+fi
+rm -rf "$ROOT"
+
+# --- fixture.comments are posted oldest first, each body from stdin ---
+ROOT="$(mktemp -d)"; setup_fixture "$ROOT"
+cat >> "${ROOT}/case/input.yaml" <<'YAML'
+  comments:
+    - |
+      <!-- fullsend:triage-agent -->
+      first analysis
+    - "second --body comment"
+YAML
+RC=0
+OUT=$(run_sf "$ROOT" 2>&1) || RC=$?
+# Blank lines are ignored: the stub adds one after each body.
+expected="$(printf '%s\n' '<!-- fullsend:triage-agent -->' 'first analysis' '--- end' 'second --body comment' '--- end')"
+if [[ $RC -eq 0 ]] \
+  && [[ "$(gh_calls "$ROOT" | grep -c '^issue comment 7 --repo testorg/eval-case-deadbeef --body-file -$')" == "2" ]] \
+  && [[ "$(grep -v '^$' "${ROOT}/capture/comment-bodies.log")" == "$expected" ]]; then
+  pass "fixture.comments are posted in order with each body on stdin"
+else
+  fail "fixture.comments are posted in order with each body on stdin (rc=$RC, output: $OUT, bodies: $(cat "${ROOT}/capture/comment-bodies.log" 2>/dev/null))"
+fi
+rm -rf "$ROOT"
+
+# --- fixture.comments must be a list of strings ---
+ROOT="$(mktemp -d)"; setup_fixture "$ROOT"
+cat >> "${ROOT}/case/input.yaml" <<'YAML'
+  comments:
+    - body: not a string
+YAML
+RC=0
+OUT=$(run_sf "$ROOT" 2>&1) || RC=$?
+if [[ $RC -eq 1 ]] && echo "$OUT" | grep -q "fixture.comments must be a list of comment bodies" \
+  && ! gh_calls "$ROOT" | grep -q "repo create"; then
+  pass "a fixture.comments entry that is not a string is refused before gh repo create"
+else
+  fail "a fixture.comments entry that is not a string is refused before gh repo create (rc=$RC, output: $OUT)"
+fi
+rm -rf "$ROOT"
+
+# --- fixture.comments: false is refused, not read as an empty list ---
+ROOT="$(mktemp -d)"; setup_fixture "$ROOT"
+cat >> "${ROOT}/case/input.yaml" <<'YAML'
+  comments: false
+YAML
+RC=0
+OUT=$(run_sf "$ROOT" 2>&1) || RC=$?
+if [[ $RC -eq 1 ]] && echo "$OUT" | grep -q "fixture.comments must be a list of comment bodies" \
+  && ! gh_calls "$ROOT" | grep -q "repo create"; then
+  pass "fixture.comments: false is refused before gh repo create"
+else
+  fail "fixture.comments: false is refused before gh repo create (rc=$RC, output: $OUT)"
+fi
+rm -rf "$ROOT"
+
+# --- fixture.comments on a pull request fixture is refused before anything is created ---
+ROOT="$(mktemp -d)"; setup_fixture "$ROOT"
+cat > "${ROOT}/case/input.yaml" <<'YAML'
+fixture:
+  type: pull_request
+  title: Test PR
+  body: Test body
+  comments:
+    - a comment
+YAML
+RC=0
+OUT=$(run_sf "$ROOT" 2>&1) || RC=$?
+if [[ $RC -eq 1 ]] && echo "$OUT" | grep -q "fixture.comments requires a github issue fixture" \
+  && ! gh_calls "$ROOT" | grep -q "repo create"; then
+  pass "fixture.comments on a pull request fixture is refused before gh repo create"
+else
+  fail "fixture.comments on a pull request fixture is refused before gh repo create (rc=$RC, output: $OUT)"
 fi
 rm -rf "$ROOT"
 

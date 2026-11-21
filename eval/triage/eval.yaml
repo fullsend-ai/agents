@@ -71,7 +71,8 @@ dataset:
   path: cases
   schema: |
     Each case directory contains:
-    - input.yaml: Fixture definition with forge, fixture type, title, and body.
+    - input.yaml: Fixture definition with forge, fixture type, title, body,
+      and optional comments already on the issue (re-triage cases).
     - annotations.yaml: Expected fixture state (labels, comments, state).
     - repo/: Directory (or symlink) with the git repo contents the agent sees.
 
@@ -174,6 +175,73 @@ judges:
           return False, f"Expected state {expected}, got {actual}"
       return True, f"State is {actual}"
 
+  - name: cause_lists
+    description: The run's triage-state-v1 marker carries the expected open and ruled-out causes
+    check: |
+      import base64, binascii, json, re
+      spec = outputs.get("annotations", {}).get("cause_lists")
+      if not spec:
+          # Abstain, so cases without expectations stay out of the pass rate.
+          return None, "Not scored: no cause_lists expectations"
+      raw = outputs["files"].get("output/fixture-state.json")
+      if not raw:
+          return False, "fixture-state.json not found"
+      comments = [(c.get("body") or "") for c in json.loads(raw).get("comments") or []]
+      # Required, so a seeded comment's marker is never graded as the run's.
+      if "seeded_comments" not in spec:
+          return False, "cause_lists needs seeded_comments (0 when the fixture seeds no comments)"
+      seeded = int(spec["seeded_comments"])
+      marker = re.compile(r"<!-- triage-state-v1:([A-Za-z0-9+/=]+) -->")
+      def own_markers(body):
+          # Only the text above the first "Previous run" fold is the comment's own.
+          return marker.findall(re.split(r"<details>\s*<summary>Previous run", body, maxsplit=1)[0])
+      # The run's state is in the newest comment after the seeded ones; a
+      # fullsend that edits in place (before fullsend#9399) wrote it into a
+      # seeded comment, above its fold.
+      found = [m for b in comments[seeded:] for m in own_markers(b)]
+      if not found:
+          found = [m for b in comments[:seeded] if "<!-- sticky:history-start -->" in b for m in own_markers(b)]
+      if not found:
+          return False, "No triage-state-v1 marker from this run"
+      try:
+          state = json.loads(base64.b64decode(found[-1], validate=True))
+      except (binascii.Error, ValueError) as e:
+          return False, f"The run's marker does not decode: {e}"
+      def causes(key):
+          return [(str(c.get("cause", "")).lower(), c.get("verified") is True)
+                  for c in state.get(key) or [] if isinstance(c, dict)]
+      open_c, ruled_c = causes("open_causes"), causes("ruled_out")
+      def match(group, items):
+          return [v for n, v in items if any(p.lower() in n for p in group)]
+      problems = []
+      for g in spec.get("open") or []:
+          if not match(g, open_c):
+              problems.append(f"open_causes lacks any of {g}")
+      for g in spec.get("ruled_out") or []:
+          if not match(g, ruled_c):
+              problems.append(f"ruled_out lacks any of {g}")
+      for g in spec.get("verified_open") or []:
+          m = match(g, open_c)
+          if m and not any(m):
+              problems.append(f"the open cause matching {g} should be verified")
+      for g in spec.get("unverified_open") or []:
+          m = match(g, open_c)
+          if m and all(m):
+              problems.append(f"the open cause matching {g} should stay unverified")
+      # A forbidden entry is a phrase, or phrases that must all be in one name.
+      for p in spec.get("forbidden_open") or []:
+          parts = [p] if isinstance(p, str) else list(p)
+          if any(all(q.lower() in n for q in parts) for n, _ in open_c):
+              problems.append(f"open_causes lists {p!r}, which should stay ruled out")
+      # The same for ruled_out: a cause the run must not rule out.
+      for p in spec.get("forbidden_ruled_out") or []:
+          parts = [p] if isinstance(p, str) else list(p)
+          if any(all(q.lower() in n for q in parts) for n, _ in ruled_c):
+              problems.append(f"ruled_out lists {p!r}, which should not be ruled out")
+      if problems:
+          return False, "; ".join(problems)
+      return True, "The run's state has the expected causes"
+
   - name: max_turns
     description: Agent must complete within the declared turn budget
     check: |
@@ -230,3 +298,7 @@ thresholds:
     min_pass_rate: 0.9
   expected_state:
     min_pass_rate: 0.9
+  # cause_lists has no threshold yet, so it is scored in each run's summary
+  # but is not part of the nightly verdict, until cases 007 and 013-021 have
+  # run three times against a live model, matching the nightly vote
+  # (fullsend-ai/agents#2043). It is scored only on cases that declare it.

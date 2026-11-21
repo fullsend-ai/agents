@@ -1,0 +1,83 @@
+# The readable-text limit keeps every ruling (fullsend-ai/agents#2043).
+# Run 2's readable lists are condensed (the six oldest rulings counted in
+# one line), while its state and run 1's text keep all fifteen. The eval
+# account posted every comment, so the agent rebuilds from them as claims;
+# every ruling holds in the fixture code, so all fifteen stay ruled out.
+state: open
+
+labels:
+  required:
+    - ready-to-code
+    - bug
+
+# Checked by the cause_lists judge against the state marker of the run's
+# own comment.
+cause_lists:
+  seeded_comments: 4
+  open:
+    - ["none", "missing email", "email field", "no email", "typeerror"]
+    - ["valueerror", "malformed", "invalid email", "invalid format"]
+  # One group per ruling, each with phrases no other ruling's name holds.
+  ruled_out:
+    - ["+", "plus"]
+    - ["uppercase", "upper-case", "upper case", "capital"]
+    - ["digit", "numeric", "number"]
+    - ["subdomain", "sub-domain", "multi-level", "co.uk"]
+    - ["hyphen"]
+    - ["tld", "top-level", "top level"]
+    - ["underscore"]
+    - ["percent"]
+    - ["backtrack", "redos", "catastrophic"]
+    - ["password"]
+    - ["authenticat", "backend"]
+    - ["circular"]
+    - ["leading dot", "dot at the start", "starts with a dot", "initial dot"]
+    - ["normaliz", "lowercas"]
+    - ["cache"]
+  verified_open:
+    - ["none", "missing email", "email field", "no email", "typeerror"]
+    - ["valueerror", "malformed", "invalid email", "invalid format"]
+  # Any ruling back as open: the regex ones with a rejection claim (a
+  # correct cause may name such an address), the rest by their own phrase.
+  forbidden_open:
+    - ["+", "reject"]
+    - ["plus", "reject"]
+    - ["uppercase", "reject"]
+    - ["digit", "reject"]
+    - ["subdomain", "reject"]
+    - ["hyphen", "reject"]
+    - ["tld", "reject"]
+    - ["top-level", "reject"]
+    - ["underscore", "reject"]
+    - ["percent", "reject"]
+    - ["dot", "reject"]
+    - ["backtrack"]
+    - ["missing password"]
+    - ["backend"]
+    - ["circular"]
+    - ["normaliz"]
+    - ["cache"]
+
+max_turns: 35
+max_cost_usd: 0.50
+
+triage_expectations: |
+  Two earlier analyses (eval account, so claims) keep the missing-email
+  (None) and unhandled ValueError causes open and rule out fifteen
+  causes, all refuted by src/auth/validators.py and views.py. Run 2's
+  readable list shows only nine of them and counts the six oldest in one
+  line; run 1's text lists those six with evidence, and run 2's state
+  holds all fifteen.
+
+  Grade the newest comment that is not one of the four seeded ones (or,
+  if fullsend edited a seeded marked comment in place, the text above its
+  "Previous run" block). If the agent posted nothing, score 1. The
+  post-script, not the agent, adds the lists and the state marker.
+
+  A good triage keeps both open causes and all fifteen rulings, and does
+  not restate the earlier analyses.
+
+  Scoring guide: 1 if a ruling is dropped or comes back as open; 3 if the
+  lists are right but the comment repeats the earlier analyses at length;
+  5 if the lists are right and the comment is concise with net-new value
+  such as a fix for both open causes.
