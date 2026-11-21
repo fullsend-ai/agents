@@ -18,8 +18,8 @@ organization, real models and real App installations, so it runs only on the eve
 | Merge queue, push to `main`, `workflow_dispatch` | Runs |
 
 `behaviour` and `behaviour-live` are not required checks. The required checks
-(`script-test`, `test`, `commit-lint`, `skillsaw`) and
-`behaviour-github-emulator` keep reporting on pull requests.
+(`script-test`, `test`, `commit-lint`, `skillsaw` and
+`behaviour-github-emulator`) keep reporting on pull requests.
 
 ## Run the live suite on a pull request
 
@@ -156,15 +156,29 @@ and no `/ok-to-test`.
 - The job builds fullsend `main` and reads the emulator pin from that
   checkout, so both repositories run the same emulator release. A dispatch
   input can name another fullsend revision.
-- The job splits the suite into shards. Each shard sets `BEHAVIOUR_FEATURES`
-  to space-separated godog paths relative to `behaviour/`, for example
-  `features/fix.feature` or `features/triage.feature:3`. When it is unset or
-  empty, the suite runs every feature.
+- The job splits the suite into the shards listed in `behaviour/shards.txt`.
+  Each line reads `<shard> <workers> <runners> <feature[:line]>...`, with
+  feature paths relative to `behaviour/`. Each shard sets `BEHAVIOUR_FEATURES`
+  to its space-separated godog paths, for example `features/fix.feature` or
+  `features/triage.feature:3`. When it is unset or empty, the suite runs every
+  feature.
+- A feature that is not listed in `behaviour/shards.txt` does not run on the
+  emulator, so it does not run on pull requests. Only the workflow reads the
+  file, and no test checks that every feature is listed: add a new feature to
+  a shard. The exception is a scenario that needs a real model, such as
+  `review/custom-persona.feature`, which runs only in the live suite; the
+  comment at the top of `shards.txt` says why.
 - The live suite (`behaviour-tests.yml`) runs in the merge queue, on push to
   `main`, on `workflow_dispatch`, and on a pull request after
   `/ok-to-test <sha> live` (see [When each suite runs](#when-each-suite-runs)).
   It is the only place scenarios that need a real model run: today, the
   custom-persona scenario behind the `review-skill-overrides` capability.
+
+When the check fails, follow
+[When the check fails](https://github.com/fullsend-ai/fullsend/blob/main/docs/guides/dev/behaviour-testing.md#when-the-check-fails)
+in fullsend's behaviour testing guide. In this repository, each shard uploads
+its logs as the artifact `behaviour-github-emulator-logs-<shard>`, and the
+shard names come from `behaviour/shards.txt`.
 
 To run the same job locally, follow
 [Running against a GitHub emulator](https://github.com/fullsend-ai/fullsend/blob/main/docs/guides/dev/behaviour-testing.md#running-against-a-github-emulator)
