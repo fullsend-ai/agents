@@ -1,0 +1,46 @@
+forge: github
+seed_issues:
+  - title: "Fix the typo in the greeting"
+    body: |
+      The greeting says "Helo" instead of "Hello". Fix the typo.
+fixture:
+  type: pull_request
+  title: "fix: correct the greeting typo"
+  body: |
+    Fixes #1
+
+    Correct the greeting typo.
+  base: main
+  files:
+    - path: src/greet.py
+      content: |
+        def greet(name):
+            return f"Hello, {name}!"
+
+
+        def format_currency(amount):
+            return f"${amount:,.2f}"
+  followup_files:
+    - path: README.md
+      content: |
+        # Example service
+
+        Call `greet(name)` to build a greeting.
+    - path: src/greet.py
+      content: |
+        def greet(name):
+            return f"Hello, {name}!"
+
+
+        def format_currency(amount):
+            return f"${amount:,.2f}"
+prior_review:
+  provenance: app-verified
+  body: |
+    ## Findings
+
+    #### Medium
+
+    - **[scope-creep]** `src/greet.py:5` — adds an unrelated helper.
+
+    <!-- fullsend:review-findings-v2:eyJ2ZXJzaW9uIjoyLCJmaW5kaW5ncyI6W3sic2V2ZXJpdHkiOiJtZWRpdW0iLCJjYXRlZ29yeSI6InNjb3BlLWNyZWVwIiwiZmlsZSI6InNyYy9ncmVldC5weSIsImxpbmUiOjUsImlkIjoiZl9jb25jZXJuMSIsImRpbWVuc2lvbiI6ImludGVudC1jb2hlcmVuY2UifV19 -->

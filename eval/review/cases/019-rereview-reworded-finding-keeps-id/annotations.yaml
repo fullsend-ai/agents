@@ -1,0 +1,27 @@
+state: open
+
+labels:
+  required: []
+  forbidden: []
+  risk_label_required: false
+
+findings:
+  # The concern may come back as scope-creep, scope-exceeded or
+  # unauthorized-change. The id, not the category, is scored by
+  # review_quality.
+  required: []
+  forbidden: []
+
+max_cost_usd: 2.75
+
+review_expectations: |
+  This is an app-verified GitHub re-review. The prior projection has one
+  open finding, id f_concern1, medium scope-creep from intent-coherence at
+  src/greet.py:5: the typo fix also adds an unrelated format_currency
+  helper. The follow-up adds only README.md and leaves format_currency in
+  place. A good review raises that concern once, at src/greet.py:5 with id
+  f_concern1, even if it rewords the description or files it under another
+  category such as unauthorized-change or scope-exceeded. A category change
+  uses a reclassified disposition for f_concern1 with a rationale. It does
+  not report the helper as a second finding with a new id beside
+  f_concern1, and does not treat the untouched file as resolved.

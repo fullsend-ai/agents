@@ -124,7 +124,7 @@ JSON at the end of this list is a file, not a variable.
   id. A closed id does not excuse the current code: a defect that is back is
   a new finding with no id. Every other prior id is open and needs an
   answer; a `reclassified` answer also re-emits the finding with the same id
-  at its new severity. Before sandbox ingress, the host marks eligible
+  at its new severity or category. Before sandbox ingress, the host marks eligible
   write-or-higher human-resolved threads `dismissed_by_human` only when a
   trusted review-bot comment contains the exact finding-id stamp; raw thread
   comments are not copied into the sandbox. The post-script independently

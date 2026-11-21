@@ -48,6 +48,48 @@ Check if `/sandbox/workspace/prior-review.txt` exists and is non-empty:
   finding because it was not in the current diff, and do not derive an id
   from the file, line, or text.
 
+**Same concern, new wording or category.** A finding is the same as an open
+prior finding when it is at that prior finding's file (and at its line, or
+where that code now sits, when the prior finding has one) and has the same
+root cause: the same defect in the same code, still unfixed. Rewording it,
+citing new evidence, or changing its category or severity does not make it a
+new finding. Copy the open prior `id` onto it, update its description in
+place, and keep it where that code now sits: the current file and line of
+the prior finding's review thread. The recorded file and line apply only
+when the id has no stamped review thread. The post-script keeps a supplied
+id only there, and mints a new one anywhere else. If only the
+wording or evidence changed, the disposition is `open`. If the category or
+severity changed, it is `reclassified`, with `rationale` and `evidence`. This
+mirrors how `resolved_by_change` answers the original id. A matching file,
+line, or category alone is not enough. Never copy an id only because it is
+the one open prior finding there. Mint a new id (omit `id`) only when the
+file or line differs or the root cause differs. A closed id is never reused
+(see above). The step 6 orchestrator applies this rule across dimensions. A
+sub-agent sees only its own dimension's prior findings, so a concern
+re-raised by a different persona or under another persona's category reaches
+the orchestrator without an id. Before merging, compare each id-less finding
+with every open prior finding, and copy a matching id as above. The
+orchestrator-only categories `scope-authorization-implicit`,
+`protected-path`, and `provenance-warning` are never in the prior projection,
+so they have no id to continue.
+
+Worked example: round 3 records open `f_7b100be48f718e09`, medium
+`missing-authorization` at `docs/adr/0038-x.md:12`: the PR deletes the ADR's
+required sign-off section. Round 5 finds the section still missing, now with
+fresh API evidence that the tracking issue has no comments.
+
+- Wrong: emitting it with no `id`. The post-script mints
+  `f_8181acddc1cf6759`, the old id is carried forward `open` beside it, and a
+  maintainer reply threaded to the old finding no longer matches the current
+  one.
+- Right: emit it at `docs/adr/0038-x.md:12` with `id: f_7b100be48f718e09`,
+  the new evidence in its description, and disposition `open`. If the
+  concern now fits `unauthorized-change` better, keep the same id at the
+  new category with disposition `reclassified`. A category change never
+  calls for a new id.
+- New finding: a separate defect in the same file, such as a broken link
+  elsewhere in the ADR, has a different root cause and gets no `id`.
+
 **Host validation background:** Before rewriting this file, the host derives
 the JSON from schema-validated findings and accepts exactly one versioned
 marker from the current sticky section, before
@@ -108,7 +150,9 @@ frontmatter lists its category. A record whose dimension is not staged in this
 run, or a record without `dimension` whose category no staged persona's
 `categories` lists, reaches no sub-agent: answer its id `open` in
 `dispositions` and do not re-emit it; the post-script carries it forward
-unchanged.
+unchanged. The exception: when a current finding is the same concern
+(step 2a, "Same concern, new wording or category"), copy the id onto that
+finding instead.
 
 Upstream personas declare these `categories` (guidance only; the staged
 frontmatter is authoritative):
