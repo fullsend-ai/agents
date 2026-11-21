@@ -153,8 +153,9 @@ COMMENT=$(jq -n \
 
 </details>"')
 
-# Jira keeps only the computed score in its RICE Score field, so the
-# sticky comment carries the whole breakdown. Jira renders the comment from
+# Jira writes Reach, Impact, Effort, and RICE Score as numbers and maps
+# Confidence onto a shared select list. The sticky comment still prints the
+# agent floats (including unmapped Confidence) and the formula. Jira renders
 # markdown, where a <details> block and a table do not survive, so use a
 # heading and a bullet list. Reasoning has HTML tags and newlines removed.
 if [[ "${FULLSEND_FORGE}" == "jira" ]]; then

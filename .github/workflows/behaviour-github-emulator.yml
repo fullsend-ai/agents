@@ -1,0 +1,229 @@
+name: behaviour-github-emulator
+
+# The agents behaviour suite (behaviour/) against a GitHub emulator, one
+# emulator stack per shard VM: no repository secrets, no environment, no
+# OIDC to a real cloud. Every credential (emulator admin token, App keys,
+# mint) is made for the run. fullsend's
+# e2e/behaviour/github-emulator/run-job.sh starts the stack and runs the
+# suite with BT_SUITE=agents. Require only the aggregate
+# behaviour-github-emulator check. It runs beside behaviour-tests.yml, which
+# keeps the scenarios that need a real model (review/custom-persona.feature).
+
+on:
+  pull_request:
+  # The merge queue needs every required check to report on its group, so
+  # requiring behaviour-github-emulator needs it here too.
+  merge_group:
+  workflow_dispatch:
+    inputs:
+      # No defaults: an empty fullsend builds fullsend-ai/fullsend main, an
+      # empty features runs the shards.
+      fullsend:
+        description: fullsend revision that runs the suite, as owner/repo@sha (40 hex); empty uses fullsend-ai/fullsend main
+
+      features:
+        description: Space-separated godog paths under behaviour/ (e.g. features/fix.feature) run as one custom shard
+      workers:
+        description: Scenarios in parallel (slot pool size and godog concurrency; empty uses the shard's)
+      runners:
+        description: Real actions/runner processes on the emulator (empty uses the shard's)
+
+permissions:
+  contents: read
+
+concurrency:
+  group: behaviour-github-emulator-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  # applier-branch-namespace: the seeded fullsend-ai/agents main enforces it.
+  # Not review-skill-overrides (the Makefile default has it): the scenario it
+  # gates, review/custom-persona.feature, asserts the claude runtime and a
+  # marker the model computes, so it needs real inference and stays in
+  # behaviour-tests.yml.
+  DEFAULT_CAPABILITIES: applier-branch-namespace
+  # fullsend's run-job.sh and behaviour framework run this suite from
+  # fullsend main, not the go.mod pin, so the agents are checked against
+  # the fullsend they will next run with. A dispatch can name another
+  # revision. The github-emulator release is not pinned here: it is read
+  # from that fullsend's own behaviour-github-emulator.yml, so both suites
+  # run against the same emulator.
+  DEFAULT_FULLSEND_REPO: fullsend-ai/fullsend
+
+jobs:
+  # fullsend main resolved once, so every shard runs the same sha, and the
+  # shard names read from behaviour/shards.txt.
+  plan:
+    name: plan shards
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      repo: ${{ steps.resolve.outputs.repo }}
+      ref: ${{ steps.resolve.outputs.ref }}
+      shards: ${{ steps.shards.outputs.shards }}
+    steps:
+      - name: Checkout the shard list
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          sparse-checkout: behaviour/shards.txt
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
+      # A dispatch with features runs them as one "custom" shard.
+      - name: List the shards
+        id: shards
+        env:
+          FEATURES: ${{ inputs.features }}
+        run: |
+          if [ -n "$FEATURES" ]; then
+            shards='["custom"]'
+          else
+            shards=$(awk '!/^#/ && NF { print $1 }' behaviour/shards.txt | jq -Rnc '[inputs]')
+          fi
+          [ "$shards" != '[]' ] || { echo "::error::no shards in behaviour/shards.txt"; exit 1; }
+          echo "shards: $shards"
+          echo "shards=$shards" >> "$GITHUB_OUTPUT"
+
+      - name: Resolve fullsend revision
+        id: resolve
+        env:
+          FULLSEND: ${{ inputs.fullsend }}
+        run: |
+          if [ -z "$FULLSEND" ]; then
+            sha=$(git ls-remote "https://github.com/${DEFAULT_FULLSEND_REPO}.git" refs/heads/main | cut -f1)
+            FULLSEND="${DEFAULT_FULLSEND_REPO}@${sha}"
+          fi
+          if ! [[ "$FULLSEND" =~ ^([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)@([0-9a-f]{40})$ ]]; then
+            echo "::error::fullsend must be owner/repo@<40-hex sha>, got: $FULLSEND"
+            exit 1
+          fi
+          echo "fullsend: $FULLSEND" | tee -a "$GITHUB_STEP_SUMMARY"
+          echo "repo=${BASH_REMATCH[1]}" >> "$GITHUB_OUTPUT"
+          echo "ref=${BASH_REMATCH[2]}" >> "$GITHUB_OUTPUT"
+
+  behaviour-github-emulator:
+    name: behaviour-github-emulator (${{ matrix.shard }})
+    needs: [plan]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        # The shards, their workers, runners and features are in
+        # behaviour/shards.txt, so fullsend's agents leg can share them.
+        shard: ${{ fromJSON(needs.plan.outputs.shards) }}
+    steps:
+      - name: Checkout agents
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Checkout fullsend
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ needs.plan.outputs.repo }}
+          ref: ${{ needs.plan.outputs.ref }}
+          path: .behaviour-fullsend
+          fetch-depth: 0
+          persist-credentials: false
+
+      # The emulator release fullsend's own behaviour job pins.
+      - name: Read the emulator pin from fullsend
+        id: emulator
+        run: |
+          wf=.behaviour-fullsend/.github/workflows/behaviour-github-emulator.yml
+          repo=$(sed -nE 's/^  EMULATOR_REPO: ([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)( .*)?$/\1/p' "$wf")
+          ref=$(sed -nE 's/^  EMULATOR_REF: ([0-9a-f]{40})( .*)?$/\1/p' "$wf")
+          if [ -z "$repo" ] || [ -z "$ref" ] || [[ "$repo$ref" == *$'\n'* ]]; then
+            echo "::error::no single EMULATOR_REPO/EMULATOR_REF pin in $wf"
+            exit 1
+          fi
+          echo "Emulator ${repo}@${ref} (from $wf)"
+          echo "repo=$repo" >> "$GITHUB_OUTPUT"
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout github-emulator
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ steps.emulator.outputs.repo }}
+          ref: ${{ steps.emulator.outputs.ref }}
+          path: .emulator
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version-file: .behaviour-fullsend/go.mod
+
+      - uses: astral-sh/setup-uv@e92bafb6253dcd438e0484186d7669ea7a8ca1cc # v6.4.3
+        with:
+          enable-cache: false
+
+      # The emulator's locked dependencies, installed with hashes, as its
+      # own smoke workflow does.
+      - name: Install emulator dependencies
+        run: |
+          python3 -m venv "$RUNNER_TEMP/emu-venv"
+          uv export -q --frozen --no-dev --no-emit-project --format requirements-txt --project .emulator -o "$RUNNER_TEMP/emu-requirements.txt"
+          uv pip install -q --python "$RUNNER_TEMP/emu-venv/bin/python" --require-hashes -r "$RUNNER_TEMP/emu-requirements.txt"
+
+      - name: Run the agents behaviour suite
+        working-directory: .behaviour-fullsend
+        env:
+          EMULATOR_DIR: ${{ github.workspace }}/.emulator
+          EMULATOR_PY: ${{ runner.temp }}/emu-venv/bin/python
+          STATE_DIR: ${{ runner.temp }}/bt-github-emulator
+          # Read-only job token, only so the emulator can fetch public
+          # github.com actions without the anonymous rate limit.
+          UPSTREAM_TOKEN: ${{ github.token }}
+          BT_SUITE: agents
+          AGENTS_DIR: ${{ github.workspace }}
+          SHARD: ${{ matrix.shard }}
+          FEATURES: ${{ inputs.features }}
+          INPUT_WORKERS: ${{ inputs.workers }}
+          INPUT_RUNNERS: ${{ inputs.runners }}
+          BEHAVIOUR_CAPABILITIES: ${{ env.DEFAULT_CAPABILITIES }}
+        run: |
+          # A shard line is: <shard> <workers> <runners> <feature[:line]>...
+          # A custom shard (dispatch with features) runs two at a time.
+          WORKERS=2 EMULATOR_RUNNERS=4
+          if [ -z "$FEATURES" ]; then
+            read -r _ WORKERS EMULATOR_RUNNERS FEATURES < <(awk -v s="$SHARD" '$1 == s' "$GITHUB_WORKSPACE/behaviour/shards.txt") || true
+          fi
+          WORKERS=${INPUT_WORKERS:-$WORKERS} EMULATOR_RUNNERS=${INPUT_RUNNERS:-$EMULATOR_RUNNERS}
+          [ -n "$FEATURES" ] || { echo "::error::no features for shard $SHARD"; exit 1; }
+          # BEHAVIOUR_FEATURES is read by behaviour/suite_test.go through
+          # make behaviour-test; paths are relative to behaviour/.
+          export EMULATOR_RUNNERS BEHAVIOUR_FEATURES="$FEATURES"
+          export BEHAVIOUR_POOL_SIZE="$WORKERS" GODOG_CONCURRENCY="$WORKERS"
+          e2e/behaviour/github-emulator/run-job.sh
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: behaviour-github-emulator-logs-${{ matrix.shard }}
+          path: |
+            ${{ runner.temp }}/bt-github-emulator/**/*.log
+            ${{ runner.temp }}/bt-github-emulator/phases.tsv
+            ${{ runner.temp }}/bt-github-emulator/emulator-profile.json
+            ${{ runner.temp }}/bt-github-emulator/bt-artifacts/
+            ${{ runner.temp }}/bt-github-emulator/openshell-logs/
+            !${{ runner.temp }}/bt-github-emulator/stack/runner-*/_work/**
+          if-no-files-found: warn
+
+  # The one check to require: green only when every shard passed.
+  behaviour-github-emulator-result:
+    name: behaviour-github-emulator
+    if: ${{ always() }}
+    needs: [behaviour-github-emulator]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: All shards passed
+        env:
+          SHARDS: ${{ needs.behaviour-github-emulator.result }}
+        run: |
+          echo "shards: $SHARDS"
+          [ "$SHARDS" = success ]
