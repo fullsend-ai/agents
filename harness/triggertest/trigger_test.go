@@ -591,7 +591,135 @@ func TestTriageTrigger(t *testing.T) {
 		{name: "MR opened", fixture: "gitlab-mr-opened.json", want: false},
 		{name: "PR closed", fixture: "pr-closed.json", want: false},
 		{name: "review requested changes", fixture: "review-changes-requested.json", want: false},
+		{
+			name:    "issue opened with skip-triage",
+			fixture: "issue-opened.json",
+			edit: func(t *testing.T, ev map[string]any) {
+				sub(t, ev, "state")["labels"] = []any{"skip-triage"}
+			},
+			want: false,
+		},
+		{
+			name:    "issue edited with skip-triage",
+			fixture: "issue-opened.json",
+			edit: func(t *testing.T, ev map[string]any) {
+				sub(t, ev, "transition")["kind"] = "edited"
+				sub(t, ev, "state")["labels"] = []any{"kind/feature", "skip-triage"}
+			},
+			want: false,
+		},
+		{
+			name:    "ready-for-triage label added to an issue with skip-triage",
+			fixture: "ready-to-code-labeled.json",
+			edit: func(t *testing.T, ev map[string]any) {
+				sub(t, sub(t, ev, "transition"), "label")["name"] = "ready-for-triage"
+				sub(t, ev, "state")["labels"] = []any{"ready-for-triage", "skip-triage"}
+			},
+			want: false,
+		},
+		{
+			name:    "/fs-triage comment on an issue with skip-triage",
+			fixture: "jira-fs-triage-comment.json",
+			edit: func(t *testing.T, ev map[string]any) {
+				sub(t, ev, "state")["labels"] = []any{"skip-triage"}
+			},
+			want: true,
+		},
+		{
+			name:    "issue opened with another label",
+			fixture: "issue-opened.json",
+			edit: func(t *testing.T, ev map[string]any) {
+				sub(t, ev, "state")["labels"] = []any{"needs-design"}
+			},
+			want: true,
+		},
 	})
+}
+
+// TestTriageSkipLabelOverrideOverlay checks the triage overlay that marks a
+// human /fs-triage as an override of the skip labels (#2076).
+func TestTriageSkipLabelOverrideOverlay(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "triage.yaml"))
+	if err != nil {
+		t.Fatalf("reading triage.yaml: %v", err)
+	}
+	var h struct {
+		Overlays []struct {
+			When string `yaml:"when"`
+			Env  struct {
+				Runner map[string]string `yaml:"runner"`
+			} `yaml:"env"`
+		} `yaml:"overlays"`
+	}
+	if err := yaml.Unmarshal(data, &h); err != nil {
+		t.Fatalf("parsing triage.yaml: %v", err)
+	}
+	when := ""
+	for _, o := range h.Overlays {
+		if o.Env.Runner["TRIAGE_SKIP_LABEL_OVERRIDE"] == "true" {
+			when = o.When
+		}
+	}
+	if when == "" {
+		t.Fatal("triage.yaml has no overlay that sets TRIAGE_SKIP_LABEL_OVERRIDE")
+	}
+	prg := compileTrigger(t, when)
+	dir := fixturesDir(t)
+	cases := []triggerCase{
+		{name: "/fs-triage comment on a Jira issue", fixture: "jira-fs-triage-comment.json", want: true},
+		{
+			name:    "/fs-triage comment on an issue",
+			fixture: "fs-fix-comment.json",
+			edit: func(t *testing.T, ev map[string]any) {
+				setCommand(t, ev, "/fs-triage")
+				asIssueComment(t, ev)
+			},
+			want: true,
+		},
+		{
+			name:    "/fs-triage comment by a bot",
+			fixture: "jira-fs-triage-comment.json",
+			edit: func(t *testing.T, ev map[string]any) {
+				sub(t, ev, "actor")["kind"] = "bot"
+			},
+			want: false,
+		},
+		{
+			name:    "comment without a command",
+			fixture: "jira-fs-triage-comment.json",
+			edit: func(t *testing.T, ev map[string]any) {
+				delete(sub(t, sub(t, ev, "transition"), "comment"), "command")
+			},
+			want: false,
+		},
+		{name: "/fs-fix comment on a PR", fixture: "fs-fix-comment.json", want: false},
+		{name: "issue opened", fixture: "issue-opened.json", want: false},
+		{name: "ready-to-code label added to an issue", fixture: "ready-to-code-labeled.json", want: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ev := loadFixture(t, dir, tc.fixture)
+			if tc.edit != nil {
+				tc.edit(t, ev)
+			}
+			out, _, err := prg.Eval(map[string]any{"event": ev})
+			if err != nil {
+				t.Fatalf("evaluating overlay: %v", err)
+			}
+			if got, _ := out.Value().(bool); got != tc.want {
+				t.Errorf("overlay = %v, want %v", got, tc.want)
+			}
+		})
+	}
+	// Runs without a normalized event resolve overlays against an empty
+	// event, where the skip must hold.
+	out, _, err := prg.Eval(map[string]any{"event": map[string]any{}})
+	if err != nil {
+		t.Fatalf("evaluating overlay on an empty event: %v", err)
+	}
+	if got, _ := out.Value().(bool); got {
+		t.Error("overlay matches an empty event")
+	}
 }
 
 func TestPrioritizeTrigger(t *testing.T) {

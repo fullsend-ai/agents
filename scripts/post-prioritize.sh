@@ -784,11 +784,14 @@ ${body}"
 # This forge is dark: GitHub and GitLab /fs-prioritize dispatch is unchanged.
 # These functions run only when FULLSEND_FORGE=jira.
 #
-# Writes only one number custom field, resolved by exact name:
-#   RICE Score
-# The Reach, Impact, Confidence, and Effort scores and their reasoning go in
-# the sticky comment, never in separate Jira fields. Never writes Rank,
-# Priority, status, assignee, or any other Jira field.
+# Writes five custom fields, resolved by exact name:
+#   Reach, Impact, Effort, RICE Score — number/float
+#   Confidence — select list (shared Jira field; not a number)
+# GitHub and GitLab /fs-prioritize are unchanged. The sticky comment still
+# prints the agent floats and the RICE formula. Confidence is mapped onto
+# the select options only for the Jira field write; the mapped label is
+# never used to compute RICE Score. Never writes Rank, Priority, status,
+# assignee, or any other Jira field.
 #
 # Jira Cloud only (v1): the issue host must match *.atlassian.net.
 #
@@ -1297,38 +1300,91 @@ forge_parse_issue_url() {
   JIRA_ISSUE_NUM="${ISSUE_NUMBER##*-}"
 }
 
-# Resolve the RICE Score field by exact name. Fail closed unless it
-# is a unique customfield_[0-9]+ number field — never Rank, Priority, or
-# system fields.
-_jira_custom_number_field_id() {
+# Resolve a custom field by exact name and schema type. Another field may
+# share the name with a different type (some JIRA instances have a site-wide
+# Impact select next to a different Impact number). Uniqueness is among
+# matches of the expected type. Never Rank, Priority, or system fields.
+_jira_custom_field_id() {
   local fields_json="$1"
   local name="$2"
-  local matches count id type
-  matches=$(echo "${fields_json}" | jq -c --arg n "${name}" '[.[] | select(.name == $n)]') || {
+  local expected_type="$3"
+  local named typed count named_count id type found_id found_type
+  named=$(echo "${fields_json}" | jq -c --arg n "${name}" '[.[] | select(.name == $n)]') || {
     echo "ERROR: failed to parse Jira field list while looking up '${name}'" >&2
     return 1
   }
-  count=$(echo "${matches}" | jq 'length')
+  typed=$(echo "${named}" | jq -c --arg t "${expected_type}" '[.[] | select(.schema.type == $t)]') || {
+    echo "ERROR: failed to parse Jira field list while looking up '${name}'" >&2
+    return 1
+  }
+  count=$(echo "${typed}" | jq 'length')
+  if [[ "${count}" -eq 0 ]]; then
+    named_count=$(echo "${named}" | jq 'length')
+    if [[ "${named_count}" -eq 0 ]]; then
+      echo "ERROR: Jira field '${name}' not found or not unique (matches=0). Create one custom field named exactly '${name}' before running prioritize on Jira." >&2
+      return 1
+    fi
+    found_id=$(echo "${named}" | jq -r '
+      ([.[] | select(.id | test("^customfield_[0-9]+$"))] | .[0].id)
+      // .[0].id // empty')
+    if [[ ! "${found_id}" =~ ^customfield_[0-9]+$ ]]; then
+      echo "ERROR: Jira field '${name}' resolved to '${found_id}', which is not a custom field — refusing to write" >&2
+      return 1
+    fi
+    found_type=$(echo "${named}" | jq -r --arg id "${found_id}" \
+      '.[] | select(.id == $id) | .schema.type // empty')
+    echo "ERROR: Jira field '${name}' (${found_id}) has schema type '${found_type}', expected ${expected_type}" >&2
+    return 1
+  fi
   if [[ "${count}" -ne 1 ]]; then
-    echo "ERROR: Jira field '${name}' not found or not unique (matches=${count}). Create one custom number field named exactly '${name}' before running prioritize on Jira." >&2
+    echo "ERROR: Jira field '${name}' not found or not unique (matches=${count}). Create one custom field named exactly '${name}' before running prioritize on Jira." >&2
     return 1
   fi
-  id=$(echo "${matches}" | jq -r '.[0].id // empty')
-  type=$(echo "${matches}" | jq -r '.[0].schema.type // empty')
+  id=$(echo "${typed}" | jq -r '.[0].id // empty')
+  type=$(echo "${typed}" | jq -r '.[0].schema.type // empty')
   if [[ ! "${id}" =~ ^customfield_[0-9]+$ ]]; then
-    echo "ERROR: Jira field '${name}' resolved to '${id}', which is not a custom number field — refusing to write" >&2
+    echo "ERROR: Jira field '${name}' resolved to '${id}', which is not a custom field — refusing to write" >&2
     return 1
   fi
-  if [[ "${type}" != "number" ]]; then
-    echo "ERROR: Jira field '${name}' (${id}) has schema type '${type}', expected number" >&2
+  if [[ "${type}" != "${expected_type}" ]]; then
+    echo "ERROR: Jira field '${name}' (${id}) has schema type '${type}', expected ${expected_type}" >&2
     return 1
   fi
   printf '%s\n' "${id}"
 }
 
+_jira_custom_number_field_id() {
+  _jira_custom_field_id "$1" "$2" "number"
+}
+
+_jira_custom_option_field_id() {
+  _jira_custom_field_id "$1" "$2" "option"
+}
+
+# Map the agent Confidence float (0.1–1.0) onto the shared Jira select
+# options. The agent rubric is Low 0.1–0.3, Medium 0.4–0.6, High 0.7–1.0.
+# This label is only written to the Confidence field. RICE Score always
+# uses the unmapped float from agent-result.json.
+_jira_map_confidence_select() {
+  local conf="$1" label
+  if ! jq -e 'type == "number"' <<< "${conf}" &>/dev/null; then
+    echo "ERROR: Confidence is not a number; cannot map onto the Jira select field" >&2
+    return 1
+  fi
+  label=$(jq -nr --argjson c "${conf}" '
+    if $c < 0.4 then "50% (Low)"
+    elif $c < 0.7 then "75% (Medium)"
+    else "100% (High)"
+    end') || {
+    echo "ERROR: failed to map Confidence onto the Jira select options" >&2
+    return 1
+  }
+  printf '%s\n' "${label}"
+}
+
 _jira_assert_rice_only_payload() {
   local payload="$1"
-  local keys key
+  local keys key count
   if echo "${payload}" | jq -e '
     .fields
     | (has("priority") or has("rank") or has("assignee") or has("status")
@@ -1339,8 +1395,9 @@ _jira_assert_rice_only_payload() {
     return 1
   fi
   keys=$(echo "${payload}" | jq -r '.fields | keys[]')
-  if [[ "$(echo "${keys}" | grep -c .)" -ne 1 ]]; then
-    echo "ERROR: refusing Jira payload that does not contain exactly one field" >&2
+  count=$(echo "${keys}" | grep -c .)
+  if [[ "${count}" -ne 5 ]]; then
+    echo "ERROR: refusing Jira payload that does not contain exactly five RICE fields" >&2
     return 1
   fi
   while IFS= read -r key; do
@@ -1354,9 +1411,14 @@ _jira_assert_rice_only_payload() {
 
 # --- Project / issue field operations ---
 
-# Reach, impact, confidence, and effort ($1-$4) go in the sticky comment;
-# only the computed score ($5) is written to Jira.
+# $1–$4 are the agent floats (Reach, Impact, Confidence, Effort). $5 is
+# RICE Score, already computed from those floats in post-prioritize.src.sh.
+# Confidence is mapped onto the Jira select only in this function.
 forge_update_project_scores() {
+  local reach="$1"
+  local impact="$2"
+  local confidence="$3"
+  local effort="$4"
   local score="$5"
 
   _jira_auth_init || return 1
@@ -1373,28 +1435,44 @@ forge_update_project_scores() {
 
   local fields_json
   fields_json=$(_jira_api GET "/field") || {
-    echo "ERROR: failed to list Jira fields while resolving the RICE Score field" >&2
+    echo "ERROR: failed to list Jira fields while resolving the RICE fields" >&2
     return 1
   }
 
-  local score_id
+  local reach_id impact_id effort_id score_id conf_id conf_option
   score_id=$(_jira_custom_number_field_id "${fields_json}" "RICE Score") || return 1
+  reach_id=$(_jira_custom_number_field_id "${fields_json}" "Reach") || return 1
+  impact_id=$(_jira_custom_number_field_id "${fields_json}" "Impact") || return 1
+  effort_id=$(_jira_custom_number_field_id "${fields_json}" "Effort") || return 1
+  conf_id=$(_jira_custom_option_field_id "${fields_json}" "Confidence") || return 1
+  conf_option=$(_jira_map_confidence_select "${confidence}") || return 1
 
   local payload
-  payload=$(jq -n --arg sid "${score_id}" --argjson s "${score}" \
-    '{fields: {($sid): $s}}') || {
+  payload=$(jq -n \
+    --arg rid "${reach_id}" --argjson r "${reach}" \
+    --arg iid "${impact_id}" --argjson i "${impact}" \
+    --arg eid "${effort_id}" --argjson e "${effort}" \
+    --arg sid "${score_id}" --argjson s "${score}" \
+    --arg cid "${conf_id}" --arg copt "${conf_option}" \
+    '{fields: {
+      ($rid): $r,
+      ($iid): $i,
+      ($eid): $e,
+      ($sid): $s,
+      ($cid): {value: $copt}
+    }}') || {
     echo "ERROR: failed to build Jira RICE field payload" >&2
     return 1
   }
 
   _jira_assert_rice_only_payload "${payload}" || return 1
 
-  echo "Writing RICE Score to Jira field ${score_id} on ${ISSUE_NUMBER}..."
+  echo "Writing RICE fields on ${ISSUE_NUMBER} (Confidence select=${conf_option}; RICE Score uses unmapped Confidence ${confidence})..."
   if ! _jira_api PUT "/issue/${ISSUE_NUMBER}" --data "${payload}" >/dev/null; then
-    echo "ERROR: failed to write RICE Score on ${ISSUE_NUMBER} via PUT /issue/${ISSUE_NUMBER}" >&2
+    echo "ERROR: failed to write RICE fields on ${ISSUE_NUMBER} via PUT /issue/${ISSUE_NUMBER}" >&2
     return 1
   fi
-  echo "Jira RICE Score updated."
+  echo "Jira RICE fields updated."
 }
 
 # --- Comments ---
@@ -1538,8 +1616,9 @@ COMMENT=$(jq -n \
 
 </details>"')
 
-# Jira keeps only the computed score in its RICE Score field, so the
-# sticky comment carries the whole breakdown. Jira renders the comment from
+# Jira writes Reach, Impact, Effort, and RICE Score as numbers and maps
+# Confidence onto a shared select list. The sticky comment still prints the
+# agent floats (including unmapped Confidence) and the formula. Jira renders
 # markdown, where a <details> block and a table do not survive, so use a
 # heading and a bullet list. Reasoning has HTML tags and newlines removed.
 if [[ "${FULLSEND_FORGE}" == "jira" ]]; then

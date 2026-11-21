@@ -24,7 +24,9 @@ The triage agent runs automatically when:
 
 It can also be triggered manually with the `/fs-triage` command.
 
-The harness also declares a CEL `trigger:` for fullsend's harness dispatch: an issue opened or edited by a human, the `ready-for-triage` label added to an issue, or `/fs-triage` from a human on an issue, a PR or an MR. Dispatch does not evaluate it for the built-in triage agent yet, so the routing above is what runs today.
+An issue that carries a [skip label](#skip-labels) is not triaged automatically.
+
+The harness also declares a CEL `trigger:` for fullsend's harness dispatch: an issue opened or edited by a human, the `ready-for-triage` label added to an issue (both unless the issue carries `skip-triage`), or `/fs-triage` from a human on an issue, a PR or an MR. Dispatch does not evaluate it for the built-in triage agent yet, so the routing above is what runs today.
 
 ## Commands
 
@@ -104,7 +106,7 @@ invent labels or apply labels not listed here.
 ## Control labels (never recommend these)
 
 These are managed by the triage pipeline. Never include them in `label_actions`:
-`needs-info`, `ready-to-code`, `duplicate`, `feature`, `blocked`, `triaged`, `question`, `bug`, `documentation`, `not-planned`, `completed`, `pr-open`.
+`needs-info`, `ready-to-code`, `duplicate`, `feature`, `blocked`, `triaged`, `question`, `bug`, `documentation`, `not-planned`, `completed`, `pr-open`, `ready-for-triage`.
 
 ## Area labels
 
@@ -170,6 +172,7 @@ post-script applies the actions via `PUT /rest/api/3/issue/{key}` with
 |----------|-------------|---------|--------------|
 | `TRIAGE_AUTO_CODE` | Controls whether triage auto-applies `ready-to-code`. See [Ready-to-code promotion](#ready-to-code-promotion). | `on` | `on`/`always`, `off`/`never`, `discretionary` |
 | `TRIAGE_AUTO_CODE_CATEGORIES` | Comma-separated list of categories eligible for auto-promotion when `TRIAGE_AUTO_CODE` is `on`/`always` or `discretionary`. | `bug,documentation,performance` | `bug`, `documentation`, `performance` |
+| `TRIAGE_SKIP_LABELS` | Comma-separated labels that act like the built-in `skip-triage` label. Set it in `env.runner`. See [Skip labels](#skip-labels). | empty | Any label names |
 
 To override these defaults per repo or org, create a custom harness for the
 triage agent the same way the [code agent](code.md#how-to-configure) does —
@@ -196,6 +199,36 @@ and `env.sandbox` values, referenced from `.fullsend/config.yaml`.
 
 Use `discretionary` for workflows such as backlog grooming, where
 triage should still classify issues but must not flood the coding queue.
+
+#### Skip labels
+
+The `skip-triage` label keeps an issue with a planning process, such as a
+top-level spec or decision map whose child issues are still being refined.
+`TRIAGE_SKIP_LABELS` adds more labels with the same behavior, for example
+`needs-design`, without changing the agent prompt or scripts. Do not list
+labels that the triage pipeline manages itself, such as `needs-info`,
+`ready-to-code`, or `triaged`: a human `/fs-triage` resets those labels, and
+the skip check would then fight the pipeline.
+
+While an issue carries a skip label:
+
+- Automatic triage skips it. The pre-script reads the labels from the
+  tracker and stops the run before the agent starts. It changes no labels
+  and posts no comment, and the run is reported as skipped. This applies to
+  issue opened and edited events and to the `ready-for-triage` label.
+- A human `/fs-triage` comment still runs triage on purpose. The harness
+  detects that comment from the run's normalized event. If a run has no
+  normalized event, the skip holds, and you must remove the label to
+  triage the issue.
+- Triage never promotes the issue to `ready-to-code`, even when a human
+  `/fs-triage` runs it. It applies `triaged` instead, so the code agent is
+  not dispatched automatically. A human can still run `/fs-code` or apply
+  `ready-to-code`.
+
+Apply the label when the issue is created: adding it later does not stop a
+triage run that has already started. Planning skills should apply
+`skip-triage` to the top-level issue and to planning-only child issues they
+own, and not to child issues meant for implementation.
 
 ### Issue filing allowlist
 

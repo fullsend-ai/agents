@@ -1016,9 +1016,10 @@ run_test "github-after-gitlab-smoke" "" 8
 # ---------------------------------------------------------------------------
 # Jira forge tests
 # Verify FULLSEND_FORGE=jira routes REST through the upstream gateway
-# (<api_url>/ex/jira/<cloudId>/rest/api/3), writes only the single
-# RICE Score custom field, posts the full breakdown in the sticky
-# comment, and never calls gh or writes Rank/Priority.
+# (<api_url>/ex/jira/<cloudId>/rest/api/3), writes the five RICE custom
+# fields (Confidence mapped onto the shared select; RICE Score uses the
+# unmapped float), posts the unmapped breakdown in the sticky comment,
+# and never calls gh or writes Rank/Priority.
 # ---------------------------------------------------------------------------
 
 export FULLSEND_FORGE="jira"
@@ -1041,6 +1042,10 @@ JIRA_DEFAULT_REST="${JIRA_DEFAULT_GATEWAY}/ex/jira/${JIRA_CLOUD_ID_VALUE}/rest/a
 
 DEFAULT_JIRA_FIELDS='[
   {"id":"customfield_10105","name":"RICE Score","schema":{"type":"number"}},
+  {"id":"customfield_10862","name":"Reach","schema":{"type":"number"}},
+  {"id":"customfield_10836","name":"Impact","schema":{"type":"number"}},
+  {"id":"customfield_10637","name":"Effort","schema":{"type":"number"}},
+  {"id":"customfield_10838","name":"Confidence","schema":{"type":"option"}},
   {"id":"customfield_10101","name":"RICE Reach","schema":{"type":"number"}},
   {"id":"priority","name":"Priority","schema":{"type":"priority"}},
   {"id":"customfield_10019","name":"Rank","schema":{"type":"any"}},
@@ -1498,24 +1503,39 @@ done
 unset FULLSEND_JIRA_EMAIL
 export JIRA_USER_EMAIL="bot@example.com"
 
-# --- Single-field update payload ---
+# --- Five-field update payload ---
 
-# The PUT body is exactly one field: RICE Score, set to the score
-# (3 * 2 * 0.8 / 2 = 2.4). No Reach/Impact/Confidence/Effort fields.
-run_jira_test "jira-writes-single-rice-priority-score-field"
+# PUT body is Reach/Impact/Effort/RICE Score as numbers and Confidence as
+# the mapped select. Fixture Confidence 0.8 → 100% (High). RICE Score is
+# still (3 * 2 * 0.8 / 2 = 2.4) from the unmapped float.
+run_jira_test "jira-writes-five-rice-fields"
 if [[ ! -f "${CURL_DATA_FILE}" ]]; then
-  echo "FAIL: jira-writes-single-rice-priority-score-field — no PUT body captured"
+  echo "FAIL: jira-writes-five-rice-fields — no PUT body captured"
   FAILURES=$((FAILURES + 1))
 else
-  if [[ "$(jq -c '.' "${CURL_DATA_FILE}")" == '{"fields":{"customfield_10105":2.4}}' ]]; then
-    echo "PASS: jira-writes-single-rice-priority-score-field-payload"
+  if jq -e '
+    (.fields | length) == 5
+    and .fields.customfield_10862 == 3
+    and .fields.customfield_10836 == 2
+    and .fields.customfield_10637 == 2
+    and .fields.customfield_10105 == 2.4
+    and .fields.customfield_10838.value == "100% (High)"
+  ' "${CURL_DATA_FILE}" >/dev/null; then
+    echo "PASS: jira-writes-five-rice-fields-payload"
   else
-    echo "FAIL: jira-writes-single-rice-priority-score-field — unexpected payload"
+    echo "FAIL: jira-writes-five-rice-fields — unexpected payload"
     cat "${CURL_DATA_FILE}"
     FAILURES=$((FAILURES + 1))
   fi
   if jq -e '.fields | has("priority") or has("rank") or has("assignee") or has("status")' "${CURL_DATA_FILE}" >/dev/null; then
-    echo "FAIL: jira-writes-single-rice-priority-score-field — payload includes Rank/Priority/status/assignee"
+    echo "FAIL: jira-writes-five-rice-fields — payload includes Rank/Priority/status/assignee"
+    FAILURES=$((FAILURES + 1))
+  fi
+  if jq -e '.fields.customfield_10105 == 2.4' "${CURL_DATA_FILE}" >/dev/null; then
+    echo "PASS: jira-rice-score-uses-unmapped-confidence-float"
+  else
+    echo "FAIL: jira-rice-score-uses-unmapped-confidence-float"
+    cat "${CURL_DATA_FILE}"
     FAILURES=$((FAILURES + 1))
   fi
 fi
@@ -1524,6 +1544,47 @@ if [[ "$(grep -cF -- '--request PUT' "${CURL_LOG}")" -eq 1 ]]; then
 else
   echo "FAIL: jira-single-put-request"
   cat "${CURL_LOG}"
+  FAILURES=$((FAILURES + 1))
+fi
+
+# Confidence 0.6 is Medium on the agent rubric; RICE Score still uses 0.6
+# (3 * 2 * 0.6 / 2 = 1.8), not 0.75 from the select label.
+SAVED_FIXTURE_JSON="${FIXTURE_JSON}"
+FIXTURE_JSON="${FIXTURE_JSON/\"confidence\": 0.8/\"confidence\": 0.6}"
+run_jira_test "jira-maps-confidence-medium"
+FIXTURE_JSON="${SAVED_FIXTURE_JSON}"
+if [[ ! -f "${CURL_DATA_FILE}" ]]; then
+  echo "FAIL: jira-maps-confidence-medium — no PUT body captured"
+  FAILURES=$((FAILURES + 1))
+else
+  if jq -e '
+    .fields.customfield_10838 == {"value":"75% (Medium)"}
+    and .fields.customfield_10105 == 1.8
+  ' "${CURL_DATA_FILE}" >/dev/null; then
+    echo "PASS: jira-maps-confidence-medium-payload"
+  else
+    echo "FAIL: jira-maps-confidence-medium — expected 75% (Medium) and RICE Score 1.8"
+    cat "${CURL_DATA_FILE}"
+    FAILURES=$((FAILURES + 1))
+  fi
+fi
+if grep -qF 'Confidence: 0.6**' "${GH_LOG}"; then
+  echo "PASS: jira-maps-confidence-medium-comment-keeps-float"
+else
+  echo "FAIL: jira-maps-confidence-medium-comment-keeps-float"
+  cat "${GH_LOG}"
+  FAILURES=$((FAILURES + 1))
+fi
+
+SAVED_FIXTURE_JSON="${FIXTURE_JSON}"
+FIXTURE_JSON="${FIXTURE_JSON/\"confidence\": 0.8/\"confidence\": 0.2}"
+run_jira_test "jira-maps-confidence-low"
+FIXTURE_JSON="${SAVED_FIXTURE_JSON}"
+if jq -e '.fields.customfield_10838 == {"value":"50% (Low)"}' "${CURL_DATA_FILE}" >/dev/null; then
+  echo "PASS: jira-maps-confidence-low-payload"
+else
+  echo "FAIL: jira-maps-confidence-low — expected 50% (Low)"
+  cat "${CURL_DATA_FILE}"
   FAILURES=$((FAILURES + 1))
 fi
 
@@ -1609,20 +1670,46 @@ echo '[{"id":"customfield_10101","name":"RICE Reach","schema":{"type":"number"}}
 run_jira_test_stdout "jira-legacy-field-names-not-accepted" "Jira field 'RICE Score' not found" "true"
 assert_jira_no_writes "jira-legacy-field-names"
 
-# Duplicate field name: ambiguous, so fail closed.
+# Duplicate field name of the same schema type: ambiguous, so fail closed.
 echo '[{"id":"customfield_10105","name":"RICE Score","schema":{"type":"number"}},{"id":"customfield_10106","name":"RICE Score","schema":{"type":"number"}}]' > "${MOCK_FIELDS_FILE}"
 run_jira_test_stdout "jira-duplicate-field-fails" "not found or not unique (matches=2)" "true"
 assert_jira_no_writes "jira-duplicate-field"
 
+# A site-wide Impact select next to another Impact number field is not
+# ambiguous: write the unique number field.
+echo "${DEFAULT_JIRA_FIELDS}" | jq '. + [{"id":"customfield_10004","name":"Impact","schema":{"type":"option"}}]' > "${MOCK_FIELDS_FILE}"
+run_jira_test "jira-impact-number-amid-site-select"
+if [[ ! -f "${CURL_DATA_FILE}" ]]; then
+  echo "FAIL: jira-impact-number-amid-site-select — no PUT body captured"
+  FAILURES=$((FAILURES + 1))
+elif jq -e '.fields.customfield_10836 == 2 and (.fields | has("customfield_10004") | not)' "${CURL_DATA_FILE}" >/dev/null; then
+  echo "PASS: jira-impact-number-amid-site-select"
+else
+  echo "FAIL: jira-impact-number-amid-site-select — expected number Impact customfield_10836"
+  cat "${CURL_DATA_FILE}"
+  FAILURES=$((FAILURES + 1))
+fi
+echo "${DEFAULT_JIRA_FIELDS}" > "${MOCK_FIELDS_FILE}"
+
 # A system field that happens to be named "RICE Score" must not be written.
 echo '[{"id":"priority","name":"RICE Score","schema":{"type":"priority"}}]' > "${MOCK_FIELDS_FILE}"
-run_jira_test_stdout "jira-rejects-system-field-named-rice" "not a custom number field" "true"
+run_jira_test_stdout "jira-rejects-system-field-named-rice" "not a custom field" "true"
 assert_jira_no_writes "jira-rejects-system-field-named-rice"
 
 # A custom field of the wrong type must not be written.
-echo '[{"id":"customfield_10105","name":"RICE Score","schema":{"type":"string"}}]' > "${MOCK_FIELDS_FILE}"
+echo '[{"id":"customfield_10105","name":"RICE Score","schema":{"type":"string"}},{"id":"customfield_10862","name":"Reach","schema":{"type":"number"}},{"id":"customfield_10836","name":"Impact","schema":{"type":"number"}},{"id":"customfield_10637","name":"Effort","schema":{"type":"number"}},{"id":"customfield_10838","name":"Confidence","schema":{"type":"option"}}]' > "${MOCK_FIELDS_FILE}"
 run_jira_test_stdout "jira-rejects-non-number-custom-field" "expected number" "true"
 assert_jira_no_writes "jira-rejects-non-number-custom-field"
+
+# Confidence must stay a select. A number Confidence field is refused.
+echo '[{"id":"customfield_10105","name":"RICE Score","schema":{"type":"number"}},{"id":"customfield_10862","name":"Reach","schema":{"type":"number"}},{"id":"customfield_10836","name":"Impact","schema":{"type":"number"}},{"id":"customfield_10637","name":"Effort","schema":{"type":"number"}},{"id":"customfield_10838","name":"Confidence","schema":{"type":"number"}}]' > "${MOCK_FIELDS_FILE}"
+run_jira_test_stdout "jira-rejects-confidence-number-field" "expected option" "true"
+assert_jira_no_writes "jira-rejects-confidence-number-field"
+
+# "RICE Reach" is not "Reach".
+echo '[{"id":"customfield_10105","name":"RICE Score","schema":{"type":"number"}},{"id":"customfield_10101","name":"RICE Reach","schema":{"type":"number"}},{"id":"customfield_10836","name":"Impact","schema":{"type":"number"}},{"id":"customfield_10637","name":"Effort","schema":{"type":"number"}},{"id":"customfield_10838","name":"Confidence","schema":{"type":"option"}}]' > "${MOCK_FIELDS_FILE}"
+run_jira_test_stdout "jira-rejects-legacy-reach-name" "Jira field 'Reach' not found" "true"
+assert_jira_no_writes "jira-rejects-legacy-reach-name"
 echo "${DEFAULT_JIRA_FIELDS}" > "${MOCK_FIELDS_FILE}"
 
 SAVED_JIRA_TOKEN="${JIRA_TOKEN}"
@@ -1663,7 +1750,7 @@ export FULLSEND_JIRA_CLIENT_SECRET="${JIRA_CLIENT_SECRET_VALUE}"
 # mapping and must not select Basic auth).
 run_jira_test "jira-client-credentials-only"
 if [[ -f "${CURL_DATA_FILE}" ]] \
-  && [[ "$(jq -c '.' "${CURL_DATA_FILE}")" == '{"fields":{"customfield_10105":2.4}}' ]] \
+  && jq -e '.fields.customfield_10105 == 2.4 and .fields.customfield_10838.value == "100% (High)"' "${CURL_DATA_FILE}" >/dev/null \
   && grep -qF -- '--request PUT' "${CURL_LOG}"; then
   echo "PASS: jira-client-credentials-only-writes-rice-score"
 else
