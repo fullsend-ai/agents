@@ -96,6 +96,10 @@ if [[ -n "\${BODY}" ]]; then
 else
   echo "fullsend \$*" >> "${GH_LOG}"
 fi
+if [[ "\${1:-} \${2:-}" == "issues transition" && -n "\${MOCK_FULLSEND_TRANSITION_FAIL:-}" ]]; then
+  echo "Error: mock fullsend issues transition failure" >&2
+  exit 1
+fi
 MOCKEOF
 chmod +x "${MOCK_BIN}/fullsend"
 
@@ -2300,10 +2304,12 @@ export ISSUE_URL="https://gitlab.com/test-group/test-project/-/issues/42"
 # ---------------------------------------------------------------------------
 # Jira tracker tests
 # Verify that post-triage.sh works correctly with FULLSEND_TRACKER=jira.
-# Comment posting shells out to `fullsend issues post-comment --tracker
-# jira` (captured by the generic fullsend mock into GH_LOG, above); labels,
-# transitions, and issue creation go through curl against the Jira Cloud
-# REST API (captured into JIRA_CURL_LOG by the mock below).
+# Comment posting and close transitions shell out to `fullsend issues
+# post-comment --tracker jira` and `fullsend issues transition --tracker jira`
+# (captured by the generic fullsend mock into GH_LOG, above); labels,
+# status/transition pre-flight reads, and issue creation go through curl
+# against the Jira Cloud REST API (captured into JIRA_CURL_LOG by the mock
+# below).
 # ---------------------------------------------------------------------------
 
 export FULLSEND_TRACKER="jira"
@@ -2312,6 +2318,7 @@ export ISSUE_URL="https://test.atlassian.net/browse/TESTPROJ-42"
 export JIRA_USER_EMAIL="triage@example.com"
 export JIRA_TOKEN="fake-jira-token"
 export FULLSEND_DIR="${TMPDIR}/dot-fullsend"
+export JIRA_COMPLETED_TRANSITION="Closed"
 export JIRA_DUPLICATE_TRANSITION="Duplicate"
 export JIRA_NOT_PLANNED_TRANSITION="Not Planned"
 export JIRA_SPLIT_TRANSITION="Done"
@@ -2345,7 +2352,27 @@ done
 
 # List transitions available on the issue.
 if [[ "${URL}" =~ /transitions$ ]] && [[ "${METHOD}" == "GET" ]]; then
-  echo '{"transitions":[{"id":"31","name":"Duplicate"},{"id":"41","name":"Not Planned"},{"id":"51","name":"Done"}]}'
+  if [[ -n "${MOCK_JIRA_TRANSITIONS:-}" ]]; then
+    echo "${MOCK_JIRA_TRANSITIONS}"
+  else
+    echo '{"transitions":[{"id":"31","name":"Duplicate","to":{"statusCategory":{"key":"done"}}},{"id":"41","name":"Not Planned","to":{"statusCategory":{"key":"done"}}},{"id":"51","name":"Done","to":{"statusCategory":{"key":"done"}}},{"id":"61","name":"Closed","to":{"statusCategory":{"key":"done"}}}]}'
+  fi
+  exit 0
+fi
+
+# Return status for the issue (used by idempotency pre-flight check).
+if [[ "${URL}" =~ /issue/[A-Z]+-[0-9]+\?fields=status ]] && [[ "${METHOD}" == "GET" ]]; then
+  if [[ -n "${MOCK_JIRA_STATUS_OBSOLETE:-}" ]]; then
+    echo '{"fields":{"status":{"name":"Obsolete","statusCategory":{"key":"done","name":"Done"}}}}'
+  elif [[ -n "${MOCK_JIRA_STATUS_REJECTED:-}" ]]; then
+    echo '{"fields":{"status":{"name":"Won'\''t Do","statusCategory":{"key":"done","name":"Done"}}}}'
+  elif [[ -n "${MOCK_JIRA_STATUS_DONE:-}" ]]; then
+    status_name="${MOCK_JIRA_STATUS_NAME:-Done}"
+    jq -nc --arg s "${status_name}" \
+      '{fields:{status:{name:$s,statusCategory:{key:"done",name:"Done"}}}}'
+  else
+    echo '{"fields":{"status":{"name":"In Progress","statusCategory":{"key":"indeterminate","name":"In Progress"}}}}'
+  fi
   exit 0
 fi
 
@@ -2484,26 +2511,351 @@ run_jira_test "jira-clears-stale-triaged-label" \
   '{"action":"insufficient","reasoning":"missing repro","clarity_scores":{"symptom":0.6,"cause":0.3,"reproduction":0.1,"impact":0.5,"overall":0.39},"comment":"Could you share the exact steps to reproduce this?"}' \
   '"remove":"triaged"'
 
-# Jira duplicate action transitions the issue via JIRA_DUPLICATE_TRANSITION.
+# Jira duplicate action transitions the issue via `fullsend issues transition --transition`.
 run_jira_test "jira-duplicate-transitions" \
   '{"action":"duplicate","reasoning":"same as TESTPROJ-10","duplicate_of":"TESTPROJ-10","comment":"This appears to be a duplicate of TESTPROJ-10."}' \
-  '{"transition":{"id":"31"}}'
+  "fullsend issues transition --tracker jira --fullsend-dir ${FULLSEND_DIR} --project TESTPROJ --number 42 --transition Duplicate"
 
-# Jira not-planned action transitions the issue via JIRA_NOT_PLANNED_TRANSITION.
+# Jira not-planned action transitions the issue via `fullsend issues transition --transition`.
 run_jira_test "jira-not-planned-transitions" \
   '{"action":"not-planned","reasoning":"out of scope","comment":"This request is out of scope."}' \
-  '{"transition":{"id":"41"}}'
+  "fullsend issues transition --tracker jira --fullsend-dir ${FULLSEND_DIR} --project TESTPROJ --number 42 --transition Not Planned"
 
-# Jira completed action reuses JIRA_SPLIT_TRANSITION (close reason "completed").
+# Jira completed action transitions the issue via `fullsend issues transition --transition`.
+: > "${FULLSEND_ENV_LOG}"
 run_jira_test "jira-completed-transitions" \
   '{"action":"completed","reasoning":"all child issues are closed","comment":"All tracked work is done."}' \
-  '{"transition":{"id":"51"}}'
+  "fullsend issues transition --tracker jira --fullsend-dir ${FULLSEND_DIR} --project TESTPROJ --number 42 --transition Closed"
+if [[ "$(wc -l < "${FULLSEND_ENV_LOG}")" -eq 2 ]] \
+  && [[ "$(grep -cF "token=fake-jira-token email=triage@example.com" "${FULLSEND_ENV_LOG}")" -eq 2 ]] \
+  && ! grep -qE -- "--(jira-url|jira-email|token)" "${GH_LOG}"; then
+  echo "PASS: jira-close-passes-credentials-to-cli"
+else
+  echo "FAIL: jira-close-passes-credentials-to-cli — expected Jira creds in CLI env for both post-comment and transition calls, and not argv"
+  cat "${FULLSEND_ENV_LOG}" "${GH_LOG}"
+  FAILURES=$((FAILURES + 1))
+fi
 
-# Jira split action closes the original issue via JIRA_SPLIT_TRANSITION
+# Jira completed action falls back to `fullsend issues transition --state closed` when configured transition is unavailable.
+MOCK_JIRA_TRANSITIONS='{"transitions":[{"id":"51","name":"Done","to":{"name":"Done","statusCategory":{"key":"done"}}}]}' \
+JIRA_COMPLETED_TRANSITION="NonExistent" \
+run_jira_test "jira-completed-fallback-state-closed" \
+  '{"action":"completed","reasoning":"all child issues are closed","comment":"All tracked work is done."}' \
+  "fullsend issues transition --tracker jira --fullsend-dir ${FULLSEND_DIR} --project TESTPROJ --number 42 --state closed"
+if grep -qF "::warning::Transition 'NonExistent' (from JIRA_COMPLETED_TRANSITION) is not available on issue TESTPROJ-42; falling back to 'fullsend issues transition --state closed'" "${TMPDIR}/stdout.log"; then
+  echo "PASS: jira-completed-fallback-state-closed-warning"
+else
+  echo "FAIL: jira-completed-fallback-state-closed-warning — expected fallback warning in stdout"
+  cat "${TMPDIR}/stdout.log"
+  FAILURES=$((FAILURES + 1))
+fi
+if grep -qF -- "--transition NonExistent" "${GH_LOG}"; then
+  echo "FAIL: jira-completed-fallback-state-closed-no-explicit-call — should not invoke --transition for missing transition"
+  cat "${GH_LOG}"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: jira-completed-fallback-state-closed-no-explicit-call"
+fi
+
+# Jira duplicate action does NOT fall back to --state closed when its configured transition is missing.
+JIRA_DUPLICATE_TRANSITION="NonExistent" \
+run_jira_test "jira-duplicate-missing-transition-fails" \
+  '{"action":"duplicate","reasoning":"same as TESTPROJ-10","duplicate_of":"TESTPROJ-10","comment":"Duplicate."}' \
+  "" true
+if ! grep -qF "transition 'NonExistent' (from JIRA_DUPLICATE_TRANSITION) is not available on issue TESTPROJ-42" "${TMPDIR}/stdout.log" \
+  || grep -qF "issues transition" "${GH_LOG}"; then
+  echo "FAIL: jira-duplicate-missing-transition-fails — expected unavailable transition diagnostic and zero CLI calls"
+  cat "${TMPDIR}/stdout.log" "${GH_LOG}"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: jira-duplicate-missing-transition-fails-no-cli-call"
+fi
+
+# Jira not-planned action does NOT fall back to --state closed when its configured transition is missing.
+JIRA_NOT_PLANNED_TRANSITION="NonExistent" \
+run_jira_test "jira-not-planned-missing-transition-fails" \
+  '{"action":"not-planned","reasoning":"out of scope","comment":"Out of scope."}' \
+  "" true
+if ! grep -qF "transition 'NonExistent' (from JIRA_NOT_PLANNED_TRANSITION) is not available on issue TESTPROJ-42" "${TMPDIR}/stdout.log" \
+  || grep -qF "issues transition" "${GH_LOG}"; then
+  echo "FAIL: jira-not-planned-missing-transition-fails — expected unavailable transition diagnostic and zero CLI calls"
+  cat "${TMPDIR}/stdout.log" "${GH_LOG}"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: jira-not-planned-missing-transition-fails-no-cli-call"
+fi
+
+# Malformed /transitions JSON fails closed without falling back to --state closed.
+MOCK_JIRA_TRANSITIONS="not-json" \
+run_jira_test "jira-malformed-transitions-fails-closed" \
+  '{"action":"completed","reasoning":"all child issues are closed","comment":"All tracked work is done."}' \
+  "" true
+if ! grep -qF "unexpected transitions response" "${TMPDIR}/stdout.log" \
+  || grep -qF "issues transition" "${GH_LOG}"; then
+  echo "FAIL: jira-malformed-transitions-fails-closed — expected parse error and zero transition CLI calls"
+  cat "${TMPDIR}/stdout.log" "${GH_LOG}"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: jira-malformed-transitions-fails-closed-verified"
+fi
+
+# JSON object missing .transitions array fails closed without falling back to --state closed.
+MOCK_JIRA_TRANSITIONS='{}' \
+run_jira_test "jira-missing-transitions-key-fails-closed" \
+  '{"action":"completed","reasoning":"all child issues are closed","comment":"All tracked work is done."}' \
+  "" true
+if ! grep -qF "unexpected transitions response" "${TMPDIR}/stdout.log" \
+  || grep -qF "issues transition" "${GH_LOG}"; then
+  echo "FAIL: jira-missing-transitions-key-fails-closed — expected parse error and zero transition CLI calls"
+  cat "${TMPDIR}/stdout.log" "${GH_LOG}"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: jira-missing-transitions-key-fails-closed-verified"
+fi
+
+# Jira transition CLI failure when configured transition IS available must fail loudly and NOT fall back to --state closed.
+MOCK_FULLSEND_TRANSITION_FAIL=1 \
+run_jira_test "jira-transition-cli-failure-no-fallback" \
+  '{"action":"completed","reasoning":"all child issues are closed","comment":"All tracked work is done."}' \
+  "" true
+if ! grep -qF -- "fullsend issues transition --tracker jira --fullsend-dir ${FULLSEND_DIR} --project TESTPROJ --number 42 --transition Closed" "${GH_LOG}" \
+  || grep -qF -- "--state closed" "${GH_LOG}"; then
+  echo "FAIL: jira-transition-cli-failure-no-fallback — expected explicit --transition Closed call and no --state closed fallback"
+  cat "${GH_LOG}"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: jira-transition-cli-failure-no-fallback-verified"
+fi
+
+# Jira fallback CLI failure (--state closed) propagates non-zero exit.
+MOCK_JIRA_TRANSITIONS='{"transitions":[{"id":"51","name":"Done","to":{"name":"Done","statusCategory":{"key":"done"}}},{"id":"61","name":"Closed","to":{"name":"Closed","statusCategory":{"key":"done"}}}]}' \
+JIRA_COMPLETED_TRANSITION="NonExistent" \
+MOCK_FULLSEND_TRANSITION_FAIL=1 \
+run_jira_test "jira-fallback-state-closed-failure-propagates" \
+  '{"action":"completed","reasoning":"all child issues are closed","comment":"All tracked work is done."}' \
+  "" true
+if grep -qF -- "fullsend issues transition --tracker jira --fullsend-dir ${FULLSEND_DIR} --project TESTPROJ --number 42 --state closed" "${GH_LOG}"; then
+  echo "PASS: jira-fallback-state-closed-failure-propagates-verified"
+else
+  echo "FAIL: jira-fallback-state-closed-failure-propagates — expected --state closed invocation before failing"
+  cat "${GH_LOG}"
+  FAILURES=$((FAILURES + 1))
+fi
+
+# Jira duplicate action does NOT skip when issue is in a different rejection status (Won't Do).
+MOCK_JIRA_STATUS_REJECTED=1 \
+run_jira_test "jira-duplicate-on-wont-do-transitions" \
+  '{"action":"duplicate","reasoning":"same as TESTPROJ-10","duplicate_of":"TESTPROJ-10","comment":"Duplicate of TESTPROJ-10."}' \
+  "fullsend issues transition --tracker jira --fullsend-dir ${FULLSEND_DIR} --project TESTPROJ --number 42 --transition Duplicate"
+
+# Jira not-planned action skips idempotently when issue is already in its matching status (Won't Do).
+JIRA_NOT_PLANNED_TRANSITION="Won't Do" \
+MOCK_JIRA_STATUS_REJECTED=1 \
+run_jira_test_stdout "jira-not-planned-idempotent-wont-do" \
+  '{"action":"not-planned","reasoning":"out of scope","comment":"Out of scope."}' \
+  "is already in status 'Won't Do' (done); skipping transition for reason 'not planned'"
+if grep -qF "issues transition" "${GH_LOG}"; then
+  echo "FAIL: jira-not-planned-idempotent-wont-do — expected no fullsend issues transition call"
+  cat "${GH_LOG}"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: jira-not-planned-idempotent-wont-do-no-transition"
+fi
+
+# Jira completed action falls back to JIRA_SPLIT_TRANSITION when JIRA_COMPLETED_TRANSITION is unset.
+_saved_jira_completed="${JIRA_COMPLETED_TRANSITION:-}"
+unset JIRA_COMPLETED_TRANSITION
+run_jira_test_stdout "jira-completed-fallback-to-split-var" \
+  '{"action":"completed","reasoning":"all child issues are closed","comment":"All tracked work is done."}' \
+  "falling back to JIRA_SPLIT_TRANSITION"
+if grep -qF -- "fullsend issues transition --tracker jira --fullsend-dir ${FULLSEND_DIR} --project TESTPROJ --number 42 --transition Done" "${GH_LOG}"; then
+  echo "PASS: jira-completed-fallback-to-split-var-cli-call"
+else
+  echo "FAIL: jira-completed-fallback-to-split-var-cli-call — expected --transition Done"
+  cat "${GH_LOG}"
+  FAILURES=$((FAILURES + 1))
+fi
+if [[ -n "${_saved_jira_completed}" ]]; then
+  export JIRA_COMPLETED_TRANSITION="${_saved_jira_completed}"
+fi
+unset _saved_jira_completed
+
+# Jira completed action fails loudly when both JIRA_COMPLETED_TRANSITION and JIRA_SPLIT_TRANSITION are unset.
+_saved_jira_completed="${JIRA_COMPLETED_TRANSITION:-}"
+_saved_jira_split="${JIRA_SPLIT_TRANSITION:-}"
+unset JIRA_COMPLETED_TRANSITION JIRA_SPLIT_TRANSITION
+run_jira_test "jira-completed-both-vars-unset-fails" \
+  '{"action":"completed","reasoning":"all child issues are closed","comment":"All tracked work is done."}' \
+  "" true
+if ! grep -qF "JIRA_COMPLETED_TRANSITION is not set" "${TMPDIR}/stdout.log" \
+  || grep -qF "issues transition" "${GH_LOG}"; then
+  echo "FAIL: jira-completed-both-vars-unset-fails — expected unset-var diagnostic and zero CLI calls"
+  cat "${TMPDIR}/stdout.log" "${GH_LOG}"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: jira-completed-both-vars-unset-fails-no-cli-call"
+fi
+if [[ -n "${_saved_jira_completed}" ]]; then
+  export JIRA_COMPLETED_TRANSITION="${_saved_jira_completed}"
+fi
+if [[ -n "${_saved_jira_split}" ]]; then
+  export JIRA_SPLIT_TRANSITION="${_saved_jira_split}"
+fi
+unset _saved_jira_completed _saved_jira_split
+
+# Jira completed action skips idempotently when issue is already in the configured target status ('Closed').
+MOCK_JIRA_STATUS_DONE=1 \
+MOCK_JIRA_STATUS_NAME="Closed" \
+run_jira_test_stdout "jira-completed-idempotent-exact-status" \
+  '{"action":"completed","reasoning":"all child issues are closed","comment":"All tracked work is done."}' \
+  "is already in status 'Closed' (done); skipping transition for reason 'completed'"
+if grep -qF "issues transition" "${GH_LOG}"; then
+  echo "FAIL: jira-completed-idempotent-exact-status — expected no fullsend issues transition call"
+  cat "${GH_LOG}"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: jira-completed-idempotent-exact-status-no-transition"
+fi
+
+# Jira completed action skips idempotently via .to.name when transition name differs from status name.
+JIRA_COMPLETED_TRANSITION="Mark Done" \
+MOCK_JIRA_STATUS_DONE=1 \
+MOCK_JIRA_STATUS_NAME="Done" \
+MOCK_JIRA_TRANSITIONS='{"transitions":[{"id":"51","name":"Mark Done","to":{"name":"Done","statusCategory":{"key":"done"}}}]}' \
+run_jira_test_stdout "jira-completed-idempotent-to-name" \
+  '{"action":"completed","reasoning":"all child issues are closed","comment":"All tracked work is done."}' \
+  "is already in target status 'Done' (done); skipping transition for reason 'completed'"
+if grep -qF "issues transition" "${GH_LOG}"; then
+  echo "FAIL: jira-completed-idempotent-to-name — expected no fullsend issues transition call"
+  cat "${GH_LOG}"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: jira-completed-idempotent-to-name-no-transition"
+fi
+
+# Jira completed action does NOT skip when uniquely offered transition has non-empty .to.name differing from current done status.
+JIRA_COMPLETED_TRANSITION="Mark Done" \
+MOCK_JIRA_STATUS_REJECTED=1 \
+MOCK_JIRA_TRANSITIONS='{"transitions":[{"id":"51","name":"Mark Done","to":{"name":"Done","statusCategory":{"key":"done"}}}]}' \
+run_jira_test "jira-completed-to-name-mismatch-transitions" \
+  '{"action":"completed","reasoning":"re-completing previously rejected issue","comment":"All tracked work is done."}' \
+  "fullsend issues transition --tracker jira --fullsend-dir ${FULLSEND_DIR} --project TESTPROJ --number 42 --transition Mark Done"
+
+# Jira completed action does NOT skip via .to.name when multiple transitions share the configured name (ambiguous);
+# it delegates to `fullsend issues transition --transition` so fullsend reports ambiguity.
+JIRA_COMPLETED_TRANSITION="Mark Done" \
+MOCK_JIRA_STATUS_DONE=1 \
+MOCK_JIRA_STATUS_NAME="Done" \
+MOCK_JIRA_TRANSITIONS='{"transitions":[{"id":"51","name":"Mark Done","to":{"name":"Done","statusCategory":{"key":"done"}}},{"id":"52","name":"Mark Done","to":{"name":"Closed","statusCategory":{"key":"done"}}}]}' \
+run_jira_test "jira-ambiguous-matching-transitions-no-skip" \
+  '{"action":"completed","reasoning":"all child issues are closed","comment":"All tracked work is done."}' \
+  "fullsend issues transition --tracker jira --fullsend-dir ${FULLSEND_DIR} --project TESTPROJ --number 42 --transition Mark Done"
+
+# Jira completed action does not skip if issue is currently in a different Done status (e.g. Won't Do) and configured transition is offered.
+MOCK_JIRA_STATUS_REJECTED=1 \
+run_jira_test "jira-completed-on-wont-do-transitions" \
+  '{"action":"completed","reasoning":"re-completing previously rejected issue","comment":"All tracked work is done."}' \
+  "fullsend issues transition --tracker jira --fullsend-dir ${FULLSEND_DIR} --project TESTPROJ --number 42 --transition Closed"
+
+# Jira split action closes the original issue via `fullsend issues transition --transition`
 # after creating both sub-issues (defaulting to the source project).
 run_jira_test "jira-split-closes-via-transition" \
   '{"action":"split","reasoning":"bundles two independent features","sub_issues":[{"title":"Feature A","body":"Do A"},{"title":"Feature B","body":"Do B"}],"comment":"Splitting into two sub-issues."}' \
-  '{"transition":{"id":"51"}}'
+  "fullsend issues transition --tracker jira --fullsend-dir ${FULLSEND_DIR} --project TESTPROJ --number 42 --transition Done"
+
+# Jira split action skips idempotently if issue is already in configured JIRA_SPLIT_TRANSITION ('Obsolete').
+JIRA_SPLIT_TRANSITION="Obsolete" \
+MOCK_JIRA_STATUS_OBSOLETE=1 \
+run_jira_test_stdout "jira-split-idempotent-obsolete" \
+  '{"action":"split","reasoning":"already split previously","sub_issues":[{"title":"Feature A","body":"Do A"},{"title":"Feature B","body":"Do B"}],"comment":"Splitting into two sub-issues."}' \
+  "is already in status 'Obsolete' (done); skipping transition for reason 'split'"
+if grep -qF "issues transition" "${GH_LOG}"; then
+  echo "FAIL: jira-split-idempotent-obsolete — expected no fullsend issues transition call when already Obsolete"
+  cat "${GH_LOG}"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: jira-split-idempotent-obsolete-no-transition"
+fi
+
+# Jira split re-run skips idempotently via .to.name when transition name differs from status name (e.g. "Mark Obsolete" -> "Obsolete").
+JIRA_SPLIT_TRANSITION="Mark Obsolete" \
+MOCK_JIRA_STATUS_DONE=1 \
+MOCK_JIRA_STATUS_NAME="Obsolete" \
+MOCK_JIRA_TRANSITIONS='{"transitions":[{"id":"71","name":"Mark Obsolete","to":{"name":"Obsolete","statusCategory":{"key":"done"}}},{"id":"51","name":"Done","to":{"name":"Done","statusCategory":{"key":"done"}}}]}' \
+run_jira_test_stdout "jira-split-idempotent-to-name" \
+  '{"action":"split","reasoning":"already split previously","sub_issues":[{"title":"Feature A","body":"Do A"},{"title":"Feature B","body":"Do B"}],"comment":"Splitting into two sub-issues."}' \
+  "is already in target status 'Obsolete' (done); skipping transition for reason 'split'"
+if grep -qF "issues transition" "${GH_LOG}"; then
+  echo "FAIL: jira-split-idempotent-to-name — expected no fullsend issues transition call when .to.name matches current status"
+  cat "${GH_LOG}"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: jira-split-idempotent-to-name-no-transition"
+fi
+
+# Jira split action falls back to `fullsend issues transition --state closed` when configured Obsolete transition is unavailable.
+JIRA_SPLIT_TRANSITION="Obsolete" \
+MOCK_JIRA_TRANSITIONS='{"transitions":[{"id":"51","name":"Done","to":{"name":"Done","statusCategory":{"key":"done"}}}]}' \
+run_jira_test "jira-split-fallback-state-closed" \
+  '{"action":"split","reasoning":"bundles two independent features","sub_issues":[{"title":"Feature A","body":"Do A"},{"title":"Feature B","body":"Do B"}],"comment":"Splitting into two sub-issues."}' \
+  "fullsend issues transition --tracker jira --fullsend-dir ${FULLSEND_DIR} --project TESTPROJ --number 42 --state closed"
+if grep -qF "::warning::Transition 'Obsolete' (from JIRA_SPLIT_TRANSITION) is not available on issue TESTPROJ-42; falling back to 'fullsend issues transition --state closed'" "${TMPDIR}/stdout.log"; then
+  echo "PASS: jira-split-fallback-state-closed-warning"
+else
+  echo "FAIL: jira-split-fallback-state-closed-warning — expected fallback warning in stdout"
+  cat "${TMPDIR}/stdout.log"
+  FAILURES=$((FAILURES + 1))
+fi
+
+# Jira split on an issue in "Won't Fix" when JIRA_SPLIT_TRANSITION is not offered must NOT take an early bash skip;
+# it emits the fallback warning and delegates to `fullsend issues transition --state closed` identically to completed.
+JIRA_SPLIT_TRANSITION="Obsolete" \
+MOCK_JIRA_STATUS_DONE=1 \
+MOCK_JIRA_STATUS_NAME="Won't Fix" \
+MOCK_JIRA_TRANSITIONS='{"transitions":[{"id":"51","name":"Done","to":{"name":"Done","statusCategory":{"key":"done"}}}]}' \
+run_jira_test "jira-split-on-wont-fix-missing-transition-not-skipped" \
+  '{"action":"split","reasoning":"re-triaging wont-fix as split","sub_issues":[{"title":"Feature A","body":"Do A"},{"title":"Feature B","body":"Do B"}],"comment":"Splitting into two sub-issues."}' \
+  "fullsend issues transition --tracker jira --fullsend-dir ${FULLSEND_DIR} --project TESTPROJ --number 42 --state closed"
+if grep -qF "skipping transition" "${TMPDIR}/stdout.log"; then
+  echo "FAIL: jira-split-on-wont-fix-missing-transition-not-skipped — should not skip in bash pre-flight for Won't Fix"
+  cat "${TMPDIR}/stdout.log"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: jira-split-on-wont-fix-missing-transition-no-early-skip"
+fi
+if grep -qF "::warning::Transition 'Obsolete' (from JIRA_SPLIT_TRANSITION) is not available on issue TESTPROJ-42; falling back to 'fullsend issues transition --state closed'" "${TMPDIR}/stdout.log"; then
+  echo "PASS: jira-split-on-wont-fix-missing-transition-warning"
+else
+  echo "FAIL: jira-split-on-wont-fix-missing-transition-warning — expected fallback warning in stdout"
+  cat "${TMPDIR}/stdout.log"
+  FAILURES=$((FAILURES + 1))
+fi
+
+# Documented setup where all four transition variables share "Done" skips idempotently when already Done.
+_saved_comp="${JIRA_COMPLETED_TRANSITION:-}"
+_saved_dup="${JIRA_DUPLICATE_TRANSITION:-}"
+_saved_np="${JIRA_NOT_PLANNED_TRANSITION:-}"
+_saved_split="${JIRA_SPLIT_TRANSITION:-}"
+export JIRA_COMPLETED_TRANSITION="Done"
+export JIRA_DUPLICATE_TRANSITION="Done"
+export JIRA_NOT_PLANNED_TRANSITION="Done"
+export JIRA_SPLIT_TRANSITION="Done"
+MOCK_JIRA_STATUS_DONE=1 \
+run_jira_test_stdout "jira-all-four-done-idempotent-completed" \
+  '{"action":"completed","reasoning":"all child issues closed","comment":"Done."}' \
+  "is already in status 'Done' (done); skipping transition for reason 'completed'"
+if grep -qF "issues transition" "${GH_LOG}"; then
+  echo "FAIL: jira-all-four-done-idempotent-completed — expected no fullsend issues transition call"
+  cat "${GH_LOG}"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: jira-all-four-done-idempotent-completed-no-transition"
+fi
+export JIRA_COMPLETED_TRANSITION="${_saved_comp}"
+export JIRA_DUPLICATE_TRANSITION="${_saved_dup}"
+export JIRA_NOT_PLANNED_TRANSITION="${_saved_np}"
+export JIRA_SPLIT_TRANSITION="${_saved_split}"
+unset _saved_comp _saved_dup _saved_np _saved_split
 
 # Jira: ready-for-triage in label_actions is refused like on GitHub and
 # GitLab (#2082); the split's own sub-issue label (below) is unaffected.
@@ -2857,7 +3209,7 @@ run_jira_test "jira-component-actions-with-labels" \
 export FULLSEND_TRACKER="github"
 export ISSUE_URL="https://github.com/test-org/test-repo/issues/42"
 export GH_TOKEN="fake-token"
-unset JIRA_USER_EMAIL JIRA_TOKEN JIRA_DUPLICATE_TRANSITION JIRA_NOT_PLANNED_TRANSITION JIRA_SPLIT_TRANSITION
+unset JIRA_USER_EMAIL JIRA_TOKEN JIRA_COMPLETED_TRANSITION JIRA_DUPLICATE_TRANSITION JIRA_NOT_PLANNED_TRANSITION JIRA_SPLIT_TRANSITION
 
 run_test_stdout "github-component-actions-ignored" \
   '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_crash"},"comment":"## Triage Summary\n\nReady.","component_actions":{"reason":"Backend component.","actions":[{"action":"add","component":"backend"}]}}' \
@@ -2869,6 +3221,7 @@ export ISSUE_URL="https://test.atlassian.net/browse/TESTPROJ-42"
 export JIRA_USER_EMAIL="triage@example.com"
 export JIRA_TOKEN="fake-jira-token"
 export FULLSEND_DIR="${TMPDIR}/dot-fullsend"
+export JIRA_COMPLETED_TRANSITION="Closed"
 export JIRA_DUPLICATE_TRANSITION="Duplicate"
 export JIRA_NOT_PLANNED_TRANSITION="Not Planned"
 export JIRA_SPLIT_TRANSITION="Done"
@@ -3275,7 +3628,7 @@ export ISSUE_URL="https://github.com/test-org/test-repo/issues/42"
 # shellcheck disable=SC2031
 export GH_TOKEN="fake-token"
 unset GITLAB_TOKEN CI_SERVER_HOST
-unset JIRA_USER_EMAIL JIRA_TOKEN JIRA_DUPLICATE_TRANSITION JIRA_NOT_PLANNED_TRANSITION JIRA_SPLIT_TRANSITION
+unset JIRA_USER_EMAIL JIRA_TOKEN JIRA_COMPLETED_TRANSITION JIRA_DUPLICATE_TRANSITION JIRA_NOT_PLANNED_TRANSITION JIRA_SPLIT_TRANSITION
 
 # --- Summary ---
 
