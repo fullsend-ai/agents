@@ -52,6 +52,8 @@ SANDBOX_RUNTIME_VARS=(
 # names, etc.)
 # ---------------------------------------------------------------------------
 NON_ENV_TOKENS=(
+  # risk-tier1.sh output keys, read from its stdout, never the environment
+  TIER1_SCORE RISK_FLOOR
   # Status / severity / verdict tokens
   APPROVE CHANGES CRITICAL HIGH MEDIUM LOW WARN PASS FAIL
   BEHIND BLOCKED CONFLICTING MERGEABLE UNSTABLE FAILED
@@ -144,6 +146,8 @@ declare -A KNOWN_GAPS=(
   ["pr-review/github:PI_CODING_AGENT_DIR"]="#1672 — pi provides its skill config dir at runtime, not through env.sandbox"
   ["pr-review/github:CLAUDE_CONFIG_DIR"]="#1672 — Claude provides its skill config dir at runtime, not through env.sandbox"
   ["pr-review/github:CODEX_HOME"]="#1672 — Codex provides its skill config dir at runtime, not through env.sandbox"
+  # The review orchestrator locates its own skill scripts the same way.
+  ["pr-review:CLAUDE_CONFIG_DIR"]="#1672 — Claude provides its skill config dir at runtime, not through env.sandbox"
   # Skills below reference these vars as ${VAR} expansions without
   # assigning them, and no delivering harness declares them in
   # env.sandbox.
