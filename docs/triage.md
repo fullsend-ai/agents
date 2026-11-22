@@ -336,17 +336,26 @@ or later). If the issue is already in a `done`-category status matching the
 configured transition name (or the destination status name of that transition
 when uniquely offered), the transition is skipped idempotently. Otherwise, if the
 configured transition name is available in the workflow, the post-script runs
-`fullsend issues transition --transition <name>`. When the configured transition
-name is missing for `completed` or `split`, the post-script emits a warning and
+`fullsend issues transition --transition <name>`. When `completed` or `split`
+uses the un-overridden harness default (`JIRA_SPLIT_TRANSITION="Obsolete"`,
+including when `JIRA_COMPLETED_TRANSITION` is unset and falls back to it) and
+`"Obsolete"` is not offered in the workflow, the post-script emits a warning and
 falls back to `fullsend issues transition --state closed`, which skips issues
 already in a `done`-category status, applies the single available
 `done`-category transition (failing loudly if multiple `done`-category
 transitions are ambiguous), and fills a required resolution by ID only when Jira
-offers a single allowed value with no default. Workflows with multiple
-`done`-category transitions should set `JIRA_COMPLETED_TRANSITION` and
-`JIRA_SPLIT_TRANSITION` explicitly. Because `post-triage.sh` does not pass
-`--resolution`, any close transition that requires a resolution must either
-define a default value or offer a single allowed value.
+offers a single allowed value with no default. Note that when only a single
+`done`-category transition is offered, `--state closed` will apply it even if
+its workflow meaning is a rejection/won't-do state (such as `"Won't Do"`,
+`"Duplicate"`, or `"Cannot Reproduce"`). If you explicitly configure
+`JIRA_COMPLETED_TRANSITION` or override `JIRA_SPLIT_TRANSITION` to a name that
+Jira does not offer, the post-script fails loudly instead of falling back.
+Operators whose workflows lack `"Obsolete"`, have multiple `done`-category
+transitions, or expose rejection-style `done` transitions should set
+`JIRA_COMPLETED_TRANSITION` and `JIRA_SPLIT_TRANSITION` explicitly. Because
+`post-triage.sh` does not pass `--resolution`, any close transition that
+requires a resolution must either define a default value or offer a single
+allowed value.
 
 Cross-project issue creation for Jira prerequisites is gated by a
 `tracker.jira.allowed_targets.projects` list of Jira project keys in

@@ -2536,26 +2536,104 @@ else
   FAILURES=$((FAILURES + 1))
 fi
 
-# Jira completed action falls back to `fullsend issues transition --state closed` when configured transition is unavailable.
+# Jira completed action falls back to `fullsend issues transition --state closed` ONLY when
+# using the un-overridden harness default (JIRA_COMPLETED_TRANSITION unset + JIRA_SPLIT_TRANSITION="Obsolete").
+_saved_jira_completed="${JIRA_COMPLETED_TRANSITION:-}"
+unset JIRA_COMPLETED_TRANSITION
 MOCK_JIRA_TRANSITIONS='{"transitions":[{"id":"51","name":"Done","to":{"name":"Done","statusCategory":{"key":"done"}}}]}' \
-JIRA_COMPLETED_TRANSITION="NonExistent" \
-run_jira_test "jira-completed-fallback-state-closed" \
+JIRA_SPLIT_TRANSITION="Obsolete" \
+run_jira_test "jira-completed-default-fallback-state-closed" \
   '{"action":"completed","reasoning":"all child issues are closed","comment":"All tracked work is done."}' \
   "fullsend issues transition --tracker jira --fullsend-dir ${FULLSEND_DIR} --project TESTPROJ --number 42 --state closed"
-if grep -qF "::warning::Transition 'NonExistent' (from JIRA_COMPLETED_TRANSITION) is not available on issue TESTPROJ-42; falling back to 'fullsend issues transition --state closed'" "${TMPDIR}/stdout.log"; then
-  echo "PASS: jira-completed-fallback-state-closed-warning"
+if grep -qF "::warning::Transition 'Obsolete' (from JIRA_SPLIT_TRANSITION) is not available on issue TESTPROJ-42; falling back to 'fullsend issues transition --state closed'" "${TMPDIR}/stdout.log"; then
+  echo "PASS: jira-completed-default-fallback-state-closed-warning"
 else
-  echo "FAIL: jira-completed-fallback-state-closed-warning — expected fallback warning in stdout"
+  echo "FAIL: jira-completed-default-fallback-state-closed-warning — expected fallback warning in stdout"
   cat "${TMPDIR}/stdout.log"
   FAILURES=$((FAILURES + 1))
 fi
-if grep -qF -- "--transition NonExistent" "${GH_LOG}"; then
-  echo "FAIL: jira-completed-fallback-state-closed-no-explicit-call — should not invoke --transition for missing transition"
+if grep -qF -- "--transition Obsolete" "${GH_LOG}"; then
+  echo "FAIL: jira-completed-default-fallback-state-closed-no-explicit-call — should not invoke --transition for missing default transition"
   cat "${GH_LOG}"
   FAILURES=$((FAILURES + 1))
 else
-  echo "PASS: jira-completed-fallback-state-closed-no-explicit-call"
+  echo "PASS: jira-completed-default-fallback-state-closed-no-explicit-call"
 fi
+if [[ -n "${_saved_jira_completed}" ]]; then
+  export JIRA_COMPLETED_TRANSITION="${_saved_jira_completed}"
+fi
+unset _saved_jira_completed
+
+# Jira completed action with an explicitly configured JIRA_COMPLETED_TRANSITION fails loudly
+# when Jira does not offer that transition (no --state closed fallback).
+MOCK_JIRA_TRANSITIONS='{"transitions":[{"id":"51","name":"Done","to":{"name":"Done","statusCategory":{"key":"done"}}}]}' \
+JIRA_COMPLETED_TRANSITION="NonExistent" \
+run_jira_test "jira-completed-explicit-missing-transition-fails" \
+  '{"action":"completed","reasoning":"all child issues are closed","comment":"All tracked work is done."}' \
+  "" true
+if ! grep -qF "transition 'NonExistent' (from JIRA_COMPLETED_TRANSITION) is not available on issue TESTPROJ-42" "${TMPDIR}/stdout.log" \
+  || grep -qF "issues transition" "${GH_LOG}"; then
+  echo "FAIL: jira-completed-explicit-missing-transition-fails — expected unavailable transition diagnostic and zero CLI calls"
+  cat "${TMPDIR}/stdout.log" "${GH_LOG}"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: jira-completed-explicit-missing-transition-fails-no-cli-call"
+fi
+
+# Even if an operator explicitly sets JIRA_COMPLETED_TRANSITION="Obsolete", it is an
+# explicit override (harness/triage.yaml leaves JIRA_COMPLETED_TRANSITION unset) and
+# must fail loudly when unavailable rather than falling back to --state closed.
+MOCK_JIRA_TRANSITIONS='{"transitions":[{"id":"51","name":"Won'\''t Do","to":{"name":"Won'\''t Do","statusCategory":{"key":"done"}}}]}' \
+JIRA_COMPLETED_TRANSITION="Obsolete" \
+run_jira_test "jira-completed-explicit-obsolete-missing-fails" \
+  '{"action":"completed","reasoning":"all child issues are closed","comment":"All tracked work is done."}' \
+  "" true
+if ! grep -qF "transition 'Obsolete' (from JIRA_COMPLETED_TRANSITION) is not available on issue TESTPROJ-42" "${TMPDIR}/stdout.log" \
+  || grep -qF "issues transition" "${GH_LOG}"; then
+  echo "FAIL: jira-completed-explicit-obsolete-missing-fails — expected unavailable transition diagnostic and zero CLI calls"
+  cat "${TMPDIR}/stdout.log" "${GH_LOG}"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: jira-completed-explicit-obsolete-missing-fails-no-cli-call"
+fi
+
+# Jira split action with an operator-overridden JIRA_SPLIT_TRANSITION fails loudly when
+# Jira does not offer that transition (no --state closed fallback).
+MOCK_JIRA_TRANSITIONS='{"transitions":[{"id":"51","name":"Won'\''t Do","to":{"name":"Won'\''t Do","statusCategory":{"key":"done"}}}]}' \
+JIRA_SPLIT_TRANSITION="CustomSplit" \
+run_jira_test "jira-split-explicit-missing-transition-fails" \
+  '{"action":"split","reasoning":"bundles two independent features","sub_issues":[{"title":"Feature A","body":"Do A"},{"title":"Feature B","body":"Do B"}],"comment":"Splitting into two sub-issues."}' \
+  "" true
+if ! grep -qF "transition 'CustomSplit' (from JIRA_SPLIT_TRANSITION) is not available on issue TESTPROJ-42" "${TMPDIR}/stdout.log" \
+  || grep -qF "issues transition" "${GH_LOG}"; then
+  echo "FAIL: jira-split-explicit-missing-transition-fails — expected unavailable transition diagnostic and zero CLI calls"
+  cat "${TMPDIR}/stdout.log" "${GH_LOG}"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: jira-split-explicit-missing-transition-fails-no-cli-call"
+fi
+
+# Jira completed action falling back to an operator-overridden JIRA_SPLIT_TRANSITION also
+# fails loudly when Jira does not offer that custom transition (no --state closed fallback).
+_saved_jira_completed="${JIRA_COMPLETED_TRANSITION:-}"
+unset JIRA_COMPLETED_TRANSITION
+MOCK_JIRA_TRANSITIONS='{"transitions":[{"id":"51","name":"Won'\''t Do","to":{"name":"Won'\''t Do","statusCategory":{"key":"done"}}}]}' \
+JIRA_SPLIT_TRANSITION="CustomSplit" \
+run_jira_test "jira-completed-explicit-split-override-missing-fails" \
+  '{"action":"completed","reasoning":"all child issues are closed","comment":"All tracked work is done."}' \
+  "" true
+if ! grep -qF "transition 'CustomSplit' (from JIRA_SPLIT_TRANSITION) is not available on issue TESTPROJ-42" "${TMPDIR}/stdout.log" \
+  || grep -qF "issues transition" "${GH_LOG}"; then
+  echo "FAIL: jira-completed-explicit-split-override-missing-fails — expected unavailable transition diagnostic and zero CLI calls"
+  cat "${TMPDIR}/stdout.log" "${GH_LOG}"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: jira-completed-explicit-split-override-missing-fails-no-cli-call"
+fi
+if [[ -n "${_saved_jira_completed}" ]]; then
+  export JIRA_COMPLETED_TRANSITION="${_saved_jira_completed}"
+fi
+unset _saved_jira_completed
 
 # Jira duplicate action does NOT fall back to --state closed when its configured transition is missing.
 JIRA_DUPLICATE_TRANSITION="NonExistent" \
@@ -2627,9 +2705,11 @@ else
   echo "PASS: jira-transition-cli-failure-no-fallback-verified"
 fi
 
-# Jira fallback CLI failure (--state closed) propagates non-zero exit.
+# Jira fallback CLI failure (--state closed) propagates non-zero exit when harness default is unavailable.
+_saved_jira_completed="${JIRA_COMPLETED_TRANSITION:-}"
+unset JIRA_COMPLETED_TRANSITION
 MOCK_JIRA_TRANSITIONS='{"transitions":[{"id":"51","name":"Done","to":{"name":"Done","statusCategory":{"key":"done"}}},{"id":"61","name":"Closed","to":{"name":"Closed","statusCategory":{"key":"done"}}}]}' \
-JIRA_COMPLETED_TRANSITION="NonExistent" \
+JIRA_SPLIT_TRANSITION="Obsolete" \
 MOCK_FULLSEND_TRANSITION_FAIL=1 \
 run_jira_test "jira-fallback-state-closed-failure-propagates" \
   '{"action":"completed","reasoning":"all child issues are closed","comment":"All tracked work is done."}' \
@@ -2641,6 +2721,10 @@ else
   cat "${GH_LOG}"
   FAILURES=$((FAILURES + 1))
 fi
+if [[ -n "${_saved_jira_completed}" ]]; then
+  export JIRA_COMPLETED_TRANSITION="${_saved_jira_completed}"
+fi
+unset _saved_jira_completed
 
 # Jira duplicate action does NOT skip when issue is in a different rejection status (Won't Do).
 MOCK_JIRA_STATUS_REJECTED=1 \

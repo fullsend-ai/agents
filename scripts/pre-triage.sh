@@ -1442,7 +1442,15 @@ tracker_close_issue() {
     return 0
   fi
 
-  if [[ "${reason}" == "completed" || "${reason}" == "split" ]]; then
+  # Fall back to `--state closed` only when the transition name came from the
+  # un-overridden harness default (JIRA_SPLIT_TRANSITION="Obsolete" in
+  # harness/triage.yaml, including when `completed` fell back to it because
+  # JIRA_COMPLETED_TRANSITION was unset). Any operator-configured transition
+  # name that Jira does not offer fails loudly below.
+  local default_split_transition="Obsolete"
+  if [[ ( "${reason}" == "completed" || "${reason}" == "split" ) \
+    && "${transition_var}" == "JIRA_SPLIT_TRANSITION" \
+    && "${transition_name}" == "${default_split_transition}" ]]; then
     echo "::warning::Transition '$(_gha_sanitize "${transition_name}")' (from ${transition_var}) is not available on issue ${ISSUE_NUMBER}; falling back to 'fullsend issues transition --state closed'"
     if ! _jira_transition --state closed; then
       echo "ERROR: failed to close issue ${ISSUE_NUMBER} via 'fullsend issues transition --state closed'" >&2
