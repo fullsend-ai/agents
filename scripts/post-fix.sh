@@ -2345,11 +2345,11 @@ precommit_run_gate() {
     # Re-derive changed files after the amend.
     local _pg_new_changed=""
     if [ -n "${_pg_merge_base}" ]; then
-      _pg_new_changed="$(git diff --name-only "${_pg_merge_base}..HEAD")"
+      _pg_new_changed="$(git -c core.quotePath=false diff --name-only "${_pg_merge_base}..HEAD")"
     else
-      _pg_new_changed="$(git diff --name-only \
+      _pg_new_changed="$(git -c core.quotePath=false diff --name-only \
         "origin/${_pg_target_branch}..HEAD" 2>/dev/null \
-        || git diff --name-only HEAD~1..HEAD 2>/dev/null || true)"
+        || git -c core.quotePath=false diff --name-only HEAD~1..HEAD 2>/dev/null || true)"
     fi
 
     if [ -z "${_pg_new_changed}" ]; then
@@ -2692,7 +2692,7 @@ if ! git merge-base --is-ancestor "${DIFF_BASE}" HEAD 2>/dev/null; then
   fi
 fi
 
-CHANGED_FILES="$(git diff --name-only "${DIFF_BASE}..HEAD" 2>/dev/null || true)"
+CHANGED_FILES="$(git -c core.quotePath=false diff --name-only "${DIFF_BASE}..HEAD" 2>/dev/null || true)"
 
 # A forge-conflict merge commit is a real, publishable change even when this
 # two-dot name-only diff is empty: for a merge commit, DIFF_BASE (still an
@@ -2717,11 +2717,11 @@ fi
 # then HEAD~1..HEAD. This keeps the two post-scripts aligned.
 MERGE_BASE="$(git merge-base "origin/${TARGET_BRANCH}" HEAD 2>/dev/null)" || MERGE_BASE=""
 if [ -n "${MERGE_BASE}" ]; then
-  BRANCH_CHANGED_FILES="$(git diff --name-only "${MERGE_BASE}..HEAD")"
+  BRANCH_CHANGED_FILES="$(git -c core.quotePath=false diff --name-only "${MERGE_BASE}..HEAD")"
 else
   gha_echo warning "Could not determine merge-base — trying origin/${TARGET_BRANCH}..HEAD"
-  BRANCH_CHANGED_FILES="$(git diff --name-only "origin/${TARGET_BRANCH}..HEAD" 2>/dev/null \
-    || git diff --name-only HEAD~1..HEAD 2>/dev/null || true)"
+  BRANCH_CHANGED_FILES="$(git -c core.quotePath=false diff --name-only "origin/${TARGET_BRANCH}..HEAD" 2>/dev/null \
+    || git -c core.quotePath=false diff --name-only HEAD~1..HEAD 2>/dev/null || true)"
 fi
 
 if [ "${NO_PUSH}" = "false" ]; then

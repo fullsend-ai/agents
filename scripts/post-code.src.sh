@@ -852,11 +852,11 @@ _jira_fullsend_bin="$(command -v fullsend 2>/dev/null || true)"
 # ---------------------------------------------------------------------------
 MERGE_BASE="$(git merge-base "origin/${TARGET_BRANCH}" HEAD 2>/dev/null)" || MERGE_BASE=""
 if [ -n "${MERGE_BASE}" ]; then
-  CHANGED_FILES="$(git diff --name-only "${MERGE_BASE}..HEAD")"
+  CHANGED_FILES="$(git -c core.quotePath=false diff --name-only "${MERGE_BASE}..HEAD")"
 else
   gha_echo warning "Could not determine merge-base — trying origin/${TARGET_BRANCH}..HEAD"
-  CHANGED_FILES="$(git diff --name-only "origin/${TARGET_BRANCH}..HEAD" 2>/dev/null \
-    || git diff --name-only HEAD~1..HEAD 2>/dev/null || true)"
+  CHANGED_FILES="$(git -c core.quotePath=false diff --name-only "origin/${TARGET_BRANCH}..HEAD" 2>/dev/null \
+    || git -c core.quotePath=false diff --name-only HEAD~1..HEAD 2>/dev/null || true)"
 fi
 
 if [ -z "${CHANGED_FILES}" ]; then

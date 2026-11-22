@@ -413,11 +413,11 @@ precommit_run_gate() {
     # Re-derive changed files after the amend.
     local _pg_new_changed=""
     if [ -n "${_pg_merge_base}" ]; then
-      _pg_new_changed="$(git diff --name-only "${_pg_merge_base}..HEAD")"
+      _pg_new_changed="$(git -c core.quotePath=false diff --name-only "${_pg_merge_base}..HEAD")"
     else
-      _pg_new_changed="$(git diff --name-only \
+      _pg_new_changed="$(git -c core.quotePath=false diff --name-only \
         "origin/${_pg_target_branch}..HEAD" 2>/dev/null \
-        || git diff --name-only HEAD~1..HEAD 2>/dev/null || true)"
+        || git -c core.quotePath=false diff --name-only HEAD~1..HEAD 2>/dev/null || true)"
     fi
 
     if [ -z "${_pg_new_changed}" ]; then
