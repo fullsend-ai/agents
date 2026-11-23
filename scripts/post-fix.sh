@@ -1295,11 +1295,17 @@ POST_FAILURE_DETAIL_MAX_LINES="${POST_FAILURE_DETAIL_MAX_LINES:-30}"
 
 _sanitize_workflow_value() {
   local value="$1"
-  value="${value//::/}"
-  value="${value//%0A/}"
-  value="${value//%0a/}"
-  value="${value//%0D/}"
-  value="${value//%0d/}"
+  local previous
+  # Repeat until stable: removing one sequence can splice a new one together
+  # (e.g. ":%0A:" -> "::", "%0%0AA" -> "%0A", "%0::A" -> "%0A").
+  while [ "${value}" != "${previous-}" ]; do
+    previous="${value}"
+    value="${value//::/}"
+    value="${value//%0A/}"
+    value="${value//%0a/}"
+    value="${value//%0D/}"
+    value="${value//%0d/}"
+  done
   printf '%s' "${value}"
 }
 

@@ -238,6 +238,41 @@ run_sanitize_gha_log_test "sanitize-gha-log-strips-workflow-commands" \
   $'::error::boom' \
   "::error::"
 
+# Removing one sequence must not splice a new "::" or encoded newline
+# together from the remaining characters.
+run_sanitize_workflow_value_split_test() {
+  local test_name="$1"
+  local input="$2"
+  local out
+  out="$(_sanitize_workflow_value "${input}")"
+  if printf '%s' "${out}" | grep -q '::' || printf '%s' "${out}" | grep -qE '%0[AaDd]'; then
+    echo "FAIL: ${test_name}"
+    echo "  unsafe sequence survived: '${out}'"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  echo "PASS: ${test_name}"
+}
+
+run_sanitize_workflow_value_split_test "sanitize-value-split-colons-lf" ':%0A:error:%0A:x'
+run_sanitize_workflow_value_split_test "sanitize-value-nested-encoded-lf" '%0%0AA'
+run_sanitize_workflow_value_split_test "sanitize-value-colons-split-encoded-lf" '%0::A'
+run_sanitize_workflow_value_split_test "sanitize-value-split-colons-lowercase-lf" ':%0a:'
+run_sanitize_workflow_value_split_test "sanitize-value-split-colons-cr" ':%0D:'
+run_sanitize_workflow_value_split_test "sanitize-value-split-colons-lowercase-cr" ':%0d:'
+run_sanitize_workflow_value_split_test "sanitize-value-mixed-nesting" '::%0A::'
+
+if [ "$(_sanitize_workflow_value '123')" = "123" ]; then
+  echo "PASS: sanitize-value-preserves-plain-value"
+else
+  echo "FAIL: sanitize-value-preserves-plain-value"
+  FAILURES=$((FAILURES + 1))
+fi
+
+run_sanitize_gha_log_test "sanitize-gha-log-strips-split-workflow-commands" \
+  ':%0A:error:%0A:injected' \
+  "::"
+
 run_categorize_push_test() {
   local test_name="$1"
   local push_output="$2"
