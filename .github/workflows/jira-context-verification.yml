@@ -5,6 +5,9 @@ permissions:
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - test/aisdlc-624-jira-context
 
 concurrency:
   group: jira-context-verification-${{ github.ref }}
