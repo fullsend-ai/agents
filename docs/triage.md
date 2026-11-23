@@ -173,6 +173,7 @@ post-script applies the actions via `PUT /rest/api/3/issue/{key}` with
 | `TRIAGE_AUTO_CODE` | Controls whether triage auto-applies `ready-to-code`. See [Ready-to-code promotion](#ready-to-code-promotion). | `on` | `on`/`always`, `off`/`never`, `discretionary` |
 | `TRIAGE_AUTO_CODE_CATEGORIES` | Comma-separated list of categories eligible for auto-promotion when `TRIAGE_AUTO_CODE` is `on`/`always` or `discretionary`. | `bug,documentation,performance` | `bug`, `documentation`, `performance` |
 | `TRIAGE_SKIP_LABELS` | Comma-separated labels that act like the built-in `skip-triage` label. Set it in `env.runner`. See [Skip labels](#skip-labels). | empty | Any label names |
+| `TRIAGE_PARENT_CONTEXT_MAX_HOPS` | How many parent levels the agent reads for context, counting the direct parent as hop 1. See [Parent issue context](#parent-issue-context). Sandbox only. | `5` | Positive integer; anything else falls back to `5` |
 
 To override these defaults per repo or org, create a custom harness for the
 triage agent the same way the [code agent](code.md#how-to-configure) does —
@@ -449,6 +450,12 @@ If you use `base:` composition to override `harness/triage.yaml`:
 The triage agent runs in a read-only sandbox. It fetches the issue content — title, body, labels, comments — and reads repository context (architecture docs, existing issues, PRs) to understand the landscape. It then decides whether the issue has enough information to act on, or whether clarification is needed.
 
 The agent's only output is a structured JSON triage result consumed by the post-script, which applies labels and posts a summary comment.
+
+### Parent issue context
+
+When the issue has a parent, the agent reads its ancestors as context before assessing the issue. It follows each tracker's own parent relationship: a GitHub sub-issue's parent issue, a GitLab work item's hierarchy parent (for example an epic), or a Jira issue's `parent` field (a sub-task's parent issue, or a story's epic). It reads up to `TRIAGE_PARENT_CONTEXT_MAX_HOPS` levels (default 5, direct parent first). It stops early when the chain ends, loops back to an issue it has already read, or a parent cannot be fetched. An unreadable parent, for example one in a repository the token cannot access, is recorded as an information gap and does not fail the triage.
+
+Ancestor context informs the clarity and cause assessment, so a terse sub-issue whose parent explains the goal is not marked under-specified for that reason. It does not widen the work: the triaged issue's own content still defines what is requested, and ancestor text is not quoted in the triage comment.
 
 ## Custom network policy
 

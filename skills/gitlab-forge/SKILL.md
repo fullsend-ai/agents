@@ -105,6 +105,54 @@ curl -K /tmp/gitlab-api.curlrc \
   "https://<GITLAB_HOST>/api/v4/projects/<REPO_ENCODED>/issues?state=opened&search=keyword&per_page=30"
 ```
 
+## Parent Work Item
+
+GitLab models parents through the work item hierarchy: an issue's parent can
+be an epic, a task's parent is an issue, and an epic's parent is another epic.
+Epics belong to a group, not a project. This GraphQL query reads a work item's
+parent with its title, description, and state. It looks the path up as a
+project and as a group, so it also works for an epic.
+
+Replace `<namespace-path>` and `<IID>` with literal values. For the issue
+being triaged, use its unencoded project path (the part of `ISSUE_URL` between
+the host and `/-/issues/`) and `<ISSUE_NUMBER>`. For the next ancestor, use the
+parent's `namespace` and `iid` from the previous result.
+
+`pipefail` makes a failed request exit non-zero instead of leaving the final
+`jq` with empty input; treat a non-zero exit as a failed read.
+
+```bash
+set -o pipefail
+jq -n --arg path "<namespace-path>" --arg iid "<IID>" --arg query '
+  query($path: ID!, $iid: String!) {
+    project(fullPath: $path) { workItem(iid: $iid) { ...parentFields } }
+    group(fullPath: $path) { workItem(iid: $iid) { ...parentFields } }
+  }
+  fragment parentFields on WorkItem {
+    widgets {
+      ... on WorkItemWidgetHierarchy {
+        parent {
+          iid title state webUrl
+          workItemType { name }
+          namespace { fullPath }
+          widgets { ... on WorkItemWidgetDescription { description } }
+        }
+      }
+    }
+  }' '{query: $query, variables: {path: $path, iid: $iid}}' \
+  | curl -K /tmp/gitlab-api.curlrc --header "Content-Type: application/json" \
+    --data @- "https://<GITLAB_HOST>/api/graphql" \
+  | jq '{errors: .errors,
+      found: ((.data.project.workItem // .data.group.workItem) != null),
+      parent: ([(.data.project.workItem // .data.group.workItem).widgets[]? | .parent? // empty][0]
+        | if . == null then null else {iid, title, state, webUrl, type: .workItemType.name,
+            namespace: .namespace.fullPath,
+            description: ([.widgets[]? | .description? // empty][0])} end)}'
+```
+
+`parent: null` with `found: true` means the work item has no parent. Treat
+`errors`, `found: false`, or a failed request as a failed read.
+
 ## Merge Requests
 
 ```bash
