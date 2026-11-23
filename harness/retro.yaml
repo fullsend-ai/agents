@@ -52,10 +52,14 @@ host_files:
     optional: true
   # A Jira-originated run cannot read its work item from the sandbox: there is
   # no Atlassian route and no Jira credential. pre-retro fetches the issue and
-  # its comments on the host into this path, which is mounted read-only here
-  # and read by the agent as RETRO_JIRA_CONTEXT. Absent on every forge
-  # originated run, so the mount is optional.
-  - src: /tmp/retro-jira-context.json
+  # its comments on the host into the path named by RETRO_JIRA_CONTEXT_FILE,
+  # which is mounted read-only here and read by the agent as
+  # RETRO_JIRA_CONTEXT. The src is ${VAR}-expanded because fullsend refuses a
+  # literal absolute path in a harness loaded from a URL or used as a `base:`
+  # (resolveBaseHostFiles -> validateBaseRelPath), and the documented overlay
+  # is exactly that. An unset value skips the mount, so a forge-originated run
+  # uploads nothing and pre-retro refuses a Jira-originated run without it.
+  - src: ${RETRO_JIRA_CONTEXT_FILE}
     dest: /sandbox/workspace/jira-origin.json
     optional: true
 

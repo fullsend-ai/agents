@@ -78,14 +78,6 @@ fi
 
 echo "Originating: ${ORIGINATING_REPO}#${ORIGINATING_NUMBER}"
 
-RETRO_MODE="${RETRO_MODE:-all}"
-case "${RETRO_MODE}" in
-  all|summary_only|issues_only) ;;
-  *)
-    echo "ERROR: RETRO_MODE must be 'all', 'summary_only', or 'issues_only' (got: ${RETRO_MODE})" >&2
-    exit 1
-    ;;
-esac
 echo "Mode: ${RETRO_MODE}"
 
 # Read the allowlist from config.yaml. The config repo is checked out
@@ -425,6 +417,7 @@ _retro_jira_fit_comment() {
 }
 
 ISSUE_LINKS=""
+EXISTING_ISSUES=""
 EVIDENCE_NOTES=""
 FILTERED_COUNT=0
 SKIPPED_TARGETS=""
@@ -579,6 +572,15 @@ if [[ "${PROPOSAL_COUNT}" -gt 0 ]]; then
         continue
       fi
 
+      # An issue this run already filed (or already found) is the one case the
+      # duplicate search cannot see: /search/jql lags behind writes.
+      if _retro_jira_title_seen "${TITLE}"; then
+        EXISTING_URL=$(_retro_jira_title_url "${TITLE}")
+        echo "Skipping proposal[$i] (${SAFE_TITLE}) — an issue with this summary was already filed or found in this run: ${EXISTING_URL}"
+        EXISTING_ISSUES="${EXISTING_ISSUES}- [${TITLE}](${EXISTING_URL}) (in \`${RETRO_JIRA_PROJECT}\`)
+"
+        continue
+      fi
       if ! EXISTING_URL=$(tracker_find_existing_issue "${TITLE}"); then
         echo "::warning::Jira duplicate check failed for proposal[$i] (${SAFE_TITLE}) — refusing to create issue"
         FAILED_PROPOSALS="${FAILED_PROPOSALS}
@@ -587,7 +589,8 @@ if [[ "${PROPOSAL_COUNT}" -gt 0 ]]; then
       fi
       if [[ -n "${EXISTING_URL}" ]]; then
         echo "Skipping proposal[$i] (${SAFE_TITLE}) — already exists in Jira: ${EXISTING_URL}"
-        ISSUE_LINKS="${ISSUE_LINKS}- [${TITLE}](${EXISTING_URL}) (in \`${RETRO_JIRA_PROJECT}\`)
+        _retro_jira_record_title "${TITLE}" "${EXISTING_URL}"
+        EXISTING_ISSUES="${EXISTING_ISSUES}- [${TITLE}](${EXISTING_URL}) (in \`${RETRO_JIRA_PROJECT}\`)
 "
         continue
       fi
@@ -644,6 +647,7 @@ if [[ "${PROPOSAL_COUNT}" -gt 0 ]]; then
 
     echo "Created: ${ISSUE_URL}"
     if [[ "${FULLSEND_TRACKER}" == "jira" ]]; then
+      _retro_jira_record_title "${TITLE}" "${ISSUE_URL}"
       ISSUE_LINKS="${ISSUE_LINKS}- [${TITLE}](${ISSUE_URL}) (in \`${RETRO_JIRA_PROJECT}\`)
 "
     else
@@ -667,6 +671,11 @@ fi
 COMMENT="${SUMMARY}"
 if [[ -n "${ISSUE_LINKS}" ]]; then
   COMMENT=$(printf '%s\n\n### Proposals filed\n\n%s' "${COMMENT}" "${ISSUE_LINKS}")
+fi
+if [[ -n "${EXISTING_ISSUES}" ]]; then
+  # No issue was created for these: the duplicate check found an existing one,
+  # or an earlier proposal in this run already filed the same summary.
+  COMMENT=$(printf '%s\n\n### Already filed (existing issue)\n\nNo new issue was created for these; an issue with the same summary already exists:\n%s' "${COMMENT}" "${EXISTING_ISSUES}")
 fi
 if [[ -n "${SUMMARY_ONLY_PROPOSALS}" ]]; then
   COMMENT=$(printf '%s\n\n### Proposals (issue creation disabled)\n%s' "${COMMENT}" "${SUMMARY_ONLY_PROPOSALS}")

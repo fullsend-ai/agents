@@ -18,6 +18,20 @@ _gha_mask() {
   printf '::add-mask::%s\n' "${value}"
 }
 
+# RETRO_MODE is validated here, before the tracker library is sourced, because
+# jira-retro-ops.lib.sh branches on it at source time: a typo such as
+# `summary-only` would otherwise take the full path and fail later with a
+# misleading missing-credential error, and pre-retro, which also sources this
+# file, would never reject it at all.
+RETRO_MODE="${RETRO_MODE:-all}"
+case "${RETRO_MODE}" in
+  all|summary_only|issues_only) ;;
+  *)
+    echo "ERROR: RETRO_MODE must be 'all', 'summary_only', or 'issues_only' (got: $(_gha_sanitize "${RETRO_MODE}"))" >&2
+    exit 1
+    ;;
+esac
+
 case "${FULLSEND_FORGE:-}" in
   github)
     source "${SCRIPT_DIR}/lib/github-retro-ops.lib.sh"

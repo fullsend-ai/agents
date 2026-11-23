@@ -926,6 +926,46 @@ FIXTURE_CREATE_FAIL_THEN_OK='{
   ]
 }'
 
+# Fixture: two proposals with the identical summary in one run. The duplicate
+# search cannot see the issue the first iteration just created, because
+# /search/jql is eventually consistent, so the run-scoped title set is the only
+# thing standing between this and two identical Jira issues.
+FIXTURE_SAME_TITLE_TWICE='{
+  "summary": "The retro analysis found one improvement opportunity.",
+  "proposals": [
+    {
+      "target_repo": "test-org/target-repo",
+      "title": "Improve error handling in widget service",
+      "what_happened": "The widget service crashed.",
+      "what_could_go_better": "It should not crash.",
+      "proposed_change": "Handle the empty input.",
+      "validation_criteria": "Widget service survives empty input.",
+      "related_issues": {
+        "searched": [
+          "skip review dispatch zero files",
+          "review dispatch routing"
+        ],
+        "found": []
+      }
+    },
+    {
+      "target_repo": "test-org/target-repo",
+      "title": "Improve error handling in widget service",
+      "what_happened": "The widget service crashed again.",
+      "what_could_go_better": "It should not crash.",
+      "proposed_change": "Handle the empty input.",
+      "validation_criteria": "Widget service survives empty input.",
+      "related_issues": {
+        "searched": [
+          "skip review dispatch zero files",
+          "review dispatch routing"
+        ],
+        "found": []
+      }
+    }
+  ]
+}'
+
 run_test() {
   local test_name="$1"
   local json_content="$2"
@@ -2673,6 +2713,16 @@ else
   cat "${GH_STDIN_LOG}" 2>/dev/null || true
   FAILURES=$((FAILURES + 1))
 fi
+# The existing issue was not filed by this run, so it must not be reported as
+# if it had been.
+if grep -qF "### Already filed (existing issue)" "${GH_STDIN_LOG}" 2>/dev/null \
+  && ! grep -qF "### Proposals filed" "${GH_STDIN_LOG}" 2>/dev/null; then
+  echo "PASS: jira/duplicate-reported-as-existing"
+else
+  echo "FAIL: jira/duplicate-reported-as-existing — duplicate listed under proposals filed"
+  cat "${GH_STDIN_LOG}" 2>/dev/null || true
+  FAILURES=$((FAILURES + 1))
+fi
 if grep -qF 'project = \"PROJ\" AND summary ~ \"handling\"' "${CURL_LOG}" 2>/dev/null \
   && ! grep -qF 'summary ~ \"\\\"' "${CURL_LOG}" 2>/dev/null; then
   echo "PASS: jira/duplicate-jql-unphrased"
@@ -2682,6 +2732,30 @@ else
   FAILURES=$((FAILURES + 1))
 fi
 unset JIRA_MOCK_DUP
+
+# 3b. Same summary twice in one run: file it once. The search index lags behind
+# writes, so the second proposal cannot rely on tracker_find_existing_issue.
+run_test_stdout "jira/same-title-in-run-files-once" \
+  "${FIXTURE_SAME_TITLE_TWICE}" \
+  "an issue with this summary was already filed or found in this run"
+CREATES=$(grep -F 'fullsend issues create' "${FULLSEND_LOG}" 2>/dev/null | grep -cvF -- '--help' || true)
+if [[ "${CREATES}" -eq 1 ]]; then
+  echo "PASS: jira/same-title-in-run-one-create"
+else
+  echo "FAIL: jira/same-title-in-run-one-create — expected 1 create, got ${CREATES}"
+  cat "${FULLSEND_LOG}" 2>/dev/null || true
+  FAILURES=$((FAILURES + 1))
+fi
+# The first proposal is reported as filed; the second belongs to the
+# already-filed section, which must name the issue the first one created.
+ALREADY_SECTION="$(sed -n '/### Already filed (existing issue)/,$p' "${GH_STDIN_LOG}" 2>/dev/null || true)"
+if [[ "${ALREADY_SECTION}" == *"https://mock.atlassian.net/browse/PROJ-100"* ]]; then
+  echo "PASS: jira/same-title-in-run-reported-as-existing"
+else
+  echo "FAIL: jira/same-title-in-run-reported-as-existing — second proposal not reported as already filed"
+  cat "${GH_STDIN_LOG}" 2>/dev/null || true
+  FAILURES=$((FAILURES + 1))
+fi
 
 # 4. Duplicate search failure: refuses to create blindly
 export JIRA_MOCK_BAD_SEARCH="html"

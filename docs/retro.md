@@ -16,9 +16,9 @@ No additional setup is required beyond the standard fullsend configuration.
 
 ## Triggers
 
-The retro agent runs automatically when a PR is closed (merged or not), including after a merge. On GitLab, the equivalent merge-request close event triggers it as well. The Jira integration below changes where the retro's proposals are filed, not where the retrospective starts: for a PR/MR-close or `/fs-retro` run the agent still traces the forge workflow. For example, with `FULLSEND_TRACKER=jira`, closing a PR or MR starts the retrospective, its validated proposals are filed in the configured Jira project, and the summary comment is posted back to that PR or MR — once dispatch supplies Jira credentials to forge-originated runs, which is tracked in [fullsend-ai/fullsend#2267](https://github.com/fullsend-ai/fullsend/issues/2267) and still open ([Jira integration](#jira-integration) covers what happens until then).
+The retro agent runs automatically when a PR is closed (merged or not), including after a merge. On GitLab, the equivalent merge-request close event triggers it as well. The Jira integration below changes where the retro's proposals are filed, not where the retrospective starts: for a PR/MR-close or `/fs-retro` run the agent still traces the forge workflow. For example, with `FULLSEND_TRACKER=jira`, closing a PR or MR starts the retrospective, its validated proposals are filed in the configured Jira project, and the summary comment is posted back to that PR or MR — once dispatch supplies Jira credentials to forge-originated runs ([Jira integration](#jira-integration) covers what happens until then).
 
-A retro can also start from a Jira issue for a manually dispatched run: pass the issue URL (`https://<site>.atlassian.net/browse/PROJ-123`) as `ORIGINATING_URL` with `FULLSEND_TRACKER=jira`. The host pre-script fetches the issue and its comments (the sandbox has no Atlassian route or Jira credential), the agent reads them from `RETRO_JIRA_CONTEXT` and traces the forge side of the workflow, and the retrospective summary is posted back to the Jira issue with `fullsend issues post-comment --tracker jira`. Jira events are still not dispatched or polled: [Jira-originated runs](#jira-originated-runs) covers the requirements and the current limits.
+A retro can also start from a Jira issue for a manually dispatched run: pass the issue URL (`https://<site>.atlassian.net/browse/<issue-key>`) as `ORIGINATING_URL` with `FULLSEND_TRACKER=jira`. The host pre-script fetches the issue and its comments (the sandbox has no Atlassian route or Jira credential), the agent reads them from `RETRO_JIRA_CONTEXT` and traces the forge side of the workflow, and the retrospective summary is posted back to the Jira issue with `fullsend issues post-comment --tracker jira`. Jira events are still not dispatched or polled: [Jira-originated runs](#jira-originated-runs) covers the requirements and the current limits.
 
 It can also be triggered manually with the `/fs-retro` command.
 
@@ -67,17 +67,18 @@ See [Customizing with AGENTS.md](https://fullsend.sh/docs/guides/user/customizin
 | `FULLSEND_DIR` | The `.fullsend` directory itself (the directory that holds `config.yaml`), used for CLI issue operations and the `tracker.jira` policy. Required when `FULLSEND_TRACKER=jira` (except forge summary-only runs). | none | Directory path |
 | `JIRA_USER_EMAIL` | Bot-user email. When set, uses Basic auth with email and token; when unset or empty, uses Bearer auth. | none | Email address |
 | `RETRO_JIRA_MAX_PAGES` | Maximum pages fetched per paginated Jira read. | `50` | Positive integer |
+| `RETRO_JIRA_CONTEXT_FILE` | Host path the pre-script writes the originating Jira issue context to; `harness/retro.yaml` mounts exactly this path into the sandbox. Set it in the environment `fullsend run` starts in (see [Jira-originated runs](#jira-originated-runs)). | none (required for a Jira-originated run) | Absolute host path |
 
 REST reads (create metadata, issue edit metadata, duplicate search, label updates) are routed the same way as the `fullsend` CLI, as described in [Jira REST routing](#jira-rest-routing).
 
 ### Jira integration
 
-Retro can deliver findings and improvement proposals to Jira Cloud instead of (or in addition to) GitHub/GitLab:
+Retro can deliver findings and improvement proposals to Jira Cloud instead of GitHub/GitLab; the summary comment still goes to the originating PR/MR:
 
 - **Jira issue creation:** When `FULLSEND_TRACKER=jira`, retro files validated proposals into an operator-configured Jira Cloud project (`RETRO_JIRA_PROJECT`). Model proposals do not select arbitrary Jira projects.
 - **Dedup search against forge:** The agent's duplicate search (`related_issues`) searches existing issues on the originating forge. Numeric references in the proposal receipt are rendered as full forge issue URLs, and proposals record their intended `Target repository`.
 - **Configurable output modes:** `RETRO_MODE` supports `all` (default: creates Jira issues and posts summary comment), `summary_only` (posts summary comment with proposals listed without creating issues), or `issues_only` (creates issues without posting summary; exits non-zero if proposals fail or are skipped).
-- **Idempotency & retry protection:** Before filing an issue in Jira, retro checks for an existing issue in `RETRO_JIRA_PROJECT` with an identical summary; reruns that produce different titles can still create duplicates.
+- **Idempotency & retry protection:** Before filing an issue in Jira, retro checks for an existing issue in `RETRO_JIRA_PROJECT` with an identical summary, and it skips any summary it already filed earlier in the same run, because the search index lags behind writes. Reruns that produce different titles can still create duplicates. Issues that already exist are reported under `### Already filed (existing issue)` in the summary comment, not under `### Proposals filed`.
 - **Traceability:** Created Jira issues preserve the originating GitHub/GitLab PR URL in the body footer, and the retro summary comment links back to all created Jira issues.
 - **Body size:** The `fullsend` CLI rejects a Jira body over 32 KiB before converting the Markdown, so an oversized proposal body is truncated at a character boundary, marked as truncated, and keeps the originating-URL footer. The issue is still filed; the full text remains on the originating PR/MR.
 - **Comment size:** The same 32 KiB limit applies to the summary comment posted back to a Jira-originated issue, and it is measured in bytes. An oversized summary is truncated on a character boundary under that cap (leaving room for the CLI's marker neutralization) and marked as truncated.
@@ -110,18 +111,20 @@ env:
 
 A retro can analyze a Jira work item instead of a PR/MR or forge issue. This
 is reached by a manually dispatched `fullsend run` that passes the issue URL
-as `ORIGINATING_URL`; automatic Jira dispatch is not implemented
-([fullsend-ai/fullsend#2267](https://github.com/fullsend-ai/fullsend/issues/2267)).
+as `ORIGINATING_URL`; automatic Jira dispatch is not implemented.
 
 The sandbox has no route to Atlassian and no Jira credential, so the split is:
 
 - **Host (`pre-retro.sh`)** validates the URL against `JIRA_BASE_URL`, fetches
-  the issue and every comment through the Jira REST API with the runner's
-  credentials, and writes `/tmp/retro-jira-context.json`
-  (`RETRO_JIRA_CONTEXT_FILE`). The harness mounts that file into the sandbox
-  as `/sandbox/workspace/jira-origin.json`, read by the agent as
-  `RETRO_JIRA_CONTEXT`. The fetch fails the run when it cannot read the issue:
-  a retrospective must not analyze a work item it cannot see.
+  the issue and every comment (oldest first) through the Jira REST API with the
+  runner's credentials, and writes `RETRO_JIRA_CONTEXT_FILE`. That variable is
+  required for this run: the harness declares it as the `host_files` src it
+  mounts, so the path written here and the path mounted are one setting. The
+  harness mounts it into the sandbox as `/sandbox/workspace/jira-origin.json`,
+  read by the agent as `RETRO_JIRA_CONTEXT`. A stale file at that path is
+  removed at the start of every run, forge-originated ones included. The fetch
+  fails the run when it cannot read the issue: a retrospective must not analyze
+  a work item it cannot see.
 - **Sandbox** reads `RETRO_JIRA_CONTEXT` (key, browse URL, summary,
   description, status, labels, parent and links, plus comments oldest first)
   and traces the agent side on the forge, using the same GitHub/GitLab
@@ -131,18 +134,28 @@ The sandbox has no route to Atlassian and no Jira credential, so the split is:
   with `fullsend issues post-comment --tracker jira`.
 
 Requirements: `FULLSEND_TRACKER=jira`, the Jira variables from the
-[overlay](#jira-integration), `FULLSEND_DIR`, and a forge whose token lets the
+[overlay](#jira-integration), `FULLSEND_DIR`, `RETRO_JIRA_CONTEXT_FILE` (an
+absolute host path, exported for the run), and a forge whose token lets the
 agent read the run logs — the harness still declares `GH_TOKEN`
 (`GITLAB_TOKEN` on GitLab) in `env.runner`, so export it for the run to start.
+
+Set `RETRO_JIRA_CONTEXT_FILE` in the environment `fullsend run` starts in — its
+job, shell or CI environment — not only in the overlay's `env.runner`.
+fullsend expands the `${VAR}` in a `host_files` src from its own environment,
+so a value that only reaches the pre-script would leave the mount unset. A
+literal absolute path in the harness is not an option: fullsend refuses one
+(`base host_files[N].src must be a relative path`) when the harness is loaded
+from a URL or composed with `base:`, which is how this agent is consumed.
 
 The context file is capped so a long issue cannot exhaust the agent's context:
 `RETRO_JIRA_CONTEXT_MAX_BYTES` (default `262144`) drops the oldest comments
 first and sets `comments_truncated`; `RETRO_JIRA_CONTEXT_COMMENT_CHARS`
 (default `4000`) and `RETRO_JIRA_CONTEXT_DESCRIPTION_CHARS` (default `20000`)
 truncate individual bodies and set `description_truncated`; and
-`RETRO_JIRA_CONTEXT_MAX_PAGES` (default `10`) bounds comment pagination. The
-agent is told to report those truncations in its summary rather than treat the
-text as complete.
+`RETRO_JIRA_CONTEXT_MAX_PAGES` (default `10`) bounds comment pagination, which
+also sets `comments_truncated` — comments are requested oldest first, so a page
+cap drops the newest ones. The agent is told to report those truncations in its
+summary rather than treat the text as complete.
 
 ### Jira REST routing
 
@@ -156,12 +169,14 @@ No `JIRA_API_URL` environment variable is read. When `tracker.jira.base_url` is 
 
 For a PR/MR-close run, fullsend must also hand the Jira credentials to the
 runner: the overlay maps them from `FULLSEND_JIRA_TOKEN` and
-`FULLSEND_JIRA_EMAIL` (or the client credentials). Passing Jira credentials
-to forge-originated runs that target Jira is tracked in
-[fullsend-ai/fullsend#2267](https://github.com/fullsend-ai/fullsend/issues/2267),
-which is still open: for a github or gitlab event, dispatch passes no Jira
+`FULLSEND_JIRA_EMAIL` (or the client credentials). That is the gap for
+forge-originated runs: for a github or gitlab event, dispatch passes no Jira
 credentials and unsets `FULLSEND_JIRA_TOKEN`, `FULLSEND_JIRA_EMAIL` and the
-client credentials.
+client credentials, so the mapping has nothing to resolve.
+[fullsend-ai/fullsend#2267](https://github.com/fullsend-ai/fullsend/issues/2267)
+is the request to add Jira support to this agent, which this implementation
+satisfies; it is not the credential gap, which needs a dispatch change that no
+issue tracks yet.
 
 So this overlay does not work for PR/MR-close or `/fs-retro` runs yet, and it
 does not fail the way a missing credential usually would. fullsend validates
@@ -177,9 +192,8 @@ it. Jira-originated runs are not reached by dispatch at all: no route hands
 retro a Jira event, a Jira URL or Jira credentials, and the harness still
 declares `GH_TOKEN` (`GITLAB_TOKEN` on GitLab) in `env.runner`, so fullsend
 requires a forge token before the pre-script runs. Treat forge-originated Jira
-filing as unverified until
-fullsend-ai/fullsend#2267 lands and this path has run once against a test
-repository.
+filing as unverified until dispatch passes those credentials and this path has
+run once against a test repository.
 
 Cross-project issue creation in Jira is governed by `tracker.jira.allowed_targets.projects` in `config.yaml`. The `tracker.jira` configuration in `config.yaml` (under `FULLSEND_DIR`) is required by the `fullsend` CLI for Jira issue operations; `RETRO_JIRA_PROJECT` must match `tracker.jira.project` or one of the allowed targets (case-insensitively). The configured primary project is always permitted; explicit allowed targets add other projects. When `allowed_targets.projects` is omitted, only the configured primary project is permitted. An explicit empty list (`projects: []`) therefore permits the primary project but no other projects. Missing config or a missing primary project denies issue creation.
 

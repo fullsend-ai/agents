@@ -10,7 +10,7 @@ description: >
 # Retro Analysis — Jira-Originated Work
 
 A retro whose `ORIGINATING_URL` is a Jira issue URL
-(`https://<site>.atlassian.net/browse/PROJ-123`) analyzes a work item that
+(`https://<site>.atlassian.net/browse/<issue-key>`) analyzes a work item that
 lives in Jira but was actioned on the forge. This skill covers both halves.
 
 ## Reading the originating issue
@@ -51,15 +51,15 @@ it. Start from the issue key:
 
 ```bash
 # PRs and commits that mention the key
-gh search prs --owner <org> "<KEY>" --limit 20
-gh search commits "<KEY>" --limit 20
+gh search prs --owner <org> "<issue-key>" --limit 20
+gh search commits "<issue-key>" --limit 20
 
 # The dispatch runs that produced them
 gh run list --repo "$REPO_FULL_NAME" --workflow=fullsend.yaml --limit 20 \
   --json databaseId,event,status,conclusion,createdAt
 ```
 
-Match the key exactly (`PROJ-123`, not `PROJ-1234`). A work item can be
+Match the key exactly (`<project>-123`, not `<project>-1234`). A work item can be
 actioned by more than one PR; treat each as a branch of the same workflow.
 
 ## Proposals

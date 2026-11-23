@@ -19,6 +19,9 @@
 # through retro-ops.lib.sh) also enforces JIRA_BASE_URL, RETRO_JIRA_PROJECT
 # and a Jira credential, and reads tracker.jira from FULLSEND_DIR's config.
 # RETRO_MODE=summary_only relaxes those requirements: no issue is filed.
+# A Jira-originated run additionally requires RETRO_JIRA_CONTEXT_FILE: the
+# path this script writes the issue context to is the host_files src the
+# harness mounts into the sandbox.
 
 set -euo pipefail
 
@@ -47,6 +50,20 @@ _gha_mask() {
   value="${value//$'\n'/%0A}"
   printf '::add-mask::%s\n' "${value}"
 }
+
+# RETRO_MODE is validated here, before the tracker library is sourced, because
+# jira-retro-ops.lib.sh branches on it at source time: a typo such as
+# `summary-only` would otherwise take the full path and fail later with a
+# misleading missing-credential error, and pre-retro, which also sources this
+# file, would never reject it at all.
+RETRO_MODE="${RETRO_MODE:-all}"
+case "${RETRO_MODE}" in
+  all|summary_only|issues_only) ;;
+  *)
+    echo "ERROR: RETRO_MODE must be 'all', 'summary_only', or 'issues_only' (got: $(_gha_sanitize "${RETRO_MODE}"))" >&2
+    exit 1
+    ;;
+esac
 
 case "${FULLSEND_FORGE:-}" in
   github)
@@ -488,6 +505,13 @@ case "${FULLSEND_TRACKER}" in
 #                            labels and a warning.
 #   RETRO_JIRA_MAX_PAGES   — maximum pages fetched per paginated Jira read (default: 50)
 #   RETRO_MODE             — "all" (default), "summary_only", or "issues_only"
+#   RETRO_JIRA_CONTEXT_FILE — path the pre-script writes the originating Jira
+#                            issue context to. Required for a Jira-originated
+#                            run: harness/retro.yaml mounts exactly this path
+#                            into the sandbox (host_files src), and a
+#                            ${VAR}-expanded src is the only form fullsend
+#                            accepts when the harness is loaded from a URL or
+#                            used as a `base:`.
 #
 # REST routing mirrors fullsend's Jira Scoped client
 # (internal/forge/jira/scoped.go), as jira-prioritize-ops.lib.sh does:
@@ -1075,7 +1099,11 @@ _retro_jira_api_with_status() {
 # here, on the host, and the harness mounts the result into the sandbox
 # (harness/retro.yaml host_files -> /sandbox/workspace/jira-origin.json, read
 # by the agent as RETRO_JIRA_CONTEXT). Nothing in the sandbox talks to Jira.
-RETRO_JIRA_CONTEXT_FILE="${RETRO_JIRA_CONTEXT_FILE:-/tmp/retro-jira-context.json}"
+#
+# The path is the runner's, not a default: harness/retro.yaml declares it as
+# the host_files src, so the path written here and the path mounted there must
+# be the same value. pre-retro refuses a Jira-originated run without it.
+RETRO_JIRA_CONTEXT_FILE="${RETRO_JIRA_CONTEXT_FILE:-}"
 RETRO_JIRA_CONTEXT_MAX_BYTES="${RETRO_JIRA_CONTEXT_MAX_BYTES:-262144}"
 RETRO_JIRA_CONTEXT_MAX_PAGES="${RETRO_JIRA_CONTEXT_MAX_PAGES:-10}"
 RETRO_JIRA_CONTEXT_COMMENT_CHARS="${RETRO_JIRA_CONTEXT_COMMENT_CHARS:-4000}"
@@ -1087,40 +1115,19 @@ if [[ ! "${RETRO_JIRA_CONTEXT_MAX_PAGES}" =~ ^[1-9][0-9]*$ ]]; then
   exit 1
 fi
 
-# Print the ADF document on stdin as plain text. Jira stores rich text as
-# Atlassian Document Format; the agent needs readable prose. Unknown node
-# types fall back to their children, so a new node type degrades to text
-# rather than disappearing.
-_retro_jira_adf() {
-  jq -r '
-    def flatten:
-      if type == "string" then .
-      elif type == "array" then map(flatten) | join("")
-      elif type == "object" then
-        (if .type == "text" then (.text // "")
-         elif .type == "hardBreak" then "\n"
-         elif .type == "paragraph" then ((.content // [] | flatten) + "\n")
-         elif .type == "heading" then
-           (("#" * ((.attrs.level // 1) | tonumber)) + " " + ((.content // [] | flatten)) + "\n")
-         elif .type == "codeBlock" then ("```\n" + ((.content // [] | flatten)) + "```\n")
-         elif .type == "listItem" then ("- " + ((.content // [] | flatten)))
-         elif .type == "mention" then ("@" + (.attrs.text // .attrs.displayName // "user"))
-         elif .type == "inlineCard" then ((.attrs.url // "") + "\n")
-         elif .type == "rule" then "---\n"
-         else (.content // [] | flatten) end)
-      else "" end;
-    flatten
-  ' 2>/dev/null
-}
-
 # Fetch every comment on an issue, oldest first, into a JSON array file.
-# Pagination is bounded by RETRO_JIRA_CONTEXT_MAX_PAGES and a truncated read
-# is reported rather than silently dropped.
+# Pagination is bounded by RETRO_JIRA_CONTEXT_MAX_PAGES; a read stopped by that
+# cap sets _RETRO_JIRA_COMMENTS_TRUNCATED, which the context builder copies into
+# the file so the agent knows the list is incomplete. orderBy is explicit
+# because the cap drops newest comments when the order is ascending, which is
+# the order the byte-size trim and the docs assume.
+_RETRO_JIRA_COMMENTS_TRUNCATED="false"
 _retro_jira_fetch_comments() {
   local key="$1" out="$2" start=0 page resp count total
+  _RETRO_JIRA_COMMENTS_TRUNCATED="false"
   printf '[]' > "${out}"
   for ((page = 1; page <= RETRO_JIRA_CONTEXT_MAX_PAGES; page++)); do
-    resp=$(_retro_jira_api GET "/issue/${key}/comment?maxResults=100&startAt=${start}") || return 1
+    resp=$(_retro_jira_api GET "/issue/${key}/comment?maxResults=100&startAt=${start}&orderBy=created") || return 1
     count=$(printf '%s' "${resp}" | jq -r '(.comments // []) | length') || return 1
     if ! printf '%s' "${resp}" | jq -c '(.comments // [])' \
       | jq -sc '.[0] + .[1]' "${out}" - > "${out}.tmp"; then
@@ -1136,6 +1143,7 @@ _retro_jira_fetch_comments() {
     fi
   done
   echo "WARNING: Jira comments stopped after ${RETRO_JIRA_CONTEXT_MAX_PAGES} pages; the sandbox context is truncated" >&2
+  _RETRO_JIRA_COMMENTS_TRUNCATED="true"
   return 0
 }
 
@@ -1144,9 +1152,13 @@ _retro_jira_fetch_comments() {
 # cannot read.
 _retro_jira_write_context() {
   local key="$1" file="${RETRO_JIRA_CONTEXT_FILE}"
-  local raw_issue comments_file tmp
+  local raw_issue comments_file issue_file tmp
   if [[ ! "${key}" =~ ^[A-Z][A-Z0-9_]*-[0-9]+$ ]]; then
     echo "ERROR: cannot read a Jira issue key from '$(_gha_sanitize "${key}")'" >&2
+    return 1
+  fi
+  if [[ -z "${file}" ]]; then
+    echo "ERROR: RETRO_JIRA_CONTEXT_FILE is not set — harness/retro.yaml mounts that path into the sandbox as RETRO_JIRA_CONTEXT" >&2
     return 1
   fi
   if [[ -z "${JIRA_BASE_URL:-}" ]]; then
@@ -1163,12 +1175,23 @@ _retro_jira_write_context() {
     echo "ERROR: failed to read comments on Jira issue ${key}" >&2
     return 1
   fi
+  # The issue document goes in through a file, not argv: it holds the ADF
+  # description, which is far larger than its text, and Linux caps a single
+  # argument at 128 KiB (MAX_ARG_STRLEN), so --argjson fails with E2BIG on a
+  # big issue. macOS has no such limit, so a local run would not show it.
+  issue_file=$(mktemp)
+  if ! printf '%s' "${raw_issue}" > "${issue_file}"; then
+    rm -f "${comments_file}" "${issue_file}"
+    echo "ERROR: failed to stage the Jira issue response" >&2
+    return 1
+  fi
   tmp=$(mktemp)
   if ! jq -n \
     --arg key "${key}" \
     --arg url "${JIRA_BASE_URL}/browse/${key}" \
-    --argjson issue "${raw_issue}" \
+    --slurpfile issue "${issue_file}" \
     --slurpfile comments "${comments_file}" \
+    --argjson comments_truncated "${_RETRO_JIRA_COMMENTS_TRUNCATED}" \
     --argjson comment_chars "${RETRO_JIRA_CONTEXT_COMMENT_CHARS}" \
     --argjson description_chars "${RETRO_JIRA_CONTEXT_DESCRIPTION_CHARS}" \
     --arg generated_by "retro pre-script (host-side fetch; the sandbox has no Jira access)" '
@@ -1193,7 +1216,7 @@ _retro_jira_write_context() {
     def text_or_null:
       if . == null then "" else (adf | gsub("\\n{3,}"; "\n\n") | ltrimstr("\n") | rtrimstr("\n")) end;
     def clip(n): if length > n then .[0:n] + "\n…(truncated)" else . end;
-    ($issue.fields // {}) as $f |
+    ($issue[0].fields // {}) as $f |
     {
       source: "jira",
       generated_by: $generated_by,
@@ -1223,13 +1246,13 @@ _retro_jira_write_context() {
             created: (.created // ""),
             body: ((.body | text_or_null) | clip($comment_chars))
           })),
-      comments_truncated: false
+      comments_truncated: $comments_truncated
     }' > "${tmp}"; then
-    rm -f "${comments_file}" "${tmp}"
+    rm -f "${comments_file}" "${issue_file}" "${tmp}"
     echo "ERROR: failed to assemble the Jira context file" >&2
     return 1
   fi
-  rm -f "${comments_file}"
+  rm -f "${comments_file}" "${issue_file}"
   # Keep the file under the size cap by dropping the oldest comments first:
   # the newest discussion is what a retrospective needs most.
   while [[ "$(wc -c < "${tmp}" | tr -d '[:space:]')" -gt "${RETRO_JIRA_CONTEXT_MAX_BYTES}" ]] \
@@ -1478,6 +1501,24 @@ tracker_find_existing_issue() {
   fi
 }
 
+# Titles filed, or matched as already filed, earlier in this run, with their
+# issue URLs. The duplicate search below is the only rerun protection and it
+# reads /search/jql, whose index lags behind writes: a second proposal with the
+# same summary, or a retry moments after a create, would not see the issue the
+# earlier iteration just filed. Checking this set first closes that gap. It
+# lives in the calling shell (post-retro's proposal loop), which is also where
+# the create runs.
+_RETRO_JIRA_RUN_TITLES='[]'
+_retro_jira_title_seen() {
+  jq -e --arg t "$1" 'map(select(.title == $t)) | length > 0' <<<"${_RETRO_JIRA_RUN_TITLES}" >/dev/null 2>&1
+}
+_retro_jira_title_url() {
+  jq -r --arg t "$1" '[.[] | select(.title == $t)][0].url // empty' <<<"${_RETRO_JIRA_RUN_TITLES}" 2>/dev/null
+}
+_retro_jira_record_title() {
+  _RETRO_JIRA_RUN_TITLES=$(jq -c --arg t "$1" --arg u "${2:-}" '. + [{title: $t, url: $u}]' <<<"${_RETRO_JIRA_RUN_TITLES}")
+}
+
 forge_create_issue() {
   # The fourth argument is the label list, which post-retro applies with
   # tracker_apply_labels after the create (labels are an edit-screen field).
@@ -1719,6 +1760,14 @@ forge_validate_originating_url
 forge_parse_originating_url
 forge_mask_token
 
+# A runner that reuses its host keeps RETRO_JIRA_CONTEXT_FILE between runs, and
+# harness/retro.yaml uploads it on every retro run, so a stale file would put an
+# earlier Jira issue's text into an unrelated run's sandbox. Drop it here, for
+# forge-originated runs too; a Jira-originated run writes a fresh one below.
+if [[ -n "${RETRO_JIRA_CONTEXT_FILE:-}" ]]; then
+  rm -f "${RETRO_JIRA_CONTEXT_FILE}" || true
+fi
+
 if [[ "${FULLSEND_TRACKER}" == "jira" ]]; then
   if [[ "${RETRO_MODE:-all}" != "summary_only" || "${JIRA_ORIGINATING:-false}" == "true" ]]; then
     if [[ -z "${FULLSEND_DIR:-}" ]]; then
@@ -1737,6 +1786,13 @@ echo "::notice::Retro target: $(_gha_sanitize "${ORIGINATING_URL}")"
 # Fail closed: a retrospective that cannot read its subject would file
 # proposals it cannot substantiate.
 if [[ "${JIRA_ORIGINATING:-false}" == "true" ]]; then
+  # The harness declares this path as its host_files src, and fullsend expands
+  # ${VAR} in that src from the runner environment, so an unset value would
+  # mount nothing and the agent would run blind. Fail here instead.
+  if [[ -z "${RETRO_JIRA_CONTEXT_FILE:-}" ]]; then
+    echo "ERROR: RETRO_JIRA_CONTEXT_FILE must be set for a Jira-originated retro — harness/retro.yaml mounts that path into the sandbox as RETRO_JIRA_CONTEXT" >&2
+    exit 1
+  fi
   if [[ "${JIRA_AUTH_MODE:-none}" == "none" ]]; then
     echo "ERROR: a Jira-originated retro needs JIRA_TOKEN, or FULLSEND_JIRA_CLIENT_ID and FULLSEND_JIRA_CLIENT_SECRET" >&2
     exit 1

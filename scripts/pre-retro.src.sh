@@ -18,6 +18,9 @@
 # through retro-ops.lib.sh) also enforces JIRA_BASE_URL, RETRO_JIRA_PROJECT
 # and a Jira credential, and reads tracker.jira from FULLSEND_DIR's config.
 # RETRO_MODE=summary_only relaxes those requirements: no issue is filed.
+# A Jira-originated run additionally requires RETRO_JIRA_CONTEXT_FILE: the
+# path this script writes the issue context to is the host_files src the
+# harness mounts into the sandbox.
 
 set -euo pipefail
 
@@ -32,6 +35,14 @@ source "${SCRIPT_DIR}/lib/retro-ops.lib.sh"
 forge_validate_originating_url
 forge_parse_originating_url
 forge_mask_token
+
+# A runner that reuses its host keeps RETRO_JIRA_CONTEXT_FILE between runs, and
+# harness/retro.yaml uploads it on every retro run, so a stale file would put an
+# earlier Jira issue's text into an unrelated run's sandbox. Drop it here, for
+# forge-originated runs too; a Jira-originated run writes a fresh one below.
+if [[ -n "${RETRO_JIRA_CONTEXT_FILE:-}" ]]; then
+  rm -f "${RETRO_JIRA_CONTEXT_FILE}" || true
+fi
 
 if [[ "${FULLSEND_TRACKER}" == "jira" ]]; then
   if [[ "${RETRO_MODE:-all}" != "summary_only" || "${JIRA_ORIGINATING:-false}" == "true" ]]; then
@@ -51,6 +62,13 @@ echo "::notice::Retro target: $(_gha_sanitize "${ORIGINATING_URL}")"
 # Fail closed: a retrospective that cannot read its subject would file
 # proposals it cannot substantiate.
 if [[ "${JIRA_ORIGINATING:-false}" == "true" ]]; then
+  # The harness declares this path as its host_files src, and fullsend expands
+  # ${VAR} in that src from the runner environment, so an unset value would
+  # mount nothing and the agent would run blind. Fail here instead.
+  if [[ -z "${RETRO_JIRA_CONTEXT_FILE:-}" ]]; then
+    echo "ERROR: RETRO_JIRA_CONTEXT_FILE must be set for a Jira-originated retro — harness/retro.yaml mounts that path into the sandbox as RETRO_JIRA_CONTEXT" >&2
+    exit 1
+  fi
   if [[ "${JIRA_AUTH_MODE:-none}" == "none" ]]; then
     echo "ERROR: a Jira-originated retro needs JIRA_TOKEN, or FULLSEND_JIRA_CLIENT_ID and FULLSEND_JIRA_CLIENT_SECRET" >&2
     exit 1
