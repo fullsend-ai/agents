@@ -2853,6 +2853,22 @@ else
   cat "${FULLSEND_LOG}" 2>/dev/null || true
   FAILURES=$((FAILURES + 1))
 fi
+# A whitespace-only title is schema-valid but normalizes to "", so it must be
+# rejected in the validation pass. The first proposal is valid, so filing it
+# before the rejection would leave a Jira issue behind and skip the summary.
+JIRA_BLANK_TITLE_FIXTURE=$(printf '%s' "${FIXTURE_SAME_TITLE_TWICE}" \
+  | jq -c '.proposals[1].title = "   "')
+run_test_stdout "jira/blank-title-rejected-before-filing" \
+  "${JIRA_BLANK_TITLE_FIXTURE}" \
+  "title is empty after trimming for Jira" \
+  true
+if grep -F 'fullsend issues create' "${FULLSEND_LOG}" 2>/dev/null | grep -qvF -- '--help'; then
+  echo "FAIL: jira/blank-title-no-creates — create called before the blank title was rejected"
+  cat "${FULLSEND_LOG}" 2>/dev/null || true
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: jira/blank-title-no-creates"
+fi
 JIRA_ALL_STOPWORDS_FIXTURE=$(printf '%s' "${FIXTURE_ONE_PROPOSAL}" | jq -c '.proposals[0].title = "a to be"')
 export JIRA_MOCK_DUP_PROJECT_ONLY="1"
 run_test_stdout "jira/duplicate-stopword-project-fallback" \

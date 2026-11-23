@@ -2098,6 +2098,20 @@ if [[ "${PROPOSAL_COUNT}" -gt 0 ]]; then
       echo "ERROR: proposal[$i].title is missing or empty" >&2
       exit 1
     fi
+    # The schema allows a whitespace-only title (minLength 1, no pattern), and
+    # Jira normalization collapses it to "", which the filing loop rejects. Run
+    # the same normalization here so that rejection happens before any proposal
+    # is filed, not mid-loop after earlier proposals already exist in Jira.
+    if [[ "${FULLSEND_TRACKER}" == "jira" ]]; then
+      if ! NORMALIZED_TITLE=$(_retro_jira_normalize_summary "${TI}"); then
+        echo "ERROR: proposal[$i].title could not be normalized for the Jira summary limit" >&2
+        exit 1
+      fi
+      if [[ -z "${NORMALIZED_TITLE}" ]]; then
+        echo "ERROR: proposal[$i].title is empty after trimming for Jira" >&2
+        exit 1
+      fi
+    fi
     jq -e ".proposals[$i] | .what_happened and .what_could_go_better and .proposed_change and .validation_criteria" "${RESULT_FILE}" >/dev/null 2>&1 || {
       echo "ERROR: proposal[$i] is missing required fields" >&2
       exit 1
