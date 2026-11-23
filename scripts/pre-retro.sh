@@ -1280,9 +1280,35 @@ _retro_jira_write_context() {
     mv "${tmp}.cut" "${tmp}"
   done
   chmod 600 "${tmp}"
-  mkdir -p "$(dirname "${file}")"
-  mv "${tmp}" "${file}"
+  # The caller reads this function's return status through `if !`, which turns
+  # errexit off for the whole body, so each step needs an explicit check: a
+  # silent mkdir/mv failure would report success and leave the run without the
+  # context file it needs.
+  mkdir -p "$(dirname "${file}")" || {
+    rm -f "${tmp}"
+    echo "ERROR: cannot create the directory for RETRO_JIRA_CONTEXT_FILE: $(dirname "${file}")" >&2
+    return 1
+  }
+  mv "${tmp}" "${file}" || {
+    rm -f "${tmp}"
+    echo "ERROR: cannot move the Jira context file into place: ${file}" >&2
+    return 1
+  }
   printf '%s' "${file}"
+}
+
+# Jira Cloud rejects a summary longer than 255 characters or one that contains a
+# line break, and fullsend's `issues create --tracker jira` sends the title as
+# in.Summary unchanged. The retro schema allows a 256-character title and does
+# not forbid newlines (schemas/retro-result.schema.json), so a schema-valid
+# title can fail to file. Normalize it once in post-retro, before the in-run
+# title set, the duplicate search and the create, so dedupe compares the same
+# value Jira stores. jq slices by code point, so a multi-byte character is never
+# split.
+RETRO_JIRA_SUMMARY_MAX_CHARS=255
+_retro_jira_normalize_summary() {
+  printf '%s' "$1" | jq -Rrs --argjson max "${RETRO_JIRA_SUMMARY_MAX_CHARS}" \
+    'gsub("\\s+"; " ") | sub("^ +"; "") | sub(" +$"; "") | .[0:$max]'
 }
 
 _retro_jql_quote() {
@@ -1820,6 +1846,12 @@ if [[ "${JIRA_ORIGINATING:-false}" == "true" ]]; then
   fi
   if ! JIRA_CONTEXT_PATH=$(_retro_jira_write_context "${ORIGINATING_NUMBER}"); then
     echo "ERROR: failed to fetch Jira issue ${ORIGINATING_NUMBER} for the retrospective" >&2
+    exit 1
+  fi
+  # The harness marks the mount optional, so an empty file would mount nothing
+  # and leave the agent to run on its own assumptions. Fail closed instead.
+  if [[ ! -s "${JIRA_CONTEXT_PATH}" ]]; then
+    echo "ERROR: Jira issue context file ${JIRA_CONTEXT_PATH} is missing or empty after the fetch" >&2
     exit 1
   fi
   echo "::notice::Jira issue context for ${ORIGINATING_NUMBER} written to ${JIRA_CONTEXT_PATH}"

@@ -428,6 +428,24 @@ if [[ "${PROPOSAL_COUNT}" -gt 0 ]]; then
   for i in $(seq 0 $((PROPOSAL_COUNT - 1))); do
     TARGET_REPO=$(jq -r ".proposals[$i].target_repo" "${RESULT_FILE}")
     TITLE=$(jq -r ".proposals[$i].title" "${RESULT_FILE}")
+    # Jira Cloud rejects a summary over 255 characters or containing a line
+    # break, and the schema permits both (maxLength 256, newlines allowed), so
+    # normalize once here: the in-run title set, the duplicate search and the
+    # create all then use the value Jira stores.
+    if [[ "${FULLSEND_TRACKER}" == "jira" ]]; then
+      TITLE_RAW="${TITLE}"
+      if ! TITLE=$(_retro_jira_normalize_summary "${TITLE_RAW}"); then
+        echo "ERROR: proposal[$i].title could not be normalized for the Jira summary limit" >&2
+        exit 1
+      fi
+      if [[ -z "${TITLE}" ]]; then
+        echo "ERROR: proposal[$i].title is empty after trimming for Jira" >&2
+        exit 1
+      fi
+      if [[ "${TITLE}" != "${TITLE_RAW}" ]]; then
+        echo "::warning::proposal[$i] title normalized to the Jira summary limit (${RETRO_JIRA_SUMMARY_MAX_CHARS} characters, single line)"
+      fi
+    fi
     SAFE_TITLE=$(_gha_sanitize "${TITLE}")
 
     # Deterministic gate: reject "Evidence for" proposals.

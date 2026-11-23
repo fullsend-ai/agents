@@ -477,6 +477,17 @@ else
   echo "PASS: jira-context-stale-file-gone"
 fi
 
+# A write that cannot put the file in place must fail the run. The caller reads
+# the write through `if !`, which turns errexit off for the whole function, so a
+# silent mkdir/mv failure would report success and leave the optional mount
+# empty — the agent would then run without the issue text.
+: > "${TMPDIR}/context-parent-is-a-file"
+run_test "jira-context-unwritable-path-fails" 1 "cannot create the directory for RETRO_JIRA_CONTEXT_FILE" \
+  FULLSEND_TRACKER=jira FULLSEND_DIR="${TMPDIR}/dot-fullsend" JIRA_TOKEN="test-token" \
+  JIRA_BASE_URL="https://test.atlassian.net" RETRO_JIRA_PROJECT="PROJ" \
+  RETRO_JIRA_CONTEXT_FILE="${TMPDIR}/context-parent-is-a-file/context.json" \
+  ORIGINATING_URL="https://test.atlassian.net/browse/PROJ-123"
+
 # RETRO_MODE is validated before the tracker library acts on it, so a typo is
 # rejected with its own message instead of a missing-credential error.
 run_test "jira-invalid-retro-mode-fails" 1 "RETRO_MODE must be 'all', 'summary_only', or 'issues_only'" \

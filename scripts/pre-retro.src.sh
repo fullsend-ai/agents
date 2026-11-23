@@ -85,6 +85,12 @@ if [[ "${JIRA_ORIGINATING:-false}" == "true" ]]; then
     echo "ERROR: failed to fetch Jira issue ${ORIGINATING_NUMBER} for the retrospective" >&2
     exit 1
   fi
+  # The harness marks the mount optional, so an empty file would mount nothing
+  # and leave the agent to run on its own assumptions. Fail closed instead.
+  if [[ ! -s "${JIRA_CONTEXT_PATH}" ]]; then
+    echo "ERROR: Jira issue context file ${JIRA_CONTEXT_PATH} is missing or empty after the fetch" >&2
+    exit 1
+  fi
   echo "::notice::Jira issue context for ${ORIGINATING_NUMBER} written to ${JIRA_CONTEXT_PATH}"
 fi
 

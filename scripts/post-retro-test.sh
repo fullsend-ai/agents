@@ -2817,12 +2817,42 @@ else
   FAILURES=$((FAILURES + 1))
 fi
 unset JIRA_MOCK_STOPWORD_DUP
-JIRA_MULTILINE_TITLE_FIXTURE=$(printf '%s' "${FIXTURE_ONE_PROPOSAL}" | jq -c '.proposals[0].title = "Fix Jira API search"')
+JIRA_MULTILINE_TITLE_FIXTURE=$(printf '%s' "${FIXTURE_ONE_PROPOSAL}" | jq -c '.proposals[0].title = "Fix Jira API\nsearch"')
 export JIRA_MOCK_MULTILINE_DUP="1"
 run_test_stdout "jira/duplicate-multiline-title" \
   "${JIRA_MULTILINE_TITLE_FIXTURE}" \
   "already exists in Jira: https://mock.atlassian.net/browse/PROJ-7"
 unset JIRA_MOCK_MULTILINE_DUP
+
+# Jira Cloud rejects a summary over 255 characters or with a line break, and
+# the retro schema allows both (maxLength 256, newlines allowed). The title is
+# normalized once, before the in-run title set, the duplicate search and the
+# create, so neither a schema-valid long title nor a multi-line one fails to
+# file — and the duplicate search compares the value Jira actually stores.
+JIRA_LONG_TITLE_FIXTURE=$(printf '%s' "${FIXTURE_ONE_PROPOSAL}" \
+  | jq -c --arg t "$(jq -rn '"x" * 256')" '.proposals[0].title = $t')
+run_test_stdout "jira/title-truncated-to-summary-limit" \
+  "${JIRA_LONG_TITLE_FIXTURE}" \
+  "title normalized to the Jira summary limit"
+if grep -qF -- "--title $(jq -rn '"x" * 255') --body" "${FULLSEND_LOG}" 2>/dev/null; then
+  echo "PASS: jira/title-truncated-to-summary-limit-create"
+else
+  echo "FAIL: jira/title-truncated-to-summary-limit-create — create did not receive a 255-character title"
+  cat "${FULLSEND_LOG}" 2>/dev/null || true
+  FAILURES=$((FAILURES + 1))
+fi
+JIRA_NEWLINE_TITLE_FIXTURE=$(printf '%s' "${FIXTURE_ONE_PROPOSAL}" \
+  | jq -c '.proposals[0].title = "Improve\nerror handling in widget service"')
+run_test_stdout "jira/title-newline-normalized" \
+  "${JIRA_NEWLINE_TITLE_FIXTURE}" \
+  "title normalized to the Jira summary limit"
+if grep -qF -- "--title Improve error handling in widget service --body" "${FULLSEND_LOG}" 2>/dev/null; then
+  echo "PASS: jira/title-newline-normalized-create"
+else
+  echo "FAIL: jira/title-newline-normalized-create — create received a title with a line break"
+  cat "${FULLSEND_LOG}" 2>/dev/null || true
+  FAILURES=$((FAILURES + 1))
+fi
 JIRA_ALL_STOPWORDS_FIXTURE=$(printf '%s' "${FIXTURE_ONE_PROPOSAL}" | jq -c '.proposals[0].title = "a to be"')
 export JIRA_MOCK_DUP_PROJECT_ONLY="1"
 run_test_stdout "jira/duplicate-stopword-project-fallback" \
