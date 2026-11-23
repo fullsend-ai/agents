@@ -400,7 +400,7 @@ vars. Key differences from single-forge setup:
   fires when it renames the agent branch, cannot read them from their
   environment or from a parent's `/proc/<pid>/environ`; only the Jira writes
   receive them. These are the same account the Jira poller treats as its own, so the update does not
-  dispatch agents. If the Jira write fails,
+  dispatch agents. If the PR/MR link write fails,
   the step fails, even though the PR/MR already exists. The branch, commits,
   PR/MR, review and merge stay on the code host: GitHub targets get a GitHub
   PR and GitLab targets get a GitLab MR. For GitLab targets the GitLab host
@@ -417,11 +417,11 @@ vars. Key differences from single-forge setup:
   are retried for all methods; HTTP 500–504 and network failures are retried for
   idempotent methods. There is no additional shell retry. A rerun after an
   ambiguous comment POST failure relies on the sticky-marker property lookup
-  to find a comment the earlier request may have created. Jira comment bodies
-  have the token and saved OAuth client secret redacted before delivery. The
-  shared comment writer captures CLI stdout and stderr, removes the saved
-  token, email, OAuth client ID and secret (including normalized values), and
-  sanitizes workflow commands before logging, preserving the CLI exit status.
+  to find a comment the earlier request may have created. The shared comment
+  writer removes the saved token, email, OAuth client ID and secret (including
+  normalized values) from the comment body before delivery and from the
+  captured CLI stdout and stderr before logging. It also sanitizes workflow
+  commands in that output and preserves the CLI exit status.
   Failure details use the same bounded regex/literal-token sanitizer as forge
   failure comments, rather than `scan_public_text`. Failures can occur before
   the public-text scanner is initialized; the scanner remains required for

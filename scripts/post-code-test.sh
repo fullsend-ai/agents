@@ -4430,7 +4430,7 @@ fi
 # trimmed form too, as it is from the CLI output.
 JIRA_INT_NO_BRANCH=1 \
   JIRA_INT_RESULT_JSON='{"target_branch":"main","no_pr_reason":"Blocked. leak: fake..."}' \
-  run_jira_int "jira-noop-redacted-padded-token" github \
+  run_jira_int "jira-noop-redacts-trimmed-token" github \
   "JIRA_TOKEN=  fake..."$'\n' "FULLSEND_JIRA_TOKEN=  fake..."$'\n'
 if [ "${JIRA_INT_RC}" -ne 0 ]; then
   jira_int_fail "jira-noop-redacts-trimmed-token" "post-code failed"
@@ -4439,6 +4439,18 @@ elif grep -qF "leak: fake..." "${JIRA_INT_FULLSEND_LOG}" \
   jira_int_fail "jira-noop-redacts-trimmed-token" "trimmed token in agent context was not redacted"
 else
   echo "PASS: jira-noop-redacts-trimmed-token"
+fi
+
+# A whitespace-only email (Bearer auth) is not used as a redaction pattern.
+JIRA_INT_NO_BRANCH=1 run_jira_int "jira-noop-blank-email-keeps-body" github \
+  "JIRA_USER_EMAIL= " "FULLSEND_JIRA_EMAIL= "
+if [ "${JIRA_INT_RC}" -ne 0 ]; then
+  jira_int_fail "jira-noop-blank-email-keeps-body" "post-code failed"
+elif grep -qF "[REDACTED]" "${JIRA_INT_FULLSEND_LOG}" \
+     || ! grep -qF "Agent did not create a feature branch" "${JIRA_INT_FULLSEND_LOG}"; then
+  jira_int_fail "jira-noop-blank-email-keeps-body" "blank email redacted spaces in the body"
+else
+  echo "PASS: jira-noop-blank-email-keeps-body"
 fi
 
 # The no-op Jira write is best-effort: a failed write still exits 0.

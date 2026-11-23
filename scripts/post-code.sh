@@ -3745,12 +3745,15 @@ _post_jira_code_comment_inner() {
   # Raw and normalized values the CLI may use; redacted from the body
   # (defense in depth: it may carry agent-written context) and from the
   # CLI output.
-  local credential credentials=(
-    "${_jira_token_saved}" "$(_jira_auth_trim "${_jira_token_saved}")"
-    "${_jira_email_saved:-}" "$(jira_auth_email "${_jira_email_saved:-}")"
-    "${_jira_client_id_saved}" "${_JIRA_AUTH_CLIENT_ID:-}"
-    "${_jira_client_secret_saved}" "${_JIRA_AUTH_CLIENT_SECRET:-}"
-  )
+  # Whitespace-only values are skipped: they would redact every space.
+  local credential credentials=()
+  for credential in \
+    "${_jira_token_saved}" "${_jira_email_saved:-}" \
+    "${_jira_client_id_saved}" "${_JIRA_AUTH_CLIENT_ID:-}" \
+    "${_jira_client_secret_saved}" "${_JIRA_AUTH_CLIENT_SECRET:-}"; do
+    [ -n "$(_jira_auth_trim "${credential}")" ] || continue
+    credentials+=("${credential}" "$(_jira_auth_trim "${credential}")")
+  done
   for credential in "${credentials[@]}"; do
     body="$(_redact_literal_token "${body}" "${credential}")"
   done
