@@ -531,7 +531,24 @@ If this agent needs to reach hosts beyond the defaults, see the
 
 Supported runtimes: **claude** (stable default), **pi** (experimental), **codex** (experimental). On pi, each sub-agent runs with its own model, see [Fullsend pi docs](https://fullsend.sh/docs/runtimes/pi) on how to define a different model for a sub-agent.
 
-On codex, review's sub-agents run as native Codex children when harness security is on and Codex resolves the parent model to collaboration V1 or V2 at its pinned version, except on a `gateway/` model or, for a V2 parent, when a child model selects V2; otherwise the parent does the sub-agents' work itself, in one context (see [Fullsend codex docs](https://fullsend.sh/docs/runtimes/codex#sub-agents)). The skill passes no `model`: a persona with its own entry in `agents[].subagents` runs on that model, and every other child on the run-level child model ([child models](https://fullsend.sh/docs/runtimes/codex#child-models)). The GitHub fleet workflows do not pass `FULLSEND_CODEX_SUBAGENT_MODEL`, so on that path set the run-level child model with `subagents.default` on the agent's `agents:` entry. Review has run this way locally, not through the fleet workflows, on a V1 parent ([fullsend #6970: macOS](https://github.com/fullsend-ai/fullsend/issues/6970#issuecomment-6606379606), [Fedora](https://github.com/fullsend-ai/fullsend/issues/6970#issuecomment-6609114516)) and on a V2 parent ([fullsend #9085](https://github.com/fullsend-ai/fullsend/issues/9085#issuecomment-6920231259)). In all three V1 runs (two on macOS, one on Fedora) the parent skipped the time-budget checks before each wait and before the challenger ([fullsend #9657](https://github.com/fullsend-ai/fullsend/issues/9657)). In two of them a persona the skill selects did not run, and neither result said so ([fullsend #9073](https://github.com/fullsend-ai/fullsend/issues/9073), [fullsend #9657](https://github.com/fullsend-ai/fullsend/issues/9657)). In the V2 run the parent dropped findings the challenger kept ([fullsend #9657](https://github.com/fullsend-ai/fullsend/issues/9657)).
+On codex, review's sub-agents run as [native Codex children](https://fullsend.sh/docs/runtimes/codex#sub-agents), at most four at once, when both of these hold:
+
+- harness security is on (`security.enabled`, the default);
+- Codex resolves the parent model to [collaboration V1 or V2](https://fullsend.sh/docs/runtimes/codex#sub-agents) at its pinned version.
+
+Even then, they do not in these cases:
+
+- the parent model is a `gateway/` model;
+- the parent is on V2 and a child model selects V2.
+
+In every other case, the parent does the sub-agents' work itself, in one context.
+
+The skill passes no `model`: a persona with its own entry in `agents[].subagents` runs on that model, and every other child on the run-level child model ([child models](https://fullsend.sh/docs/runtimes/codex#child-models)). The GitHub fleet workflows do not pass `FULLSEND_CODEX_SUBAGENT_MODEL`, so on that path set the run-level child model with `subagents.default` on the agent's `agents:` entry.
+
+Review has run this way only locally, not through the fleet workflows:
+
+- On a V1 parent, twice on macOS ([fullsend #6970](https://github.com/fullsend-ai/fullsend/issues/6970#issuecomment-6606379606)) and once on Fedora ([fullsend #6970](https://github.com/fullsend-ai/fullsend/issues/6970#issuecomment-6609114516)). In all three runs the parent skipped the time-budget checks before each wait and before the challenger ([fullsend #9657](https://github.com/fullsend-ai/fullsend/issues/9657)). In two of them a persona the skill selects did not run, and neither result said so ([fullsend #9073](https://github.com/fullsend-ai/fullsend/issues/9073), [fullsend #9657](https://github.com/fullsend-ai/fullsend/issues/9657)).
+- On a V2 parent, once on macOS ([fullsend #9085](https://github.com/fullsend-ai/fullsend/issues/9085#issuecomment-6920231259)). The parent dropped findings the challenger kept ([fullsend #9657](https://github.com/fullsend-ai/fullsend/issues/9657)).
 
 Effort: `high` (explicit in the harness; override per run with `fullsend run --effort` or `FULLSEND_EFFORT`, values `low`–`max`).
 
