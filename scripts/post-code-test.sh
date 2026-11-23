@@ -4426,6 +4426,21 @@ else
   echo "PASS: jira-noop-context-sanitized"
 fi
 
+# A token saved with surrounding whitespace is redacted from the body in its
+# trimmed form too, as it is from the CLI output.
+JIRA_INT_NO_BRANCH=1 \
+  JIRA_INT_RESULT_JSON='{"target_branch":"main","no_pr_reason":"Blocked. leak: fake..."}' \
+  run_jira_int "jira-noop-redacted-padded-token" github \
+  "JIRA_TOKEN=  fake..."$'\n' "FULLSEND_JIRA_TOKEN=  fake..."$'\n'
+if [ "${JIRA_INT_RC}" -ne 0 ]; then
+  jira_int_fail "jira-noop-redacts-trimmed-token" "post-code failed"
+elif grep -qF "leak: fake..." "${JIRA_INT_FULLSEND_LOG}" \
+     || ! grep -qF "leak: [REDACTED]" "${JIRA_INT_FULLSEND_LOG}"; then
+  jira_int_fail "jira-noop-redacts-trimmed-token" "trimmed token in agent context was not redacted"
+else
+  echo "PASS: jira-noop-redacts-trimmed-token"
+fi
+
 # The no-op Jira write is best-effort: a failed write still exits 0.
 JIRA_INT_NO_BRANCH=1 run_jira_int "jira-noop-write-failure" github MOCK_FULLSEND_FAIL=1
 if [ "${JIRA_INT_RC}" -ne 0 ]; then

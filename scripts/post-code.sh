@@ -3742,10 +3742,18 @@ _post_jira_code_comment_inner() {
     return 1
   fi
 
-  # Defense in depth: the text may carry agent-written context.
-  body="$(_redact_literal_token "${body}" "${_jira_token_saved}")"
-  body="$(_redact_literal_token "${body}" "${_jira_client_secret_saved}")"
-  body="$(_redact_literal_token "${body}" "${_JIRA_AUTH_CLIENT_SECRET:-}")"
+  # Raw and normalized values the CLI may use; redacted from the body
+  # (defense in depth: it may carry agent-written context) and from the
+  # CLI output.
+  local credential credentials=(
+    "${_jira_token_saved}" "$(_jira_auth_trim "${_jira_token_saved}")"
+    "${_jira_email_saved:-}" "$(jira_auth_email "${_jira_email_saved:-}")"
+    "${_jira_client_id_saved}" "${_JIRA_AUTH_CLIENT_ID:-}"
+    "${_jira_client_secret_saved}" "${_JIRA_AUTH_CLIENT_SECRET:-}"
+  )
+  for credential in "${credentials[@]}"; do
+    body="$(_redact_literal_token "${body}" "${credential}")"
+  done
 
   # The credentials reach the CLI through FULLSEND_JIRA_TOKEN and, for a
   # bot user only, FULLSEND_JIRA_EMAIL, or through FULLSEND_JIRA_CLIENT_ID
@@ -3755,20 +3763,14 @@ _post_jira_code_comment_inner() {
   # One CLI invocation: the Jira client owns HTTP retries, including for
   # no-op and failure comments. A rerun after an ambiguous POST 5xx relies
   # on the CLI's sticky-marker property lookup to find a created comment.
-  local output="" write_rc=0 email="" token=""
+  local output="" write_rc=0
   output="$(printf '%s' "${body}" | jira_auth_fullsend "${_jira_fullsend_bin}" \
     "${_jira_token_saved}" "${_jira_email_saved:-}" \
     issues post-comment --tracker jira --fullsend-dir "${FULLSEND_DIR}" \
     --project "${project}" --number "${number}" \
     --marker "${marker}" --result - 2>&1)" || write_rc=$?
-  # Redact both successful output and error diagnostics inside Bash before
-  # logging. Include raw and normalized values used by the CLI.
-  email="$(jira_auth_email "${_jira_email_saved:-}")"
-  token="$(_jira_auth_trim "${_jira_token_saved}")"
-  local credential
-  for credential in "${_jira_token_saved}" "${token}" "${_jira_email_saved:-}" "${email}" \
-    "${_jira_client_id_saved}" "${_JIRA_AUTH_CLIENT_ID:-}" \
-    "${_jira_client_secret_saved}" "${_JIRA_AUTH_CLIENT_SECRET:-}"; do
+  # Redact successful output and error diagnostics inside Bash before logging.
+  for credential in "${credentials[@]}"; do
     output="$(_redact_literal_token "${output}" "${credential}")"
   done
   if [ -n "${output}" ]; then
