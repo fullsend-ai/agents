@@ -1778,6 +1778,18 @@ classify_branch_vs_pr_head() {
 [[ -n "${JIRA_AUTH_SH_LOADED:-}" ]] && return 0
 JIRA_AUTH_SH_LOADED=1
 
+# Emit a GitHub Actions masking command for a secret. Defined here rather
+# than in a caller's library so every bundle that sources Jira auth can mask
+# a minted token, whatever the agent. Percent signs, CR and LF are escaped
+# because an unescaped line break would end the workflow command.
+_jira_auth_gha_mask() {
+  local value="$1"
+  value="${value//%/%25}"
+  value="${value//$'\r'/%0D}"
+  value="${value//$'\n'/%0A}"
+  printf '::add-mask::%s\n' "${value}"
+}
+
 # Selected mode: "token", "client", or "none". Empty until jira_auth_select.
 JIRA_AUTH_MODE=""
 _JIRA_AUTH_CLIENT_ID=""
@@ -1934,24 +1946,29 @@ _jira_auth_mint_now() {
   token="$(printf '%s' "${body}" | jq -r '.access_token // empty' 2>/dev/null)" || token=""
   expires_in="$(printf '%s' "${body}" | jq -r '.expires_in // empty' 2>/dev/null)" || expires_in=""
   # Atlassian access tokens are JWTs. Anything outside this charset could
-  # break or inject into the ::add-mask:: line, so it is refused unprinted.
+  # break or inject into the workflow command, so it is refused unprinted.
   if [[ ! "${token}" =~ ^[A-Za-z0-9._~+/=-]+$ ]]; then
     echo "ERROR: Jira OAuth token response has no usable access_token" >&2
     return 1
   fi
-  # In the script's own shell the mask goes to stdout. In a subshell, such
-  # as a command substitution, stdout may be captured, so it goes to the
-  # main shell's current stdout through /proc when that is a pipe or a
-  # terminal (the runner log), else to stderr. A file or /dev/null there
-  # means the caller redirected stdout around the call.
-  local main_out="/proc/$$/fd/1"
-  if (( BASH_SUBSHELL == 0 )); then
-    printf '::add-mask::%s\n' "${token}"
-  elif [[ -w "${main_out}" ]] && [[ -p "${main_out}" || -c "${main_out}" ]] \
-    && ! [[ "${main_out}" -ef /dev/null ]]; then
-    printf '::add-mask::%s\n' "${token}" >> "${main_out}"
-  else
-    printf '::add-mask::%s\n' "${token}" >&2
+  # ::add-mask:: is a GitHub Actions workflow command. On any other runner
+  # the line is ordinary log output and would print the token, so the mask
+  # is emitted only when GITHUB_ACTIONS is set.
+  if [[ -n "${GITHUB_ACTIONS:-}" ]]; then
+    # In the script's own shell the mask goes to stdout. In a subshell, such
+    # as a command substitution, stdout may be captured, so it goes to the
+    # main shell's current stdout through /proc when that is a pipe or a
+    # terminal (the runner log), else to stderr. A file or /dev/null there
+    # means the caller redirected stdout around the call.
+    local main_out="/proc/$$/fd/1"
+    if (( BASH_SUBSHELL == 0 )); then
+      _jira_auth_gha_mask "${token}"
+    elif [[ -w "${main_out}" ]] && [[ -p "${main_out}" || -c "${main_out}" ]] \
+      && ! [[ "${main_out}" -ef /dev/null ]]; then
+      _jira_auth_gha_mask "${token}" >> "${main_out}"
+    else
+      _jira_auth_gha_mask "${token}" >&2
+    fi
   fi
   [[ "${expires_in}" =~ ^[0-9]+$ ]] || expires_in=3600
   _JIRA_AUTH_ACCESS_TOKEN="${token}"
