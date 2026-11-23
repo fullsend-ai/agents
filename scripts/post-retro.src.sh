@@ -751,10 +751,24 @@ if [[ "${RETRO_MODE}" != "issues_only" ]]; then
   if [[ ${COMMENT_EXIT} -ne 0 ]]; then
     # Treat 401/403 as non-fatal — the token lacks permission to comment on
     # this repo, but the core deliverables (analysis + proposal issues) are
-    # already complete. See #2305. Match a standalone status code (not a digit
-    # run, and not the -NNN suffix of an issue key) or the words the forge and
-    # Jira CLIs use, since their error formats differ.
-    if echo "${COMMENT_OUTPUT}" | grep -qiE '(^|[^A-Za-z0-9-])40[13]([^0-9]|$)|unauthorized|forbidden'; then
+    # already complete. See #2305.
+    #
+    # The forge helpers prefix the status code ("HTTP 403", "error: 401"), so
+    # keep that match narrow: an unrelated forge failure that merely contains
+    # the word "forbidden" stays fatal. The fullsend Jira CLI instead reports
+    # permission failures as words or a bare status code, so widen the match —
+    # ignoring -NNN issue-key suffixes and digit runs — only when the comment
+    # target is Jira.
+    PERMISSION_DENIED=false
+    if [[ "${JIRA_ORIGINATING:-false}" == "true" ]]; then
+      if echo "${COMMENT_OUTPUT}" | grep -qiE '(^|[^A-Za-z0-9-])40[13]([^0-9]|$)|unauthorized|forbidden'; then
+        PERMISSION_DENIED=true
+      fi
+    elif echo "${COMMENT_OUTPUT}" | grep -qE "HTTP (401|403)|error: (401|403)"; then
+      PERMISSION_DENIED=true
+    fi
+
+    if [[ "${PERMISSION_DENIED}" == "true" ]]; then
       # Sanitize before interpolating into GHA workflow command to prevent
       # injecting ::set-output or ::save-state directives via crafted responses.
       SAFE_OUTPUT=$(_gha_sanitize "${COMMENT_OUTPUT}")

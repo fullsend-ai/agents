@@ -26,6 +26,7 @@ trap 'rm -rf "${TMPDIR}"' EXIT
 #   "401"             — fail with HTTP 401
 #   "500"             — fail with HTTP 500
 #   "422"             — fail with HTTP 422
+#   "forbidden"       — fail with a permission word but no HTTP status code
 GH_LOG="${TMPDIR}/gh-calls.log"
 MOCK_BIN="${TMPDIR}/bin"
 mkdir -p "${MOCK_BIN}"
@@ -88,6 +89,10 @@ if [[ "$1" == "api" && "$2" == *"/comments" ]]; then
       ;;
     422)
       echo "HTTP 422: Unprocessable Entity" >&2
+      exit 1
+      ;;
+    forbidden)
+      echo "error: forbidden: Resource not accessible by integration" >&2
       exit 1
       ;;
     *)
@@ -1335,6 +1340,14 @@ run_test_stdout "comment-422-fatal" \
   "ERROR: failed to post summary comment" \
   "true" \
   "422"
+
+# A forge failure that only contains the word "forbidden" remains fatal: the
+# word match is applied only when the comment target is Jira.
+run_test_stdout "comment-forbidden-without-403-fatal" \
+  "${FIXTURE_ONE_PROPOSAL}" \
+  "ERROR: failed to post summary comment" \
+  "true" \
+  "forbidden"
 
 # 403 with no proposals — still non-fatal.
 run_test_stdout "comment-403-no-proposals" \
