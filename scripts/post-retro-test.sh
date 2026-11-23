@@ -249,6 +249,10 @@ if [[ "${URL}" == *"/rest/api/3/"* ]]; then
         echo '{"fields":[{"fieldId":"summary","required":true,"hasDefaultValue":false},{"fieldId":"labels","required":false,"hasDefaultValue":false}]}'
       elif [[ "${JIRA_MOCK_CREATE_NO_LABELS:-}" == "1" ]]; then
         echo '{"fields":[{"fieldId":"summary","required":true,"hasDefaultValue":false},{"fieldId":"description","required":false,"hasDefaultValue":false}]}'
+      elif [[ "${JIRA_MOCK_REPORTER_REQUIRED:-}" == "1" ]]; then
+        # An account with Modify Reporter permission sees reporter as required
+        # with no default, though Jira still fills it with the caller.
+        echo '{"fields":[{"fieldId":"summary","required":true,"hasDefaultValue":false},{"fieldId":"description","required":false,"hasDefaultValue":false},{"fieldId":"labels","required":false,"hasDefaultValue":false},{"fieldId":"reporter","required":true,"hasDefaultValue":false}]}'
       else
         echo '{"fields":[{"fieldId":"summary","required":true,"hasDefaultValue":false},{"fieldId":"description","required":false,"hasDefaultValue":false},{"fieldId":"labels","required":false,"hasDefaultValue":false},{"fieldId":"reporter","required":true,"hasDefaultValue":true}]}'
       fi
@@ -2913,6 +2917,14 @@ else
   FAILURES=$((FAILURES + 1))
 fi
 unset JIRA_MOCK_NO_DESCRIPTION
+
+# 6b. A required Reporter with no default is not a blocker: Jira fills it with
+# the calling account when the create omits it, so the proposal is still filed.
+export JIRA_MOCK_REPORTER_REQUIRED="1"
+run_test_stdout "jira/createmeta-required-reporter-files" \
+  "${FIXTURE_ONE_PROPOSAL}" \
+  "Created: https://mock.atlassian.net/browse/PROJ-100"
+unset JIRA_MOCK_REPORTER_REQUIRED
 
 # Createmeta must collect all pages before choosing the configured issue type.
 export JIRA_MOCK_CREATEMETA_PAGES="1"

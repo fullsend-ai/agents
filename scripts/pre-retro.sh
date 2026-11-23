@@ -1501,10 +1501,14 @@ tracker_validate_create() {
     echo "ERROR: cannot read create fields for issue type '$(_gha_sanitize "${RETRO_JIRA_ISSUE_TYPE}")' in Jira project ${RETRO_JIRA_PROJECT}" >&2
     return 1
   }
+  # reporter is exempt because Jira fills it with the calling account when the
+  # field is omitted. createmeta still reports it as required with no default
+  # for an account that holds Modify Reporter permission, so without this
+  # exemption every proposal would be refused on a project retro can file in.
   missing=$(printf '%s' "${meta}" | jq -r '
     [.[]
       | select(.required == true and (.hasDefaultValue // false) == false)
-      | select((.fieldId // .key) as $f | ["project","issuetype","summary","description"] | index($f) | not)
+      | select((.fieldId // .key) as $f | ["project","issuetype","summary","description","reporter"] | index($f) | not)
       | (.fieldId // .key)] | join(", ")')
   if [[ -n "${missing}" ]]; then
     echo "ERROR: Jira project ${RETRO_JIRA_PROJECT} requires fields retro does not set: $(_gha_sanitize "${missing}")" >&2
