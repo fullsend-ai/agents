@@ -74,11 +74,11 @@ if [[ "${JIRA_ORIGINATING:-false}" == "true" ]]; then
     exit 1
   fi
   _retro_jira_xtrace_off
-  _retro_jira_mint_rc=0
-  jira_auth_mint || _retro_jira_mint_rc=$?
+  _retro_jira_init_rc=0
+  _retro_jira_init || _retro_jira_init_rc=$?
   _retro_jira_xtrace_restore
-  if [[ "${_retro_jira_mint_rc}" -ne 0 ]]; then
-    echo "ERROR: failed to obtain a Jira access token for the originating-issue fetch" >&2
+  if [[ "${_retro_jira_init_rc}" -ne 0 ]]; then
+    echo "ERROR: failed to initialize Jira REST access for the originating-issue fetch" >&2
     exit 1
   fi
   if ! JIRA_CONTEXT_PATH=$(_retro_jira_write_context "${ORIGINATING_NUMBER}"); then

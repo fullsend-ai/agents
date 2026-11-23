@@ -891,12 +891,13 @@ if [[ "${RETRO_MODE}" != "summary_only" ]]; then
   }
 fi
 
-# Client-credentials tokens are not minted at source time: pre-retro bundles
-# this library only to validate the URL, and makes no Jira call. post-retro
-# calls _retro_jira_init once, in the main shell, before the proposal loop.
-# Minting there (rather than here or per call) is what keeps the token out of
-# the subshells: the cache lives in this process, and every REST call runs in
-# a command substitution that would otherwise exchange a new token each time.
+# Client-credentials tokens are not minted at source time: pre-retro mints
+# and caches the REST root via _retro_jira_init only when JIRA_ORIGINATING=true
+# to fetch the originating issue context, while forge-originated runs make no
+# Jira calls in pre-retro. post-retro calls _retro_jira_init once in the main
+# shell before the proposal loop. Minting there (rather than per call) keeps
+# the token and REST root in the main process cache, avoiding token exchanges
+# and tenant_info lookups inside subshell command substitutions.
 
 if [[ -n "${RETRO_JIRA_PROJECT}" && ! "${RETRO_JIRA_PROJECT}" =~ ^[A-Z][A-Z0-9_]*$ ]]; then
   echo "ERROR: RETRO_JIRA_PROJECT must be a Jira project key (e.g. PROJ)" >&2
@@ -1018,7 +1019,7 @@ _retro_jira_rest_root() {
 # with its cloud-ID cache.
 _RETRO_JIRA_REST_ROOT=""
 _retro_jira_init() {
-  [[ "${RETRO_MODE}" == "summary_only" ]] && return 0
+  [[ "${RETRO_MODE}" == "summary_only" && "${JIRA_ORIGINATING:-false}" != "true" ]] && return 0
   # Mint in the calling shell so the token cache survives the subshells.
   jira_auth_mint || return 1
   local root=""
@@ -1108,10 +1109,22 @@ RETRO_JIRA_CONTEXT_MAX_BYTES="${RETRO_JIRA_CONTEXT_MAX_BYTES:-262144}"
 RETRO_JIRA_CONTEXT_MAX_PAGES="${RETRO_JIRA_CONTEXT_MAX_PAGES:-10}"
 RETRO_JIRA_CONTEXT_COMMENT_CHARS="${RETRO_JIRA_CONTEXT_COMMENT_CHARS:-4000}"
 RETRO_JIRA_CONTEXT_DESCRIPTION_CHARS="${RETRO_JIRA_CONTEXT_DESCRIPTION_CHARS:-20000}"
-# Used as an arithmetic bound, so refuse anything but a positive integer, as
-# RETRO_JIRA_MAX_PAGES does.
+# Used as arithmetic or jq bounds, so refuse anything but a positive integer,
+# as RETRO_JIRA_MAX_PAGES does.
+if [[ ! "${RETRO_JIRA_CONTEXT_MAX_BYTES}" =~ ^[1-9][0-9]*$ ]]; then
+  echo "ERROR: RETRO_JIRA_CONTEXT_MAX_BYTES must be a positive integer (got: $(_gha_sanitize "${RETRO_JIRA_CONTEXT_MAX_BYTES}"))" >&2
+  exit 1
+fi
 if [[ ! "${RETRO_JIRA_CONTEXT_MAX_PAGES}" =~ ^[1-9][0-9]*$ ]]; then
   echo "ERROR: RETRO_JIRA_CONTEXT_MAX_PAGES must be a positive integer (got: $(_gha_sanitize "${RETRO_JIRA_CONTEXT_MAX_PAGES}"))" >&2
+  exit 1
+fi
+if [[ ! "${RETRO_JIRA_CONTEXT_COMMENT_CHARS}" =~ ^[1-9][0-9]*$ ]]; then
+  echo "ERROR: RETRO_JIRA_CONTEXT_COMMENT_CHARS must be a positive integer (got: $(_gha_sanitize "${RETRO_JIRA_CONTEXT_COMMENT_CHARS}"))" >&2
+  exit 1
+fi
+if [[ ! "${RETRO_JIRA_CONTEXT_DESCRIPTION_CHARS}" =~ ^[1-9][0-9]*$ ]]; then
+  echo "ERROR: RETRO_JIRA_CONTEXT_DESCRIPTION_CHARS must be a positive integer (got: $(_gha_sanitize "${RETRO_JIRA_CONTEXT_DESCRIPTION_CHARS}"))" >&2
   exit 1
 fi
 
@@ -1798,11 +1811,11 @@ if [[ "${JIRA_ORIGINATING:-false}" == "true" ]]; then
     exit 1
   fi
   _retro_jira_xtrace_off
-  _retro_jira_mint_rc=0
-  jira_auth_mint || _retro_jira_mint_rc=$?
+  _retro_jira_init_rc=0
+  _retro_jira_init || _retro_jira_init_rc=$?
   _retro_jira_xtrace_restore
-  if [[ "${_retro_jira_mint_rc}" -ne 0 ]]; then
-    echo "ERROR: failed to obtain a Jira access token for the originating-issue fetch" >&2
+  if [[ "${_retro_jira_init_rc}" -ne 0 ]]; then
+    echo "ERROR: failed to initialize Jira REST access for the originating-issue fetch" >&2
     exit 1
   fi
   if ! JIRA_CONTEXT_PATH=$(_retro_jira_write_context "${ORIGINATING_NUMBER}"); then

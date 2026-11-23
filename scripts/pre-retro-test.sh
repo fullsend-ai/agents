@@ -325,6 +325,26 @@ run_test "jira-nonnumeric-max-pages-fails" 1 "RETRO_JIRA_MAX_PAGES must be a pos
   JIRA_BASE_URL="https://test.atlassian.net" RETRO_JIRA_PROJECT="PROJ" "RETRO_JIRA_MAX_PAGES=x[1]" \
   ORIGINATING_URL="https://github.com/test-org/test-repo/pull/42"
 
+run_test "jira-invalid-context-max-bytes-fails" 1 "RETRO_JIRA_CONTEXT_MAX_BYTES must be a positive integer" \
+  FULLSEND_TRACKER=jira FULLSEND_DIR="${TMPDIR}/dot-fullsend" JIRA_TOKEN="test-token" \
+  JIRA_BASE_URL="https://test.atlassian.net" RETRO_JIRA_PROJECT="PROJ" "RETRO_JIRA_CONTEXT_MAX_BYTES=abc" \
+  ORIGINATING_URL="https://github.com/test-org/test-repo/pull/42"
+
+run_test "jira-invalid-context-max-pages-fails" 1 "RETRO_JIRA_CONTEXT_MAX_PAGES must be a positive integer" \
+  FULLSEND_TRACKER=jira FULLSEND_DIR="${TMPDIR}/dot-fullsend" JIRA_TOKEN="test-token" \
+  JIRA_BASE_URL="https://test.atlassian.net" RETRO_JIRA_PROJECT="PROJ" "RETRO_JIRA_CONTEXT_MAX_PAGES=0" \
+  ORIGINATING_URL="https://github.com/test-org/test-repo/pull/42"
+
+run_test "jira-invalid-context-comment-chars-fails" 1 "RETRO_JIRA_CONTEXT_COMMENT_CHARS must be a positive integer" \
+  FULLSEND_TRACKER=jira FULLSEND_DIR="${TMPDIR}/dot-fullsend" JIRA_TOKEN="test-token" \
+  JIRA_BASE_URL="https://test.atlassian.net" RETRO_JIRA_PROJECT="PROJ" "RETRO_JIRA_CONTEXT_COMMENT_CHARS=-5" \
+  ORIGINATING_URL="https://github.com/test-org/test-repo/pull/42"
+
+run_test "jira-invalid-context-description-chars-fails" 1 "RETRO_JIRA_CONTEXT_DESCRIPTION_CHARS must be a positive integer" \
+  FULLSEND_TRACKER=jira FULLSEND_DIR="${TMPDIR}/dot-fullsend" JIRA_TOKEN="test-token" \
+  JIRA_BASE_URL="https://test.atlassian.net" RETRO_JIRA_PROJECT="PROJ" "RETRO_JIRA_CONTEXT_DESCRIPTION_CHARS=invalid" \
+  ORIGINATING_URL="https://github.com/test-org/test-repo/pull/42"
+
 run_test "jira-summary-only-forge-no-credentials" 0 "Pre-retro validation complete." \
   FULLSEND_TRACKER=jira RETRO_MODE="summary_only" \
   ORIGINATING_URL="https://github.com/test-org/test-repo/pull/42"
