@@ -3731,6 +3731,7 @@ for _tool in sleep gitleaks; do
   cat > "${JIRA_INT_MOCK_BIN}/${_tool}" <<'MOCKEOF'
 #!/usr/bin/env bash
 if [ "${1:-}" = version ]; then echo 8.30.1; fi
+if [ "${1:-}" = detect ] && [ -n "${MOCK_GITLEAKS_FINDINGS:-}" ]; then exit 2; fi
 exit 0
 MOCKEOF
   chmod +x "${JIRA_INT_MOCK_BIN}/${_tool}"
@@ -3766,6 +3767,7 @@ case "\$1 \$2" in
     fi
     exit 0 ;;
   "pr create")   echo "https://github.com/test-org/test-repo/pull/1"; exit 0 ;;
+  "issue comment") echo "<<BODY:\$(cat):BODY>>" >> "${JIRA_INT_FORGE_LOG}"; exit 0 ;;
   *)             exit 0 ;;
 esac
 MOCKEOF
@@ -3869,6 +3871,17 @@ setup_jira_int_repo() {
   echo "changed content" > "${repo_dir}/file.txt"
   ${JIRA_REAL_GIT} -C "${repo_dir}" add -f file.txt
   ${JIRA_REAL_GIT} -C "${repo_dir}" commit -q -m "fix: test change"
+  # JIRA_INT_NOOP=files leaves the feature branch with no commits;
+  # JIRA_INT_NOOP=branch leaves the agent on main. Both are no-op exits.
+  case "${JIRA_INT_NOOP:-}" in
+    files)  ${JIRA_REAL_GIT} -C "${repo_dir}" reset -q --hard HEAD~1 ;;
+    branch) ${JIRA_REAL_GIT} -C "${repo_dir}" checkout -q main ;;
+  esac
+  if [ -n "${JIRA_INT_PR_BODY:-}" ]; then
+    mkdir -p "${run_dir}/iteration-1/output"
+    jq -n --arg pb "${JIRA_INT_PR_BODY}" '{target_branch: "main", pr_body: $pb}' \
+      > "${run_dir}/iteration-1/output/agent-result.json"
+  fi
   if [ -n "${JIRA_INT_PREPUSH_HOOK:-}" ]; then
     write_jira_int_hook "${repo_dir}/.git/hooks/pre-push" pre-push "${JIRA_INT_PREPUSH_HOOK}"
   fi
@@ -4266,6 +4279,96 @@ elif ! grep -q "^gh pr create" "${JIRA_INT_FORGE_LOG}"; then
   jira_int_fail "forge-originated-run-no-jira-write" "PR not created"
 else
   echo "PASS: forge-originated-run-no-jira-write"
+fi
+
+# No-op runs (#2160): a Jira-sourced run that ends without a PR writes one
+# "No PR created" comment to the Jira issue under the code-agent marker, with
+# the reason, the agent's context and the run link. The optional PR-ready
+# transition never runs on this path, and no GitHub issue is commented on.
+JIRA_NOOP_RUN_URL="https://github.com/test-org/test-repo/actions/runs/4242"
+# Pin the run URL inputs; CI sets its own GITHUB_REPOSITORY and GITHUB_RUN_ID.
+JIRA_NOOP_RUN_ENV=(GITHUB_SERVER_URL=https://github.com GITHUB_REPOSITORY=test-org/test-repo GITHUB_RUN_ID=4242)
+for _jira_noop_case in \
+  "files|No changed files in agent's commit(s)" \
+  "branch|Agent did not create a feature branch (current: 'main')"; do
+  _jira_noop_mode="${_jira_noop_case%%|*}"
+  _jira_noop_reason="${_jira_noop_case#*|}"
+  JIRA_INT_NOOP="${_jira_noop_mode}" JIRA_INT_PR_BODY="Already fixed by an earlier commit." \
+    run_jira_int "jira-noop-${_jira_noop_mode}" github \
+    CODE_JIRA_PR_READY_TRANSITION=Review "${JIRA_NOOP_RUN_ENV[@]}"
+  if [ "${JIRA_INT_RC}" -ne 0 ]; then
+    jira_int_fail "jira-noop-${_jira_noop_mode}-posts-comment" "post-code failed"
+  elif [ "$(grep -c '^fullsend ' "${JIRA_INT_FULLSEND_LOG}")" -ne 1 ] \
+     || ! grep -qF -- "fullsend issues post-comment --tracker jira --fullsend-dir ${JIRA_INT_FULLSEND_DIR} --project TESTPROJ --number 42 ${JIRA_CODE_MARKER} --result - env-token=fake-jira-token env-email=fullsend-bot@example.com" "${JIRA_INT_FULLSEND_LOG}"; then
+    jira_int_fail "jira-noop-${_jira_noop_mode}-posts-comment" "expected exactly one marked Jira comment and no transition"
+  elif ! grep -qF "<<BODY:No PR created for TESTPROJ-42: the code agent determined no changes are needed." "${JIRA_INT_FULLSEND_LOG}" \
+     || ! grep -qxF "Reason: ${_jira_noop_reason}" "${JIRA_INT_FULLSEND_LOG}" \
+     || ! grep -qxF "Already fixed by an earlier commit." "${JIRA_INT_FULLSEND_LOG}" \
+     || ! grep -qF "Workflow run: ${JIRA_NOOP_RUN_URL}:BODY>>" "${JIRA_INT_FULLSEND_LOG}"; then
+    jira_int_fail "jira-noop-${_jira_noop_mode}-posts-comment" "comment body missing the heading, reason, agent context or run URL"
+  elif ! grep -qF "::notice::No PR created for TESTPROJ-42: ${_jira_noop_reason}" "${JIRA_INT_OUT}"; then
+    jira_int_fail "jira-noop-${_jira_noop_mode}-posts-comment" "notice line missing"
+  elif grep -q "^gh issue comment" "${JIRA_INT_FORGE_LOG}"; then
+    jira_int_fail "jira-noop-${_jira_noop_mode}-posts-comment" "commented on a GitHub issue for a Jira work item"
+  else
+    echo "PASS: jira-noop-${_jira_noop_mode}-posts-comment"
+  fi
+done
+
+# Agent context whose secret scan does not pass is left out of the comment.
+JIRA_INT_NOOP=files JIRA_INT_PR_BODY="Already fixed by an earlier commit." \
+  run_jira_int "jira-noop-context-scan-fails" github MOCK_GITLEAKS_FINDINGS=1
+if [ "${JIRA_INT_RC}" -ne 0 ] || [ "$(grep -c '^fullsend issues post-comment ' "${JIRA_INT_FULLSEND_LOG}")" -ne 1 ]; then
+  jira_int_fail "jira-noop-context-omitted-on-scan-failure" "expected exit 0 and one Jira comment"
+elif grep -qF "Already fixed by an earlier commit." "${JIRA_INT_FULLSEND_LOG}" \
+   || grep -qF "Agent context:" "${JIRA_INT_FULLSEND_LOG}" \
+   || ! grep -qF "Agent context omitted because its secret scan did not pass" "${JIRA_INT_OUT}"; then
+  jira_int_fail "jira-noop-context-omitted-on-scan-failure" "unscanned agent context reached Jira, or no warning"
+else
+  echo "PASS: jira-noop-context-omitted-on-scan-failure"
+fi
+
+# A failed Jira write on the no-op path is a warning, not a failed run.
+JIRA_INT_NOOP=files run_jira_int "jira-noop-write-failure" github MOCK_FULLSEND_FAIL=1
+if [ "${JIRA_INT_RC}" -ne 0 ]; then
+  jira_int_fail "jira-noop-write-failure-exits-zero" "expected exit 0 but got ${JIRA_INT_RC}"
+elif ! grep -qF "::warning::Failed to post no-op comment to Jira issue TESTPROJ-42" "${JIRA_INT_OUT}" \
+   || [ "$(grep -c '^fullsend issues post-comment ' "${JIRA_INT_FULLSEND_LOG}")" -ne 1 ]; then
+  jira_int_fail "jira-noop-write-failure-exits-zero" "missing warning, or the write was not attempted"
+else
+  echo "PASS: jira-noop-write-failure-exits-zero"
+fi
+
+# Other external trackers keep the notice only: no Jira write, no forge comment.
+JIRA_INT_NOOP=files run_jira_int "external-noop-non-jira" github \
+  FULLSEND_TRACKER=linear FULLSEND_WORK_ITEM_SOURCE=linear
+if [ "${JIRA_INT_RC}" -ne 0 ] || [ -s "${JIRA_INT_FULLSEND_LOG}" ] \
+   || grep -q "^gh issue comment" "${JIRA_INT_FORGE_LOG}" \
+   || ! grep -qF "::notice::No PR created for TESTPROJ-42: No changed files in agent's commit(s)" "${JIRA_INT_OUT}"; then
+  jira_int_fail "external-noop-non-jira-notice-only" "expected the notice only"
+else
+  echo "PASS: external-noop-non-jira-notice-only"
+fi
+
+# The GitHub issue no-op comment is unchanged, and nothing goes to Jira.
+JIRA_INT_NOOP=files JIRA_INT_PR_BODY="Already fixed by an earlier commit." \
+  run_jira_int "forge-originated-noop" github FULLSEND_TRACKER= FULLSEND_WORK_ITEM_SOURCE=github \
+  FULLSEND_WORK_ITEM_KEY= FULLSEND_WORK_ITEM_URL= ISSUE_NUMBER=42 \
+  ISSUE_URL=https://github.com/test-org/test-repo/issues/42 "${JIRA_NOOP_RUN_ENV[@]}"
+if [ "${JIRA_INT_RC}" -ne 0 ] || [ -s "${JIRA_INT_FULLSEND_LOG}" ]; then
+  jira_int_fail "forge-originated-noop-github-comment-unchanged" "expected exit 0 and no Jira write"
+elif [ "$(grep -c '^gh issue comment 42 --repo test-org/test-repo --body-file -$' "${JIRA_INT_FORGE_LOG}")" -ne 1 ] \
+   || ! grep -qxF "<<BODY:ℹ️ **No PR created** — agent determined no changes needed" "${JIRA_INT_FORGE_LOG}" \
+   || ! grep -qxF "The code agent ran and evaluated issue #42, but did not produce changes to submit as a pull request." "${JIRA_INT_FORGE_LOG}" \
+   || ! grep -qxF "**Reason:** No changed files in agent's commit(s)" "${JIRA_INT_FORGE_LOG}" \
+   || ! grep -qxF "**Agent context:**" "${JIRA_INT_FORGE_LOG}" \
+   || ! grep -qxF "Already fixed by an earlier commit." "${JIRA_INT_FORGE_LOG}" \
+   || ! grep -qxF "**Workflow run:** ${JIRA_NOOP_RUN_URL}" "${JIRA_INT_FORGE_LOG}" \
+   || ! grep -qxF 'Retry with `/fs-code` if appropriate.:BODY>>' "${JIRA_INT_FORGE_LOG}"; then
+  jira_int_fail "forge-originated-noop-github-comment-unchanged" "GitHub no-op comment missing or changed"
+  cat "${JIRA_INT_FORGE_LOG}"
+else
+  echo "PASS: forge-originated-noop-github-comment-unchanged"
 fi
 
 # An explicit tracker that disagrees with the exported work-item source stops

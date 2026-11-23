@@ -117,7 +117,8 @@ elif [[ -n "${JIRA_TOKEN:-}${JIRA_USER_EMAIL:-}${FULLSEND_JIRA_TOKEN:-}${FULLSEN
   # exported by bash, so -x must be re-applied explicitly across the re-exec.
   # That makes every credential expansion after this point a trace hazard,
   # so each one is guarded — the ::add-mask:: pair below, and
-  # post_jira_stage_update, which suspends xtrace for the whole CLI call.
+  # post_jira_stage_update and post_jira_noop_comment, which suspend xtrace
+  # for the whole CLI call.
   _jira_bash_flags=()
   (( _jira_xtrace_was_on )) && _jira_bash_flags+=(-x)
   exec env -u JIRA_TOKEN -u JIRA_USER_EMAIL -u FULLSEND_JIRA_TOKEN -u FULLSEND_JIRA_EMAIL \
@@ -3847,6 +3848,9 @@ post_noop_comment() {
 
   if [ "${EXTERNAL_WORK_ITEM}" = "true" ]; then
     gha_echo notice "No PR created for ${WORK_ITEM_KEY}: ${reason}"
+    if [ "${WORK_ITEM_TRACKER}" = "jira" ]; then
+      post_jira_noop_comment "${reason}"
+    fi
     return 0
   fi
 
@@ -3858,27 +3862,14 @@ post_noop_comment() {
   local run_url
   run_url="$(forge_get_workflow_run_url)"
 
-  # Try to extract agent reasoning from result file.
-  # Note: RESULT_FILE is set at the top of the script and may point to a
-  # prior iteration's output when the current run exits before producing one.
-  # This is acceptable — context is sanitized and the comment is best-effort.
-  local agent_context=""
-  if [ -n "${RESULT_FILE:-}" ] && [ -f "${RESULT_FILE}" ]; then
-    agent_context="$(jq -r '.pr_body // empty' "${RESULT_FILE}" 2>/dev/null || true)"
-  fi
+  load_noop_agent_context
 
   local detail_block=""
-  if [ -n "${agent_context}" ]; then
-    local sanitized_context
-    sanitized_context="$(sanitize_failure_detail "${agent_context}")"
-    if ! install_gitleaks || ! scan_public_text "${sanitized_context}"; then
-      gha_echo warning "Agent context omitted because its secret scan did not pass"
-    else
-      detail_block="
+  if [ -n "${NOOP_AGENT_CONTEXT}" ]; then
+    detail_block="
 
 **Agent context:**
-${sanitized_context}"
-    fi
+${NOOP_AGENT_CONTEXT}"
   fi
 
   local body
@@ -3895,6 +3886,68 @@ Retry with \`/fs-code\` if appropriate."
 
   if ! forge_retry_transient forge_post_issue_comment "${body}"; then
     gha_echo warning "Failed to post no-op comment to issue #${safe_issue_number}"
+  fi
+}
+
+# Set NOOP_AGENT_CONTEXT to the agent's reasoning from the result file,
+# sanitized and secret-scanned, or to empty when there is none or the scan
+# does not pass. A variable, not output, so install_gitleaks's log lines and
+# the warning stay out of the comment body.
+# Note: RESULT_FILE is set at the top of the script and may point to a
+# prior iteration's output when the current run exits before producing one.
+# This is acceptable — context is sanitized and the comment is best-effort.
+load_noop_agent_context() {
+  NOOP_AGENT_CONTEXT=""
+  local agent_context=""
+  if [ -n "${RESULT_FILE:-}" ] && [ -f "${RESULT_FILE}" ]; then
+    agent_context="$(jq -r '.pr_body // empty' "${RESULT_FILE}" 2>/dev/null || true)"
+  fi
+  if [ -z "${agent_context}" ]; then
+    return 0
+  fi
+  local sanitized_context
+  sanitized_context="$(sanitize_failure_detail "${agent_context}")"
+  if ! install_gitleaks || ! scan_public_text "${sanitized_context}"; then
+    gha_echo warning "Agent context omitted because its secret scan did not pass"
+    return 0
+  fi
+  NOOP_AGENT_CONTEXT="${sanitized_context}"
+}
+
+# Jira counterpart of the no-op comment: writes the reason, the agent's
+# context and the run link to the Jira issue under the code-agent marker, so
+# a later run that opens a PR replaces it. Best-effort, like the forge
+# comment: a failed write is a warning, never a failed run. xtrace is
+# suspended around the write for the reason given at post_jira_stage_update.
+post_jira_noop_comment() {
+  local reason="$1"
+  local run_url
+  run_url="$(forge_get_workflow_run_url)"
+
+  load_noop_agent_context
+
+  local detail_block=""
+  if [ -n "${NOOP_AGENT_CONTEXT}" ]; then
+    detail_block="
+
+Agent context:
+${NOOP_AGENT_CONTEXT}"
+  fi
+
+  local body
+  body="No PR created for ${WORK_ITEM_KEY}: the code agent determined no changes are needed.
+
+Reason: ${reason}${detail_block}
+
+Workflow run: ${run_url}"
+
+  local _noop_xtrace=0 _noop_rc=0
+  [[ $- == *x* ]] && _noop_xtrace=1
+  set +x
+  post_jira_code_comment "${body}" || _noop_rc=$?
+  (( _noop_xtrace )) && set -x
+  if [ "${_noop_rc}" -ne 0 ]; then
+    gha_echo warning "Failed to post no-op comment to Jira issue ${WORK_ITEM_KEY}"
   fi
 }
 
@@ -3938,6 +3991,33 @@ _post_jira_stage_update_inner() {
     gha_echo error "No PR/MR URL to report to the Jira issue"
     return 1
   fi
+
+  local noun="pull request"
+  if [ "${FULLSEND_FORGE}" = "gitlab" ]; then
+    noun="merge request"
+  fi
+
+  local body
+  body="**Code stage:** ${verb} ${noun} ${pr_url} for ${WORK_ITEM_KEY}.
+
+Review and merge happen on the ${noun}."
+
+  post_jira_code_comment "${body}" || return $?
+
+  # post_jira_code_comment verified that WORK_ITEM_KEY is <project>-<number>.
+  maybe_transition_jira_pr_ready "${WORK_ITEM_KEY%-*}" "${WORK_ITEM_KEY##*-}" "${pr_url##*/}"
+}
+
+# Write <body> to the Jira issue under the code-agent marker, replacing an
+# earlier comment with the same marker. Shared by the stage update and the
+# no-op comment. Validates the Jira identity and credentials first and
+# returns non-zero, without writing, when any check fails. The saved
+# credentials are expanded here, so callers must suspend xtrace.
+#
+# Usage: post_jira_code_comment <body>
+post_jira_code_comment() {
+  local body="$1"
+
   if [[ ! "${WORK_ITEM_URL}" =~ ^https://([a-zA-Z0-9.-]+\.atlassian\.net)/browse/([A-Z][A-Z0-9]*)-([0-9]+)$ ]]; then
     gha_echo error "FULLSEND_WORK_ITEM_URL is not a Jira Cloud issue URL"
     return 1
@@ -3980,16 +4060,6 @@ _post_jira_stage_update_inner() {
     return 1
   fi
 
-  local noun="pull request"
-  if [ "${FULLSEND_FORGE}" = "gitlab" ]; then
-    noun="merge request"
-  fi
-
-  local body
-  body="**Code stage:** ${verb} ${noun} ${pr_url} for ${WORK_ITEM_KEY}.
-
-Review and merge happen on the ${noun}."
-
   # The credentials reach the CLI through FULLSEND_JIRA_TOKEN and, for a
   # bot user only, FULLSEND_JIRA_EMAIL, or through FULLSEND_JIRA_CLIENT_ID
   # and FULLSEND_JIRA_CLIENT_SECRET, never through command-line flags,
@@ -3999,9 +4069,7 @@ Review and merge happen on the ${noun}."
     "${_jira_token_saved}" "${_jira_email_saved:-}" \
     issues post-comment --tracker jira --fullsend-dir "${FULLSEND_DIR}" \
     --project "${project}" --number "${number}" \
-    --marker "<!-- fullsend:code-agent -->" --result - || return $?
-
-  maybe_transition_jira_pr_ready "${project}" "${number}" "${pr_url##*/}"
+    --marker "<!-- fullsend:code-agent -->" --result -
 }
 
 # Called only after post_jira_stage_update validates the Jira identity and
@@ -4177,6 +4245,12 @@ ${err}"
 ${dirty}"
 }
 
+# The Jira credentials were taken out of the environment at the top of this
+# script and are passed only to this trusted CLI. Resolve the trusted
+# tracker CLI now, before the first no-op exit below and before
+# repo-controlled installs can put a binary of the same name earlier on PATH.
+_jira_fullsend_bin="$(command -v fullsend 2>/dev/null || true)"
+
 # ---------------------------------------------------------------------------
 # 1. Verify feature branch
 # ---------------------------------------------------------------------------
@@ -4205,12 +4279,6 @@ BRANCH="${SAFE_BRANCH}"
 
 echo "Branch: ${BRANCH}"
 echo "Token source: ${PUSH_TOKEN_SOURCE:-unknown}"
-
-# The Jira credentials were taken out of the environment at the top of this
-# script and are passed only to post_jira_stage_update. Resolve the trusted
-# tracker CLI now, before repo-controlled installs can put a binary of the
-# same name earlier on PATH.
-_jira_fullsend_bin="$(command -v fullsend 2>/dev/null || true)"
 
 # ---------------------------------------------------------------------------
 # 2. Compute changed files
