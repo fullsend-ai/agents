@@ -198,7 +198,8 @@ overlays:
       runner:
         JIRA_BASE_URL: "${JIRA_BASE_URL}"
         # Runner-only Jira credentials: pre-code can apply the configured
-        # started transition; post-code writes the stage update and PR/MR URL.
+        # started transition; post-code writes the stage update, PR/MR URL,
+        # no-op reason and failure details, and optional PR-ready transition.
         # The sandbox never gets the real credential
         # (the jira provider supplies a placeholder). They
         # come from the FULLSEND_JIRA_TOKEN and optional FULLSEND_JIRA_EMAIL
