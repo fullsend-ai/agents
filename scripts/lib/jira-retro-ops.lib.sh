@@ -38,13 +38,21 @@
 #                            labels and a warning.
 #   RETRO_JIRA_MAX_PAGES   — maximum pages fetched per paginated Jira read (default: 50)
 #   RETRO_MODE             — "all" (default), "summary_only", or "issues_only"
-#   RETRO_JIRA_CONTEXT_FILE — path the pre-script writes the originating Jira
-#                            issue context to. Required for a Jira-originated
-#                            run: harness/retro.yaml mounts exactly this path
-#                            into the sandbox (host_files src), and a
-#                            ${VAR}-expanded src is the only form fullsend
-#                            accepts when the harness is loaded from a URL or
-#                            used as a `base:`.
+#   RETRO_JIRA_CONTEXT_FILE — absolute host path the pre-script writes the
+#                            originating Jira issue context to. Required for a
+#                            Jira-originated run: harness/retro.yaml mounts
+#                            exactly this path into the sandbox (host_files
+#                            src), and a ${VAR}-expanded src is the only form
+#                            fullsend accepts when the harness is loaded from a
+#                            URL or used as a `base:`.
+#   RETRO_JIRA_CONTEXT_MAX_BYTES — byte cap for the context file; the oldest
+#                            comments are dropped first (default: 262144)
+#   RETRO_JIRA_CONTEXT_MAX_PAGES — comment pages fetched for the context file;
+#                            the cap drops the newest comments (default: 10)
+#   RETRO_JIRA_CONTEXT_COMMENT_CHARS — per-comment character cap in the
+#                            context file (default: 4000)
+#   RETRO_JIRA_CONTEXT_DESCRIPTION_CHARS — description character cap in the
+#                            context file (default: 20000)
 #
 # REST routing mirrors fullsend's Jira Scoped client
 # (internal/forge/jira/scoped.go), as jira-prioritize-ops.lib.sh does:
@@ -59,7 +67,7 @@
 [[ -n "${JIRA_RETRO_OPS_SH_LOADED:-}" ]] && return 0
 JIRA_RETRO_OPS_SH_LOADED=1
 
-RETRO_JIRA_PROJECT="${RETRO_JIRA_PROJECT:-${JIRA_PROJECT:-}}"
+RETRO_JIRA_PROJECT="${RETRO_JIRA_PROJECT:-}"
 RETRO_MODE="${RETRO_MODE:-all}"
 if [[ "${RETRO_MODE}" != "summary_only" ]]; then
   : "${JIRA_BASE_URL:?JIRA_BASE_URL must be set}"
@@ -406,6 +414,14 @@ _retro_jira_write_context() {
   fi
   if [[ -z "${file}" ]]; then
     echo "ERROR: RETRO_JIRA_CONTEXT_FILE is not set — harness/retro.yaml mounts that path into the sandbox as RETRO_JIRA_CONTEXT" >&2
+    return 1
+  fi
+  # The harness mounts this path as a host path, so a relative value would
+  # write a file under this script's working directory and pass the -s check
+  # below while the sandbox mount expands to something else, running the agent
+  # without its context. Docs and the overlay example require an absolute path.
+  if [[ "${file}" != /* ]]; then
+    echo "ERROR: RETRO_JIRA_CONTEXT_FILE must be an absolute path (got: $(_gha_sanitize "${file}")) — harness/retro.yaml mounts it as a host path" >&2
     return 1
   fi
   if [[ -z "${JIRA_BASE_URL:-}" ]]; then

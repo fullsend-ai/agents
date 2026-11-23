@@ -386,6 +386,14 @@ run_test "jira-context-file-unset-fails" 1 "RETRO_JIRA_CONTEXT_FILE must be set 
   JIRA_BASE_URL="https://test.atlassian.net" RETRO_JIRA_PROJECT="PROJ" \
   ORIGINATING_URL="https://test.atlassian.net/browse/PROJ-123"
 
+# The mount takes a host path, so a relative value must be refused rather than
+# written under the working directory and mounted from somewhere else.
+run_test "jira-context-relative-path-fails" 1 "RETRO_JIRA_CONTEXT_FILE must be an absolute path" \
+  FULLSEND_TRACKER=jira FULLSEND_DIR="${TMPDIR}/dot-fullsend" JIRA_TOKEN="test-token" \
+  JIRA_BASE_URL="https://test.atlassian.net" RETRO_JIRA_PROJECT="PROJ" \
+  RETRO_JIRA_CONTEXT_FILE="jira-origin.json" \
+  ORIGINATING_URL="https://test.atlassian.net/browse/PROJ-123"
+
 # An unreadable issue fails the run: a retrospective must not analyze a work
 # item it cannot see.
 run_test "jira-context-issue-read-fails-closed" 1 "failed to fetch Jira issue PROJ-123" \
