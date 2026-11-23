@@ -1,18 +1,25 @@
 name: ok-to-test
 
-# Writer-authorized functional and behaviour tests for fork PRs (#1975). Fork
-# PRs get no secrets on pull_request, so both suites skip until a user with
-# write access reviews the latest push and comments `/ok-to-test <sha>` on the
-# PR, naming the reviewed commit; only a PR head that matches that sha runs.
-# This is gh-aw's inline slash-command model: issue_comment plus a commenter
-# role gate, with the workflow file always taken from the default branch.
+# Writer-authorized functional tests for fork PRs (#1975). Fork PRs get no
+# secrets on pull_request, so the suite skips until a user with write access
+# reviews the latest push and comments `/ok-to-test <sha>` on the PR, naming
+# the reviewed commit; only a PR head that matches that sha runs. This is
+# gh-aw's inline slash-command model: issue_comment plus a commenter role
+# gate, with the workflow file always taken from the default branch.
+#
+# Pull requests get the behaviour scenarios from behaviour-github-emulator.yml,
+# with no secrets. The live behaviour suite (behaviour-tests.yml: real models
+# and App installations) runs in the merge queue and on push to main.
+# `/ok-to-test <sha> live` also runs it for that sha and reports it as
+# behaviour-live. That name is not a required check, so a live run on a PR
+# never stands in for, or blocks on, a required check.
 #
 # Called jobs report as "functional / ..." and "behaviour / ..." on the
 # default-branch commit, not on the PR. So `authorize` creates check runs
-# named functional-tests-complete and behaviour on the authorized head sha,
-# and `report` completes them from the called workflows' results. Only these
-# two jobs hold write scopes; the jobs that run PR code never do (gh-aw's
-# safe-outputs split).
+# named functional-tests-complete (and behaviour-live) on the authorized head
+# sha, and `report` completes them from the called workflows' results. Only
+# these two jobs hold write scopes; the jobs that run PR code never do
+# (gh-aw's safe-outputs split).
 #
 # No caller-level concurrency: each called workflow queues /ok-to-test runs
 # in its own *-ok-to-test-{n} group, and sharing a group with a callee
@@ -40,6 +47,7 @@ jobs:
     outputs:
       authorized: ${{ steps.auth.outputs.authorized }}
       head_sha: ${{ steps.auth.outputs.head_sha }}
+      live: ${{ steps.auth.outputs.live }}
       functional_check_id: ${{ steps.checks.outputs.functional }}
       behaviour_check_id: ${{ steps.checks.outputs.behaviour }}
     steps:
@@ -74,10 +82,13 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           HEAD_SHA: ${{ steps.auth.outputs.head_sha }}
+          LIVE: ${{ steps.auth.outputs.live }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
-          for pair in functional:functional-tests-complete behaviour:behaviour; do
+          pairs=(functional:functional-tests-complete)
+          [[ "${LIVE}" == "true" ]] && pairs+=(behaviour:behaviour-live)
+          for pair in "${pairs[@]}"; do
             key="${pair%%:*}"
             name="${pair#*:}"
             id=$(gh api -X POST "repos/${REPO}/check-runs" \
@@ -96,9 +107,12 @@ jobs:
           REPO: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.issue.number }}
           HEAD_SHA: ${{ steps.auth.outputs.head_sha }}
+          LIVE: ${{ steps.auth.outputs.live }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
-          body="Functional and behaviour tests authorized for \`${HEAD_SHA}\` ([run](${RUN_URL})). A new push needs a new \`/ok-to-test <sha>\`."
+          suites="Functional tests"
+          [[ "${LIVE}" == "true" ]] && suites="Functional tests and the live behaviour suite"
+          body="${suites} authorized for \`${HEAD_SHA}\` ([run](${RUN_URL})). A new push needs a new \`/ok-to-test <sha>\`."
           gh api -X POST "repos/${REPO}/issues/${PR_NUMBER}/comments" -f body="${body}" --silent
 
   functional:
@@ -118,12 +132,12 @@ jobs:
       tier: ${{ contains(github.event.issue.labels.*.name, 'eval-full') && 'full' || 'release' }}
     secrets: inherit
 
+  # Only for `/ok-to-test <sha> live`; plain /ok-to-test runs functional only.
   behaviour:
     needs: authorize
-    if: needs.authorize.outputs.authorized == 'true'
+    if: needs.authorize.outputs.authorized == 'true' && needs.authorize.outputs.live == 'true'
     permissions:
       contents: read
-      pull-requests: write
       id-token: write
     uses: ./.github/workflows/behaviour-tests.yml
     with:
@@ -149,6 +163,7 @@ jobs:
           BEHAVIOUR_ID: ${{ needs.authorize.outputs.behaviour_check_id }}
           BEHAVIOUR_CALL: ${{ needs.behaviour.result }}
           BEHAVIOUR_RESULT: ${{ needs.behaviour.outputs.result }}
+          LIVE: ${{ needs.authorize.outputs.live }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
@@ -169,9 +184,11 @@ jobs:
             esac
           }
           status=0
-          for row in \
-            "functional-tests-complete:${FUNCTIONAL_ID}:${FUNCTIONAL_RESULT}:${FUNCTIONAL_CALL}" \
-            "behaviour:${BEHAVIOUR_ID}:${BEHAVIOUR_RESULT}:${BEHAVIOUR_CALL}"; do
+          rows=("functional-tests-complete:${FUNCTIONAL_ID}:${FUNCTIONAL_RESULT}:${FUNCTIONAL_CALL}")
+          if [[ "${LIVE}" == "true" ]]; then
+            rows+=("behaviour-live:${BEHAVIOUR_ID}:${BEHAVIOUR_RESULT}:${BEHAVIOUR_CALL}")
+          fi
+          for row in "${rows[@]}"; do
             IFS=: read -r name id result call <<<"${row}"
             [[ -n "${id}" ]] || { echo "::error::no ${name} check run id"; status=1; continue; }
             c=$(conclusion "${result}" "${call}")
