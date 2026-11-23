@@ -631,7 +631,7 @@ if [[ "${PROPOSAL_COUNT}" -gt 0 ]]; then
     # Ensure the label exists in the target repo before applying it.
     # Follows the same pattern as post-review.sh for ready-for-merge.
     # --force / idempotent creation makes this safe to repeat.
-    if [[ "${FULLSEND_TRACKER}" != "jira" || ",${RETRO_JIRA_LABELS:-ready-for-triage}," == *,ready-for-triage,* ]]; then
+    if [[ "${FULLSEND_TRACKER}" != "jira" || ",${RETRO_JIRA_LABELS-ready-for-triage}," == *,ready-for-triage,* ]]; then
       forge_create_label "${TARGET_REPO}" "ready-for-triage" \
         "Triggers triage agent dispatch" "0E8A16"
     fi
@@ -751,8 +751,10 @@ if [[ "${RETRO_MODE}" != "issues_only" ]]; then
   if [[ ${COMMENT_EXIT} -ne 0 ]]; then
     # Treat 401/403 as non-fatal — the token lacks permission to comment on
     # this repo, but the core deliverables (analysis + proposal issues) are
-    # already complete. See #2305.
-    if echo "${COMMENT_OUTPUT}" | grep -qE "HTTP (401|403)|error: (401|403)|jira api: (401|403)"; then
+    # already complete. See #2305. Match a standalone status code (not a digit
+    # run, and not the -NNN suffix of an issue key) or the words the forge and
+    # Jira CLIs use, since their error formats differ.
+    if echo "${COMMENT_OUTPUT}" | grep -qiE '(^|[^A-Za-z0-9-])40[13]([^0-9]|$)|unauthorized|forbidden'; then
       # Sanitize before interpolating into GHA workflow command to prevent
       # injecting ::set-output or ::save-state directives via crafted responses.
       SAFE_OUTPUT=$(_gha_sanitize "${COMMENT_OUTPUT}")
@@ -770,6 +772,14 @@ else
     echo "ERROR: issues_only mode encountered proposal failures or skipped targets without summary report" >&2
     exit 1
   fi
+fi
+
+# The context file carries the originating Jira issue text, and the harness only
+# needs it while the sandbox runs. Remove it so a reused runner does not keep
+# Jira content on disk between runs; pre-retro also removes any stale file at
+# the start of every run.
+if [[ -n "${RETRO_JIRA_CONTEXT_FILE:-}" ]]; then
+  rm -f "${RETRO_JIRA_CONTEXT_FILE}" || true
 fi
 
 echo "Post-retro complete."

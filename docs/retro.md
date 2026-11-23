@@ -68,6 +68,10 @@ See [Customizing with AGENTS.md](https://fullsend.sh/docs/guides/user/customizin
 | `JIRA_USER_EMAIL` | Bot-user email. When set, uses Basic auth with email and token; when unset or empty, uses Bearer auth. | none | Email address |
 | `RETRO_JIRA_MAX_PAGES` | Maximum pages fetched per paginated Jira read. | `50` | Positive integer |
 | `RETRO_JIRA_CONTEXT_FILE` | Host path the pre-script writes the originating Jira issue context to; `harness/retro.yaml` mounts exactly this path into the sandbox. Set it in the environment `fullsend run` starts in (see [Jira-originated runs](#jira-originated-runs)). | none (required for a Jira-originated run) | Absolute host path |
+| `RETRO_JIRA_CONTEXT_MAX_BYTES` | Byte cap for the context file; oldest comments are dropped first and `comments_truncated` is set. | `262144` | Positive integer |
+| `RETRO_JIRA_CONTEXT_MAX_PAGES` | Maximum comment pages fetched for the context file; the page cap drops the newest comments. | `10` | Positive integer |
+| `RETRO_JIRA_CONTEXT_COMMENT_CHARS` | Per-comment character cap in the context file; a clipped body ends in `…(truncated)`. | `4000` | Positive integer |
+| `RETRO_JIRA_CONTEXT_DESCRIPTION_CHARS` | Description character cap in the context file; sets `issue.description_truncated` when it applies. | `20000` | Positive integer |
 
 REST reads (create metadata, issue edit metadata, duplicate search, label updates) are routed the same way as the `fullsend` CLI, as described in [Jira REST routing](#jira-rest-routing).
 
@@ -147,6 +151,16 @@ so a value that only reaches the pre-script would leave the mount unset. A
 literal absolute path in the harness is not an option: fullsend refuses one
 (`base host_files[N].src must be a relative path`) when the harness is loaded
 from a URL or composed with `base:`, which is how this agent is consumed.
+
+Use a path that is unique per run, because a reused runner shares it across
+concurrent retros. `pre-retro` removes any file at the path when it starts and
+`post-retro` removes it when the run ends, so a fixed path lets one run delete
+another's context file between its pre-script and the harness upload. For
+example, in the job or shell environment:
+
+```bash
+export RETRO_JIRA_CONTEXT_FILE="${RUNNER_TEMP}/jira-origin-${GITHUB_RUN_ID}.json"
+```
 
 The context file is capped so a long issue cannot exhaust the agent's context:
 `RETRO_JIRA_CONTEXT_MAX_BYTES` (default `262144`) drops the oldest comments

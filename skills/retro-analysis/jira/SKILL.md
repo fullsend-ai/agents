@@ -64,9 +64,10 @@ actioned by more than one PR; treat each as a branch of the same workflow.
 
 ## Proposals
 
-- Jira is the tracker destination for this run: validated proposals are filed
-  as Jira issues in the configured project, not as forge issues. Describe the
-  proposed change so it stands alone in Jira.
+- Jira is the tracker destination for this run: unless `RETRO_MODE` is
+  `summary_only`, validated proposals are filed as Jira issues in the configured
+  project, not as forge issues. Describe the proposed change so it stands alone
+  in Jira.
 - The dedup receipt (`related_issues`) still records searches. Include the
   issue-key search you ran on the forge, and note the originating key as a
   related item where the proposal stems from it.

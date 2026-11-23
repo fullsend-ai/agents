@@ -168,6 +168,10 @@ if [[ "\$1" == "issues" ]] && [[ "\$2" == "post-comment" ]]; then
     esac
     exit 0
   fi
+  if [[ -n "\${FULLSEND_MOCK_POST_COMMENT_FAIL:-}" ]]; then
+    echo "Error: request failed: \${FULLSEND_MOCK_POST_COMMENT_FAIL}" >&2
+    exit 1
+  fi
   cat >> "${FULLSEND_STDIN_LOG}"
   echo '{"id":10,"url":"https://mock.atlassian.net/browse/PROJ-10#comment-1"}'
   exit 0
@@ -3128,6 +3132,49 @@ fi
 [[ -n "${SAVED_GH_TOKEN}" ]] && export GH_TOKEN="${SAVED_GH_TOKEN}"
 [[ -n "${SAVED_GITLAB_TOKEN}" ]] && export GITLAB_TOKEN="${SAVED_GITLAB_TOKEN}"
 export FULLSEND_FORGE="github"
+
+# 9c. issues_only on a Jira-originated run files issues and posts no Jira comment.
+export RETRO_MODE="issues_only"
+GITHUB_ACTIONS="true" \
+ORIGINATING_URL="https://mock.atlassian.net/browse/PROJ-123" \
+  run_test_stdout "jira/originating-issues-only-no-comment" \
+  "${FIXTURE_ONE_PROPOSAL}" \
+  "Mode is issues_only — skipping summary comment posting"
+if grep -F 'fullsend issues post-comment' "${FULLSEND_LOG}" 2>/dev/null | grep -qvF -- '--help'; then
+  echo "FAIL: jira/originating-issues-only-no-post — post-comment called in issues_only mode"
+  cat "${FULLSEND_LOG}" 2>/dev/null || true
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: jira/originating-issues-only-no-post"
+fi
+export RETRO_MODE="all"
+
+# 9d. A Jira comment permission error is a warning, not a failed run, and the
+# detection does not depend on the CLI's exact error prefix (the issues were
+# already filed).
+export FULLSEND_MOCK_POST_COMMENT_FAIL="401 Unauthorized"
+GITHUB_ACTIONS="true" \
+ORIGINATING_URL="https://mock.atlassian.net/browse/PROJ-123" \
+  run_test_stdout "jira/originating-comment-401-graceful" \
+  "${FIXTURE_ONE_PROPOSAL}" \
+  "insufficient permissions"
+unset FULLSEND_MOCK_POST_COMMENT_FAIL
+
+# 9e. post-retro removes the context file once the run ends, so a reused runner
+# does not keep the originating issue text on disk.
+CTX_FILE="${TMPDIR}/jira-origin-cleanup.json"
+printf '{"issue":{"key":"PROJ-123"}}' > "${CTX_FILE}"
+RETRO_JIRA_CONTEXT_FILE="${CTX_FILE}" \
+ORIGINATING_URL="https://mock.atlassian.net/browse/PROJ-123" \
+  run_test_stdout "jira/originating-context-removed-after-run" \
+  "${FIXTURE_ONE_PROPOSAL}" \
+  "Post-retro complete."
+if [[ -e "${CTX_FILE}" ]]; then
+  echo "FAIL: jira/originating-context-file-gone — context file still exists"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: jira/originating-context-file-gone"
+fi
 
 # 10. GitLab forge + Jira tracker: creates Jira issue and posts note to GitLab MR
 ORIGINATING_URL="https://gitlab.com/test-group/test-project/-/merge_requests/10" \

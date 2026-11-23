@@ -1149,7 +1149,13 @@ _retro_jira_fetch_comments() {
       rm -f "${out}.tmp"
       return 1
     fi
-    mv "${out}.tmp" "${out}"
+    # Called through `if !`, so errexit is off here: an unchecked mv failure
+    # would leave the previous page in place and silently lose this one.
+    if ! mv "${out}.tmp" "${out}"; then
+      rm -f "${out}.tmp"
+      echo "ERROR: failed to accumulate the Jira comment page" >&2
+      return 1
+    fi
     total=$(printf '%s' "${resp}" | jq -r '.total // empty')
     start=$((start + count))
     if [[ "${count}" -eq 0 ]] || [[ -n "${total}" && "${start}" -ge "${total}" ]]; then
@@ -1278,7 +1284,13 @@ _retro_jira_write_context() {
       echo "ERROR: failed to trim the Jira context file" >&2
       return 1
     fi
-    mv "${tmp}.cut" "${tmp}"
+    # The while condition re-reads "${tmp}": an unchecked failure to replace it
+    # would leave the file over the cap and loop forever.
+    if ! mv "${tmp}.cut" "${tmp}"; then
+      rm -f "${tmp}" "${tmp}.cut"
+      echo "ERROR: failed to rewrite the trimmed Jira context file" >&2
+      return 1
+    fi
   done
   chmod 600 "${tmp}"
   # The caller reads this function's return status through `if !`, which turns
@@ -1380,8 +1392,10 @@ _retro_jira_filter_labels() {
 # Jira validates a label update against the issue's edit screen, not the create
 # screen createmeta reports: an issue type can offer Labels at creation and
 # still refuse the update, or omit it at creation and accept the update. Label
-# support is therefore decided from `GET /issue/{key}/editmeta`, probed once
-# per run and cached, because tracker_apply_labels runs in the calling shell.
+# support is therefore decided from `GET /issue/{key}/editmeta`, and the answer
+# is cached for the run because tracker_apply_labels runs in the calling shell.
+# Only a successful read is cached: a failed probe leaves the state unknown and
+# is retried for the next issue, since the label update still runs either way.
 _RETRO_JIRA_LABELS_EDITABLE="unknown"
 
 # Fail (non-zero) when the issue's edit screen has no Labels field, so no
@@ -1629,7 +1643,10 @@ forge_validate_originating_url() {
     host=$(echo "${ORIGINATING_URL}" | sed -E 's|^https://([^/]+)/.*|\1|')
     case "${host}" in
       *.atlassian.net)
-        : "${JIRA_BASE_URL:?JIRA_BASE_URL must be set}"
+        if [[ -z "${JIRA_BASE_URL:-}" ]]; then
+          echo "ERROR: JIRA_BASE_URL must be set for a Jira-originated run" >&2
+          return 1
+        fi
         if [[ "https://${host}" != "${JIRA_BASE_URL}" ]]; then
           echo "ERROR: ORIGINATING_URL Jira host ('${host}') does not match JIRA_BASE_URL ('${JIRA_BASE_URL}')" >&2
           return 1
@@ -1779,9 +1796,10 @@ forge_mask_token() {
 }
 
 forge_get_comment_max_len() {
-  if [[ "${JIRA_ORIGINATING:-false}" == "true" ]]; then
-    echo "32000"
-  elif declare -f _forge_get_comment_max_len >/dev/null 2>&1; then
+  # The Jira comment limit is not exposed here: post-retro applies it with
+  # _retro_jira_fit_comment (RETRO_JIRA_COMMENT_MAX_BYTES) for a Jira-originated
+  # run and only reaches this function for a forge comment.
+  if declare -f _forge_get_comment_max_len >/dev/null 2>&1; then
     _forge_get_comment_max_len
   else
     echo "65000"
@@ -2394,7 +2412,7 @@ if [[ "${PROPOSAL_COUNT}" -gt 0 ]]; then
     # Ensure the label exists in the target repo before applying it.
     # Follows the same pattern as post-review.sh for ready-for-merge.
     # --force / idempotent creation makes this safe to repeat.
-    if [[ "${FULLSEND_TRACKER}" != "jira" || ",${RETRO_JIRA_LABELS:-ready-for-triage}," == *,ready-for-triage,* ]]; then
+    if [[ "${FULLSEND_TRACKER}" != "jira" || ",${RETRO_JIRA_LABELS-ready-for-triage}," == *,ready-for-triage,* ]]; then
       forge_create_label "${TARGET_REPO}" "ready-for-triage" \
         "Triggers triage agent dispatch" "0E8A16"
     fi
@@ -2514,8 +2532,10 @@ if [[ "${RETRO_MODE}" != "issues_only" ]]; then
   if [[ ${COMMENT_EXIT} -ne 0 ]]; then
     # Treat 401/403 as non-fatal — the token lacks permission to comment on
     # this repo, but the core deliverables (analysis + proposal issues) are
-    # already complete. See #2305.
-    if echo "${COMMENT_OUTPUT}" | grep -qE "HTTP (401|403)|error: (401|403)|jira api: (401|403)"; then
+    # already complete. See #2305. Match a standalone status code (not a digit
+    # run, and not the -NNN suffix of an issue key) or the words the forge and
+    # Jira CLIs use, since their error formats differ.
+    if echo "${COMMENT_OUTPUT}" | grep -qiE '(^|[^A-Za-z0-9-])40[13]([^0-9]|$)|unauthorized|forbidden'; then
       # Sanitize before interpolating into GHA workflow command to prevent
       # injecting ::set-output or ::save-state directives via crafted responses.
       SAFE_OUTPUT=$(_gha_sanitize "${COMMENT_OUTPUT}")
@@ -2533,6 +2553,14 @@ else
     echo "ERROR: issues_only mode encountered proposal failures or skipped targets without summary report" >&2
     exit 1
   fi
+fi
+
+# The context file carries the originating Jira issue text, and the harness only
+# needs it while the sandbox runs. Remove it so a reused runner does not keep
+# Jira content on disk between runs; pre-retro also removes any stale file at
+# the start of every run.
+if [[ -n "${RETRO_JIRA_CONTEXT_FILE:-}" ]]; then
+  rm -f "${RETRO_JIRA_CONTEXT_FILE}" || true
 fi
 
 echo "Post-retro complete."
