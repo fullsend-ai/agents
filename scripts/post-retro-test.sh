@@ -213,6 +213,10 @@ fi
 # Atlassian OAuth token endpoint (client-credentials mode). Every call is
 # already recorded in CURL_LOG, so tests can count exchanges.
 if [[ "${URL}" == "https://auth.atlassian.com/oauth/token" ]]; then
+  # Drain the request body: _jira_auth_mint_now feeds it from `jq | curl
+  # --data @-`, so exiting before jq writes fails jq with a broken pipe and
+  # pipefail reports that as the mint's exit status.
+  cat > /dev/null
   # Emulate --write-out '\n%{http_code}': _jira_auth_mint_now reads the status
   # from the last line of the response.
   if [[ "${JIRA_MOCK_TOKEN_FAIL:-}" == "1" ]]; then
