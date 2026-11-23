@@ -123,9 +123,9 @@ If this agent needs to reach hosts beyond the defaults, see the
 
 ## Runtime support
 
-Supported runtimes: **claude** (stable default), **pi** (experimental). On pi, sub-agents run with the agent model, see [Fullsend pi docs](https://fullsend.sh/docs/runtimes/pi) on how to define a different model for sub-agents.
+Supported runtimes: **claude** (stable default), **pi** (experimental), **codex** (experimental). On pi, sub-agents run with the agent model, see [Fullsend pi docs](https://fullsend.sh/docs/runtimes/pi) on how to define a different model for sub-agents.
 
-**Codex** is not a supported runtime for retro yet. Retro dispatches native Codex children only when the runtime note lists registered sub-agent roles, which depends on [fullsend #6970](https://github.com/fullsend-ai/fullsend/issues/6970); this section changes after a live retro run on Codex is linked here. Retro passes no `model`: the runner binds each child's model from `agents[].subagents`, or its run-level default.
+On codex, retro's sub-agents run as native Codex children, at most four at once, when harness security is on and Codex resolves the parent model to collaboration V1 or V2 at its pinned version, except on a `gateway/` model or, for a V2 parent, when a child model selects V2; otherwise retro does the sub-agents' work itself, in one context (see [Fullsend codex docs](https://fullsend.sh/docs/runtimes/codex#sub-agents)). Retro passes no `model`: every child runs on the run-level child model ([child models](https://fullsend.sh/docs/runtimes/codex#child-models)). Retro has run this way locally, not through the fleet workflows, on a V1 parent ([fullsend #6970](https://github.com/fullsend-ai/fullsend/issues/6970)) and on a V2 parent ([fullsend #9085](https://github.com/fullsend-ai/fullsend/issues/9085#issuecomment-6920231259)).
 
 Effort: `high` (explicit in the harness; override per run with `fullsend run --effort` or `FULLSEND_EFFORT`, values `low`–`max`).
 

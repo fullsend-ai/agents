@@ -363,7 +363,7 @@ fails closed when `CI_SERVER_HOST` is not set.
 The review agent follows the same pre-script / sandbox / post-script pipeline as the other agents.
 
 1. **Pre-script** validates inputs and fetches PR metadata. On a re-review, it also fetches current review-thread state, applies verified human dismissals to the prior-finding ledger, and discards the raw thread content before sandbox creation.
-2. **Sandbox** — the agent runs the `pr-review` orchestrator skill. The orchestrator runs a security-triage pre-pass for large PRs, then dispatches the specialized dimension sub-agents in parallel (plus the risk-assessment sub-agent when enabled), each covering a distinct review dimension (correctness, security, intent & coherence, style & conventions, docs currency, user experience, and optionally cross-repo contracts — whichever personas are staged; see [Add, replace or disable a review persona](#add-replace-or-disable-a-review-persona)). Sub-agents run concurrently and return structured findings. The orchestrator collects, deduplicates, and synthesizes findings across dimensions, runs PR-level checks (scope authorization, protected paths), and produces a structured JSON review result. The agent cannot push files, edit code, or push — it is strictly read-only.
+2. **Sandbox** — the agent runs the `pr-review` orchestrator skill. The orchestrator runs a security-triage pre-pass for large PRs, then dispatches the specialized dimension sub-agents in parallel (plus the risk-assessment sub-agent when enabled), each covering a distinct review dimension (correctness, security, intent & coherence, style & conventions, docs currency, user experience, and optionally cross-repo contracts — whichever personas are staged; see [Add, replace or disable a review persona](#add-replace-or-disable-a-review-persona)). Sub-agents run concurrently and return structured findings; on codex, at most four run at once, and the orchestrator starts the next as each one ends. The orchestrator collects, deduplicates, and synthesizes findings across dimensions, runs PR-level checks (scope authorization, protected paths), and produces a structured JSON review result. The agent cannot push files, edit code, or push — it is strictly read-only.
 3. **Validation loop** — the output is checked against a schema. The review harness runs a single iteration (see [Time budget](#time-budget)), so a failed validation is not retried and the review is lost. Contract change: `finding.category` in `schemas/review-result.schema.json` is a closed enum (the dimension categories in `pr-review` `references/re-review.md` plus `protected-path`, `provenance-warning`, `scope-authorization-implicit`, `sub-agent-failure`), no longer any non-empty string. Anything that produces review results must emit only these categories. The `pr-review` orchestrator remaps stray dimensional categories in step 6b to limit this risk.
 4. **Post-script** posts the review on the PR. On GitHub, it also resolves still-open review threads whose only comments are outdated inline comments authored by the review agent, so stale comments do not remain in the PR's unresolved-review state.
 
@@ -406,7 +406,7 @@ A review is six phases, and only one of them scales with the PR:
 | Phase | What happens | Typical |
 |---|---|---|
 | context | PR metadata, diff and PR-head files written to `/sandbox/workspace/` (a manifest marks each file `ok`, `too-large`, `binary`, `failed` or `unsafe`) | 1–2 min |
-| dispatch | prompts composed; risk assessment + dimension sub-agents in one message | 3 min |
+| dispatch | prompts composed; risk assessment + dimension sub-agents in one message, or in waves of up to four on codex | 3 min |
 | dimensions | sub-agents review in parallel; `correctness` is the long pole | 4–13 min (grows with the diff) |
 | synthesis | merge, de-duplicate | ~1 min |
 | challenger | one sub-agent re-checks every finding | 2.5–6 min |
@@ -453,6 +453,22 @@ nothing:
 
   This PR was NOT reviewed. Do not count this as an approval.
   ```
+
+On codex, the orchestrator also checks the time before each wait on a
+child. With under 240 s left, it stops the running children (it closes
+them on a V1 parent and interrupts them on a V2 one) and writes the same
+`time-budget` failure if any selected sub-agent has not finished. A
+child still running 900 s after its spawn is stopped too. Unless
+stopping it returns a result, it is final for its sub-agent, as is a
+child that ends without one (errored, shut down, not found, or withheld
+by the runtime): the skill's failure fallback for that sub-agent
+applies, and the spawn is not retried. The challenger starts only once
+every dimension sub-agent, and the risk assessment when enabled, has a
+result or a failure, and the same 240 s check runs before each wait on
+it; without its result, the review falls back to the findings merged
+before the challenger, and a `low` finding says so. In the local V1
+review runs the parent skipped the time-budget checks; see
+[Runtime support](#runtime-support).
 
 As soon as the PR is identified, the orchestrator writes a provisional
 `failure` result with `reason: tool-failure`, and replaces it with the
@@ -513,9 +529,9 @@ If this agent needs to reach hosts beyond the defaults, see the
 
 ## Runtime support
 
-Supported runtimes: **claude** (stable default), **pi** (experimental). On pi, each sub-agent runs with its own model, see [Fullsend pi docs](https://fullsend.sh/docs/runtimes/pi) on how to define a different model for a sub-agent.
+Supported runtimes: **claude** (stable default), **pi** (experimental), **codex** (experimental). On pi, each sub-agent runs with its own model, see [Fullsend pi docs](https://fullsend.sh/docs/runtimes/pi) on how to define a different model for a sub-agent.
 
-**Codex** is not a supported runtime for review yet. The `pr-review` skill dispatches native Codex children only when the runtime note lists registered sub-agent roles, which depends on [fullsend #6970](https://github.com/fullsend-ai/fullsend/issues/6970); this section changes after a live review run on Codex is linked here. The skill passes no `model`: the runner binds each child's model from `agents[].subagents`, or its run-level default.
+On codex, review's sub-agents run as native Codex children when harness security is on and Codex resolves the parent model to collaboration V1 or V2 at its pinned version, except on a `gateway/` model or, for a V2 parent, when a child model selects V2; otherwise the parent does the sub-agents' work itself, in one context (see [Fullsend codex docs](https://fullsend.sh/docs/runtimes/codex#sub-agents)). The skill passes no `model`: a persona with its own entry in `agents[].subagents` runs on that model, and every other child on the run-level child model ([child models](https://fullsend.sh/docs/runtimes/codex#child-models)). Review has run this way locally, not through the fleet workflows, on a V1 parent ([fullsend #6970](https://github.com/fullsend-ai/fullsend/issues/6970)) and on a V2 parent ([fullsend #9085](https://github.com/fullsend-ai/fullsend/issues/9085#issuecomment-6920231259)). In all three V1 runs the parent skipped the time-budget checks before each wait and before the challenger ([fullsend #9657](https://github.com/fullsend-ai/fullsend/issues/9657)). In two of them a persona the skill selects did not run, and neither result said so ([fullsend #9073](https://github.com/fullsend-ai/fullsend/issues/9073), [fullsend #9657](https://github.com/fullsend-ai/fullsend/issues/9657)). In the V2 run the parent dropped findings the challenger kept ([fullsend #9657](https://github.com/fullsend-ai/fullsend/issues/9657)).
 
 Effort: `high` (explicit in the harness; override per run with `fullsend run --effort` or `FULLSEND_EFFORT`, values `low`–`max`).
 

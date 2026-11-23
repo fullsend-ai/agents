@@ -8,13 +8,13 @@ First-class agents for the [fullsend](https://github.com/fullsend-ai/fullsend) p
 |-------|-------------|---------|----------|
 | **Triage** | Assesses issue sufficiency, searches for duplicates, applies control labels | New issues, `/fs-triage` | claude, pi |
 | **Code** | Implements fixes and features following repo conventions | `ready-to-code` label, `/fs-code` | claude, pi |
-| **Review** | Dispatches parallel sub-agents across the review dimensions the skill stages (correctness, security, user experience for UI changes, and more) | PR events, `/fs-review` | claude, pi |
+| **Review** | Dispatches parallel sub-agents across the review dimensions the skill stages (correctness, security, user experience for UI changes, and more) | PR events, `/fs-review` | claude, pi, codex |
 | **Fix** | Implements targeted fixes from review feedback | Review comments, `/fs-fix` | claude, pi |
 | **Prioritize** | Scores issues using the RICE framework | Schedule, `/fs-prioritize` | claude, pi |
-| **Retro** | Analyzes completed workflows and proposes improvements | PR close, `/fs-retro` | claude, pi |
+| **Retro** | Analyzes completed workflows and proposes improvements | PR close, `/fs-retro` | claude, pi, codex |
 | **Scribe** | Maps meeting notes to issue backlog updates and new issues | Schedule | claude, pi |
 
-Claude Code (`claude`) is the stable default every repo gets; `pi` is in its enablement (experimental) phase and is selected per repo with `runtime: pi` — see fullsend's [Runtimes](https://github.com/fullsend-ai/fullsend/blob/main/docs/runtimes.md). Every harness sets `effort: high` explicitly.
+Claude Code (`claude`) is the stable default every repo gets; `pi` is in its enablement (experimental) phase and is selected per repo with `runtime: pi`; `codex` is experimental, is selected with `runtime: codex`, and needs an OpenAI or `gateway/` model set for it, since every harness here names `opus` — see fullsend's [Runtimes](https://github.com/fullsend-ai/fullsend/blob/main/docs/runtimes.md). Every harness sets `effort: high` explicitly.
 
 Review and Retro dispatch native Codex children only when the runtime note lists registered sub-agent roles ([fullsend #6970](https://github.com/fullsend-ai/fullsend/issues/6970)); each agent's row lists `codex` once a live run of that agent is linked from its doc.
 
