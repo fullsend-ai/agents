@@ -531,7 +531,20 @@ Retry with \`/fs-code\` if appropriate."
 # Note: RESULT_FILE is set at the top of the script and may point to a
 # prior iteration's output when the current run exits before producing one.
 # This is acceptable — context is sanitized and the comment is best-effort.
+#
+# xtrace is suspended for the whole load, so the raw pr_body is never traced
+# before it is redacted and scanned; the original tracing state is restored
+# on every return path.
 load_noop_agent_context() {
+  local _ctx_xtrace=0
+  [[ $- == *x* ]] && _ctx_xtrace=1
+  set +x
+  _load_noop_agent_context_inner
+  (( _ctx_xtrace )) && set -x
+  return 0
+}
+
+_load_noop_agent_context_inner() {
   NOOP_AGENT_CONTEXT=""
   local agent_context=""
   if [ -n "${RESULT_FILE:-}" ] && [ -f "${RESULT_FILE}" ]; then

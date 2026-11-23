@@ -78,8 +78,11 @@ this repository. On GitHub/GitLab source issues, the no-PR path sanitizes
 context" under a generic "No PR created — agent determined no changes needed"
 notice with retry guidance. Keep escalation text under 25 lines, put the
 repository, file, and required change first, and omit the normal PR template.
-External-tracker runs (such as Jira) emit only a generic notice; the upstream
-explanation remains in the agent's final message in the run transcript.
+Jira-sourced runs also post a no-op comment (the reason, the same sanitized
+and secret-scanned agent context, and the workflow run URL) to the Jira issue
+under the code-agent marker. Other external-tracker runs emit only a generic
+notice; the upstream explanation remains in the agent's final message in the
+run transcript.
 
 If the target is referenced by a pinned SHA and the upstream fix has not
 landed in a newer commit reachable from the intended upstream reference, the
@@ -102,7 +105,8 @@ text scan. If a text scan finds a secret or cannot complete, the issue comment
 omits optional context, and the PR/MR description uses a generic fallback. A
 rejected PR body falls back to the normalized commit body only if that text
 passes the same scan. Raw text-scan diagnostics are not logged.
-Jira-source no-PR runs still emit only their existing generic notice.
+Jira-source no-PR runs apply the same scan to the agent context in their Jira
+no-op comment and omit it when the scan does not pass.
 
 ### Reruns on an open pull request
 
@@ -361,6 +365,9 @@ vars. Key differences from single-forge setup:
   gateway from `tracker.jira` in that directory's `config.yaml`. This needs
   a fullsend release that includes the config-backed Jira commands
   ([fullsend-ai/fullsend#9078](https://github.com/fullsend-ai/fullsend/pull/9078)).
+  A Jira-sourced run that ends without a PR/MR writes a "No PR created"
+  comment the same way, under the same marker, so a later run that opens a
+  PR/MR replaces it. A failed write is a warning, not a failed run.
 
   Jira secrets — set exactly one of the two credential modes:
 

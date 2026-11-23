@@ -4328,6 +4328,22 @@ else
   echo "PASS: jira-noop-context-omitted-on-scan-failure"
 fi
 
+# Under xtrace, the raw agent context must not be traced before it is
+# sanitized and scanned, yet the comment still carries it.
+JIRA_INT_XTRACE=1 JIRA_INT_NOOP=files JIRA_INT_PR_BODY="Already fixed by an earlier commit." \
+  run_jira_int "jira-noop-context-xtrace" github
+if [ "${JIRA_INT_RC}" -ne 0 ]; then
+  jira_int_fail "jira-noop-context-xtrace-not-traced" "post-code failed"
+elif ! grep -q '^+' "${JIRA_INT_OUT}"; then
+  jira_int_fail "jira-noop-context-xtrace-not-traced" "no xtrace output"
+elif grep -qE '^\++ (local )?(agent_context|sanitized_context)=' "${JIRA_INT_OUT}"; then
+  jira_int_fail "jira-noop-context-xtrace-not-traced" "raw agent context on a traced line"
+elif ! grep -qxF "Already fixed by an earlier commit." "${JIRA_INT_FULLSEND_LOG}"; then
+  jira_int_fail "jira-noop-context-xtrace-not-traced" "agent context missing from the comment"
+else
+  echo "PASS: jira-noop-context-xtrace-not-traced"
+fi
+
 # A failed Jira write on the no-op path is a warning, not a failed run.
 JIRA_INT_NOOP=files run_jira_int "jira-noop-write-failure" github MOCK_FULLSEND_FAIL=1
 if [ "${JIRA_INT_RC}" -ne 0 ]; then
