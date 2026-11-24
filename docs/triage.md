@@ -360,8 +360,11 @@ leaves room for the lists and footers. The stored state keeps every cause
 non-ASCII escaped, under Jira's 32768-character property limit, it drops
 evidence and then cuts cause text, and fails the
 run, before any label or comment changes, if the names alone do not fit.
-A cause the state cannot keep (an empty name, or past the list limits) is
-reported as a warning.
+The schema caps the lists (10 open causes, 25 ruled out), so a longer list
+fails validation and the agent is asked again. It does not limit the
+text: the post-script cuts a cause name to 200 characters and its evidence to
+300 when it stores them, and drops an entry with an empty or blank name with a
+warning, rather than failing the run.
 
 A re-run starts from the newest state in a comment the triage account wrote
 and nobody else last edited (`agents/triage.md` step 2e). Without one, for

@@ -103,11 +103,11 @@ run_test "cause-extra-field" \
 
 run_test "evidence-whitespace-only" \
   '{"action":"sufficient","reasoning":"clear","clarity_scores":{"symptom":0.9,"cause":0.8,"reproduction":0.9,"impact":0.7,"overall":0.85},"triage_summary":{"title":"Bug","severity":"high","category":"bug","problem":"crash","root_cause_hypothesis":"null ptr","reproduction_steps":["step 1"],"impact":"all users","recommended_fix":"fix ptr","proposed_test_case":"test_fix","open_causes":[{"cause":"null ptr","evidence":"   ","verified":true}],"ruled_out":[]},"comment":"Triage complete."}' \
-  "false"
+  "true"
 
 run_test "cause-too-long" \
   '{"action":"sufficient","reasoning":"clear","clarity_scores":{"symptom":0.9,"cause":0.8,"reproduction":0.9,"impact":0.7,"overall":0.85},"triage_summary":{"title":"Bug","severity":"high","category":"bug","problem":"crash","root_cause_hypothesis":"null ptr","reproduction_steps":["step 1"],"impact":"all users","recommended_fix":"fix ptr","proposed_test_case":"test_fix","open_causes":[{"cause":"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx","evidence":"crash trace","verified":true}],"ruled_out":[]},"comment":"Triage complete."}' \
-  "false"
+  "true"
 
 run_test "open-causes-over-ten" \
   '{"action":"sufficient","reasoning":"clear","clarity_scores":{"symptom":0.9,"cause":0.8,"reproduction":0.9,"impact":0.7,"overall":0.85},"triage_summary":{"title":"Bug","severity":"high","category":"bug","problem":"crash","root_cause_hypothesis":"null ptr","reproduction_steps":["step 1"],"impact":"all users","recommended_fix":"fix ptr","proposed_test_case":"test_fix","open_causes":[{"cause":"null ptr","evidence":"crash trace","verified":true},{"cause":"null ptr","evidence":"crash trace","verified":true},{"cause":"null ptr","evidence":"crash trace","verified":true},{"cause":"null ptr","evidence":"crash trace","verified":true},{"cause":"null ptr","evidence":"crash trace","verified":true},{"cause":"null ptr","evidence":"crash trace","verified":true},{"cause":"null ptr","evidence":"crash trace","verified":true},{"cause":"null ptr","evidence":"crash trace","verified":true},{"cause":"null ptr","evidence":"crash trace","verified":true},{"cause":"null ptr","evidence":"crash trace","verified":true},{"cause":"null ptr","evidence":"crash trace","verified":true}],"ruled_out":[]},"comment":"Triage complete."}' \
