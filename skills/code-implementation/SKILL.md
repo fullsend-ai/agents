@@ -1114,7 +1114,7 @@ from step 6 and structure `pr_body` to match its sections, filling
 each per the step 3 comment guidance. Include opt-in sections only when
 they apply; never copy comment markers into `pr_body`. Comment guidance
 is advisory — pipeline invariants win: no closing reference even if the
-template asks for `Fixes #NNN` or a `Fixes:` line; title guidance applies to the commit
+template asks for `Fixes #<issue-number>` or a `Fixes:` line; title guidance applies to the commit
 subject (10c), which becomes the PR title; no secrets, since `pr_body`
 is secret-scanned. Otherwise,
 write a best-effort description covering what changed, why, testing
