@@ -1,0 +1,13 @@
+# Behaviour shards for behaviour-github-emulator.yml: <shard> <workers> <runners> <feature[:line]>...
+# Feature paths are relative to behaviour/. One VM each. A 4-vCPU VM is
+# CPU-bound above about two scenarios at once, and a scenario takes two to
+# three times longer under that load, so a shard holds at most two of the
+# long scenarios (code, fix, retro and the approving and changes-requested
+# reviews). Balanced on measured scenario time, not count. Not listed:
+# review/custom-persona.feature, which needs a real model and runs only in
+# behaviour-tests.yml.
+a 2 4 features/code/branch-namespace.feature
+b 2 4 features/fix.feature features/retro.feature
+c 2 4 features/review/post-review-outcomes.feature:30 features/review/post-review-outcomes.feature:43
+d 2 4 features/review/post-review-outcomes.feature:63 features/review/post-review-outcomes.feature:87
+e 3 6 features/prioritize.feature features/triage.feature

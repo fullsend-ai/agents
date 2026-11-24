@@ -108,6 +108,7 @@ run_case() {
   env -u FULLSEND_JIRA_TOKEN -u FULLSEND_JIRA_EMAIL -u FULLSEND_JIRA_CLIENT_ID \
     -u FULLSEND_JIRA_CLIENT_SECRET -u JIRA_TOKEN -u JIRA_USER_EMAIL -u JIRA_API_URL \
     PATH="${MOCK_BIN}:${PATH}" LOG_DIR="${CASE_DIR}" EXPECTED_SECRET="${SECRET}" \
+    GITHUB_ACTIONS="${TEST_GITHUB_ACTIONS-1}" \
     TEST_SECRET="${SECRET}" TEST_CLIENT_ID="${CLIENT_ID}" TEST_API_URL="${API_URL}" \
     FAKE_MINT="${FAKE_MINT:-ok}" FAKE_EXPIRES_IN="${FAKE_EXPIRES_IN:-3600}" \
     bash -c "set -euo pipefail; source '${LIB}'; ${body}" \
@@ -244,6 +245,22 @@ else
   fail "client-fullsend-gets-client-vars-only" "$(cat "${CASE_DIR}/fullsend-env.log")"
 fi
 assert_secret_hidden "client"
+
+# Outside GitHub Actions the mask line is not emitted: ::add-mask:: would be
+# ordinary log output there and would print the token.
+TEST_GITHUB_ACTIONS="" run_case client-no-gha '
+  export JIRA_API_URL="${TEST_API_URL}"
+  jira_auth_select "" TEST_CLIENT_ID TEST_SECRET
+  jira_auth_mint
+  echo "minted=$([[ -n "${_JIRA_AUTH_ACCESS_TOKEN}" ]] && echo yes || echo no)"
+'
+if [[ "${CASE_RC}" -eq 0 ]] && grep -qx "minted=yes" "${CASE_OUT}" \
+  && ! grep -qF "::add-mask::" "${CASE_OUT}" "${CASE_ERR}" \
+  && ! grep -qF "minted-token" "${CASE_OUT}" "${CASE_ERR}"; then
+  pass "client-no-gha-emits-no-mask"
+else
+  fail "client-no-gha-emits-no-mask" "rc=${CASE_RC}; $(cat "${CASE_OUT}" "${CASE_ERR}" 2>/dev/null)"
+fi
 
 # xtrace on: the mint still prints no secret.
 run_case client-xtrace '

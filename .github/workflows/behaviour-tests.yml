@@ -1,11 +1,14 @@
 name: Behaviour Tests
 
-# Same-repo PRs run on pull_request (dev-environment secrets available; the
-# gate runs on the base checkout before this job checks out and executes the
-# PR head). Fork PRs get no secrets on pull_request: behaviour skips until a
-# writer comments `/ok-to-test <sha>`, and ok-to-test.yml calls this workflow
-# for that sha (event_name issue_comment, inputs.head_sha). No
-# pull_request_target: GitHub blocks it by default from 2026-12-02 (#1975).
+# The live behaviour suite: real models, the deployed mint and real App
+# installations, with dev-environment secrets. It runs in the merge queue, on
+# push to main, on workflow_dispatch, and for a PR head that a writer
+# authorized with `/ok-to-test <sha> live` (ok-to-test.yml calls this workflow
+# for that sha: event_name issue_comment, inputs.head_sha). On pull_request the
+# job skips, and a skipped check reports success; pull requests get the
+# behaviour scenarios from behaviour-github-emulator.yml, with no secrets.
+# review/custom-persona.feature needs a real model and runs only here.
+# No pull_request_target: GitHub blocks it by default from 2026-12-02 (#1975).
 
 permissions: {}
 
@@ -27,13 +30,15 @@ on:
       - '.github/workflows/behaviour-tests.yml'
       - '.github/actions/check-e2e-authorization/**'
       - '.github/scripts/check-e2e-authorization.sh'
+  # The behaviour job skips on pull_request; the trigger keeps the check
+  # reporting on PRs. A live run on a PR: `/ok-to-test <sha> live`.
   pull_request:
-    # Fork PRs: /ok-to-test is handled by ok-to-test.yml via workflow_call.
     types: [opened, synchronize, reopened]
   merge_group:
   workflow_dispatch:
   workflow_call:
-    # Only ok-to-test.yml calls this, from an authorized /ok-to-test comment.
+    # Only ok-to-test.yml calls this, from an authorized
+    # `/ok-to-test <sha> live` comment.
     inputs:
       pr_number:
         description: Pull request number the /ok-to-test comment authorized
@@ -53,58 +58,22 @@ on:
 # never cancelled; the caller reports their result.
 concurrency:
   group: >-
-    ${{ github.event_name == 'pull_request'
-        && format('behaviour-{0}', github.event.pull_request.number)
-        || github.event_name == 'issue_comment'
+    ${{ github.event_name == 'issue_comment'
         && format('behaviour-ok-to-test-{0}', inputs.pr_number)
         || format('{0}-{1}', github.workflow, github.ref) }}
   cancel-in-progress: >-
-    ${{ github.event_name == 'pull_request'
-        || (github.event_name != 'issue_comment' && github.ref != 'refs/heads/main') }}
+    ${{ github.event_name != 'issue_comment' && github.ref != 'refs/heads/main' }}
 
 jobs:
-  gate:
-    # Same-repo PRs only (gh-aw's guard): a fork PR's pull_request token is
-    # read-only and it gets no secrets, so forks go through /ok-to-test.
-    if: >-
-      github.event_name == 'pull_request' &&
-      github.event.pull_request.head.repo.id == github.repository_id
-    runs-on: ubuntu-24.04
-    timeout-minutes: 5
-    permissions:
-      contents: read
-      pull-requests: write
-    outputs:
-      authorized: ${{ steps.auth.outputs.authorized }}
-    steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-        with:
-          ref: ${{ github.event.pull_request.base.sha }}  # Base only — never check out PR head in gate
-          persist-credentials: false
-
-      - name: Check PR authorization
-        id: auth
-        uses: ./.github/actions/check-e2e-authorization
-        with:
-          pr_number: ${{ github.event.pull_request.number }}
-          repository: ${{ github.repository }}
-          pr_updated_at: ${{ github.event.pull_request.updated_at }}
-          event_action: ${{ github.event.action }}
-          pr_author_association: ${{ github.event.pull_request.author_association }}
-          pr_author_login: ${{ github.event.pull_request.user.login }}
-          label_actor_login: ${{ github.event.sender.login }}
-
   behaviour:
-    needs: gate
+    # Never on pull_request. PR code runs here only on issue_comment, after
+    # ok-to-test.yml authorized that exact sha and the comment asked for live.
     if: >-
-      !cancelled() &&
       github.repository_owner == 'fullsend-ai' &&
       (
         (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
         github.event_name == 'merge_group' ||
         github.event_name == 'workflow_dispatch' ||
-        (github.event_name == 'pull_request' &&
-         needs.gate.outputs.authorized == 'true') ||
         (github.event_name == 'issue_comment' && inputs.head_sha != '')
       )
     environment: dev
@@ -460,7 +429,7 @@ jobs:
           E2E_GCP_SERVICE_ACCOUNT: ${{ secrets.AGENTS_BT_E2E_GCP_SERVICE_ACCOUNT }}
         # Clean environment so variables the PR head set (LD_PRELOAD,
         # BASH_ENV, PATH) cannot affect redaction by accident. The trust
-        # boundary is the gate job: authorized PR code already sees these
+        # boundary is the ok-to-test.yml gate: authorized PR code already sees these
         # secrets during the test step.
         run: |
           exec /usr/bin/env -i \
