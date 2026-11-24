@@ -62,17 +62,21 @@ TRIAGE_STATE_FOLD_RE='(?i)<(?=summary\b[^>]*>(?:\s|&nbsp;|&#x?[0-9a-f]+;|<[^>]*>
 # then cuts cause text (whole characters only), and fails, so nothing is
 # posted, if the names alone still do not fit. The evidence of an "Other
 # open candidates" entry (agents/triage.md) names the causes past the ninth,
-# so it is never emptied or cut: those names are causes too.
+# so it is never emptied or cut, not even to the 300 characters other
+# evidence keeps: those names are causes too, and the state's escaped-length
+# cap is what bounds it.
 triage_state_json() {
   jq -c '
     def text($n):
       (if type == "string" then . else "" end)
       | gsub("[\\r\\n\\t]+"; " ") | gsub("^ +| +$"; "")
-      | if length > $n then .[0:($n - 1)] + "…" else . end;
+      | if $n != null and length > $n then .[0:($n - 1)] + "…" else . end;
     def causes:
       (if type == "array" then . else [] end)
       | map(select(type == "object")
-            | {cause: (.cause | text(200)), evidence: (.evidence | text(300)), verified: (.verified == true)}
+            | (.cause | text(200)) as $c
+            | {cause: $c, evidence: (.evidence | text(if $c == "Other open candidates" then null else 300 end)),
+               verified: (.verified == true)}
             | select(.cause != ""));
     (.triage_summary | if type == "object" then . else {} end) as $s
     | {open_causes: ($s.open_causes | causes | .[0:10]),

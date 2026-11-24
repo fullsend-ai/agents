@@ -235,7 +235,7 @@
       "required": ["cause", "evidence", "verified"],
       "properties": {
         "cause": { "type": "string", "description": "The cause, as one short phrase. Stored with line breaks folded to spaces and cut to 200 characters; an entry whose name is empty or blank is dropped from the state with a warning. No length is enforced here, so a long name never fails validation: the post-script trims it." },
-        "evidence": { "type": "string", "description": "What supports it (open) or refutes it (ruled out), or who claimed it when unverified. Stored with line breaks folded to spaces and cut to 300 characters (the post-script trims it; no length is enforced here)." },
+        "evidence": { "type": "string", "description": "What supports it (open) or refutes it (ruled out), or who claimed it when unverified. Stored with line breaks folded to spaces and cut to 300 characters, except on the Other open candidates entry, whose evidence names causes and is kept whole (the post-script trims it; no length is enforced here)." },
         "verified": { "type": "boolean", "description": "True only when this run checked the evidence itself." }
       },
       "additionalProperties": false

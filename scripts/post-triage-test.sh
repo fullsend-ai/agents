@@ -2080,6 +2080,23 @@ else
   echo "PASS: state-other-candidates-evidence-kept"
 fi
 
+# The overflow entry's evidence is never cut to the 300 characters other
+# evidence keeps, even when the state is well under the cap: every name in it
+# is a cause, and a cut name is a cause lost for every later run.
+long_names="$(jq -rn '[range(10; 40) | "cause-number-\(.) with a moderately descriptive name"] | join("; ")')"
+ol_open="$(jq -cn --arg e "${long_names}" '[range(0; 9) | {cause: "cause \(.)", evidence: "e", verified: true}] + [{cause: "Other open candidates", evidence: $e, verified: false}]')"
+ol_file="${TMPDIR}/state-other-long.json"
+printf '%s\n' "$(sufficient_with ",\"open_causes\":${ol_open},\"ruled_out\":[]" "x")" > "${ol_file}"
+ol_out="$(SCRIPT_DIR="${SCRIPT_DIR}" bash -c 'source "${SCRIPT_DIR}/lib/triage-state.lib.sh"; triage_state_json "$1"' _ "${ol_file}" 2>&1)" || true
+ol_dropped="$(SCRIPT_DIR="${SCRIPT_DIR}" bash -c 'source "${SCRIPT_DIR}/lib/triage-state.lib.sh"; triage_state_dropped "$1" "$2"' _ "${ol_file}" "${ol_out}" 2>&1)" || true
+if [[ ${#long_names} -le 300 ]] \
+  || [[ "$(jq -r '.open_causes[] | select(.cause == "Other open candidates") | .evidence' <<<"${ol_out}" 2>/dev/null)" != "${long_names}" ]] \
+  || [[ "$(jq -r '.open_causes[0].evidence' <<<"${ol_out}" 2>/dev/null)" != "e" ]] || [[ "${ol_dropped}" != "0" ]]; then
+  state_fail "state-other-candidates-evidence-uncut" "expected all ${#long_names} characters of the overflow entry kept: ${ol_out:0:300}"
+else
+  echo "PASS: state-other-candidates-evidence-uncut"
+fi
+
 # A state that cannot be stored fails the run before the issue is touched.
 export TRIAGE_STATE_MAX_CHARS=500
 run_state_case "state-too-large-fails-closed" "$(sufficient_with ",${OPEN_TWO},\"ruled_out\":${many_ruled}" "Short analysis.")"

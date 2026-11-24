@@ -363,7 +363,8 @@ run, before any label or comment changes, if the names alone do not fit.
 The schema caps the lists (10 open causes, 25 ruled out), so a longer list
 fails validation and the agent is asked again. It does not limit the
 text: the post-script cuts a cause name to 200 characters and its evidence to
-300 when it stores them, and drops an entry with an empty or blank name with a
+300 when it stores them (the "Other open candidates" entry's evidence, which
+names the causes past the ninth, is kept whole), and drops an entry with an empty or blank name with a
 warning, rather than failing the run.
 
 A re-run starts from the newest state in a comment the triage account wrote
