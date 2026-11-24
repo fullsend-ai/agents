@@ -1348,10 +1348,32 @@ _jira_post_comment() {
 # Execute a Jira workflow transition through the fullsend CLI (v0.56.1+),
 # which reads the Jira site and API gateway from tracker.jira in FULLSEND_DIR
 # and shares the upstream transition and resolution policy.
+_JIRA_TRANSITION_CLI_SUPPORTED=""
 _jira_transition() {
   _jira_require_vars || return 1
   if [[ -z "${FULLSEND_DIR:-}" ]]; then
     echo "ERROR: FULLSEND_DIR is not set; the fullsend CLI needs it for the tracker.jira settings" >&2
+    return 1
+  fi
+  # Preflight: verify once that the installed fullsend binary provides
+  # `issues transition` (introduced in v0.56.1 / fullsend#9437) so older
+  # deployments fail with an actionable upgrade message. Cobra exits 0 and
+  # prints parent `fullsend issues [command]` help for unknown subcommands
+  # when `fullsend issues` exists (v0.56.0), so verify the subcommand usage
+  # line and flags rather than relying on exit code alone.
+  if [[ -z "${_JIRA_TRANSITION_CLI_SUPPORTED:-}" ]]; then
+    local help_out=""
+    if help_out=$(fullsend issues transition --help 2>&1) \
+      && grep -Eq '^[[:space:]]*fullsend issues transition([[:space:]]|$)' <<< "${help_out}" \
+      && grep -Eq '^[[:space:]]+--transition([=[:space:]]|$)' <<< "${help_out}" \
+      && grep -Eq '^[[:space:]]+--state([=[:space:]]|$)' <<< "${help_out}"; then
+      _JIRA_TRANSITION_CLI_SUPPORTED="yes"
+    else
+      _JIRA_TRANSITION_CLI_SUPPORTED="no"
+    fi
+  fi
+  if [[ "${_JIRA_TRANSITION_CLI_SUPPORTED}" != "yes" ]]; then
+    echo "ERROR: 'fullsend issues transition' is not available — Jira close requires fullsend v0.56.1+ (fullsend#9437); upgrade the fullsend CLI" >&2
     return 1
   fi
   jira_auth_fullsend fullsend "${JIRA_TOKEN:-}" "${JIRA_USER_EMAIL:-}" \

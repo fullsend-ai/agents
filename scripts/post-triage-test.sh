@@ -20,6 +20,8 @@ trap 'rm -rf "${TMPDIR}"' EXIT
 # Mock gh: record all calls to a log file.
 GH_LOG="${TMPDIR}/gh-calls.log"
 FULLSEND_ENV_LOG="${TMPDIR}/fullsend-env.log"
+FULLSEND_HELP_LOG="${TMPDIR}/fullsend-help.log"
+: > "${FULLSEND_HELP_LOG}"
 MOCK_ISSUE_LABELS_FILE="${TMPDIR}/mock-issue-labels"
 MOCK_ISSUE_LABELS_FAIL="${TMPDIR}/mock-issue-labels-fail"
 MOCK_ISSUE_LABELS_PERSIST="${TMPDIR}/mock-issue-labels-persist"
@@ -81,6 +83,25 @@ chmod +x "${MOCK_BIN}/gh"
 
 cat > "${MOCK_BIN}/fullsend" <<MOCKEOF
 #!/usr/bin/env bash
+if [[ "\${1:-} \${2:-}" == "issues transition" && "\${3:-}" == "--help" ]]; then
+  echo "fullsend \$*" >> "${FULLSEND_HELP_LOG}"
+  case "\${MOCK_FULLSEND_TRANSITION_NO_HELP:-}" in
+    cobra-parent)
+      # Real Cobra behavior on fullsend <= v0.56.0: exits 0 and prints parent
+      # "fullsend issues [command]" help when "transition" is unknown.
+      printf 'Usage:\n  fullsend issues [command]\n\nAvailable Commands:\n  post-comment Post a comment\n'
+      exit 0
+      ;;
+    "")
+      printf 'Usage:\n  fullsend issues transition [flags]\n\nFlags:\n      --state string        Semantic lifecycle state\n      --transition string   Exact Jira transition name\n'
+      exit 0
+      ;;
+    *)
+      echo 'Error: unknown command "transition" for "fullsend issues"' >&2
+      exit 1
+      ;;
+  esac
+fi
 # Record the Jira credentials the CLI reads from its environment.
 echo "token=\${FULLSEND_JIRA_TOKEN-unset} email=\${FULLSEND_JIRA_EMAIL-unset} client-id=\${FULLSEND_JIRA_CLIENT_ID-unset} client-secret=\${FULLSEND_JIRA_CLIENT_SECRET:+set}" >> "${FULLSEND_ENV_LOG}"
 BODY=""
@@ -2704,6 +2725,88 @@ if ! grep -qF -- "fullsend issues transition --tracker jira --fullsend-dir ${FUL
 else
   echo "PASS: jira-transition-cli-failure-no-fallback-verified"
 fi
+
+# Older fullsend CLI (<= v0.56.0, Cobra exits 0 printing parent `fullsend issues` help) fails with an actionable upgrade error and zero transition calls.
+MOCK_FULLSEND_TRANSITION_NO_HELP="cobra-parent" \
+run_jira_test "jira-transition-cobra-parent-help-fails-with-upgrade-hint" \
+  '{"action":"completed","reasoning":"all child issues are closed","comment":"All tracked work is done."}' \
+  "" true
+if ! grep -qF "Jira close requires fullsend v0.56.1+" "${TMPDIR}/stdout.log" \
+  || grep -qF "issues transition" "${GH_LOG}"; then
+  echo "FAIL: jira-transition-cobra-parent-help-fails-with-upgrade-hint — expected upgrade hint and zero transition calls on Cobra exit-0 parent help"
+  cat "${TMPDIR}/stdout.log" "${GH_LOG}"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: jira-transition-cobra-parent-help-fails-with-upgrade-hint-verified"
+fi
+
+# Broken/missing fullsend CLI (--help exits non-zero) also fails with an actionable upgrade error and zero transition calls.
+MOCK_FULLSEND_TRANSITION_NO_HELP=1 \
+run_jira_test "jira-transition-missing-subcommand-fails-with-upgrade-hint" \
+  '{"action":"completed","reasoning":"all child issues are closed","comment":"All tracked work is done."}' \
+  "" true
+if ! grep -qF "Jira close requires fullsend v0.56.1+" "${TMPDIR}/stdout.log" \
+  || grep -qF "issues transition" "${GH_LOG}"; then
+  echo "FAIL: jira-transition-missing-subcommand-fails-with-upgrade-hint — expected upgrade hint and zero transition calls"
+  cat "${TMPDIR}/stdout.log" "${GH_LOG}"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: jira-transition-missing-subcommand-fails-with-upgrade-hint-verified"
+fi
+
+# `_jira_transition` caches both positive and negative `fullsend issues transition --help` probe results across repeated calls.
+: > "${FULLSEND_HELP_LOG}"
+: > "${GH_LOG}"
+probe_cache_exit=0
+(
+  # shellcheck source=lib/jira-triage-ops.lib.sh
+  source "${SCRIPT_DIR}/lib/jira-triage-ops.lib.sh"
+  tracker_parse_issue_url "${ISSUE_URL}"
+  _jira_transition --transition Closed
+  _jira_transition --state closed
+) > "${TMPDIR}/stdout.log" 2>&1 || probe_cache_exit=$?
+if [[ ${probe_cache_exit} -ne 0 ]]; then
+  echo "FAIL: jira-transition-cli-probe-cached — exit code ${probe_cache_exit}"
+  cat "${TMPDIR}/stdout.log"
+  FAILURES=$((FAILURES + 1))
+elif [[ "$(wc -l < "${FULLSEND_HELP_LOG}")" -ne 1 ]] \
+  || [[ "$(grep -cF "fullsend issues transition --tracker jira" "${GH_LOG}")" -ne 2 ]]; then
+  echo "FAIL: jira-transition-cli-probe-cached — expected 1 --help probe and 2 transition calls"
+  echo "Help log:"
+  cat "${FULLSEND_HELP_LOG}"
+  echo "Call log:"
+  cat "${GH_LOG}"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: jira-transition-cli-probe-cached"
+fi
+unset probe_cache_exit
+
+: > "${FULLSEND_HELP_LOG}"
+: > "${GH_LOG}"
+neg_probe_rc1=0
+(
+  # shellcheck source=lib/jira-triage-ops.lib.sh
+  source "${SCRIPT_DIR}/lib/jira-triage-ops.lib.sh"
+  tracker_parse_issue_url "${ISSUE_URL}"
+  MOCK_FULLSEND_TRANSITION_NO_HELP="cobra-parent" _jira_transition --transition Closed && exit 10
+  _jira_transition --state closed && exit 11
+  exit 0
+) > "${TMPDIR}/stdout.log" 2>&1 || neg_probe_rc1=$?
+if [[ ${neg_probe_rc1} -ne 0 ]]; then
+  echo "FAIL: jira-transition-cli-probe-negative-cached — expected both calls to fail cleanly, got rc=${neg_probe_rc1}"
+  cat "${TMPDIR}/stdout.log"
+  FAILURES=$((FAILURES + 1))
+elif [[ "$(wc -l < "${FULLSEND_HELP_LOG}")" -ne 1 ]] \
+  || [[ "$(grep -cF "Jira close requires fullsend v0.56.1+" "${TMPDIR}/stdout.log")" -ne 2 ]] \
+  || grep -qF "issues transition" "${GH_LOG}"; then
+  echo "FAIL: jira-transition-cli-probe-negative-cached — expected 1 --help probe, 2 upgrade errors, and 0 transition calls"
+  cat "${FULLSEND_HELP_LOG}" "${TMPDIR}/stdout.log" "${GH_LOG}"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: jira-transition-cli-probe-negative-cached"
+fi
+unset neg_probe_rc1
 
 # Jira fallback CLI failure (--state closed) propagates non-zero exit when harness default is unavailable.
 _saved_jira_completed="${JIRA_COMPLETED_TRANSITION:-}"

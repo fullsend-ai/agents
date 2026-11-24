@@ -347,11 +347,13 @@ transitions are ambiguous), and fills a required resolution by ID only when Jira
 offers a single allowed value with no default. Note that when only a single
 `done`-category transition is offered, `--state closed` will apply it even if
 its workflow meaning is a rejection/won't-do state (such as `"Won't Do"`,
-`"Duplicate"`, or `"Cannot Reproduce"`). If you explicitly configure
-`JIRA_COMPLETED_TRANSITION` or override `JIRA_SPLIT_TRANSITION` to any name other
-than `"Obsolete"` that Jira does not offer, the post-script fails loudly instead of
-falling back (because the harness default is `"Obsolete"`, an override explicitly
-retaining `"Obsolete"` still benefits from the fallback).
+`"Duplicate"`, or `"Cannot Reproduce"`). The `--state closed` fallback applies
+only when the transition name comes from `JIRA_SPLIT_TRANSITION` set to
+`"Obsolete"` (the `split` action, or `completed` with
+`JIRA_COMPLETED_TRANSITION` unset). Setting `JIRA_COMPLETED_TRANSITION`
+explicitly (including `JIRA_COMPLETED_TRANSITION="Obsolete"`) or overriding
+`JIRA_SPLIT_TRANSITION` to any name other than `"Obsolete"` fails loudly when
+Jira does not offer that transition.
 Operators whose workflows lack `"Obsolete"`, have multiple `done`-category
 transitions, or expose rejection-style `done` transitions should set
 `JIRA_COMPLETED_TRANSITION` and `JIRA_SPLIT_TRANSITION` explicitly. Because
