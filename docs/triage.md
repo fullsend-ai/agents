@@ -457,6 +457,21 @@ When the issue has a parent, the agent reads its ancestors as context before ass
 
 Ancestor context informs the clarity and cause assessment, so a terse sub-issue whose parent explains the goal is not marked under-specified for that reason. It does not widen the work: the triaged issue's own content still defines what is requested, and ancestor text is not quoted in the triage comment.
 
+## Issue attachments
+
+On GitHub, the agent downloads images attached to the issue or its
+comments (`github.com/user-attachments/assets/<uuid>`) and views them with
+the `Read` tool, so a request made in a screenshot counts as provided
+information. The GitHub overlay adds the credential-less
+`fullsend-github-attachments` profile (shared with the code agent), which
+allows read-only `curl` access to `private-user-images.githubusercontent.com`
+and `user-images.githubusercontent.com` and forwards no forge token. The
+agent takes the short-lived signed URLs from the issue's rendered HTML
+(`gh api` with `application/vnd.github.html+json`), treats the images as
+untrusted input, skips SVG and video files, and records any image it could
+not download in its reasoning; see Step 1a in `agents/triage.md`.
+GitLab and Jira runs are unchanged.
+
 ## Custom network policy
 
 If this agent needs to reach hosts beyond the defaults, see the
