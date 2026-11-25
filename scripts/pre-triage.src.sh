@@ -10,6 +10,9 @@
 # (fullsend docs/normative/prescript-output/v1) before any label changes,
 # unless TRIAGE_SKIP_LABEL_OVERRIDE is "true" (#2076).
 #
+# On GitHub it then stages the issue's authorized images for the sandbox
+# (scripts/lib/github-triage-images.lib.sh, #2172).
+#
 # Required env vars:
 #   ISSUE_URL        — HTML URL of the issue
 #   FULLSEND_TRACKER — "github", "gitlab", or "jira" (falls back to FULLSEND_FORGE)
@@ -17,6 +20,7 @@
 # Optional env vars:
 #   TRIAGE_SKIP_LABELS          — comma-separated extra skip labels
 #   TRIAGE_SKIP_LABEL_OVERRIDE  — "true" for a human /fs-triage request
+#   RUNNER_TEMP                 — GitHub: directory the issue images are staged in
 #
 # IMPORTANT: Uses the labels API directly (DELETE /issues/{number}/labels/{name})
 # instead of gh issue edit. gh issue edit uses PATCH /issues/{number}
@@ -34,6 +38,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/lib/prescript-output.lib.sh"
 # shellcheck source=lib/triage-ops.lib.sh
 source "${SCRIPT_DIR}/lib/triage-ops.lib.sh"
+# shellcheck source=lib/github-triage-images.lib.sh
+source "${SCRIPT_DIR}/lib/github-triage-images.lib.sh"
 
 tracker_validate_issue_url
 echo "::notice::🔗 Triage target: $(_gha_sanitize "${ISSUE_URL}")"
@@ -69,3 +75,10 @@ tracker_strip_labels "${TRIAGE_LABELS[@]}"
 tracker_verify_labels_stripped "${TRIAGE_LABELS[@]}"
 
 echo "Label reset complete."
+
+# Issue images (#2172): on GitHub, stage the images posted by the issue author
+# or by a user with the admin, maintain or write role, for harness/triage.yaml
+# to copy into the sandbox. Images from anyone else never reach the model.
+if [[ "${FULLSEND_TRACKER}" == "github" ]]; then
+  triage_stage_issue_images
+fi
