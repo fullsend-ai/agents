@@ -357,6 +357,12 @@ vars. Key differences from single-forge setup:
   tracker comes from `FULLSEND_TRACKER`, or from `FULLSEND_WORK_ITEM_SOURCE`
   (exported by `fullsend run`) when that is unset. If both are set and
   disagree, the run stops.
+- **Jira origin metadata** — newly created Jira-originated PRs and MRs
+  include a `fullsend:work-item` HTML comment in the managed post-script
+  verification footer. Its JSON records `source: "jira"`, `key`, and `url`
+  from the code run. Fix-agent description updates preserve this record.
+  A Jira link in an otherwise forge-originated PR does not add the record;
+  existing PRs are not backfilled by this creation path.
 - **Jira results** — after a Jira-sourced run creates or updates the PR/MR,
   the post-script posts a short code-stage update with the PR/MR URL to the
   Jira issue through `fullsend issues post-comment --tracker jira`. The

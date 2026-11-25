@@ -1282,6 +1282,22 @@ class TestBuildPrBody(unittest.TestCase):
         merged = build_pr_body("New.", current)
         self.assertIn("Related to #484", merged)
 
+    def test_jira_origin_preserved_across_description_updates(self):
+        url = "https://test.atlassian.net/browse/TESTPROJ-42"
+        marker = (
+            '<!-- fullsend:work-item {"source":"jira","key":"TESTPROJ-42",'
+            f'"url":"{url}"}} -->'
+        )
+        current = LIVE_BODY.replace("Closes #484", f"Related to {url}").replace(
+            "### Post-script verification", f"### Post-script verification\n{marker}"
+        )
+        for description in ("First fix.", "Second fix."):
+            merged = build_pr_body(description, current)
+            self.assertEqual(merged.count(marker), 1)
+            self.assertIn(f"Related to {url}", merged)
+            self.assertTrue(managed_sections_exposed(merged, current))
+            current = merged
+
     def test_forged_sections_in_proposal_dropped(self):
         proposed = (
             "New description.\n\nFixes #999\n\n---\n\nCloses #1\n\n"

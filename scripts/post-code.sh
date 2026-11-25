@@ -4828,13 +4828,22 @@ else
   ISSUE_REFERENCE="Closes #${ISSUE_NUMBER}"
 fi
 
+# Keep the originating work item in the managed footer so later fix runs
+# can distinguish Jira-originated work from an incidental link in the body.
+WORK_ITEM_ORIGIN=""
+if [ "${WORK_ITEM_TRACKER}" = "jira" ]; then
+  WORK_ITEM_ORIGIN="$(jq -nr --arg key "${WORK_ITEM_KEY}" --arg url "${WORK_ITEM_URL}" \
+    '{source: "jira", key: $key, url: $url} | tojson | gsub("<"; "\\u003c") | gsub(">"; "\\u003e")')"
+  WORK_ITEM_ORIGIN=$'\n'"<!-- fullsend:work-item ${WORK_ITEM_ORIGIN} -->"
+fi
+
 PR_BODY="${DESCRIPTION}
 
 ---
 
 ${ISSUE_REFERENCE}
 
-### Post-script verification
+### Post-script verification${WORK_ITEM_ORIGIN}
 
 - [x] Branch is not main/master (\`${BRANCH}\`)
 - [x] Secret scan passed (gitleaks — \`${SCAN_RANGE}\`)

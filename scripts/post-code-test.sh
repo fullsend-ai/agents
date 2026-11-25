@@ -4008,6 +4008,7 @@ jira_int_fail() {
 JIRA_CODE_MARKER="--marker <!-- fullsend:code-agent -->"
 JIRA_OUTCOME_MARKER="--marker <!-- fullsend:code-agent-outcome -->"
 JIRA_FAILURE_MARKER="--marker <!-- fullsend:code-agent-failure -->"
+JIRA_ORIGIN_MARKER='<!-- fullsend:work-item {"source":"jira","key":"TESTPROJ-42","url":"https://test.atlassian.net/browse/TESTPROJ-42"} -->'
 
 # GitHub target: PR on GitHub, stage update with the PR URL on the Jira issue.
 run_jira_int "jira-github-target" github
@@ -4015,6 +4016,8 @@ if [ "${JIRA_INT_RC}" -ne 0 ]; then
   jira_int_fail "jira-github-target-pr-url-to-jira" "post-code failed"
 elif ! grep -q "^gh pr create" "${JIRA_INT_FORGE_LOG}"; then
   jira_int_fail "jira-github-target-pr-url-to-jira" "PR not created on GitHub"
+elif ! grep -qxF "${JIRA_ORIGIN_MARKER}" "${JIRA_INT_FORGE_LOG}"; then
+  jira_int_fail "jira-github-target-pr-url-to-jira" "PR body missing Jira origin metadata"
 elif ! grep -qF -- "--tracker jira --fullsend-dir ${JIRA_INT_FULLSEND_DIR} --project TESTPROJ --number 42" "${JIRA_INT_FULLSEND_LOG}" \
      || ! grep -qF -- "${JIRA_CODE_MARKER}" "${JIRA_INT_FULLSEND_LOG}" \
      || ! grep -qF "opened pull request https://github.com/test-org/test-repo/pull/1 for TESTPROJ-42" "${JIRA_INT_FULLSEND_LOG}"; then
@@ -4167,6 +4170,8 @@ if [ "${JIRA_INT_RC}" -ne 0 ]; then
   jira_int_fail "jira-gitlab-target-mr-url-to-jira" "post-code failed"
 elif ! grep -qE "^curl .*--request POST .*https://gitlab.com/api/v4/projects/test-group%2Ftest-project/merge_requests" "${JIRA_INT_FORGE_LOG}"; then
   jira_int_fail "jira-gitlab-target-mr-url-to-jira" "MR not created on GitLab"
+elif ! grep -qxF "${JIRA_ORIGIN_MARKER}" "${JIRA_INT_FORGE_LOG}"; then
+  jira_int_fail "jira-gitlab-target-mr-url-to-jira" "MR description missing Jira origin metadata"
 elif grep -qF "atlassian.net/api/v4" "${JIRA_INT_FORGE_LOG}"; then
   jira_int_fail "jira-gitlab-target-mr-url-to-jira" "GitLab API call went to the Jira host"
 elif ! grep -qF -- "${JIRA_CODE_MARKER}" "${JIRA_INT_FULLSEND_LOG}" \
@@ -4785,7 +4790,9 @@ else
 fi
 
 # Forge-originated run (fullsend run still exports FULLSEND_WORK_ITEM_SOURCE):
-# GitHub issue flow, no Jira write.
+# GitHub issue flow, no Jira write or origin metadata, even with a Jira link
+# in the agent-provided description.
+JIRA_INT_RESULT_JSON='{"pr_body":"See https://test.atlassian.net/browse/TESTPROJ-42 for related context."}' \
 run_jira_int "forge-originated" github FULLSEND_TRACKER= FULLSEND_WORK_ITEM_SOURCE=github \
   FULLSEND_WORK_ITEM_KEY= FULLSEND_WORK_ITEM_URL= ISSUE_NUMBER=42 \
   ISSUE_URL=https://github.com/test-org/test-repo/issues/42 JIRA_TOKEN= JIRA_USER_EMAIL= CODE_JIRA_PR_READY_TRANSITION=Review
@@ -4795,6 +4802,10 @@ elif [ -s "${JIRA_INT_FULLSEND_LOG}" ]; then
   jira_int_fail "forge-originated-run-no-jira-write" "wrote to Jira for a GitHub issue"
 elif ! grep -q "^gh pr create" "${JIRA_INT_FORGE_LOG}"; then
   jira_int_fail "forge-originated-run-no-jira-write" "PR not created"
+elif ! grep -qF 'See https://test.atlassian.net/browse/TESTPROJ-42 for related context.' "${JIRA_INT_FORGE_LOG}"; then
+  jira_int_fail "forge-originated-run-no-jira-write" "PR body missing the incidental Jira link"
+elif grep -qF '<!-- fullsend:work-item ' "${JIRA_INT_FORGE_LOG}"; then
+  jira_int_fail "forge-originated-run-no-jira-write" "incidental Jira link was marked as Jira origin"
 else
   echo "PASS: forge-originated-run-no-jira-write"
 fi
