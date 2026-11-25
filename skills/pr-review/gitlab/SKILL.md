@@ -19,7 +19,7 @@ It extracts the host, project path, and MR IID from `PR_URL` and prints them:
 
 ```bash
 GITLAB_HOST=$(printf '%s\n' "$PR_URL" | sed -nE 's|^https://([^/]+)/.*|\1|p')
-REPO=$(printf '%s\n' "$PR_URL" | sed -E 's|^https://[^/]+/(.+)/-/merge_requests/[0-9]+$|\1|')
+REPO=$(printf '%s\n' "$PR_URL" | cut -d/ -f4- | sed -E 's|/-/merge_requests/[0-9]+$||')
 REPO_ENCODED=$(printf '%s' "$REPO" | jq -sRr @uri)
 MR_IID="${PR_URL##*/}"
 test -n "${GITLAB_HOST}" || echo "GITLAB_HOST is empty: PR_URL is unset or not an https URL" >&2
