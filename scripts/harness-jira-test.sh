@@ -116,6 +116,9 @@ check_runner_mapping "${TRIAGE_HARNESS}" triage FULLSEND_DIR '${FULLSEND_DIR}'
 # their own names, so jira-auth.lib.sh and the fullsend CLI read them.
 check_runner_mapping "${TRIAGE_HARNESS}" triage FULLSEND_JIRA_CLIENT_ID '${FULLSEND_JIRA_CLIENT_ID}'
 check_runner_mapping "${TRIAGE_HARNESS}" triage FULLSEND_JIRA_CLIENT_SECRET '${FULLSEND_JIRA_CLIENT_SECRET}'
+check_runner_mapping "${TRIAGE_HARNESS}" triage JIRA_SPLIT_TRANSITION 'Obsolete'
+check_runner_mapping "${TRIAGE_HARNESS}" triage JIRA_DUPLICATE_TRANSITION 'Duplicate'
+check_runner_mapping "${TRIAGE_HARNESS}" triage JIRA_NOT_PLANNED_TRANSITION "Won't Do"
 
 # The real FULLSEND_JIRA_* values (token, email, client ID and secret) must
 # never reach the sandbox, so no sandbox env, Jira host file or provider

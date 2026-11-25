@@ -3,11 +3,13 @@
 # jira-triage-ops.lib.sh — Jira Cloud tracker operations for triage scripts.
 #
 # Bundled into pre-triage.sh and post-triage.sh via triage-ops.lib.sh.
-# Labels, transitions, and cross-project issue creation use curl against
-# the Jira Cloud REST API v3. Comment posting shells out to
-# `fullsend issues post-comment --tracker jira`, which handles Jira's
-# markdown-to-ADF conversion and marker-based find-and-update semantics
-# that raw REST calls would otherwise have to reimplement.
+# Labels, components, read-only status/transition pre-flight checks, and
+# cross-project issue creation use curl against the Jira Cloud REST API v3.
+# Comment posting shells out to `fullsend issues post-comment --tracker jira`,
+# which handles Jira's markdown-to-ADF conversion and marker-based
+# find-and-update semantics, and close transitions shell out to
+# `fullsend issues transition --tracker jira` (Fullsend v0.56.1+) so triage
+# and core fullsend share one transition and resolution policy.
 #
 # Jira Cloud only (v1): the issue host must match *.atlassian.net. Jira
 # Server/Data Center is not supported.
@@ -49,11 +51,12 @@
 # `fullsend` shell-outs below.
 #
 # Optional env vars:
+#   JIRA_COMPLETED_TRANSITION   — transition name for the "completed" action
+#                                 (no default; falls back to
+#                                 JIRA_SPLIT_TRANSITION when unset)
 #   JIRA_DUPLICATE_TRANSITION   — transition name for the "duplicate" action
 #   JIRA_NOT_PLANNED_TRANSITION — transition name for the "not planned" action
-#   JIRA_SPLIT_TRANSITION       — transition name for the "split" and
-#                                 "completed" actions (both close with
-#                                 GitHub reason "completed")
+#   JIRA_SPLIT_TRANSITION       — transition name for the "split" action
 #   JIRA_CREATE_ISSUE_TYPE      — issue type name for cross-project issue
 #                                 creation (default: "Task")
 
@@ -378,6 +381,42 @@ _jira_post_comment() {
     --marker "${marker}" --result -
 }
 
+# Execute a Jira workflow transition through the fullsend CLI (v0.56.1+),
+# which reads the Jira site and API gateway from tracker.jira in FULLSEND_DIR
+# and shares the upstream transition and resolution policy.
+_JIRA_TRANSITION_CLI_SUPPORTED=""
+_jira_transition() {
+  _jira_require_vars || return 1
+  if [[ -z "${FULLSEND_DIR:-}" ]]; then
+    echo "ERROR: FULLSEND_DIR is not set; the fullsend CLI needs it for the tracker.jira settings" >&2
+    return 1
+  fi
+  # Preflight: verify once that the installed fullsend binary provides
+  # `issues transition` (introduced in v0.56.1 / fullsend#9437) so older
+  # deployments fail with an actionable upgrade message. Cobra exits 0 and
+  # prints parent `fullsend issues [command]` help for unknown subcommands
+  # when `fullsend issues` exists (v0.56.0), so verify the subcommand usage
+  # line and flags rather than relying on exit code alone.
+  if [[ -z "${_JIRA_TRANSITION_CLI_SUPPORTED:-}" ]]; then
+    local help_out=""
+    if help_out=$(fullsend issues transition --help 2>&1) \
+      && grep -Eq '^[[:space:]]*fullsend issues transition([[:space:]]|$)' <<< "${help_out}" \
+      && grep -Eq '^[[:space:]]+--transition([=[:space:]]|$)' <<< "${help_out}" \
+      && grep -Eq '^[[:space:]]+--state([=[:space:]]|$)' <<< "${help_out}"; then
+      _JIRA_TRANSITION_CLI_SUPPORTED="yes"
+    else
+      _JIRA_TRANSITION_CLI_SUPPORTED="no"
+    fi
+  fi
+  if [[ "${_JIRA_TRANSITION_CLI_SUPPORTED}" != "yes" ]]; then
+    echo "ERROR: 'fullsend issues transition' is not available — Jira close requires fullsend v0.56.1+ (fullsend#9437); upgrade the fullsend CLI" >&2
+    return 1
+  fi
+  jira_auth_fullsend fullsend "${JIRA_TOKEN:-}" "${JIRA_USER_EMAIL:-}" \
+    issues transition --tracker jira --fullsend-dir "${FULLSEND_DIR}" \
+    --project "${REPO}" --number "${JIRA_ISSUE_NUM}" "$@"
+}
+
 # --- Issues ---
 
 tracker_close_issue() {
@@ -386,7 +425,8 @@ tracker_close_issue() {
   case "${reason}" in
     duplicate) transition_var="JIRA_DUPLICATE_TRANSITION" ;;
     "not planned") transition_var="JIRA_NOT_PLANNED_TRANSITION" ;;
-    completed) transition_var="JIRA_SPLIT_TRANSITION" ;;
+    completed) transition_var="JIRA_COMPLETED_TRANSITION" ;;
+    split) transition_var="JIRA_SPLIT_TRANSITION" ;;
     *)
       echo "ERROR: unknown close reason '${reason}' — no Jira transition mapping" >&2
       return 1
@@ -394,9 +434,28 @@ tracker_close_issue() {
   esac
 
   local transition_name="${!transition_var:-}"
+  if [[ -z "${transition_name}" && "${reason}" == "completed" && -n "${JIRA_SPLIT_TRANSITION:-}" ]]; then
+    transition_var="JIRA_SPLIT_TRANSITION"
+    transition_name="${JIRA_SPLIT_TRANSITION}"
+    echo "NOTICE: JIRA_COMPLETED_TRANSITION is not set; falling back to JIRA_SPLIT_TRANSITION ('$(_gha_sanitize "${transition_name}")')"
+  fi
+
   if [[ -z "${transition_name}" ]]; then
     echo "ERROR: ${transition_var} is not set — cannot close issue ${ISSUE_NUMBER} via Jira transition for reason '${reason}'" >&2
     return 1
+  fi
+
+  # Idempotency pre-flight: skip when the issue is already in the configured
+  # terminal status (matching the configured transition name directly).
+  local current_status_json current_category="" current_status_name=""
+  current_status_json=$(_jira_api GET "/issue/${ISSUE_NUMBER}?fields=status" 2>/dev/null) || true
+  if [[ -n "${current_status_json}" ]]; then
+    current_category=$(echo "${current_status_json}" | jq -r '.fields.status.statusCategory.key // empty' 2>/dev/null) || current_category=""
+    current_status_name=$(echo "${current_status_json}" | jq -r '.fields.status.name // empty' 2>/dev/null) || current_status_name=""
+    if [[ "${current_category}" == "done" && -n "${current_status_name}" && "${current_status_name,,}" == "${transition_name,,}" ]]; then
+      echo "Issue ${ISSUE_NUMBER} is already in status '$(_gha_sanitize "${current_status_name}")' (${current_category}); skipping transition for reason '${reason}'"
+      return 0
+    fi
   fi
 
   local transitions
@@ -404,19 +463,53 @@ tracker_close_issue() {
     echo "ERROR: failed to list transitions for issue ${ISSUE_NUMBER}" >&2
     return 1
   }
-  local transition_id
-  transition_id=$(echo "${transitions}" | jq -r --arg name "${transition_name}" \
-    '[.transitions[] | select(.name == $name)][0].id // empty')
-  if [[ -z "${transition_id}" ]]; then
-    echo "ERROR: transition '${transition_name}' (from ${transition_var}) is not available on issue ${ISSUE_NUMBER}" >&2
+  local matching_count target_status_name=""
+  matching_count=$(echo "${transitions}" | jq -r --arg name "${transition_name}" \
+    'if (type == "object" and (.transitions | type) == "array") then [.transitions[] | select(.name == $name)] | length else error("expected transitions array") end' 2>/dev/null) || {
+    echo "ERROR: unexpected transitions response for issue ${ISSUE_NUMBER}" >&2
+    return 1
+  }
+  if [[ ! "${matching_count}" =~ ^[0-9]+$ ]]; then
+    echo "ERROR: unexpected transitions response for issue ${ISSUE_NUMBER}" >&2
     return 1
   fi
 
-  if ! _jira_api POST "/issue/${ISSUE_NUMBER}/transitions" \
-    --data "$(jq -cn --arg id "${transition_id}" '{transition:{id:$id}}')" > /dev/null; then
-    echo "ERROR: failed to transition issue ${ISSUE_NUMBER} via '${transition_name}'" >&2
-    return 1
+  if [[ "${matching_count}" -eq 1 && "${current_category:-}" == "done" && -n "${current_status_name:-}" ]]; then
+    target_status_name=$(echo "${transitions}" | jq -r --arg name "${transition_name}" \
+      '[.transitions[] | select(.name == $name)][0].to.name // empty' 2>/dev/null) || target_status_name=""
+    if [[ -n "${target_status_name}" && "${target_status_name,,}" == "${current_status_name,,}" ]]; then
+      echo "Issue ${ISSUE_NUMBER} is already in target status '$(_gha_sanitize "${current_status_name}")' (done); skipping transition for reason '${reason}'"
+      return 0
+    fi
   fi
+
+  if [[ "${matching_count}" -gt 0 ]]; then
+    if ! _jira_transition --transition "${transition_name}"; then
+      echo "ERROR: failed to transition issue ${ISSUE_NUMBER} via '$(_gha_sanitize "${transition_name}")'" >&2
+      return 1
+    fi
+    return 0
+  fi
+
+  # Fall back to `--state closed` only when the transition name came from the
+  # un-overridden harness default (JIRA_SPLIT_TRANSITION="Obsolete" in
+  # harness/triage.yaml, including when `completed` fell back to it because
+  # JIRA_COMPLETED_TRANSITION was unset). Any operator-configured transition
+  # name that Jira does not offer fails loudly below.
+  local default_split_transition="Obsolete"
+  if [[ ( "${reason}" == "completed" || "${reason}" == "split" ) \
+    && "${transition_var}" == "JIRA_SPLIT_TRANSITION" \
+    && "${transition_name}" == "${default_split_transition}" ]]; then
+    echo "::warning::Transition '$(_gha_sanitize "${transition_name}")' (from ${transition_var}) is not available on issue ${ISSUE_NUMBER}; falling back to 'fullsend issues transition --state closed'"
+    if ! _jira_transition --state closed; then
+      echo "ERROR: failed to close issue ${ISSUE_NUMBER} via 'fullsend issues transition --state closed'" >&2
+      return 1
+    fi
+    return 0
+  fi
+
+  echo "ERROR: transition '$(_gha_sanitize "${transition_name}")' (from ${transition_var}) is not available on issue ${ISSUE_NUMBER}" >&2
+  return 1
 }
 
 _text_to_adf() {
