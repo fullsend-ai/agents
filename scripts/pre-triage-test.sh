@@ -568,6 +568,9 @@ chmod +x "${MOCK_BIN}/gh"
 export FULLSEND_TRACKER="github"
 export GH_TOKEN="fake-gh-token"
 unset GITHUB_SERVER_URL
+# GitHub runs stage issue images under RUNNER_TEMP (#2172); keep them in the
+# test's own directory, not the CI runner's.
+export RUNNER_TEMP="${TMPDIR}/runner-temp"
 
 run_test "github-com-no-server-url-ok" \
   "https://github.com/test-org/test-repo/issues/42" \
@@ -642,6 +645,208 @@ unset TRIAGE_SKIP_LABELS TRIAGE_SKIP_LABEL_OVERRIDE
 printf '%s\n' "bug" > "${MOCK_GH_ISSUE_LABELS}"
 run_skip_test "github-no-skip-label-runs" \
   "https://github.com/test-org/test-repo/issues/42" run "labels/needs-info -X DELETE"
+
+# --- Issue images (#2172) ---
+# pre-triage stages only images posted by the issue author or by a user whose
+# role is admin, maintain or write, under RUNNER_TEMP, for harness/triage.yaml
+# to copy into the sandbox. The gh mock serves the rendered issue and comments
+# from fixtures and each poster's permission from MOCK_GH_PERMS/<login> (no
+# file: the lookup fails). The curl mock fails URLs ending in fail.png, serves
+# text.png as text/html, and anything else as image/png.
+IMG_DIR="${RUNNER_TEMP}/fullsend-triage-images"
+MOCK_GH_ISSUE="${TMPDIR}/mock-gh-issue.json"
+MOCK_GH_COMMENTS="${TMPDIR}/mock-gh-comments.json"
+MOCK_GH_PERMS="${TMPDIR}/mock-gh-perms"
+mkdir -p "${MOCK_GH_PERMS}"
+printf '' > "${MOCK_GH_ISSUE_LABELS}"
+
+printf '#!/usr/bin/env bash\necho "gh $*" >> %s\n' "${CURL_LOG}" > "${MOCK_BIN}/gh"
+cat >> "${MOCK_BIN}/gh" <<GHMOCK
+endpoint="" jq_expr=""
+prev=""
+for arg in "\$@"; do
+  [[ "\${prev}" == "--jq" ]] && jq_expr="\${arg}"
+  [[ "\${arg}" == repos/* ]] && endpoint="\${arg}"
+  prev="\${arg}"
+done
+case "\${endpoint}" in
+  */issues/*/labels|*/issues/*/labels/*)
+    [[ "\$*" == *--paginate* ]] && { cat "${MOCK_GH_ISSUE_LABELS}"; exit 0; }
+    echo '[]'; exit 0 ;;
+  */issues/*/comments) cat "${MOCK_GH_COMMENTS}"; exit 0 ;;
+  */issues/[0-9]*) cat "${MOCK_GH_ISSUE}"; exit 0 ;;
+  */collaborators/*/permission)
+    login="\${endpoint%/permission}"; login="\${login##*/}"
+    [[ -f "${MOCK_GH_PERMS}/\${login}" ]] || { echo "HTTP 404" >&2; exit 1; }
+    jq -r "\${jq_expr}" "${MOCK_GH_PERMS}/\${login}"; exit 0 ;;
+esac
+echo '[]'
+exit 0
+GHMOCK
+chmod +x "${MOCK_BIN}/gh"
+
+printf '#!/usr/bin/env bash\necho "curl $*" >> %s\n' "${CURL_LOG}" > "${MOCK_BIN}/curl"
+cat >> "${MOCK_BIN}/curl" <<'CURLMOCK'
+out="" url="" prev=""
+for arg in "$@"; do
+  [[ "${prev}" == "--output" ]] && out="${arg}"
+  [[ "${arg}" == https://* ]] && url="${arg}"
+  prev="${arg}"
+done
+path="${url%%\?*}"
+case "${path}" in
+  *fail.png) exit 22 ;;
+  *text.png) printf '<html>' > "${out}"; printf 'text/html; charset=utf-8' ;;
+  *) printf 'PNG' > "${out}"; printf 'image/png' ;;
+esac
+CURLMOCK
+chmod +x "${MOCK_BIN}/curl"
+
+# perm LOGIN ROLE_NAME PERMISSION — the collaborator permission response.
+perm() {
+  jq -n --arg r "$2" --arg p "$3" '{role_name: $r, permission: $p}' > "${MOCK_GH_PERMS}/$1"
+}
+perm bob write write
+perm erin maintain write
+perm ada admin admin
+perm cora custom-reviewer write
+perm carol read read
+perm dave triage read
+perm mia write read
+
+# html IMAGE_NAME... — rendered HTML with one private image per name.
+html() {
+  local name out=""
+  for name in "$@"; do
+    out+="<p><img src=\"https://private-user-images.githubusercontent.com/1/${name}?jwt=tok&amp;x=1\"></p>"
+  done
+  printf '%s' "${out}"
+}
+
+# comment LOGIN IMAGE_NAME... — one rendered comment; an empty LOGIN is a
+# deleted account (user null).
+comment() {
+  local login="$1"; shift
+  jq -nc --arg l "${login}" --arg h "$(html "$@")" \
+    '{user: (if $l == "" then null else {login: $l} end), body_html: $h}'
+}
+
+jq -n --arg h "$(html a1.png diagram.svg)" '{user: {login: "alice"}, body_html: $h}' > "${MOCK_GH_ISSUE}"
+{
+  comment bob b1.png
+  comment carol c1.png
+  comment dave d1.png
+  comment erin e1.jpg
+  comment frank f1.png
+  comment mia m1.png
+  comment "" g1.png
+  comment ada ad1.gif
+  comment cora co1.webp
+  comment alice a2.png demo.mp4
+  comment bob text.png fail.png
+  comment carol c2.png
+} | jq -s '.' > "${MOCK_GH_COMMENTS}"
+
+# run_image_test NAME — run pre-triage on the GitHub issue; it must succeed.
+run_image_test() {
+  local test_name="$1" exit_code=0
+  : > "${CURL_LOG}"
+  (ISSUE_URL="https://github.com/test-org/test-repo/issues/42" bash "${PRE_SCRIPT}") \
+    > "${TMPDIR}/stdout.log" 2>&1 || exit_code=$?
+  if [[ ${exit_code} -ne 0 ]]; then
+    echo "FAIL: ${test_name} — exit code ${exit_code}"
+    cat "${TMPDIR}/stdout.log"
+    FAILURES=$((FAILURES + 1))
+    return 1
+  fi
+}
+
+# check NAME CONDITION... — PASS when the command succeeds.
+check() {
+  local test_name="$1"; shift
+  if "$@"; then
+    echo "PASS: ${test_name}"
+  else
+    echo "FAIL: ${test_name}"
+    [[ -f "${IMG_DIR}/manifest.json" ]] && cat "${IMG_DIR}/manifest.json"
+    cat "${TMPDIR}/stdout.log"
+    FAILURES=$((FAILURES + 1))
+  fi
+}
+
+manifest_is() { [[ "$(jq -c "$1" "${IMG_DIR}/manifest.json" 2>/dev/null)" == "$2" ]]; }
+
+if run_image_test "github-images-mixed-posters"; then
+  # Author (body and comment), write, maintain, admin and a custom role with
+  # write permission are staged, in order; the svg and mp4 are skipped.
+  check "github-images-allowed-posters-staged" manifest_is '[.images[].posted_by]' \
+    '["alice","bob","erin","ada","cora","alice"]'
+  check "github-images-body-first" manifest_is '.images[0]' \
+    '{"file":"image-1","source":"issue body","posted_by":"alice","content_type":"image/png"}'
+  check "github-images-files-staged" test -f "${IMG_DIR}/image-1" -a -f "${IMG_DIR}/image-6"
+  # read, triage, role_name write with permission read, failed lookup and a
+  # deleted account: five posters, six images (carol posted two).
+  check "github-images-unauthorized-omitted-and-counted" manifest_is '.omitted' '6'
+  # text/html and a failed download are counted, and their files removed.
+  check "github-images-unreadable-counted" manifest_is '.unreadable' '2'
+  check "github-images-unreadable-files-removed" test ! -e "${IMG_DIR}/image-7" -a ! -e "${IMG_DIR}/image-8"
+  check "github-images-svg-video-not-downloaded" \
+    bash -c "! grep -qE 'diagram\.svg|demo\.mp4' '${CURL_LOG}'"
+  check "github-images-no-unauthorized-download" \
+    bash -c "! grep -qE '/(c1|c2|d1|f1|m1|g1)\.png' '${CURL_LOG}'"
+  check "github-images-curl-carries-no-token" \
+    bash -c "! grep -E '^curl ' '${CURL_LOG}' | grep -qiE 'authorization|fake-gh-token'"
+  check "github-images-permission-looked-up-once" \
+    test "$(grep -c 'collaborators/carol/permission' "${CURL_LOG}")" -eq 1
+  check "github-images-author-not-looked-up" \
+    bash -c "! grep -q 'collaborators/alice/permission' '${CURL_LOG}'"
+  check "github-images-signed-url-not-logged" \
+    bash -c "! grep -q 'jwt=' '${TMPDIR}/stdout.log'"
+fi
+
+# More than 10 allowed images: only the first 10 are downloaded and staged.
+jq -n --arg h "$(html i1.png i2.png i3.png i4.png i5.png i6.png i7.png i8.png i9.png i10.png i11.png i12.png)" \
+  '{user: {login: "alice"}, body_html: $h}' > "${MOCK_GH_ISSUE}"
+echo '[]' > "${MOCK_GH_COMMENTS}"
+if run_image_test "github-images-limit"; then
+  check "github-images-limit-ten-staged" manifest_is '.images | length' '10'
+  check "github-images-limit-no-eleventh-file" test ! -e "${IMG_DIR}/image-11"
+  check "github-images-limit-ten-downloads" test "$(grep -c '^curl ' "${CURL_LOG}")" -eq 10
+fi
+
+# No images: an empty manifest, so the agent knows the check ran.
+jq -n '{user: {login: "alice"}, body_html: "<p>text only</p>"}' > "${MOCK_GH_ISSUE}"
+if run_image_test "github-images-none"; then
+  check "github-images-none-empty-manifest" manifest_is '.' '{"images":[],"omitted":0,"unreadable":0}'
+  check "github-images-stale-files-removed" test ! -e "${IMG_DIR}/image-1"
+fi
+
+# The images cannot be listed: triage still runs, with no manifest.
+echo 'not json' > "${MOCK_GH_ISSUE}"
+if run_image_test "github-images-listing-fails"; then
+  check "github-images-listing-fails-no-manifest" test ! -e "${IMG_DIR}/manifest.json"
+  check "github-images-listing-fails-warns" grep -qF "Cannot list the images" "${TMPDIR}/stdout.log"
+fi
+
+# Without RUNNER_TEMP nothing is staged and triage still runs.
+jq -n --arg h "$(html a1.png)" '{user: {login: "alice"}, body_html: $h}' > "${MOCK_GH_ISSUE}"
+saved_runner_temp="${RUNNER_TEMP}"
+unset RUNNER_TEMP
+if run_image_test "github-images-no-runner-temp"; then
+  check "github-images-no-runner-temp-no-download" bash -c "! grep -q '^curl ' '${CURL_LOG}'"
+fi
+export RUNNER_TEMP="${saved_runner_temp}"
+
+# The harness copies the staged files and gives the sandbox no image-host route.
+TRIAGE_HARNESS="${SCRIPT_DIR}/../harness/triage.yaml"
+check "github-images-harness-no-attachment-provider" \
+  bash -c "! grep -qF 'github-attachments' '${TRIAGE_HARNESS}'"
+check "github-images-harness-mounts-manifest" \
+  grep -qF 'src: ${RUNNER_TEMP}/fullsend-triage-images/manifest.json' "${TRIAGE_HARNESS}"
+for slot in 1 2 3 4 5 6 7 8 9 10; do
+  check "github-images-harness-mounts-slot-${slot}" \
+    grep -qxF "      - src: \${RUNNER_TEMP}/fullsend-triage-images/image-${slot}" "${TRIAGE_HARNESS}"
+done
 
 unset GH_TOKEN
 

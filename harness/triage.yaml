@@ -111,12 +111,6 @@ overlays:
   - when: '(has(event.source) && event.source.system == "github") || (!has(event.source) && runtime.forge == "github")'
     providers:
       - github-ro
-      # Credential-less: lets curl download images attached to the issue
-      # (agents/triage.md Step 1a).
-      - providers/github-attachments.yaml
-    openshell:
-      profiles:
-        - profiles/fullsend-github-attachments.yaml
     skills:
       - skills/github-forge
       - skills/issue-labels/github
@@ -124,6 +118,48 @@ overlays:
       - src: env/github/triage.env
         dest: /sandbox/workspace/.env.d/triage.env
         expand: true
+      # Issue images (agents/triage.md Step 1a, #2172). pre-triage keeps only
+      # images posted by the issue author or by a user with the admin,
+      # maintain or write role, downloads them on the runner, and writes them
+      # with a manifest under ${RUNNER_TEMP}/fullsend-triage-images
+      # (scripts/lib/github-triage-images.lib.sh). Each entry copies one
+      # fixed file, so there is one optional slot per image, up to 10; a slot
+      # with no file is skipped. The sandbox has no route to the image hosts.
+      # The src is ${VAR}-expanded because fullsend refuses a literal absolute
+      # path in a harness loaded from a URL or used as a `base:`.
+      - src: ${RUNNER_TEMP}/fullsend-triage-images/manifest.json
+        dest: /tmp/issue-images/manifest.json
+        optional: true
+      - src: ${RUNNER_TEMP}/fullsend-triage-images/image-1
+        dest: /tmp/issue-images/image-1
+        optional: true
+      - src: ${RUNNER_TEMP}/fullsend-triage-images/image-2
+        dest: /tmp/issue-images/image-2
+        optional: true
+      - src: ${RUNNER_TEMP}/fullsend-triage-images/image-3
+        dest: /tmp/issue-images/image-3
+        optional: true
+      - src: ${RUNNER_TEMP}/fullsend-triage-images/image-4
+        dest: /tmp/issue-images/image-4
+        optional: true
+      - src: ${RUNNER_TEMP}/fullsend-triage-images/image-5
+        dest: /tmp/issue-images/image-5
+        optional: true
+      - src: ${RUNNER_TEMP}/fullsend-triage-images/image-6
+        dest: /tmp/issue-images/image-6
+        optional: true
+      - src: ${RUNNER_TEMP}/fullsend-triage-images/image-7
+        dest: /tmp/issue-images/image-7
+        optional: true
+      - src: ${RUNNER_TEMP}/fullsend-triage-images/image-8
+        dest: /tmp/issue-images/image-8
+        optional: true
+      - src: ${RUNNER_TEMP}/fullsend-triage-images/image-9
+        dest: /tmp/issue-images/image-9
+        optional: true
+      - src: ${RUNNER_TEMP}/fullsend-triage-images/image-10
+        dest: /tmp/issue-images/image-10
+        optional: true
     env:
       runner:
         ISSUE_URL: ${GITHUB_ISSUE_URL}

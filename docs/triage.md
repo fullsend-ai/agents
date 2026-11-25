@@ -459,17 +459,27 @@ Ancestor context informs the clarity and cause assessment, so a terse sub-issue 
 
 ## Issue attachments
 
-On GitHub, the agent downloads images attached to the issue or its
-comments (`github.com/user-attachments/assets/<uuid>`) and views them with
-the `Read` tool, so a request made in a screenshot counts as provided
-information. The GitHub overlay adds the credential-less
-`fullsend-github-attachments` profile (shared with the code agent), which
-allows read-only `curl` access to `private-user-images.githubusercontent.com`
-and `user-images.githubusercontent.com` and forwards no forge token. The
-agent takes the short-lived signed URLs from the issue's rendered HTML
-(`gh api` with `application/vnd.github.html+json`), treats the images as
-untrusted input, skips SVG and video files, and records any image it could
-not download in its reasoning; see Step 1a in `agents/triage.md`.
+On GitHub, the agent views images attached to the issue or its comments
+(`github.com/user-attachments/assets/<uuid>`) with the `Read` tool, so a
+request made in a screenshot counts as provided information. Only images
+posted by the issue author, or by a user whose `role_name` on the
+repository is `admin`, `maintain` or `write`, reach the agent. No sandbox
+check reads the text inside an image, so this is stricter than the role
+needed to trigger triage.
+
+The check runs on the runner, before the sandbox starts. The pre-script
+(`scripts/lib/github-triage-images.lib.sh`) reads the issue's rendered HTML
+(`gh api` with `application/vnd.github.html+json`), looks up each other
+poster with GitHub's collaborator permission endpoint, and leaves an image
+out when the poster lacks the role or the lookup fails. It downloads up to
+10 allowed images without a token, skips SVG and video files and anything
+that is not PNG, JPEG, GIF or WebP, and writes them with a `manifest.json`
+under `${RUNNER_TEMP}/fullsend-triage-images`. The GitHub overlay copies
+each file to `/tmp/issue-images/` with an optional `host_files` entry (one
+per image slot), and the sandbox has no network access to the image hosts.
+The manifest counts the images left out, and the triage comment states that
+count when it is above zero; see Step 1a in `agents/triage.md`. Without
+`RUNNER_TEMP` (outside GitHub Actions), no images are staged.
 GitLab and Jira runs are unchanged.
 
 ## Custom network policy
