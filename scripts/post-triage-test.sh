@@ -325,10 +325,6 @@ run_test "sufficient-with-info-gaps-fails" \
   "" \
   "true"
 
-run_test "sufficient-appends-action-hints-footer" \
-  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash on save","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_save_crash"},"comment":"## Triage Summary\n\nThis is ready."}' \
-  "/fs-code"
-
 run_test "sufficient-removes-blocked-label" \
   '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash on save","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_save_crash","information_gaps":[]},"comment":"## Triage Summary\n\nThis is ready."}' \
   "gh api repos/test-org/test-repo/issues/42/labels/blocked -X DELETE --silent"
@@ -1093,6 +1089,18 @@ run_test_with_env "auto-code-on-bug-gets-ready-to-code" \
   "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=ready-to-code --silent" \
   "false" \
   "TRIAGE_AUTO_CODE=on"
+
+run_test "auto-code-footer-explains-label-trigger" \
+  "${AUTO_CODE_BUG_FIXTURE}" 'the `ready-to-code` label starts the code agent'
+
+run_test "auto-code-footer-warns-about-restarting" \
+  "${AUTO_CODE_BUG_FIXTURE}" 'This can cancel the current code run.'
+
+run_test_no_pattern "auto-code-footer-omits-manual-start" \
+  "${AUTO_CODE_BUG_FIXTURE}" '- `/fs-code`'
+
+run_test_with_env "manual-code-footer-keeps-start-command" \
+  "${AUTO_CODE_BUG_FIXTURE}" '- `/fs-code`' "false" "TRIAGE_AUTO_CODE=off"
 
 # TRIAGE_AUTO_CODE=off: bug gets triaged instead of ready-to-code.
 run_test_with_env "auto-code-off-bug-gets-triaged" \
