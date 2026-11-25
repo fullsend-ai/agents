@@ -349,6 +349,13 @@ _VERIFICATION_HEADING_RE = re.compile(
     rf"^ {{0,3}}###[ \t]+{re.escape(VERIFICATION_HEADING[4:])}[ \t]*(?:#+[ \t]*)?$"
 )
 
+# The origin record post-code.sh writes under the verification heading: one
+# line, compact JSON without "<" or ">" (it escapes them).
+_WORK_ITEM_ORIGIN_RE = re.compile(r"^<!-- fullsend:work-item \{[^<>\n]*\} -->$")
+# Any work-item comment, however spaced, for stripping from agent text.
+_WORK_ITEM_COMMENT_RE = re.compile(r"<!--\s*fullsend:work-item\b.*?-->", re.DOTALL | re.IGNORECASE)
+_WORK_ITEM_OPENER_RE = re.compile(r"<!--\s*fullsend:work-item\b", re.IGNORECASE)
+
 
 # Markdown code that forges do not treat as live text. Block code (fenced and
 # indented) is found by a line-aware pass that follows list containers and
@@ -912,7 +919,46 @@ def _managed_parts(current):
         ref = re.sub(r"\s*\n\s*", " ", m.group("ref")).strip()
         if ref not in refs:
             refs.append(ref)
-    return refs, "\n".join(tail).strip()
+    tail_text = "\n".join(tail).strip()
+    origin = _origin_marker(current)
+    if tail_text and origin and origin not in tail_text:
+        # A later verification heading starts the tail after the heading that
+        # carries the origin record; put the record under the tail's heading.
+        tail_lines = tail_text.split("\n")
+        for i, line in enumerate(tail_lines):
+            if _VERIFICATION_HEADING_RE.match(line):
+                tail_lines.insert(i + 1, origin)
+                break
+        tail_text = "\n".join(tail_lines)
+    return refs, tail_text
+
+
+def _origin_marker(current):
+    """Return the post-script origin record of current, or "".
+
+    It is the work-item comment on the line right after the first live
+    verification heading, the place post-code.sh writes it. A comment anywhere
+    else, such as in the description, is not the record.
+    """
+    lines = _normalize_newlines(current).split("\n")
+    live = _mask_live_text(current, mask_raw_html=True).split("\n")
+    for i, line in enumerate(live[:-1]):
+        if _VERIFICATION_HEADING_RE.match(line):
+            nxt = lines[i + 1].strip()
+            return nxt if _WORK_ITEM_ORIGIN_RE.match(nxt) else ""
+    return ""
+
+
+def _strip_work_item_origin(text):
+    """Remove every fullsend:work-item comment from text, repeating until
+    stable. The record is post-script-owned, so an agent-written copy is
+    dropped; an unclosed opener, which would hide what follows, goes too."""
+    while True:
+        stripped = _WORK_ITEM_COMMENT_RE.sub("", text)
+        stripped = _WORK_ITEM_OPENER_RE.sub("", stripped)
+        if stripped == text:
+            return text
+        text = stripped
 
 
 def _mask_live_text(text, mask_raw_html=False):
@@ -1020,7 +1066,7 @@ def build_pr_body(proposed, current):
     # so the keyword removal must run on the final, trimmed form.
     description = "\n".join(kept)
     while True:
-        description = _strip_closing_keywords(description.strip())
+        description = _strip_work_item_origin(_strip_closing_keywords(description.strip()))
         if description == description.strip():
             break
     if not description:

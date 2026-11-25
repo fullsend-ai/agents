@@ -3713,18 +3713,16 @@ post_jira_code_comment() {
   return "${_comment_rc}"
 }
 
-_post_jira_code_comment_inner() {
-  local marker="$1"
-  local body="$2"
-
+# Fails unless the work-item URL is a Jira Cloud issue URL that matches
+# WORK_ITEM_KEY and JIRA_BASE_URL. Shared by every Jira write and by the PR/MR
+# origin metadata, so an inconsistent identity is never published.
+validate_jira_work_item_identity() {
   if [[ ! "${WORK_ITEM_URL}" =~ ^https://([a-zA-Z0-9.-]+\.atlassian\.net)/browse/([A-Z][A-Z0-9]*)-([0-9]+)$ ]]; then
     gha_echo error "FULLSEND_WORK_ITEM_URL is not a Jira Cloud issue URL"
     return 1
   fi
   local jira_url="https://${BASH_REMATCH[1]}"
-  local project="${BASH_REMATCH[2]}"
-  local number="${BASH_REMATCH[3]}"
-  if [ "${project}-${number}" != "${WORK_ITEM_KEY}" ]; then
+  if [ "${BASH_REMATCH[2]}-${BASH_REMATCH[3]}" != "${WORK_ITEM_KEY}" ]; then
     gha_echo error "FULLSEND_WORK_ITEM_KEY does not match the Jira issue in FULLSEND_WORK_ITEM_URL"
     return 1
   fi
@@ -3736,6 +3734,16 @@ _post_jira_code_comment_inner() {
     gha_echo error "JIRA_BASE_URL does not match the Jira host in FULLSEND_WORK_ITEM_URL"
     return 1
   fi
+}
+
+_post_jira_code_comment_inner() {
+  local marker="$1"
+  local body="$2"
+
+  validate_jira_work_item_identity || return 1
+  # Validated against WORK_ITEM_URL above.
+  local project="${WORK_ITEM_KEY%-*}"
+  local number="${WORK_ITEM_KEY##*-}"
   # The credentials were withheld from the environment at the start of the
   # script (see "Jira credential isolation"); they are passed to the trusted
   # CLI below and nowhere else. The email is optional: without it the CLI
@@ -4799,6 +4807,16 @@ else
   DESCRIPTION="${COMMIT_BODY}"
 fi
 
+# The origin record below is post-script-owned: drop any work-item comment the
+# agent wrote, repeating until stable so removal cannot assemble a new one. An
+# unclosed opener would hide the managed footer, so it is removed too.
+while :; do
+  _description_clean="$(printf '%s' "${DESCRIPTION}" | jq -Rrs \
+    'gsub("<!--\\s*fullsend:work-item\\b.*?-->"; ""; "is") | gsub("<!--\\s*fullsend:work-item\\b"; ""; "i")')"
+  [ "${_description_clean}" = "${DESCRIPTION}" ] && break
+  DESCRIPTION="${_description_clean}"
+done
+
 case "${PR_BODY_SCAN_STATUS}" in
   passed)  PR_BODY_SCAN_LINE="- [x] PR body secret scan passed (gitleaks — no-git)" ;;
   blocked) PR_BODY_SCAN_LINE="- [x] PR body secret scan: blocked; commit-body fallback attempted" ;;
@@ -4832,6 +4850,9 @@ fi
 # can distinguish Jira-originated work from an incidental link in the body.
 WORK_ITEM_ORIGIN=""
 if [ "${WORK_ITEM_TRACKER}" = "jira" ]; then
+  # Never publish an identity the Jira write would later reject.
+  validate_jira_work_item_identity || \
+    post_fail_to_issue setup-error "Jira work-item key, URL and base URL are inconsistent"
   WORK_ITEM_ORIGIN="$(jq -nr --arg key "${WORK_ITEM_KEY}" --arg url "${WORK_ITEM_URL}" \
     '{source: "jira", key: $key, url: $url} | tojson | gsub("<"; "\\u003c") | gsub(">"; "\\u003e")')"
   WORK_ITEM_ORIGIN=$'\n'"<!-- fullsend:work-item ${WORK_ITEM_ORIGIN} -->"
