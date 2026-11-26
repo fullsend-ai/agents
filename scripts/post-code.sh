@@ -3856,6 +3856,11 @@ else
   WORK_ITEM_KEY="${ISSUE_NUMBER}"
 fi
 
+# Reject inconsistent Jira identity before repository processing or any push.
+if [ "${WORK_ITEM_TRACKER}" = "jira" ]; then
+  validate_jira_work_item_identity || exit 1
+fi
+
 trap 'report_post_failure_to_issue' ERR
 
 if [ "${REPO_DIR}" != "." ]; then
@@ -4850,9 +4855,6 @@ fi
 # can distinguish Jira-originated work from an incidental link in the body.
 WORK_ITEM_ORIGIN=""
 if [ "${WORK_ITEM_TRACKER}" = "jira" ]; then
-  # Never publish an identity the Jira write would later reject.
-  validate_jira_work_item_identity || \
-    post_fail_to_issue setup-error "Jira work-item key, URL and base URL are inconsistent"
   WORK_ITEM_ORIGIN="$(jq -nr --arg key "${WORK_ITEM_KEY}" --arg url "${WORK_ITEM_URL}" \
     '{source: "jira", key: $key, url: $url} | tojson | gsub("<"; "\\u003c") | gsub(">"; "\\u003e")')"
   WORK_ITEM_ORIGIN=$'\n'"<!-- fullsend:work-item ${WORK_ITEM_ORIGIN} -->"

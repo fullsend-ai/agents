@@ -1191,13 +1191,33 @@ class TestPrMetadataGitHub(unittest.TestCase):
         self.assertEqual(stdin.count("fullsend:work-item"), 1)
         self.assertIn(JIRA_ORIGIN_MARKER, stdin)
 
-    def test_github_origin_kept_with_later_verification_heading(self):
-        current = JIRA_LIVE_BODY + "\n\n### Post-script verification\n\n- [x] Added later"
-        forge = FakeForge(body=current)
-        data = _metadata_result(pr_body="Fixed it.", pr_body_base_sha256=_sha(current))
-        self.assertEqual(self._run(data, forge)[0], 0)
-        (cmd, stdin), = forge.edits()
-        self.assertEqual(stdin.count(JIRA_ORIGIN_MARKER), 1)
+    def test_ambiguous_origin_skips_body_but_updates_title(self):
+        heading = "### Post-script verification"
+        later = JIRA_LIVE_BODY + f"\n\n{heading}\nHuman note."
+        forged_description = LIVE_BODY.replace(
+            "Adds docs", f"{heading}\n{JIRA_ORIGIN_MARKER}\nAdds docs"
+        )
+        cases = (
+            later,
+            f"Agent description.\n\n{heading}\nAgent note.\n\n{later}",
+            forged_description,
+            JIRA_LIVE_BODY.replace(JIRA_ORIGIN_MARKER, JIRA_ORIGIN_MARKER + "\n" + JIRA_ORIGIN_MARKER)
+            + f"\n\n{heading}\nHuman note.",
+        )
+        for current in cases:
+            with self.subTest(current=current):
+                forge = FakeForge(body=current)
+                data = _metadata_result(
+                    **_both_fields(pr_body="Fixed it.", pr_body_base_sha256=_sha(current))
+                )
+                rc, log = self._run(data, forge)
+                self.assertEqual(rc, 0)
+                (cmd, _), = forge.edits()
+                self.assertTrue(any(a in (f"--title={NEW_TITLE}", f"title={NEW_TITLE}") for a in cmd))
+                self.assertNotIn("--body-file", cmd)
+                self.assertFalse(any(a.startswith("description=") for a in cmd))
+                self.assertIn("origin metadata is ambiguous", log)
+                self.assertIn("body not updated", forge.comment_body())
 
 
 @patch.dict(
@@ -1240,14 +1260,9 @@ class TestPrMetadataGitLab(unittest.TestCase):
         self.assertEqual(desc.count("fullsend:work-item"), 1)
         self.assertIn(JIRA_ORIGIN_MARKER, desc)
 
-    def test_gitlab_origin_kept_with_later_verification_heading(self):
-        current = JIRA_LIVE_BODY + "\n\n### Post-script verification\n\n- [x] Added later"
-        forge = FakeForge(body=current)
-        data = _metadata_result(pr_body="Fixed it.", pr_body_base_sha256=_sha(current))
-        self.assertEqual(self._run(data, forge)[0], 0)
-        (cmd, stdin), = forge.edits()
-        desc = next(a for a in cmd if a.startswith("description="))
-        self.assertEqual(desc.count(JIRA_ORIGIN_MARKER), 1)
+    test_ambiguous_origin_skips_body_but_updates_title = (
+        TestPrMetadataGitHub.test_ambiguous_origin_skips_body_but_updates_title
+    )
 
     def test_gitlab_quick_action_lines_in_body_not_sent(self):
         for text in (
@@ -1345,6 +1360,8 @@ class TestBuildPrBody(unittest.TestCase):
         current = LIVE_BODY.replace("Closes #484", f"Related to {url}").replace(
             "### Post-script verification", f"### Post-script verification\n{marker}"
         )
+        # An earlier description heading is harmless when the record stays in the footer.
+        current = "### Post-script verification\nDescription note.\n\n" + current
         for description in ("First fix.", "Second fix."):
             merged = build_pr_body(description, current)
             self.assertEqual(merged.count(marker), 1)
@@ -1369,14 +1386,19 @@ class TestBuildPrBody(unittest.TestCase):
         merged = build_pr_body(proposed, LIVE_BODY)
         self.assertNotIn("fullsend:work-item", merged)
 
-    def test_jira_origin_preserved_with_later_verification_heading(self):
-        current = JIRA_LIVE_BODY + "\n\n### Post-script verification\n\n- [x] Added later"
-        merged = build_pr_body("New.", current)
-        self.assertEqual(merged.count(JIRA_ORIGIN_MARKER), 1)
-        self.assertIn(f"Related to {JIRA_ORIGIN_URL}", merged)
-        self.assertIn("Added later", merged)
-        self.assertTrue(managed_sections_exposed(merged, current))
-        self.assertEqual(build_pr_body("Newer.", merged).count(JIRA_ORIGIN_MARKER), 1)
+    def test_origin_outside_selected_footer_blocks_update(self):
+        heading = "### Post-script verification"
+        later = JIRA_LIVE_BODY + f"\n\n{heading}\n\n- [x] Added later"
+        cases = (
+            later,
+            f"Agent text.\n\n{heading}\nAgent note.\n\n{later}",
+            LIVE_BODY.replace("Adds docs", f"{heading}\n{JIRA_ORIGIN_MARKER}\nAdds docs"),
+        )
+        for current in cases:
+            with self.subTest(current=current):
+                merged = build_pr_body("New.", current)
+                self.assertNotIn(JIRA_ORIGIN_MARKER, merged)
+                self.assertFalse(managed_sections_exposed(merged, current))
 
     def test_origin_comment_outside_verification_heading_not_preserved(self):
         current = LIVE_BODY.replace("Adds docs", f"{JIRA_ORIGIN_MARKER}\nAdds docs")

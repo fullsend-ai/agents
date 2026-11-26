@@ -349,9 +349,10 @@ _VERIFICATION_HEADING_RE = re.compile(
     rf"^ {{0,3}}###[ \t]+{re.escape(VERIFICATION_HEADING[4:])}[ \t]*(?:#+[ \t]*)?$"
 )
 
-# The origin record post-code.sh writes under the verification heading: one
-# line, compact JSON without "<" or ">" (it escapes them).
-_WORK_ITEM_ORIGIN_RE = re.compile(r"^<!-- fullsend:work-item \{[^<>\n]*\} -->$")
+# Include incomplete comments so an ambiguous origin record blocks an update.
+_WORK_ITEM_ORIGIN_RE = re.compile(
+    r"<!--\s*fullsend:work-item\b.*?(?:-->|$)", re.DOTALL | re.IGNORECASE
+)
 # Any work-item comment, however spaced, for stripping from agent text.
 _WORK_ITEM_COMMENT_RE = re.compile(r"<!--\s*fullsend:work-item\b.*?-->", re.DOTALL | re.IGNORECASE)
 _WORK_ITEM_OPENER_RE = re.compile(r"<!--\s*fullsend:work-item\b", re.IGNORECASE)
@@ -919,34 +920,7 @@ def _managed_parts(current):
         ref = re.sub(r"\s*\n\s*", " ", m.group("ref")).strip()
         if ref not in refs:
             refs.append(ref)
-    tail_text = "\n".join(tail).strip()
-    origin = _origin_marker(current)
-    if tail_text and origin and origin not in tail_text:
-        # A later verification heading starts the tail after the heading that
-        # carries the origin record; put the record under the tail's heading.
-        tail_lines = tail_text.split("\n")
-        for i, line in enumerate(tail_lines):
-            if _VERIFICATION_HEADING_RE.match(line):
-                tail_lines.insert(i + 1, origin)
-                break
-        tail_text = "\n".join(tail_lines)
-    return refs, tail_text
-
-
-def _origin_marker(current):
-    """Return the post-script origin record of current, or "".
-
-    It is the work-item comment on the line right after the first live
-    verification heading, the place post-code.sh writes it. A comment anywhere
-    else, such as in the description, is not the record.
-    """
-    lines = _normalize_newlines(current).split("\n")
-    live = _mask_live_text(current, mask_raw_html=True).split("\n")
-    for i, line in enumerate(live[:-1]):
-        if _VERIFICATION_HEADING_RE.match(line):
-            nxt = lines[i + 1].strip()
-            return nxt if _WORK_ITEM_ORIGIN_RE.match(nxt) else ""
-    return ""
+    return refs, "\n".join(tail).strip()
 
 
 def _strip_work_item_origin(text):
@@ -1029,6 +1003,14 @@ def managed_sections_exposed(merged, current):
     cannot be proven.
     """
     refs, tail_text = _managed_parts(current)
+    # Never relocate a record from the description or an earlier heading.
+    # If the selected footer cannot preserve every record, leave the body alone.
+    origins = _WORK_ITEM_ORIGIN_RE.findall(_normalize_newlines(current))
+    if (
+        _WORK_ITEM_ORIGIN_RE.findall(tail_text) != origins
+        or _WORK_ITEM_ORIGIN_RE.findall(_normalize_newlines(merged)) != origins
+    ):
+        return False
     if (refs or tail_text) and _has_unclosed_raw_html(_mask_live_text(merged)):
         return False
     # Raw HTML blocks, tags and link titles are literal, so a heading or
@@ -1205,12 +1187,12 @@ def apply_pr_metadata(data, repo, pr_number, schema_validated, secret_scan_passe
             print(
                 "::warning::PR body not updated: the proposed Markdown (for example an"
                 " unclosed code fence or HTML comment) could hide the preserved closing"
-                " references or the post-script verification block",
+                " references or verification block, or the origin metadata is ambiguous",
                 file=sys.stderr,
             )
             notes.append(
                 "body not updated (proposed Markdown could hide the preserved"
-                " references or verification block)"
+                " references or verification block, or origin metadata is ambiguous)"
             )
         else:
             new_body = merged

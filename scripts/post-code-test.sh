@@ -3743,6 +3743,9 @@ cat > "${JIRA_INT_MOCK_BIN}/git" <<MOCKEOF
 if [[ "\$1" == "remote" && "\$2" == "set-url" ]]; then
   exit 0
 fi
+if [[ "\$1" == "push" ]]; then
+  echo "git push" >> "${JIRA_INT_FORGE_LOG}"
+fi
 if [[ "\$1" == "push" && -n "\${MOCK_JIRA_PUSH_FAIL:-}" ]]; then
   echo "\${MOCK_JIRA_PUSH_ERROR:-forced local push failure}" >&2
   exit 1
@@ -4016,6 +4019,8 @@ if [ "${JIRA_INT_RC}" -ne 0 ]; then
   jira_int_fail "jira-github-target-pr-url-to-jira" "post-code failed"
 elif ! grep -q "^gh pr create" "${JIRA_INT_FORGE_LOG}"; then
   jira_int_fail "jira-github-target-pr-url-to-jira" "PR not created on GitHub"
+elif ! grep -qxF "git push" "${JIRA_INT_FORGE_LOG}"; then
+  jira_int_fail "jira-github-target-branch-pushed" "push was not recorded"
 elif ! grep -qxF "${JIRA_ORIGIN_MARKER}" "${JIRA_INT_FORGE_LOG}"; then
   jira_int_fail "jira-github-target-pr-url-to-jira" "PR body missing Jira origin metadata"
 elif ! grep -qF -- "--tracker jira --fullsend-dir ${JIRA_INT_FULLSEND_DIR} --project TESTPROJ --number 42" "${JIRA_INT_FULLSEND_LOG}" \
@@ -4170,6 +4175,8 @@ if [ "${JIRA_INT_RC}" -ne 0 ]; then
   jira_int_fail "jira-gitlab-target-mr-url-to-jira" "post-code failed"
 elif ! grep -qE "^curl .*--request POST .*https://gitlab.com/api/v4/projects/test-group%2Ftest-project/merge_requests" "${JIRA_INT_FORGE_LOG}"; then
   jira_int_fail "jira-gitlab-target-mr-url-to-jira" "MR not created on GitLab"
+elif ! grep -qxF "git push" "${JIRA_INT_FORGE_LOG}"; then
+  jira_int_fail "jira-gitlab-target-branch-pushed" "push was not recorded"
 elif ! grep -qxF "${JIRA_ORIGIN_MARKER}" "${JIRA_INT_FORGE_LOG}"; then
   jira_int_fail "jira-gitlab-target-mr-url-to-jira" "MR description missing Jira origin metadata"
 elif grep -qF "atlassian.net/api/v4" "${JIRA_INT_FORGE_LOG}"; then
@@ -4208,8 +4215,7 @@ for _jira_forge in github gitlab; do
   fi
 done
 
-# An inconsistent Jira identity must stop the run before the PR/MR is created,
-# so it never carries origin metadata the Jira write would reject.
+# An inconsistent Jira identity must stop before any push or PR/MR creation.
 for _jira_forge in github gitlab; do
   for _jira_bad_dest in \
     'url|FULLSEND_WORK_ITEM_URL=https://other.example/browse/TESTPROJ-42' \
@@ -4218,10 +4224,10 @@ for _jira_forge in github gitlab; do
     _jira_bad_name="jira-${_jira_forge}-create-rejects-${_jira_bad_dest%%|*}"
     run_jira_int "${_jira_bad_name}" "${_jira_forge}" "${_jira_bad_dest#*|}"
     if [ "${JIRA_INT_RC}" -eq 0 ] \
-       || grep -qE '^gh pr create|^curl .*--request POST .*merge_requests' "${JIRA_INT_FORGE_LOG}" \
+       || grep -qE '^git push|^gh pr create|^curl .*--request POST .*merge_requests' "${JIRA_INT_FORGE_LOG}" \
        || grep -qF 'fullsend:work-item' "${JIRA_INT_FORGE_LOG}" \
-       || grep -qF -- "${JIRA_CODE_MARKER}" "${JIRA_INT_FULLSEND_LOG}"; then
-      jira_int_fail "${_jira_bad_name}" "expected failure before any PR/MR creation"
+       || [ -s "${JIRA_INT_FULLSEND_LOG}" ]; then
+      jira_int_fail "${_jira_bad_name}" "expected failure before any push, PR/MR creation or Jira write"
     else
       echo "PASS: ${_jira_bad_name}"
     fi
@@ -4710,8 +4716,8 @@ for _jira_refusal_write in success failure; do
   fi
 done
 
-# New no-op and failure callers must reject mismatched destinations before
-# issuing any tracker or forge write, while preserving their own exit status.
+# Invalid identity is a setup error even on no-op and failure paths; no
+# push, tracker write or forge write may happen before it is rejected.
 for _jira_bad_dest in \
   'url|FULLSEND_WORK_ITEM_URL=https://other.example/browse/TESTPROJ-42' \
   'key|FULLSEND_WORK_ITEM_KEY=TESTPROJ-7' \
@@ -4720,19 +4726,15 @@ for _jira_bad_dest in \
     _jira_bad_name="jira-${_jira_bad_path}-rejects-${_jira_bad_dest%%|*}"
     if [ "${_jira_bad_path}" = noop ]; then
       JIRA_INT_NO_BRANCH=1 run_jira_int "${_jira_bad_name}" github "${_jira_bad_dest#*|}"
-      _jira_bad_rc=0
-      _jira_bad_warning='Failed to post no-op comment'
     else
       JIRA_INT_RESULT_JSON="${JIRA_BRANCH_FAIL_RESULT}" run_jira_int "${_jira_bad_name}" github \
         CODE_ALLOWED_TARGET_BRANCHES=main "${_jira_bad_dest#*|}"
-      _jira_bad_rc=1
-      _jira_bad_warning='see workflow logs'
     fi
-    if [ "${JIRA_INT_RC}" -ne "${_jira_bad_rc}" ] \
+    if [ "${JIRA_INT_RC}" -ne 1 ] \
        || [ -s "${JIRA_INT_FULLSEND_LOG}" ] \
-       || grep -qE '^gh (issue comment|pr create|pr comment)' "${JIRA_INT_FORGE_LOG}" \
-       || ! grep -qF "${_jira_bad_warning}" "${JIRA_INT_OUT}"; then
-      jira_int_fail "${_jira_bad_name}" "expected zero writes, warning and preserved status"
+       || [ -s "${JIRA_INT_FORGE_LOG}" ] \
+       || ! grep -qE '^::error::(FULLSEND_WORK_ITEM_URL is not a Jira Cloud issue URL|FULLSEND_WORK_ITEM_KEY does not match|JIRA_BASE_URL does not match)' "${JIRA_INT_OUT}"; then
+      jira_int_fail "${_jira_bad_name}" "expected setup failure before any push or write"
     else
       echo "PASS: ${_jira_bad_name}"
     fi

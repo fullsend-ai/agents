@@ -360,10 +360,11 @@ vars. Key differences from single-forge setup:
 - **Jira origin metadata** — newly created Jira-originated PRs and MRs
   include a `fullsend:work-item` HTML comment in the managed post-script
   verification footer. Its JSON records `source: "jira"`, `key`, and `url`
-  from the code run. The run stops before creating the PR/MR when the key,
+  from the code run. The run stops before pushing the branch when the key,
   URL, and `JIRA_BASE_URL` disagree. Fix-agent description updates preserve
   this record, and `fullsend:work-item` comments in agent-written descriptions
-  are dropped.
+  are dropped. If an existing origin record falls outside the preserved footer,
+  the description update is skipped with a warning rather than moving the record.
   A Jira link in an otherwise forge-originated PR does not add the record;
   existing PRs are not backfilled by this creation path.
 - **Jira results** — after a Jira-sourced run creates or updates the PR/MR,

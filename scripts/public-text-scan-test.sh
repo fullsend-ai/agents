@@ -189,7 +189,7 @@ Signed-off-by: Test <test@example.com>
       config-toml)
         GITLEAKS_CONFIG_TOML="$(< "${run_dir}/repo/.agentready/allow.toml")"
         export GITLEAKS_CONFIG_TOML ;;
-      jira) export FULLSEND_TRACKER=jira FULLSEND_WORK_ITEM_URL=https://jira.example.com/browse/TEST-99 ;;
+      jira) export FULLSEND_TRACKER=jira FULLSEND_WORK_ITEM_URL=https://test.atlassian.net/browse/TEST-99 ;;
     esac
     bash "${POST_SCRIPT}"
   ) > "${run_dir}/log" 2>&1 || rc=$?
