@@ -33,7 +33,10 @@ import sys
 from pathlib import Path
 
 ROOTS = [Path(p) for p in os.environ["EVAL_SCRUB_ROOTS"].splitlines() if p]
-TEXT_SUFFIXES = {".log", ".txt", ".json", ".jsonl", ".yaml", ".yml", ".md"}
+# .diff: captured PR diffs (capture-fixture.sh writes output/pr-<num>.diff);
+# they can carry whatever the agent committed, so they must be scrubbed and
+# leak-verified like any other text artifact before upload.
+TEXT_SUFFIXES = {".log", ".txt", ".json", ".jsonl", ".yaml", ".yml", ".md", ".diff"}
 # Actions masks everything to end-of-line (not only \S+).
 ADD_MASK_RE = re.compile(r"::add-mask::(.+)$", re.MULTILINE)
 # Reject trivially short mask values that would over-redact (e.g. single
