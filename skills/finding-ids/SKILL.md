@@ -65,6 +65,12 @@ open prior id a disposition, never reuse a closed id, and let the
 post-script mint ids for new findings. Keep `f_...` ids in the JSON
 result only. Do not write them in review prose.
 
+For an id settled `resolved_by_change`, the post-script replies in that
+id's one review-bot thread with the rationale and evidence, then resolves
+the thread. It leaves the thread open when the match is human-owned or
+ambiguous, anyone other than the review bot commented in it, or the PR
+head moved.
+
 ## Fix agent
 
 On GitHub, the pre-script writes the PR's open review-bot finding threads

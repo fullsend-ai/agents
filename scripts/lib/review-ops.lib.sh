@@ -125,3 +125,149 @@ forge_get_human_dismissals() {
     ]
   ' <<< "${response}" 2>/dev/null || echo '[]'
 }
+
+# Classify one finding id against normalized threads (see the forge libs).
+# Input: {complete, head_sha, threads}. Args: $id, $head (the commit this
+# review evaluated), $marker (the reply idempotency marker). Output:
+# {status, thread_id, url, replied}. Only "ready" may be acted on.
+#
+# The thread must be the single unresolved thread whose first comment is a
+# review-bot comment carrying exactly this id's stamp and no other. A stamp
+# in a human reply never makes a thread the finding's thread.
+_FINDING_THREAD_CLASSIFY='
+  def stamps: [ scan("<!--[[:space:]]+finding:(f_[A-Za-z0-9]+)[[:space:]]+-->") | .[0] ] | unique;
+  (.head_sha // "") as $live
+  | [ (.threads // [])[] | select(any(.comments[]?; .body | stamps | index($id) != null)) ] as $cand
+  | [ $cand[] | select((.comments[0].review_bot // false) and ((.comments[0].body // "") | stamps) == [$id]) ] as $owned
+  | [ $owned[] | select(.resolved | not) ] as $open
+  | if (.complete | not) then {status: "incomplete", thread: (if ($owned | length) == 1 then $owned[0] else null end)}
+    elif ($cand | length) == 0 then {status: "missing", thread: null}
+    elif ($owned | length) == 0 then {status: "human-owned", thread: $cand[0]}
+    elif ($open | length) == 0 then {status: "already-resolved", thread: $owned[0]}
+    elif ($open | length) > 1 then {status: "ambiguous", thread: $open[0]}
+    else $open[0] as $t
+      | if ($t.comments_complete | not) then {status: "incomplete", thread: $t}
+        elif $head == "" or ($live | ascii_downcase) != ($head | ascii_downcase) then {status: "changed-head", thread: $t}
+        elif any($t.comments[]; (.review_bot or .own) | not) then {status: "other-comment", thread: $t}
+        elif ($t.can_resolve | not) then {status: "not-resolvable", thread: $t}
+        else {status: "ready", thread: $t}
+        end
+    end
+  | {
+      status,
+      thread_id: (.thread.id // null),
+      url: (.thread.url // ""),
+      replied: (.thread != null and any(.thread.comments[]?; .own and (.body | contains($marker))))
+    }
+'
+
+# Resolve the review threads of prior findings this review settled.
+#
+# $1 — JSON array of {id, rationale, evidence}: prior ids whose effective
+#      ledger status is resolved_by_change (rationale and evidence given, and
+#      the id not reported again).
+# $2 — the head SHA the review evaluated.
+#
+# Each id must map to one exact, review-bot-stamped, unresolved thread (see
+# _FINDING_THREAD_CLASSIFY). The thread is re-read just before acting and
+# left open when the PR head moved, anyone but the review bot commented in
+# it (a person, or another bot such as the fix agent), or it cannot be read
+# completely or resolved. An explanation is posted first, led by a marker
+# so a rerun at the same head never posts it twice; when the explanation
+# cannot be posted the thread stays open. A thread a concurrent run already
+# resolved counts as done.
+#
+# Prints a JSON array of {id, status, url}. Forge errors are reported per
+# thread and never fail the caller.
+forge_reconcile_finding_threads() {
+  local settled="$1" head="$2"
+  local entries listing item id rationale evidence marker verdict status url thread_id fresh body
+
+  entries='[]'
+  _finding_thread_entry() {
+    entries=$(jq -c --arg id "$1" --arg status "$2" --arg url "${3:-}" --arg pr_url "${PR_URL}" \
+      '. + [{id: $id, status: $status, url: (if $url == "" then $pr_url else $url end)}]' <<< "${entries}")
+  }
+
+  if ! listing="$(forge_fetch_finding_threads)" \
+      || ! jq -e 'type == "object" and (.threads | type) == "array"' <<< "${listing}" >/dev/null 2>&1; then
+    echo "::warning::Could not read review threads — threads of resolved findings left open" >&2
+    listing=""
+  fi
+
+  while IFS= read -r item; do
+    [[ -z "${item}" ]] && continue
+    id="$(jq -r '.id' <<< "${item}")"
+    rationale="$(jq -r '.rationale' <<< "${item}")"
+    evidence="$(jq -r '.evidence' <<< "${item}")"
+    if [[ -z "${listing}" ]]; then
+      _finding_thread_entry "${id}" "fetch-failed"
+      continue
+    fi
+    marker="<!-- fullsend:review-resolve finding=${id} head=${head} -->"
+
+    verdict="$(jq -c --arg id "${id}" --arg head "${head}" --arg marker "${marker}" \
+      "${_FINDING_THREAD_CLASSIFY}" <<< "${listing}")"
+    status="$(jq -r '.status' <<< "${verdict}")"
+    url="$(jq -r '.url' <<< "${verdict}")"
+    thread_id="$(jq -r '.thread_id // empty' <<< "${verdict}")"
+    if [[ "${status}" != "ready" ]]; then
+      _finding_thread_entry "${id}" "${status}" "${url}"
+      continue
+    fi
+
+    # Re-read the thread's current state immediately before acting on it.
+    if ! fresh="$(forge_fetch_finding_thread "${thread_id}")" \
+        || ! jq -e 'type == "object" and has("thread")' <<< "${fresh}" >/dev/null 2>&1; then
+      echo "::warning::Could not re-read the review thread of a resolved finding — left open" >&2
+      _finding_thread_entry "${id}" "fetch-failed" "${url}"
+      continue
+    fi
+    verdict="$(jq -c --arg id "${id}" --arg head "${head}" --arg marker "${marker}" \
+      '{complete: true, head_sha: .head_sha, threads: ([.thread] | map(select(. != null)))} | '"${_FINDING_THREAD_CLASSIFY}" \
+      <<< "${fresh}")"
+    status="$(jq -r '.status' <<< "${verdict}")"
+    if [[ "${status}" != "ready" ]]; then
+      _finding_thread_entry "${id}" "${status}" "${url}"
+      continue
+    fi
+
+    if [[ "$(jq -r '.replied' <<< "${verdict}")" != "true" ]]; then
+      body="$(jq -rn --arg marker "${marker}" --arg id "${id}" --arg sha "${head:0:12}" \
+        --arg rationale "${rationale}" --arg evidence "${evidence}" '
+        # Untrusted model text: no HTML comments (a stamp or marker could be
+        # forged), no finding ids, bounded length.
+        def clean:
+          gsub("\r\n?"; "\n") | gsub("<!--"; "&lt;!--")
+          | gsub("\\b" + $id + "\\b"; "") | gsub("\\bf_[0-9a-f]{16}\\b"; "")
+          | .[0:1500];
+        $marker + "\n"
+        + "**Resolved by the review agent:** a later review found this finding fixed at commit " + $sha + ".\n\n"
+        + "**Why:** " + ($rationale | clean) + "\n\n"
+        + "**Evidence:** " + ($evidence | clean) + "\n\n"
+        + "_Resolving this thread. Unresolve it if you disagree._"')"
+      if ! forge_reply_finding_thread "${thread_id}" "${body}"; then
+        if fresh="$(forge_fetch_finding_thread "${thread_id}")" \
+            && jq -e '.thread.resolved == true' <<< "${fresh}" >/dev/null 2>&1; then
+          _finding_thread_entry "${id}" "already-resolved" "${url}"
+        else
+          echo "::warning::Could not post the explanation in the review thread of a resolved finding — left open" >&2
+          _finding_thread_entry "${id}" "reply-failed" "${url}"
+        fi
+        continue
+      fi
+    fi
+
+    if forge_resolve_finding_thread "${thread_id}"; then
+      _finding_thread_entry "${id}" "resolved" "${url}"
+    elif fresh="$(forge_fetch_finding_thread "${thread_id}")" \
+        && jq -e '.thread.resolved == true' <<< "${fresh}" >/dev/null 2>&1; then
+      _finding_thread_entry "${id}" "resolved" "${url}"
+    else
+      echo "::warning::Could not resolve the review thread of a resolved finding" >&2
+      _finding_thread_entry "${id}" "resolve-failed" "${url}"
+    fi
+  done < <(jq -c '.[]?' <<< "${settled}")
+
+  printf '%s\n' "${entries}"
+}

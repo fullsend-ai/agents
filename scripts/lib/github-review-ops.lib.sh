@@ -356,6 +356,151 @@ forge_resolve_outdated_review_threads() {
   return 0
 }
 
+# --- Finding threads ---
+#
+# Normalized thread shape shared with gitlab-review-ops.lib.sh and read by
+# forge_reconcile_finding_threads in review-ops.lib.sh:
+#   {id, url, resolved, can_resolve, comments_complete,
+#    comments: [{body, review_bot, own}]}
+# review_bot: written by a trusted review-bot login (a Bot account), the same
+# logins post-review trusts for stamps. own: written by this token's own Bot
+# account, so a person's PAT never makes their replies count as the bot's.
+
+_FINDING_THREAD_FIELDS='id isResolved viewerCanResolve
+  comments(first: 100) {
+    pageInfo { hasNextPage }
+    nodes { url body viewerDidAuthor author { __typename login } }
+  }'
+
+# Run a jq program with norm (raw GraphQL thread -> normalized thread) in
+# scope. $1 is the program; any further arguments go to jq.
+_github_finding_thread_jq() {
+  local program="$1"
+  shift
+  jq -c --arg org "${REPO%%/*}" --arg app_set "${FULLSEND_APP_SET:-}" "$@" '
+    ([ ($org + "-review"), ($org + "-review[bot]"),
+       "fullsend-ai-review", "fullsend-ai-review[bot]",
+       (if $app_set == "" then empty else ($app_set + "-review"), ($app_set + "-review[bot]") end)
+     ] | map(ascii_downcase)) as $trusted
+    | def norm:
+        if type != "object" or (.id | type) != "string" then null else
+        {
+          id,
+          url: ((.comments.nodes // [])[0].url // ""),
+          resolved: (.isResolved == true),
+          can_resolve: (.viewerCanResolve == true),
+          comments_complete: ((.comments.pageInfo.hasNextPage // false) == false),
+          comments: [ (.comments.nodes // [])[] | select(type == "object")
+                      | (.author.__typename // "") as $type
+                      | {
+                          body: (.body // ""),
+                          review_bot: ($type == "Bot" and (((.author.login // "") | ascii_downcase) as $a | ($trusted | index($a)) != null)),
+                          own: (.viewerDidAuthor == true and $type == "Bot")
+                        } ]
+        } end;
+    '"${program}"
+}
+
+# Print {complete, head_sha, threads} for every review thread on the PR.
+# Fails when a page cannot be read; a page cap or missing cursor reports
+# complete: false instead.
+forge_fetch_finding_threads() {
+  local owner name query cursor has_next page response nodes_json head complete
+  local -a gh_args
+
+  owner="${REPO%%/*}"
+  name="${REPO##*/}"
+  cursor=""
+  has_next="true"
+  page=0
+  nodes_json="[]"
+  head=""
+  complete=true
+
+  query='query($owner: String!, $name: String!, $number: Int!, $cursor: String) {
+    repository(owner: $owner, name: $name) {
+      pullRequest(number: $number) {
+        headRefOid
+        reviewThreads(first: 100, after: $cursor) {
+          pageInfo { hasNextPage endCursor }
+          nodes { '"${_FINDING_THREAD_FIELDS}"' }
+        }
+      }
+    }
+  }'
+
+  while [[ "${has_next}" == "true" ]]; do
+    page=$((page + 1))
+    if [[ "${page}" -gt 20 ]]; then
+      complete=false
+      break
+    fi
+    gh_args=(api graphql -f owner="${owner}" -f name="${name}" -F number="${PR_NUMBER}" -f query="${query}")
+    if [[ -n "${cursor}" ]]; then
+      gh_args+=(-f cursor="${cursor}")
+    fi
+    response=$(GH_TOKEN="${REVIEW_TOKEN}" gh "${gh_args[@]}" 2>/dev/null) || return 1
+    jq -e '(.errors | type == "array" and length > 0) | not' <<< "${response}" >/dev/null 2>&1 || return 1
+    jq -e '.data.repository.pullRequest.reviewThreads.nodes | type == "array"' <<< "${response}" >/dev/null 2>&1 || return 1
+    nodes_json=$(jq -c --argjson acc "${nodes_json}" '$acc + .data.repository.pullRequest.reviewThreads.nodes' <<< "${response}") || return 1
+    head=$(jq -r '.data.repository.pullRequest.headRefOid // empty' <<< "${response}")
+    has_next=$(jq -r '.data.repository.pullRequest.reviewThreads.pageInfo.hasNextPage // false' <<< "${response}")
+    cursor=$(jq -r '.data.repository.pullRequest.reviewThreads.pageInfo.endCursor // empty' <<< "${response}")
+    if [[ "${has_next}" == "true" && -z "${cursor}" ]]; then
+      complete=false
+      break
+    fi
+  done
+
+  _github_finding_thread_jq \
+    '{complete: $complete, head_sha: $head, threads: [ .[] | norm | select(. != null) ]}' \
+    --arg head "${head}" --argjson complete "${complete}" <<< "${nodes_json}"
+}
+
+# Print {head_sha, thread} for one thread, re-read just before acting on it.
+# thread is null when the thread no longer exists. Fails when it cannot be read.
+forge_fetch_finding_thread() {
+  local thread_id="$1" query response
+  query='query($threadId: ID!) {
+    node(id: $threadId) {
+      ... on PullRequestReviewThread {
+        pullRequest { headRefOid }
+        '"${_FINDING_THREAD_FIELDS}"'
+      }
+    }
+  }'
+  response=$(GH_TOKEN="${REVIEW_TOKEN}" gh api graphql -f threadId="${thread_id}" -f query="${query}" 2>/dev/null) || return 1
+  jq -e '(.errors | type == "array" and length > 0) | not' <<< "${response}" >/dev/null 2>&1 || return 1
+  _github_finding_thread_jq \
+    '.data.node as $n | {head_sha: ($n.pullRequest.headRefOid // ""), thread: ($n | norm)}' \
+    <<< "${response}"
+}
+
+forge_reply_finding_thread() {
+  local thread_id="$1" body="$2" response
+  response=$(GH_TOKEN="${REVIEW_TOKEN}" gh api graphql \
+    -f threadId="${thread_id}" \
+    -f body="${body}" \
+    -f query='mutation($threadId: ID!, $body: String!) {
+      addPullRequestReviewThreadReply(input: {pullRequestReviewThreadId: $threadId, body: $body}) {
+        comment { id }
+      }
+    }' 2>/dev/null) || return 1
+  jq -e '(.errors | type == "array" and length > 0) | not' <<< "${response}" >/dev/null 2>&1
+}
+
+forge_resolve_finding_thread() {
+  local thread_id="$1" response
+  response=$(GH_TOKEN="${REVIEW_TOKEN}" gh api graphql \
+    -f threadId="${thread_id}" \
+    -f query='mutation($threadId: ID!) {
+      resolveReviewThread(input: {threadId: $threadId}) {
+        thread { isResolved }
+      }
+    }' 2>/dev/null) || return 1
+  jq -e '(.errors | type == "array" and length > 0) | not' <<< "${response}" >/dev/null 2>&1
+}
+
 # --- Human dismissals ---
 
 # --- Labels ---
