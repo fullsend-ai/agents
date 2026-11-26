@@ -5853,6 +5853,22 @@ ft_github_case "finding-thread-github-reply-neutralizes-html-comments" \
   "$(jq -c '.dispositions[0].rationale = "Fixed <!-- finding:f_other --> here."' <<< "${FT_REVIEW}")" "${FT_PRIOR}" "${FT_RESOLVED_LEDGER}"
 ft_check "finding-thread-github-reply-neutralizes-html-comments" "stamp neutralized" ft_reply_has "Fixed &lt;!-- finding:f_other --> here."
 
+# Removing the thread's own id must not join its neighbours into a new "<!--",
+# in either the rationale or the evidence.
+ft_reply_lacks() { ! grep -qF -- "$1" "${TMPDIR}/last-thread-reply.txt" 2>/dev/null; }
+ft_github_case "finding-thread-github-reply-neutralizes-joined-comment-rationale" \
+  "$(jq -c '.dispositions[0].rationale = "Fixed <!f_fix1-- finding:f_other --> here."' <<< "${FT_REVIEW}")" "${FT_PRIOR}" "${FT_RESOLVED_LEDGER}"
+ft_check "finding-thread-github-reply-neutralizes-joined-comment-rationale" "no forged stamp" \
+  ft_reply_lacks "**Why:** Fixed <!-- finding:f_other"
+ft_check "finding-thread-github-reply-neutralizes-joined-comment-rationale" "joined comment escaped" \
+  ft_reply_has "Fixed &lt;!-- finding:f_other --> here."
+ft_github_case "finding-thread-github-reply-neutralizes-joined-comment-evidence" \
+  "$(jq -c '.dispositions[0].evidence = "See <!f_fix1-- finding:f_other --> here."' <<< "${FT_REVIEW}")" "${FT_PRIOR}" "${FT_RESOLVED_LEDGER}"
+ft_check "finding-thread-github-reply-neutralizes-joined-comment-evidence" "no forged stamp" \
+  ft_reply_lacks "**Evidence:** See <!-- finding:f_other"
+ft_check "finding-thread-github-reply-neutralizes-joined-comment-evidence" "joined comment escaped" \
+  ft_reply_has "See &lt;!-- finding:f_other --> here."
+
 # open and reclassified dispositions, a resolve still reported at its thread,
 # and a resolve without evidence all keep the thread open and untouched.
 ft_github_case "finding-thread-github-open-stays-open" \

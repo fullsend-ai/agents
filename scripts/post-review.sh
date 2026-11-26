@@ -1264,9 +1264,12 @@ forge_reconcile_finding_threads() {
         --arg rationale "${rationale}" --arg evidence "${evidence}" '
         # Untrusted model text: no HTML comments (a stamp or marker could be
         # forged), no finding ids, bounded length.
+        # Text-removing steps run first and the "<!--" escape last, so
+        # removing an id cannot join its neighbours into a new "<!--".
         def clean:
-          gsub("\r\n?"; "\n") | gsub("<!--"; "&lt;!--")
+          gsub("\r\n?"; "\n")
           | gsub("\\b" + $id + "\\b"; "") | gsub("\\bf_[0-9a-f]{16}\\b"; "")
+          | gsub("<!--"; "&lt;!--")
           | .[0:1500];
         $marker + "\n"
         + "**Resolved by the review agent:** a later review found this finding fixed at commit " + $sha + ".\n\n"
