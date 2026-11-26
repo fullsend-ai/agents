@@ -19,7 +19,7 @@ prints them:
 
 ```bash
 GITLAB_HOST=$(printf '%s\n' "$ISSUE_URL" | sed -nE 's|^https://([^/]+)/.*|\1|p')
-REPO=$(printf '%s\n' "$ISSUE_URL" | sed -E 's|^https://[^/]+/(.+)/-/issues/[0-9]+$|\1|')
+REPO=$(printf '%s\n' "$ISSUE_URL" | cut -d/ -f4- | sed -E 's|/-/issues/[0-9]+$||')
 REPO_ENCODED=$(printf '%s' "$REPO" | jq -sRr @uri)
 ISSUE_NUMBER="${ISSUE_URL##*/}"
 test -n "${GITLAB_HOST}" || echo "GITLAB_HOST is empty: ISSUE_URL is unset or not an https URL" >&2
