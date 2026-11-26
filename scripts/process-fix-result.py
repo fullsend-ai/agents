@@ -1541,13 +1541,16 @@ def reconcile_finding_threads(data, repo, pr_number, head_sha, can_post, manifes
         if not owned:
             entry("human-owned", candidates[0])
             continue
-        if len(owned) > 1:
-            entry("ambiguous", owned[0])
+        # Ambiguity is judged among unresolved threads only: resolved historical
+        # threads reusing the id must not block reconciling the open one.
+        unresolved = [t for t in owned if not t.get("isResolved")]
+        if not unresolved:
+            entry("already-resolved", owned[0])
             continue
-        thread = owned[0]
-        if thread.get("isResolved"):
-            entry("already-resolved", thread)
+        if len(unresolved) > 1:
+            entry("ambiguous", unresolved[0])
             continue
+        thread = unresolved[0]
         if not _thread_comments_complete(thread):
             entry("incomplete", thread)
             continue

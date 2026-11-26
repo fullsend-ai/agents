@@ -2398,6 +2398,21 @@ class TestFindingThreads(unittest.TestCase):
         self.assertEqual((forge.replies, forge.resolved), ([], []))
         self.assertIn("more than one review-bot thread", self._attention(forge))
 
+    def test_resolved_historical_match_does_not_block_open_thread(self):
+        forge = FakeThreadsForge([_bot_thread("T1", "f_aaa", 1, resolved=True), _bot_thread("T2", "f_aaa", 2)])
+        self._run(_thread_result(_action("f_aaa", "fixed")), forge)
+        self.assertEqual(forge.order, [("reply", "T2"), ("resolve", "T2")])
+
+    def test_two_open_matches_stay_ambiguous_despite_resolved_one(self):
+        forge = FakeThreadsForge([
+            _bot_thread("T1", "f_aaa", 1, resolved=True),
+            _bot_thread("T2", "f_aaa", 2),
+            _bot_thread("T3", "f_aaa", 3),
+        ])
+        self._run(_thread_result(_action("f_aaa", "fixed")), forge)
+        self.assertEqual((forge.replies, forge.resolved), ([], []))
+        self.assertIn("more than one review-bot thread", self._attention(forge))
+
     def test_human_owned_thread_left_open(self):
         # A human started the thread and pasted the stamp; a reply from the
         # review bot in a human thread does not make it the finding's thread.
