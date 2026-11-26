@@ -8348,6 +8348,138 @@ fi
 
 rm -rf "${PRM_TMPDIR}"
 
+# ---------------------------------------------------------------------------
+# Finding threads (issue #2187) through the real post-fix.sh: a GitHub run
+# hands the processor the head it left the PR at and the manifest pre-fix
+# wrote under RUNNER_TEMP. The processor's matching rules are covered in
+# process-fix-result-test.py; this checks the post-script wiring.
+# ---------------------------------------------------------------------------
+FT_TMPDIR="$(mktemp -d)"
+
+# run_finding_threads_postfix <name> <live-head: local|other> <manifest: seen|unseen>
+run_finding_threads_postfix() {
+  local test_name="$1" live_head="$2" manifest="$3"
+  local run_dir="${FT_TMPDIR}/${test_name}"
+  local mock_bin="${run_dir}/bin" head
+  mkdir -p "${mock_bin}" "${run_dir}/repo" "${run_dir}/runner-temp" "${run_dir}/validated-output"
+
+  git init -q -b main "${run_dir}/repo"
+  git -C "${run_dir}/repo" config user.email "test@example.com"
+  git -C "${run_dir}/repo" config user.name "Test"
+  git -C "${run_dir}/repo" commit --allow-empty -m "init" -q
+  head="$(git -C "${run_dir}/repo" rev-parse HEAD)"
+  [ "${live_head}" = "local" ] || head="0000000000000000000000000000000000000000"
+
+  jq -n --arg head "${head}" '{data: {repository: {pullRequest: {headRefOid: $head, reviewThreads: {
+    pageInfo: {hasNextPage: false, endCursor: null},
+    nodes: [{id: "T1", isResolved: false, isOutdated: false, viewerCanResolve: true,
+      comments: {pageInfo: {hasNextPage: false}, nodes: [
+        {databaseId: 1, url: "https://github.com/test-org/test-repo/pull/99#discussion_r1",
+         body: "Bug.\n<!-- finding:f_aaa -->", outdated: false, viewerDidAuthor: false,
+         author: {__typename: "Bot", login: "test-org-review"}},
+        {databaseId: 2, url: "https://github.com/test-org/test-repo/pull/99#discussion_r2",
+         body: "Also cover nulls.", outdated: false, viewerDidAuthor: false,
+         author: {__typename: "User", login: "alice"}}]}}]}}}}}' > "${run_dir}/threads.json"
+  if [ "${manifest}" = "seen" ]; then
+    echo '{"complete": true, "threads": [{"finding_id": "f_aaa", "comments": [{"id": 1}, {"id": 2}]}]}'
+  else
+    echo '{"complete": true, "threads": [{"finding_id": "f_aaa", "comments": [{"id": 1}]}]}'
+  fi > "${run_dir}/runner-temp/fullsend-fix-finding-threads.json"
+  jq -n '{pr_number: 99, trigger_source: "bot", summary: "Fixed it.", tests_passed: true, files_changed: [],
+    actions: [{type: "fix", finding: "Null input", finding_id: "f_aaa", disposition: "fixed",
+               description: "Rejected null input."}]}' > "${run_dir}/validated-output/agent-result.json"
+
+  printf '#!/usr/bin/env bash\nexit 0\n' > "${mock_bin}/gitleaks"
+  cat > "${mock_bin}/gh" <<MOCKEOF
+#!/usr/bin/env bash
+case "\$1 \$2" in
+  "api graphql")
+    case "\$*" in
+      *reviewThreads*) cat "${run_dir}/threads.json" ;;
+      *addPullRequestReviewThreadReply*) printf '%s\n' "\$@" >> "${run_dir}/reply.log"; echo '{"data":{}}' ;;
+      *resolveReviewThread*) printf '%s\n' "\$@" >> "${run_dir}/resolve.log"; echo '{"data":{}}' ;;
+    esac
+    exit 0 ;;
+  "pr comment")
+    cat > "${run_dir}/comment.log"
+    exit 0 ;;
+esac
+exit 0
+MOCKEOF
+  chmod +x "${mock_bin}/gitleaks" "${mock_bin}/gh"
+
+  local exit_code=0
+  # shellcheck disable=SC2030,SC2031
+  (
+    cd "${run_dir}"
+    export PATH="${mock_bin}:${PATH}"
+    export PUSH_TOKEN="fake-token"
+    export REPO_FULL_NAME="test-org/test-repo"
+    export PR_NUMBER="99"
+    export TRIGGER_SOURCE="test-org-review[bot]"
+    export REPO_DIR="repo"
+    export FULLSEND_FORGE="github"
+    export RUNNER_TEMP="${run_dir}/runner-temp"
+    export FULLSEND_VALIDATED_ITERATION_DIR="${run_dir}/validated-output"
+    export FULLSEND_OUTPUT_SCHEMA="${SCRIPT_DIR}/../schemas/fix-result.schema.json"
+    PRE_AGENT_HEAD="$(git -C repo rev-parse HEAD)"
+    export PRE_AGENT_HEAD
+    bash "${POST_SCRIPT}"
+  ) > "${run_dir}/stdout.log" 2>&1 || exit_code=$?
+  FT_RUN_DIR="${run_dir}"
+  if [ "${exit_code}" -ne 0 ]; then
+    echo "FAIL: ${test_name} — exit code ${exit_code}"
+    cat "${run_dir}/stdout.log"
+    FAILURES=$((FAILURES + 1))
+    return 1
+  fi
+}
+
+ft_fail() {
+  echo "FAIL: $1 — $2"
+  cat "${FT_RUN_DIR}/stdout.log"
+  FAILURES=$((FAILURES + 1))
+}
+
+if run_finding_threads_postfix "finding-threads-fixed-resolved" local seen; then
+  name="finding-threads-fixed-resolved"
+  if ! grep -qx 'threadId=T1' "${FT_RUN_DIR}/reply.log" 2>/dev/null \
+    || ! grep -qF 'disposition=fixed' "${FT_RUN_DIR}/reply.log"; then
+    ft_fail "${name}" "no explanatory reply on the stamped thread"
+  elif ! grep -qx 'threadId=T1' "${FT_RUN_DIR}/resolve.log" 2>/dev/null; then
+    ft_fail "${name}" "stamped thread not resolved"
+  elif ! grep -qF '`f_aaa` (fixed): replied and resolved' "${FT_RUN_DIR}/comment.log" 2>/dev/null; then
+    ft_fail "${name}" "PR summary missing the thread outcome"
+  else
+    echo "PASS: ${name}"
+  fi
+fi
+
+if run_finding_threads_postfix "finding-threads-unread-human-reply" local unseen; then
+  name="finding-threads-unread-human-reply"
+  if [ -e "${FT_RUN_DIR}/reply.log" ] || [ -e "${FT_RUN_DIR}/resolve.log" ]; then
+    ft_fail "${name}" "thread changed although the agent never saw the human reply"
+  elif ! grep -qF 'Finding threads that need attention (1)' "${FT_RUN_DIR}/comment.log" 2>/dev/null \
+    || ! grep -qF 'discussion_r1' "${FT_RUN_DIR}/comment.log"; then
+    ft_fail "${name}" "PR summary missing the thread that needs attention"
+  else
+    echo "PASS: ${name}"
+  fi
+fi
+
+if run_finding_threads_postfix "finding-threads-changed-head" other seen; then
+  name="finding-threads-changed-head"
+  if [ -e "${FT_RUN_DIR}/reply.log" ] || [ -e "${FT_RUN_DIR}/resolve.log" ]; then
+    ft_fail "${name}" "thread changed although the PR head moved"
+  elif ! grep -qF 'the PR head changed after this run' "${FT_RUN_DIR}/comment.log" 2>/dev/null; then
+    ft_fail "${name}" "PR summary missing the changed-head note"
+  else
+    echo "PASS: ${name}"
+  fi
+fi
+
+rm -rf "${FT_TMPDIR}"
+
 # --- Summary ---
 
 echo ""

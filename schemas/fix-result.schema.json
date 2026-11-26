@@ -65,9 +65,32 @@
             "type": "string",
             "maxLength": 2048,
             "description": "Why the agent disagrees with the feedback (for disagree actions)."
+          },
+          "finding_id": {
+            "type": "string",
+            "maxLength": 64,
+            "pattern": "^f_[A-Za-z0-9]+$",
+            "description": "Stable review finding id (f_...) copied exactly from the finding-thread manifest or the review-bot stamp (see the finding-ids skill). Not a per-run display number. Omit for a standalone human instruction. Requires disposition."
+          },
+          "disposition": {
+            "type": "string",
+            "enum": ["fixed", "declined", "needs_human"],
+            "description": "Outcome for the finding named by finding_id. fixed (type fix): the change settles it. declined (type disagree): invalid, duplicate, or no longer needs action. needs_human: a valid or uncertain concern the agent could not or would not settle. The post-script replies in the finding's thread and resolves it for fixed and declined; needs_human stays open. Requires finding_id."
           }
         },
+        "dependentRequired": {
+          "finding_id": ["disposition"],
+          "disposition": ["finding_id"]
+        },
         "allOf": [
+          {
+            "if": { "properties": { "disposition": { "const": "fixed" } }, "required": ["disposition"] },
+            "then": { "properties": { "type": { "const": "fix" } } }
+          },
+          {
+            "if": { "properties": { "disposition": { "const": "declined" } }, "required": ["disposition"] },
+            "then": { "properties": { "type": { "const": "disagree" } } }
+          },
           {
             "if": { "properties": { "type": { "const": "fix" } }, "required": ["type"] },
             "then": { "required": ["type", "finding", "description"] }

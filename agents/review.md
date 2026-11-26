@@ -11,6 +11,7 @@ skills:
   - pr-risk-assessment
   - docs-review
   - issue-labels
+  - finding-ids
 ---
 
 # Review Agent
@@ -131,6 +132,8 @@ JSON at the end of this list is a file, not a variable.
   verifies any `dismissed_by_human` status produced during this run and
   records anything else as open. Copy an open id onto the same finding; do
   not mint a new one and do not derive one from the path or the text.
+  The `finding-ids` skill explains the stamp and why an id is not a
+  per-run finding number.
   The file is empty on first review or when provenance, projection, category,
   or path validation fails.
 

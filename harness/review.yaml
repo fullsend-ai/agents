@@ -51,6 +51,7 @@ skills:
   - skills/code-review
   - skills/docs-review
   - skills/pr-risk-assessment
+  - skills/finding-ids
 
 host_files:
   - src: env/gcp-vertex.env

@@ -99,6 +99,10 @@ The fix agent uses the `fix-verification` skill after fixes are implemented: man
 
 The fix agent uses the `fix-result-contract` skill as the canonical owner of the `agent-result.json` handoff contract: schema requirements, the `fullsend-check-output` validation loop, partial-work behavior, failure handling, optional PR title/description proposals, and validation-retry semantics (including carrying `rebased_onto_target`, `merged_target`, `conflict_update`, `history_rewritten`, and the PR metadata fields forward when the runner clears the output directory between retries).
 
+### Skill: `finding-ids`
+
+The review and fix agents share the `finding-ids` skill. It explains the stable `f_…` finding id stamped in review-bot thread comments (`<!-- finding:f_… -->`), how it differs from the per-run number a review summary gives a finding, which stamps to trust, and the fix agent's `fixed` / `declined` / `needs_human` dispositions.
+
 ## How the agent works
 
 The fix agent follows a similar pipeline to the [code agent](code.md), with an additional validation step:
@@ -116,6 +120,53 @@ A fix can leave the PR title or description inaccurate, for example after conten
 - the live value still matches the SHA-256 the agent recorded for the value it read (`pr_title_base_sha256` / `pr_body_base_sha256`). A human edit made after the agent read the value and before the post-script's check is not overwritten; the field is skipped with a warning instead. The check and the write are separate API calls, because neither `gh pr edit` nor the GitLab MR update offers a conditional write, so an edit landing in the short window between them can still be overwritten.
 
 A field the agent did not propose is left unchanged. When the body is replaced, the existing issue-closing reference and the `### Post-script verification` section are kept. Before the body is written, the post-script checks that the merged body still shows them outside fenced code and HTML comments. If a proposal's Markdown could hide them (for example an unclosed code fence or HTML comment), only the body update is skipped with a warning; the post-script does not close or change the agent's Markdown, and a valid title update still applies. The outcome is noted in the summary comment. A failed update is logged as a warning and does not fail the run or block the summary.
+
+### Finding threads
+
+On GitHub, the fix run settles the review bot's inline finding threads, so you
+do not have to find and close them yourself.
+
+1. **Pre-script.** `pre-fix.sh` reads the PR's review threads and writes every
+   open thread whose first comment is from the review bot (`<org>-review[bot]`,
+   `fullsend-ai-review[bot]`, or `<FULLSEND_APP_SET>-review[bot]`) and carries
+   one `<!-- finding:f_… -->` stamp. Each entry has the id, a link, and every
+   comment, human replies included. The file is
+   `${RUNNER_TEMP}/fullsend-fix-finding-threads.json`, mounted in the sandbox as
+   `/sandbox/workspace/finding-threads.json`.
+2. **Agent.** The agent addresses each thread and records the thread's
+   `finding_id` with one `disposition` on the action: `fixed`, `declined`
+   (invalid, duplicate, or no longer needed), or `needs_human` (a valid or
+   uncertain concern the agent did not settle). Actions for a standalone
+   `/fs-fix` instruction have no id.
+3. **Post-script.** After the push, `process-fix-result.py` reads the live
+   threads again and acts only on the one unresolved thread that the review bot
+   started with that exact stamp. It first posts a reply explaining the
+   outcome. A `fixed` reply links the pushed commit. It then resolves the thread
+   for `fixed` and `declined`. A `needs_human` thread gets the reply and stays
+   open. A hidden marker in the reply keeps a rerun from posting it twice.
+
+The post-script leaves a thread open and changes nothing in it when:
+
+- no open review-bot thread carries the id, or several do;
+- the stamp is only in a thread a human started;
+- the threads or the thread's comments could not be read completely;
+- the PR head is no longer the commit this run pushed;
+- a human replied after the pre-script built the manifest, so the agent never
+  saw the reply;
+- the result gave the id more than one action, or the result was not
+  schema-validated and secret-scanned.
+
+The post-script also resolves outdated review-bot threads under the same
+conditions as the review post-script: the thread is unresolved, resolvable,
+and outdated, and every one of its comments is fully read, outdated, and from
+the review bot.
+
+The summary comment lists threads it resolved. Under **Finding threads that
+need attention** it lists each thread left open or that failed to update, with
+a link and a next step: resolve it manually, or rerun `/fs-fix` with
+instructions. A failed reply or resolve is reported there and never fails the
+run. If the reply fails, the thread is not resolved. GitLab merge requests are
+not changed yet.
 
 ### Signed-off-by trailers
 
@@ -286,9 +337,11 @@ diagnosis in the PR summary.
 This is worth being explicit about, because the fix agent's scope is narrower
 than you might expect:
 
-- **Inline PR review comments.** The agent reads the consolidated review body,
-  not individual line-level comments. If you need the agent to act on a
-  specific inline comment, copy the relevant text into a `/fs-fix` instruction.
+- **Inline PR review comments, apart from finding threads.** The agent reads
+  the consolidated review body and, on GitHub, the open review-bot finding
+  threads with their replies (see [Finding threads](#finding-threads)). It
+  does not read other line-level comments. If you need the agent to act on
+  one, copy the relevant text into a `/fs-fix` instruction.
 - **Other PR comments.** General discussion comments on the PR are not part of
   the agent's input. Only the review body and the `/fs-fix` instruction are
   read.

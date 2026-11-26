@@ -100,6 +100,7 @@ skills:
   - skills/fix-ci-inspection
   - skills/fix-verification
   - skills/fix-result-contract
+  - skills/finding-ids
 
 env:
   runner:
@@ -151,6 +152,15 @@ overlays:
       - src: env/github/fix.env
         dest: /sandbox/workspace/.env.d/forge-fix.env
         expand: true
+      # Open review-bot finding threads with their stable f_... ids, links
+      # and full comment context (issue #2187; skills/finding-ids). Written
+      # by pre-fix (forge_write_finding_threads_manifest) and read back by
+      # post-fix. The src is ${VAR}-expanded because fullsend refuses a
+      # literal absolute path in a harness loaded from a URL or used as a
+      # `base:`. Without RUNNER_TEMP no file exists and the slot is skipped.
+      - src: ${RUNNER_TEMP}/fullsend-fix-finding-threads.json
+        dest: /sandbox/workspace/finding-threads.json
+        optional: true
     env:
       runner:
         PR_NUMBER: "${PR_NUMBER}"

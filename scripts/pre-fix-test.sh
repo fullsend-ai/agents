@@ -44,6 +44,18 @@ mkdir -p "${MOCK_BIN}" "${DATA}" "${HOME_DIR}"
 printf '#!/usr/bin/env bash\nLOG=%q\nDATA=%q\n' "${GH_LOG}" "${DATA}" > "${MOCK_BIN}/gh"
 cat >> "${MOCK_BIN}/gh" <<'MOCKEOF'
 echo "gh $*" >> "${LOG}"
+# `gh api graphql` (review threads): page N+1 is ${DATA}/graphql-<N+1>.json,
+# chosen by the cursor argument (page 1 has none); exits 1 when
+# ${DATA}/graphql.fail exists.
+if [[ "${1:-} ${2:-}" == "api graphql" ]]; then
+  [[ -f "${DATA}/graphql.fail" ]] && exit 1
+  page=1
+  for arg in "$@"; do
+    [[ "${arg}" == cursor=* ]] && page=$(( ${arg#cursor=} + 1 ))
+  done
+  [[ -f "${DATA}/graphql-${page}.json" ]] && cat "${DATA}/graphql-${page}.json"
+  exit 0
+fi
 field=""
 filter="."
 while [[ $# -gt 0 ]]; do
@@ -588,6 +600,109 @@ expect_out "Could not read PR labels"
 expect_out "Could not read PR/MR base branch from forge — using main"
 expect_out "merge_state=unknown"
 expect_out "conflict=false"
+finish
+
+# --- Finding-thread manifest (GitHub, issue #2187) ---
+
+RUNNER_TEMP_DIR="${TMPDIR}/runner-temp"
+MANIFEST="${RUNNER_TEMP_DIR}/fullsend-fix-finding-threads.json"
+
+# thread_page HAS_NEXT CURSOR NODES_JSON — one reviewThreads GraphQL page.
+thread_page() {
+  jq -n --argjson next "$1" --arg cursor "$2" --argjson nodes "$3" '{data: {repository: {pullRequest: {
+    headRefOid: "abc123",
+    reviewThreads: {pageInfo: {hasNextPage: $next, endCursor: (if $cursor == "" then null else $cursor end)}, nodes: $nodes}}}}}'
+}
+
+# thread NAME RESOLVED FIRST_AUTHOR FIRST_TYPE BODY [MORE_COMMENTS_JSON] — one review thread.
+thread() {
+  jq -n --arg n "$1" --argjson resolved "$2" --arg login "$3" --arg type "$4" --arg body "$5" \
+    --argjson more "${6:-[]}" '{
+      isResolved: $resolved, isOutdated: false, path: ($n + ".sh"), line: 7,
+      comments: {pageInfo: {hasNextPage: false}, nodes: ([
+        {databaseId: 1, url: ("https://github.com/test-org/test-repo/pull/42#discussion_r" + $n),
+         body: $body, createdAt: "2026-01-01T00:00:00Z", author: {__typename: $type, login: $login}}
+      ] + $more)}
+    }'
+}
+
+human_reply='[{"databaseId": 2, "url": "u2", "body": "Please also cover nulls.", "createdAt": "2026-01-02T00:00:00Z", "author": {"__typename": "User", "login": "alice"}}]'
+open_bot="$(thread 1 false test-org-review Bot $'Bug.\n<!-- finding:f_aaa -->' "${human_reply}")"
+resolved_bot="$(thread 2 true test-org-review Bot '<!-- finding:f_bbb -->')"
+human_started="$(thread 3 false alice User '<!-- finding:f_ccc -->')"
+untrusted_bot="$(thread 4 false other-review Bot '<!-- finding:f_ddd -->')"
+unstamped_bot="$(thread 5 false test-org-review Bot 'No stamp here.')"
+second_page_bot="$(thread 6 false fullsend-ai-review Bot '<!-- finding:f_eee -->')"
+
+reset_data
+thread_page true 1 "[${open_bot},${resolved_bot},${human_started},${untrusted_bot},${unstamped_bot}]" > "${DATA}/graphql-1.json"
+thread_page false "" "[${second_page_bot}]" > "${DATA}/graphql-2.json"
+mkdir -p "${RUNNER_TEMP_DIR}"
+echo stale > "${MANIFEST}"
+run_pre_fix "github-finding-thread-manifest" 0 RUNNER_TEMP="${RUNNER_TEMP_DIR}"
+expect_out "Wrote finding-thread manifest: 2 open thread(s), complete=true"
+expect_log "${GH_LOG}" "cursor=1"
+expect_log "${GH_LOG}" "-F number=42"
+jq -e '.complete == true and .head_sha == "abc123"' "${MANIFEST}" >/dev/null || fail "manifest header wrong"
+jq -e '[.threads[].finding_id] == ["f_aaa", "f_eee"]' "${MANIFEST}" >/dev/null \
+  || fail "manifest should list only open review-bot stamped threads: $(jq -c '[.threads[].finding_id]' "${MANIFEST}")"
+jq -e '.threads[0] | .url == "https://github.com/test-org/test-repo/pull/42#discussion_r1"
+    and .comments_complete == true and .ambiguous == false
+    and (.comments | length) == 2
+    and .comments[1].author == "alice" and .comments[1].review_bot == false
+    and .comments[1].body == "Please also cover nulls." and .comments[1].id == 2
+    and .comments[0].review_bot == true' "${MANIFEST}" >/dev/null \
+  || fail "manifest thread should keep links and human replies: $(jq -c '.threads[0]' "${MANIFEST}")"
+finish
+
+reset_data
+dup_bot="$(thread 7 false test-org-review Bot '<!-- finding:f_aaa -->')"
+thread_page false "" "[${open_bot},${dup_bot}]" > "${DATA}/graphql-1.json"
+run_pre_fix "github-finding-thread-manifest-ambiguous" 0 RUNNER_TEMP="${RUNNER_TEMP_DIR}"
+jq -e '[.threads[].ambiguous] == [true, true]' "${MANIFEST}" >/dev/null || fail "duplicate ids should be flagged ambiguous"
+finish
+
+reset_data
+thread_page false "" "[${second_page_bot}]" > "${DATA}/graphql-1.json"
+run_pre_fix "github-finding-thread-manifest-app-set" 0 RUNNER_TEMP="${RUNNER_TEMP_DIR}" FULLSEND_APP_SET=acme
+jq -e '(.threads | length) == 1' "${MANIFEST}" >/dev/null || fail "fullsend-ai-review should stay trusted with an app set"
+finish
+
+reset_data
+touch "${DATA}/graphql.fail"
+run_pre_fix "github-finding-thread-manifest-fetch-failure" 0 RUNNER_TEMP="${RUNNER_TEMP_DIR}"
+expect_out "Could not read review threads"
+jq -e '.complete == false and .threads == []' "${MANIFEST}" >/dev/null || fail "failed fetch should write an incomplete, empty manifest"
+finish
+
+reset_data
+thread_page true "" "[${open_bot}]" > "${DATA}/graphql-1.json"
+run_pre_fix "github-finding-thread-manifest-missing-cursor" 0 RUNNER_TEMP="${RUNNER_TEMP_DIR}"
+jq -e '.complete == false and (.threads | length) == 1' "${MANIFEST}" >/dev/null || fail "truncated pagination should mark the manifest incomplete"
+finish
+
+reset_data
+echo stale > "${MANIFEST}"
+run_pre_fix "github-no-runner-temp-no-manifest" 0
+expect_out "RUNNER_TEMP is not set — no finding-thread manifest written"
+expect_no_log "${GH_LOG}" "graphql"
+finish
+
+reset_data
+rm -f "${MANIFEST}"
+run_pre_fix "gitlab-no-finding-thread-manifest" 0 "${GL_ENV[@]}" RUNNER_TEMP="${RUNNER_TEMP_DIR}"
+[[ -e "${MANIFEST}" ]] && fail "GitLab runs must not write a finding-thread manifest"
+finish
+
+FIX_HARNESS="${SCRIPT_DIR}/../harness/fix.yaml"
+CASE="harness-mounts-finding-thread-manifest"
+CASE_FAILED=0
+grep -qxF '      - src: ${RUNNER_TEMP}/fullsend-fix-finding-threads.json' "${FIX_HARNESS}" \
+  || fail "harness/fix.yaml must mount the manifest from RUNNER_TEMP"
+grep -qxF '        dest: /sandbox/workspace/finding-threads.json' "${FIX_HARNESS}" \
+  || fail "harness/fix.yaml must mount the manifest at /sandbox/workspace/finding-threads.json"
+grep -qxF '  - skills/finding-ids' "${FIX_HARNESS}" || fail "harness/fix.yaml must load skills/finding-ids"
+grep -qxF '  - skills/finding-ids' "${SCRIPT_DIR}/../harness/review.yaml" || fail "harness/review.yaml must load skills/finding-ids"
 finish
 
 # --- Summary ---
