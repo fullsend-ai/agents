@@ -1389,6 +1389,16 @@ def _is_review_bot(comment, trusted):
     return author.get("__typename") == "Bot" and (author.get("login") or "").lower() in trusted
 
 
+def _is_own_bot_comment(comment):
+    """A comment written by the token's own account, and only when that account is a Bot.
+
+    viewerDidAuthor alone means "the API token's owner wrote it". With a
+    human-owned PAT that is a person whose replies the agent still has to read.
+    """
+    author = comment.get("author") or {}
+    return bool(comment.get("viewerDidAuthor")) and author.get("__typename") == "Bot"
+
+
 def _owned_finding_id(thread, trusted):
     """The id stamped on the thread's first comment when the review bot wrote it."""
     comments = _thread_comments(thread)
@@ -1549,7 +1559,7 @@ def reconcile_finding_threads(data, repo, pr_number, head_sha, can_post, manifes
                 c
                 for c in comments
                 if not _is_review_bot(c, trusted)
-                and not c.get("viewerDidAuthor")
+                and not _is_own_bot_comment(c)
                 and (
                     known is None
                     or c.get("databaseId") not in known

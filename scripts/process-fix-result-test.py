@@ -2336,6 +2336,23 @@ class TestFindingThreads(unittest.TestCase):
         self.assertEqual((forge.replies, forge.resolved), ([], []))
         self.assertIn("human reply the fix agent did not read", self._attention(forge))
 
+    def test_edited_reply_by_token_owner_human_leaves_thread_untouched(self):
+        # A human-owned PAT makes viewerDidAuthor true for that person's replies.
+        read = _bot_thread("T1", "f_aaa", 1, _comment(2, HUMAN, "Looks fine.", viewer=True))
+        manifest = _manifest("f_aaa", read)
+        edited = _bot_thread("T1", "f_aaa", 1, _comment(2, HUMAN, "Actually, do not merge this.", viewer=True))
+        forge = FakeThreadsForge([edited])
+        self._run(_thread_result(_action("f_aaa", "fixed")), forge, manifest=manifest)
+        self.assertEqual((forge.replies, forge.resolved), ([], []))
+        self.assertIn("human reply the fix agent did not read", self._attention(forge))
+
+    def test_new_reply_by_token_owner_human_leaves_thread_untouched(self):
+        thread = _bot_thread("T1", "f_aaa", 1, _comment(2, HUMAN, "One more thing.", viewer=True))
+        manifest = _manifest("f_aaa", _bot_thread("T1", "f_aaa", 1))
+        forge = FakeThreadsForge([thread])
+        self._run(_thread_result(_action("f_aaa", "declined")), forge, manifest=manifest)
+        self.assertEqual((forge.replies, forge.resolved), ([], []))
+
     def test_manifest_comment_without_body_is_not_trusted(self):
         thread = _bot_thread("T1", "f_aaa", 1, _comment(2, HUMAN, "Hi."))
         manifest = {"complete": True, "threads": [{"finding_id": "f_aaa", "comments": [{"id": 1}, {"id": 2}]}]}
