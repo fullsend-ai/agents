@@ -4783,8 +4783,20 @@ if [ -z "${COMMIT_BODY}" ]; then
   COMMIT_BODY="$(extract_commit_body)"
 fi
 
-# Scan the final normalized description after removing trailers. Removing a
-# Signed-off-by line can join text that was separate during the earlier scan.
+# The origin record is post-script-owned: drop any work-item comment the agent
+# wrote, repeating until stable so removal cannot assemble a new one. An
+# unclosed opener would hide the managed footer, so it is removed too. The
+# comment may span lines, so the pattern matches newlines explicitly.
+while :; do
+  _commit_body_clean="$(printf '%s' "${COMMIT_BODY}" | jq -Rrs \
+    'gsub("<!--\\s*fullsend:work-item\\b[\\s\\S]*?-->"; ""; "i") | gsub("<!--\\s*fullsend:work-item\\b"; ""; "i")')"
+  [ "${_commit_body_clean}" = "${COMMIT_BODY}" ] && break
+  COMMIT_BODY="${_commit_body_clean}"
+done
+
+# Scan the final normalized description after removing trailers and origin
+# comments. Removing either can join text that was separate during the earlier
+# scan.
 COMMIT_BODY_SCAN_STATUS="skipped"
 if [ -n "${COMMIT_BODY}" ]; then
   GL_RC=0
@@ -4811,16 +4823,6 @@ if [ -z "${COMMIT_BODY}" ]; then
 else
   DESCRIPTION="${COMMIT_BODY}"
 fi
-
-# The origin record below is post-script-owned: drop any work-item comment the
-# agent wrote, repeating until stable so removal cannot assemble a new one. An
-# unclosed opener would hide the managed footer, so it is removed too.
-while :; do
-  _description_clean="$(printf '%s' "${DESCRIPTION}" | jq -Rrs \
-    'gsub("<!--\\s*fullsend:work-item\\b.*?-->"; ""; "is") | gsub("<!--\\s*fullsend:work-item\\b"; ""; "i")')"
-  [ "${_description_clean}" = "${DESCRIPTION}" ] && break
-  DESCRIPTION="${_description_clean}"
-done
 
 case "${PR_BODY_SCAN_STATUS}" in
   passed)  PR_BODY_SCAN_LINE="- [x] PR body secret scan passed (gitleaks — no-git)" ;;

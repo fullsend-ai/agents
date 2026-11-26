@@ -153,6 +153,11 @@ run_case() {
     empty) text='' ;;
     allow) text="${text} # gitleaks:allow" ;;
     encoded) text="aws_access_key_id = \"${TEST_CREDENTIAL:0:8}%0A${TEST_CREDENTIAL:8}\"" ;;
+    origin-split-secret)
+      # Removing the post-script-owned origin comment joins the credential.
+      text="aws_access_key_id = \"${TEST_CREDENTIAL:0:8}<!-- fullsend:work-item
+{\"source\":\"jira\"}
+-->${TEST_CREDENTIAL:8}\"" ;;
     normalized-secret) text="api_key
 Signed-off-by: Test <test@example.com>
 = \"${TEST_GENERIC_KEY}\"" ;;
@@ -221,7 +226,7 @@ Signed-off-by: Test <test@example.com>
   elif [ "${path}" = pr ] && [ "${expected}" = generic ] \
     && ! grep -qF 'Automated implementation for issue #99.' "${run_dir}/published.txt"; then
     echo "FAIL: ${name} — generic fallback missing"; FAILURES=$((FAILURES + 1))
-  elif [ "${path}" = pr ] && [ "${mode}" = normalized-secret ] \
+  elif [ "${path}" = pr ] && [[ "${mode}" = normalized-secret || "${mode}" = origin-split-secret ]] \
     && ! grep -qF 'Final PR description secret scan: blocked; generic description used' "${run_dir}/published.txt"; then
     echo "FAIL: ${name} — final normalized description scan missing"; FAILURES=$((FAILURES + 1))
   elif [ "${path}" = pr ] && [ "${expected}" = blocked ] \
@@ -262,6 +267,7 @@ for forge in github gitlab; do
   run_case "${forge}" noop encoded blocked
   run_case "${forge}" pr commit-secret generic
   run_case "${forge}" pr normalized-secret generic
+  run_case "${forge}" pr origin-split-secret generic
   run_case "${forge}" noop jira jira
 done
 [ "${FAILURES}" -eq 0 ] || { echo "${FAILURES} public-text tests failed"; exit 1; }
