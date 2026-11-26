@@ -151,15 +151,19 @@ The post-script leaves a thread open and changes nothing in it when:
 - the stamp is only in a thread a human started;
 - the threads or the thread's comments could not be read completely;
 - the PR head is no longer the commit this run pushed;
-- a human replied after the pre-script built the manifest, so the agent never
-  saw the reply;
+- a human replied after the pre-script built the manifest, or edited a reply
+  after it (the live text no longer matches the manifest), so the agent never
+  saw that text;
 - the result gave the id more than one action, or the result was not
   schema-validated and secret-scanned.
 
 The post-script also resolves outdated review-bot threads under the same
 conditions as the review post-script: the thread is unresolved, resolvable,
 and outdated, and every one of its comments is fully read, outdated, and from
-the review bot.
+the review bot. The sweep never touches a thread a finding action names,
+whatever its outcome, and runs only when the result was schema-validated and
+secret-scanned, the threads were read completely, and the PR head is still the
+commit this run pushed.
 
 The summary comment lists threads it resolved. Under **Finding threads that
 need attention** it lists each thread left open or that failed to update, with

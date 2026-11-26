@@ -2249,6 +2249,12 @@ class FakeThreadsForge:
         raise AssertionError(f"unexpected graphql call: {query}")
 
 
+def _manifest(finding_id, thread):
+    """A pre-fix manifest listing every comment of the thread with its body."""
+    comments = [{"id": c["databaseId"], "body": c["body"]} for c in thread["comments"]["nodes"]]
+    return {"complete": True, "threads": [{"finding_id": finding_id, "comments": comments}]}
+
+
 _THREADS_ENV = {
     **_SCHEMA_ENV,
     "FIX_RESULT_SECRET_SCAN": "passed",
@@ -2315,14 +2321,31 @@ class TestFindingThreads(unittest.TestCase):
 
     def test_human_reply_seen_by_agent_allows_resolve(self):
         thread = _bot_thread("T1", "f_aaa", 1, _comment(2, HUMAN, "Please also cover nulls."))
-        manifest = {"complete": True, "threads": [{"finding_id": "f_aaa", "comments": [{"id": 1}, {"id": 2}]}]}
+        manifest = _manifest("f_aaa", thread)
         forge = FakeThreadsForge([thread])
         self._run(_thread_result(_action("f_aaa", "fixed")), forge, manifest=manifest)
         self.assertEqual(forge.resolved, ["T1"])
 
+    def test_human_reply_edited_after_manifest_leaves_thread_untouched(self):
+        read = _bot_thread("T1", "f_aaa", 1, _comment(2, HUMAN, "Looks fine."))
+        manifest = _manifest("f_aaa", read)
+        edited = _bot_thread("T1", "f_aaa", 1, _comment(2, HUMAN, "Actually, do not merge this."))
+        forge = FakeThreadsForge([edited])
+        rc, _ = self._run(_thread_result(_action("f_aaa", "fixed")), forge, manifest=manifest)
+        self.assertEqual(rc, 0)
+        self.assertEqual((forge.replies, forge.resolved), ([], []))
+        self.assertIn("human reply the fix agent did not read", self._attention(forge))
+
+    def test_manifest_comment_without_body_is_not_trusted(self):
+        thread = _bot_thread("T1", "f_aaa", 1, _comment(2, HUMAN, "Hi."))
+        manifest = {"complete": True, "threads": [{"finding_id": "f_aaa", "comments": [{"id": 1}, {"id": 2}]}]}
+        forge = FakeThreadsForge([thread])
+        self._run(_thread_result(_action("f_aaa", "fixed")), forge, manifest=manifest)
+        self.assertEqual((forge.replies, forge.resolved), ([], []))
+
     def test_human_reply_after_manifest_leaves_thread_untouched(self):
         thread = _bot_thread("T1", "f_aaa", 1, _comment(2, HUMAN), _comment(3, HUMAN, "Wait, one more thing."))
-        manifest = {"complete": True, "threads": [{"finding_id": "f_aaa", "comments": [{"id": 1}, {"id": 2}]}]}
+        manifest = _manifest("f_aaa", _bot_thread("T1", "f_aaa", 1, _comment(2, HUMAN)))
         forge = FakeThreadsForge([thread])
         rc, _ = self._run(_thread_result(_action("f_aaa", "fixed")), forge, manifest=manifest)
         self.assertEqual(rc, 0)
@@ -2446,6 +2469,43 @@ class TestFindingThreads(unittest.TestCase):
         self.assertEqual(forge.resolved, ["T1"])
         self.assertEqual(forge.replies, [])
         self.assertIn("Resolved 1 outdated review-bot thread(s)", forge.summary)
+
+    def _outdated_bot_thread(self, tid="T1", fid="f_aaa", cid=1):
+        return _bot_thread(tid, fid, cid, outdated=True, c_outdated=True)
+
+    def test_outdated_sweep_skips_needs_human_thread(self):
+        forge = FakeThreadsForge([self._outdated_bot_thread()])
+        self._run(_thread_result(_action("f_aaa", "needs_human", "disagree")), forge)
+        self.assertEqual(forge.resolved, [])
+        self.assertIn("`f_aaa` (needs_human): replied; left open", self._attention(forge))
+        self.assertNotIn("outdated review-bot thread(s)", forge.summary)
+
+    def test_outdated_sweep_skips_thread_when_reply_fails(self):
+        forge = FakeThreadsForge([self._outdated_bot_thread()], fail_reply={"T1"})
+        self._run(_thread_result(_action("f_aaa", "fixed")), forge)
+        self.assertEqual(forge.resolved, [])
+        self.assertIn("the explanation could not be posted", self._attention(forge))
+
+    def test_outdated_sweep_skips_thread_when_head_changed(self):
+        forge = FakeThreadsForge([self._outdated_bot_thread()], head="b" * 40)
+        self._run(_thread_result(_action("f_aaa", "fixed")), forge)
+        self.assertEqual((forge.replies, forge.resolved), ([], []))
+        self.assertIn("the PR head changed", self._attention(forge))
+
+    def test_outdated_sweep_skips_other_threads_when_head_changed(self):
+        forge = FakeThreadsForge([self._outdated_bot_thread()], head="b" * 40)
+        self._run(_thread_result(), forge)
+        self.assertEqual(forge.resolved, [])
+
+    def test_outdated_sweep_skips_unposted_result(self):
+        forge = FakeThreadsForge([self._outdated_bot_thread(), self._outdated_bot_thread("T2", "f_bbb", 2)])
+        self._run(_thread_result(_action("f_aaa", "fixed")), forge, env={"FIX_RESULT_SECRET_SCAN": ""})
+        self.assertEqual(forge.resolved, [])
+
+    def test_outdated_sweep_skips_duplicate_action_thread(self):
+        forge = FakeThreadsForge([self._outdated_bot_thread()])
+        self._run(_thread_result(_action("f_aaa", "fixed"), _action("f_aaa", "declined")), forge)
+        self.assertEqual(forge.resolved, [])
 
     def test_outdated_sweep_failure_reported_per_thread(self):
         eligible = _bot_thread("T1", "f_old", 1, outdated=True, c_outdated=True)

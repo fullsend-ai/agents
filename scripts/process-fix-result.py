@@ -1406,7 +1406,12 @@ def _stamped_ids(thread):
 
 
 def load_seen_comment_ids(path):
-    """Map finding id -> comment ids the fix agent was given, or None if unknown."""
+    """Map finding id -> {comment id: body} the fix agent was given, or None if unknown.
+
+    The body is kept so a comment edited after the manifest was built (same
+    id, new text) is not mistaken for one the agent read. A manifest comment
+    without a string body maps to None, which never matches a live comment.
+    """
     if not path:
         return None
     try:
@@ -1420,10 +1425,11 @@ def load_seen_comment_ids(path):
     for thread in manifest["threads"]:
         if not isinstance(thread, dict) or not isinstance(thread.get("finding_id"), str):
             continue
-        ids = seen.setdefault(thread["finding_id"], set())
+        ids = seen.setdefault(thread["finding_id"], {})
         for comment in thread.get("comments") or []:
             if isinstance(comment, dict) and isinstance(comment.get("id"), int):
-                ids.add(comment["id"])
+                body = comment.get("body")
+                ids[comment["id"]] = body if isinstance(body, str) else None
     return seen
 
 
@@ -1480,7 +1486,13 @@ def reconcile_finding_threads(data, repo, pr_number, head_sha, can_post, manifes
         print(f"::warning::Could not read review threads: {detail}", file=sys.stderr)
 
     seen = load_seen_comment_ids(manifest_path)
-    touched = set()
+    # Every thread a disposition names, whatever its outcome. The outdated
+    # sweep must not resolve these: the run may have deliberately left one open.
+    targeted = {
+        t.get("id")
+        for t in threads
+        if any(fid in _stamped_ids(t) for fid in counts)
+    }
     entries = []
     done = set()
 
@@ -1532,13 +1544,17 @@ def reconcile_finding_threads(data, repo, pr_number, head_sha, can_post, manifes
             continue
         comments = _thread_comments(thread)
         if disposition in ("fixed", "declined"):
-            known = None if seen is None else seen.get(fid, set())
+            known = None if seen is None else seen.get(fid, {})
             unread = [
                 c
                 for c in comments
                 if not _is_review_bot(c, trusted)
                 and not c.get("viewerDidAuthor")
-                and (known is None or c.get("databaseId") not in known)
+                and (
+                    known is None
+                    or c.get("databaseId") not in known
+                    or known[c.get("databaseId")] != (c.get("body") or "")
+                )
             ]
             if unread:
                 entry("new-reply", thread)
@@ -1575,15 +1591,17 @@ def reconcile_finding_threads(data, repo, pr_number, head_sha, can_post, manifes
                 print(f"::warning::Could not resolve the thread for {fid}: {detail}", file=sys.stderr)
                 entry("resolve-failed", thread)
                 continue
-        touched.add(thread.get("id"))
         entry("resolved", thread)
 
+    # The sweep is bound by the same global gates as the dispositions: it acts
+    # only on a validated result, a complete read, and an unchanged head.
+    sweep_ok = can_post and fetch_error is None and complete and bool(head_sha) and live_head == head_sha
     outdated_resolved = 0
-    for thread in threads:
+    for thread in threads if sweep_ok else []:
         comments = _thread_comments(thread)
         if (
             thread.get("id") is None
-            or thread.get("id") in touched
+            or thread.get("id") in targeted
             or thread.get("isResolved") is not False
             or thread.get("viewerCanResolve") is not True
             or thread.get("isOutdated") is not True
