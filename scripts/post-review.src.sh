@@ -1711,6 +1711,16 @@ fi
 # changed-head threads, and threads anyone else commented in. Those are
 # listed in the review body with a link and a next step, without ids. Forge
 # errors never fail the review.
+#
+# Accepted ordering: threads are closed BEFORE forge_post_review, because the
+# threads left open are listed in the review body and so must be known first.
+# If posting then fails, the threads stay closed while the last published
+# ledger still lists those findings as open. That is self-healing: the
+# rerun re-reviews against the same ledger, records the same
+# resolved_by_change disposition, and finds the thread already resolved
+# (counted as done, no second reply). The same applies when the head moves
+# after this point and posting exits as stale-head. Threads are only closed
+# when the PR head still matches the reviewed head at that moment.
 FINDING_THREADS_SETTLED='[]'
 if [[ -n "${PRIOR_FINDINGS_PROJECTION}" ]]; then
   FINDING_THREADS_SETTLED="$(jq -c --argjson effective "${LEDGER_EFFECTIVE}" '

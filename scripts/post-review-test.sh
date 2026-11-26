@@ -673,6 +673,10 @@ for arg in "\$@"; do
   PREV="\${arg}"
 done
 echo "fullsend \$*" >> "${GH_LOG}"
+# MOCK_POST_REVIEW_FAIL simulates a failed review publication.
+if [[ "\$1" == "post-review" ]] && [[ -n "\${MOCK_POST_REVIEW_FAIL:-}" ]]; then
+  exit 1
+fi
 MOCKEOF
 chmod +x "${MOCK_BIN}/fullsend"
 
@@ -5994,6 +5998,31 @@ ft_github_case "finding-thread-github-fetch-failure-leaves-open" "${FT_REVIEW}" 
 ft_check "finding-thread-github-fetch-failure-leaves-open" "no reply" ft_no_reply
 assert_last_result "finding-thread-github-fetch-failure-leaves-open" '(.body | contains("the review threads could not be read. **Next step:**")) and (.body | contains("[Thread](https://github.com/test-org/test-repo/pull/99)"))'
 unset MOCK_REVIEW_THREADS_FAIL
+
+# Accepted ordering: threads close before the review is posted, so a failed
+# publication leaves the thread closed and fails the run. The rerun finds the
+# thread already resolved (see finding-thread-github-already-resolved).
+MOCK_REVIEW_THREADS_JSON="$(ft_threads "$(ft_thread T1 '<!-- finding:f_fix1 --> The sum is wrong.')")"
+export MOCK_REVIEW_THREADS_JSON MOCK_POST_REVIEW_FAIL=1
+ft_post_fail_exit=0
+(
+  ft_run_dir="${TMPDIR}/run-finding-thread-github-post-failure"
+  mkdir -p "${ft_run_dir}/iteration-1/output"
+  printf '%s' "${FT_REVIEW}" > "${ft_run_dir}/iteration-1/output/agent-result.json"
+  printf '%s' "${FT_PRIOR}" > "${ft_run_dir}/prior.json"
+  : > "${GH_LOG}"
+  rm -f "${TMPDIR}/last-thread-reply.txt"
+  cd "${ft_run_dir}"
+  export PATH="${MOCK_BIN}:${PATH}"
+  export REVIEW_TOKEN="fake-token" PR_NUMBER="99" REPO_FULL_NAME="test-org/test-repo"
+  export PR_URL="https://github.com/test-org/test-repo/pull/99" FULLSEND_FORGE="github"
+  export REVIEW_FINDING_SEVERITY_THRESHOLD="low" PRIOR_REVIEW_FILE="${ft_run_dir}/prior.json"
+  bash "${POST_SCRIPT}"
+) > "${TMPDIR}/stdout-finding-thread-github-post-failure.log" 2>&1 || ft_post_fail_exit=$?
+ft_check "finding-thread-github-post-failure" "run fails" test "${ft_post_fail_exit}" -ne 0
+ft_check "finding-thread-github-post-failure" "review publication attempted" ft_log_has "fullsend post-review"
+ft_check "finding-thread-github-post-failure" "thread closed before the failed post" ft_log_has "resolveReviewThread(input"
+unset MOCK_POST_REVIEW_FAIL
 
 # No ledger projection (a dimension failed): the closure is not recorded, so
 # the thread is not touched.
