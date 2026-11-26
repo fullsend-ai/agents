@@ -8381,9 +8381,11 @@ run_finding_threads_postfix() {
          body: "Also cover nulls.", outdated: false, viewerDidAuthor: false,
          author: {__typename: "User", login: "alice"}}]}}]}}}}}' > "${run_dir}/threads.json"
   if [ "${manifest}" = "seen" ]; then
-    echo '{"complete": true, "threads": [{"finding_id": "f_aaa", "comments": [{"id": 1}, {"id": 2}]}]}'
+    jq -n '{complete: true, threads: [{finding_id: "f_aaa", comments: [
+      {id: 1, body: "Bug.\n<!-- finding:f_aaa -->"}, {id: 2, body: "Also cover nulls."}]}]}'
   else
-    echo '{"complete": true, "threads": [{"finding_id": "f_aaa", "comments": [{"id": 1}]}]}'
+    jq -n '{complete: true, threads: [{finding_id: "f_aaa", comments: [
+      {id: 1, body: "Bug.\n<!-- finding:f_aaa -->"}]}]}'
   fi > "${run_dir}/runner-temp/fullsend-fix-finding-threads.json"
   jq -n '{pr_number: 99, trigger_source: "bot", summary: "Fixed it.", tests_passed: true, files_changed: [],
     actions: [{type: "fix", finding: "Null input", finding_id: "f_aaa", disposition: "fixed",
