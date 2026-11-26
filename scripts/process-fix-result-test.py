@@ -2308,6 +2308,16 @@ class TestFindingThreads(unittest.TestCase):
         self.assertEqual(forge.order, [("reply", "T1"), ("resolve", "T1")])
         self.assertIn("Declined by the fix agent:** Duplicate of the input check.", forge.replies[0][1])
 
+    def test_reply_does_not_rejoin_text_split_by_carriage_returns(self):
+        # The secret scan sees the raw text; the posted reply must not delete
+        # characters and so reassemble a token the scan saw split.
+        forge = FakeThreadsForge([_bot_thread("T1", "f_aaa", 1)])
+        self._run(_thread_result(_action("f_aaa", "fixed", description="ghp_abcd\refgh\r\nijkl")), forge)
+        body = forge.replies[0][1]
+        self.assertNotIn("\r", body)
+        self.assertNotIn("ghp_abcdefgh", body)
+        self.assertIn("ghp_abcd\nefgh\nijkl", body)
+
     def test_needs_human_replies_and_stays_open(self):
         forge = FakeThreadsForge([_bot_thread("T1", "f_aaa", 1)])
         self._run(_thread_result(_action("f_aaa", "needs_human", "disagree", reason="Needs a product call.")), forge)

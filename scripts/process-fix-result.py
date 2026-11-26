@@ -1450,7 +1450,9 @@ def _reply_marker(finding_id, disposition, head_sha):
 def _reply_body(action, disposition, marker, commit_url):
     """The explanation posted in the thread, led by the idempotency marker."""
     first, second = ("reason", "description") if disposition == "declined" else ("description", "reason")
-    detail = (action.get(first) or action.get(second) or "").replace("\r", "").strip()
+    # Convert carriage returns to newlines rather than deleting them: removing a
+    # character after the secret scan could rejoin a token the scan saw split.
+    detail = _normalize_newlines(action.get(first) or action.get(second) or "").strip()
     if disposition == "declined":
         text = f"**Declined by the fix agent:** {detail}\n\n_Resolving this thread. Reply or {_RERUN} if you disagree._"
     elif disposition == "needs_human":
