@@ -71,6 +71,7 @@ script-test:
 	$(call run-timed,bash scripts/post-failure-report-test.sh)
 	$(call run-timed,bash scripts/pr-assignee-test.sh)
 	$(call run-timed,bash scripts/labels-test.sh)
+	$(call run-timed,bash scripts/env-files-test.sh)
 	$(call run-timed,bash scripts/post-triage-test.sh)
 	$(call run-timed,bash scripts/pre-triage-test.sh)
 	$(call run-timed,bash scripts/pre-prioritize-test.sh)
