@@ -2960,26 +2960,15 @@ if [[ -n "${LEAKED_FINDING_IDS}" ]]; then
   echo "::warning::Removed finding id(s) ${LEAKED_FINDING_IDS} from the posted review text; ids stay in the ledger only"
 fi
 
-# Resolve the review threads of prior findings this review settled: an open
+# Work out the review threads of prior findings this review settled: an open
 # prior id whose effective status is resolved_by_change (rationale and
 # evidence given, and no current finding carries the id). open and
 # reclassified ids keep their threads open. Only when the projection is
 # written, so the ledger records the closure the thread reply explains.
-# forge_reconcile_finding_threads re-reads each thread, posts an explanation,
-# then resolves it. It leaves open human-owned and ambiguous matches,
-# changed-head threads, and threads anyone else commented in. Those are
-# listed in the review body with a link and a next step, without ids. Forge
-# errors never fail the review.
-#
-# Accepted ordering: threads are closed BEFORE forge_post_review, because the
-# threads left open are listed in the review body and so must be known first.
-# If posting then fails, the threads stay closed while the last published
-# ledger still lists those findings as open. That is self-healing: the
-# rerun re-reviews against the same ledger, records the same
-# resolved_by_change disposition, and finds the thread already resolved
-# (counted as done, no second reply). The same applies when the head moves
-# after this point and posting exits as stale-head. Threads are only closed
-# when the PR head still matches the reviewed head at that moment.
+# The threads are NOT touched here: they are reconciled only after
+# forge_post_review succeeds (see below), so a failed or stale-head
+# publication never leaves threads closed while the published ledger
+# still lists the findings as open.
 FINDING_THREADS_SETTLED='[]'
 if [[ -n "${PRIOR_FINDINGS_PROJECTION}" ]]; then
   FINDING_THREADS_SETTLED="$(jq -c --argjson effective "${LEDGER_EFFECTIVE}" '
@@ -2988,48 +2977,6 @@ if [[ -n "${PRIOR_FINDINGS_PROJECTION}" ]]; then
         | ($given | map(select(type == "object" and .id == $id)) | last) as $d
         | {id: $id, rationale: ($d.rationale // ""), evidence: ($d.evidence // "")} ]
   ' "${RESULT_FILE}")"
-fi
-if jq -e 'length > 0' <<< "${FINDING_THREADS_SETTLED}" >/dev/null 2>&1; then
-  FINDING_THREAD_ENTRIES="$(forge_reconcile_finding_threads "${FINDING_THREADS_SETTLED}" "$(jq -r '.head_sha // empty' "${RESULT_FILE}")")" \
-    || FINDING_THREAD_ENTRIES='[]'
-  jq -e 'type == "array"' <<< "${FINDING_THREAD_ENTRIES}" >/dev/null 2>&1 || FINDING_THREAD_ENTRIES='[]'
-  FINDING_THREADS_LOG="$(jq -r 'group_by(.status) | map("\(.[0].status) (\(length))") | join(", ")' <<< "${FINDING_THREAD_ENTRIES}")"
-  if [[ -n "${FINDING_THREADS_LOG}" ]]; then
-    echo "Finding threads of resolved prior findings: ${FINDING_THREADS_LOG}"
-  fi
-  FINDING_THREADS_NOTICE="$(jq -r '
-    def what:
-      {
-        "fetch-failed": ["the review threads could not be read", "resolve the thread manually if the change fixed the finding"],
-        "incomplete": ["the thread could not be read completely", "check the thread and resolve it manually if the change fixed the finding"],
-        "human-owned": ["the thread was not started by the review bot", "resolve it manually if the change fixed the finding"],
-        "ambiguous": ["more than one open thread carries this finding", "resolve the threads the change fixed manually"],
-        "changed-head": ["the PR head moved after this review", "confirm the latest commit keeps the fix, then resolve the thread manually"],
-        "other-comment": ["someone other than the review bot commented in the thread", "answer the comment, then resolve the thread when settled"],
-        "not-resolvable": ["the review bot cannot resolve this thread", "resolve it manually"],
-        "reply-failed": ["the explanation could not be posted, so the thread was left open", "resolve it manually"],
-        "resolve-failed": ["the explanation was posted, but the thread could not be resolved", "resolve it manually"]
-      }[.status];
-    ([ .[] | select(.status == "resolved") ]) as $done
-    | ([ .[] | select(what != null) ]) as $open
-    | [ (if ($done | length) > 0 then
-           "**Finding threads:** resolved \($done | length) earlier finding thread(s) this change fixed: "
-           + ([ $done | to_entries[] | "[\(.key + 1)](\(.value.url))" ] | join(", ")) + "."
-         else empty end),
-        (if ($open | length) > 0 then
-           "**Finding threads left open (\($open | length)):**\n"
-           + ([ $open | to_entries[] | (.value | what) as $w
-                | "\(.key + 1). [Thread](\(.value.url)): \($w[0]). **Next step:** \($w[1])." ] | join("\n"))
-         else empty end) ]
-    | join("\n\n")
-  ' <<< "${FINDING_THREAD_ENTRIES}")"
-  if [[ -n "${FINDING_THREADS_NOTICE}" ]]; then
-    FINDING_THREADS_RESULT="$(mktemp)"
-    CLEANUP_FILES+=("${FINDING_THREADS_RESULT}")
-    jq --arg notice $'\n\n---\n'"${FINDING_THREADS_NOTICE}" '.body = ((.body // "") + $notice)' \
-      "${RESULT_FILE}" > "${FINDING_THREADS_RESULT}"
-    RESULT_FILE="${FINDING_THREADS_RESULT}"
-  fi
 fi
 
 TMP_RESULT="$(mktemp)"
@@ -3126,6 +3073,57 @@ ${REDISPATCH_MARKER}" || echo "::warning::Failed to post re-dispatch comment"
 elif [ "${POST_REVIEW_EXIT}" -ne 0 ]; then
   echo "::error::fullsend post-review failed with exit code ${POST_REVIEW_EXIT} (PR #${PR_NUMBER} in ${REPO})" >&2
   exit "${POST_REVIEW_EXIT}"
+fi
+
+# ---------------------------------------------------------------------------
+# Finding threads: resolve the threads of prior findings this review settled,
+# only now that the review carrying the matching ledger is published. A
+# failed or stale-head publication exits above, so it never leaves threads
+# closed while the published ledger still lists those findings as open; a
+# rerun settles them against that ledger. forge_reconcile_finding_threads
+# re-reads each thread, posts an explanation, then resolves it. It leaves
+# open human-owned and ambiguous matches, changed-head threads, and threads
+# anyone else commented in. Those are listed, with a link and a next step
+# and without ids, in a separate comment. Forge errors never fail the review.
+# ---------------------------------------------------------------------------
+if jq -e 'length > 0' <<< "${FINDING_THREADS_SETTLED}" >/dev/null 2>&1; then
+  FINDING_THREAD_ENTRIES="$(forge_reconcile_finding_threads "${FINDING_THREADS_SETTLED}" "$(jq -r '.head_sha // empty' "${RESULT_FILE}")")" \
+    || FINDING_THREAD_ENTRIES='[]'
+  jq -e 'type == "array"' <<< "${FINDING_THREAD_ENTRIES}" >/dev/null 2>&1 || FINDING_THREAD_ENTRIES='[]'
+  FINDING_THREADS_LOG="$(jq -r 'group_by(.status) | map("\(.[0].status) (\(length))") | join(", ")' <<< "${FINDING_THREAD_ENTRIES}")"
+  if [[ -n "${FINDING_THREADS_LOG}" ]]; then
+    echo "Finding threads of resolved prior findings: ${FINDING_THREADS_LOG}"
+  fi
+  FINDING_THREADS_NOTICE="$(jq -r '
+    def what:
+      {
+        "fetch-failed": ["the review threads could not be read", "resolve the thread manually if the change fixed the finding"],
+        "incomplete": ["the thread could not be read completely", "check the thread and resolve it manually if the change fixed the finding"],
+        "human-owned": ["the thread was not started by the review bot", "resolve it manually if the change fixed the finding"],
+        "ambiguous": ["more than one open thread carries this finding", "resolve the threads the change fixed manually"],
+        "changed-head": ["the PR head moved after this review", "confirm the latest commit keeps the fix, then resolve the thread manually"],
+        "other-comment": ["someone other than the review bot commented in the thread", "answer the comment, then resolve the thread when settled"],
+        "not-resolvable": ["the review bot cannot resolve this thread", "resolve it manually"],
+        "reply-failed": ["the explanation could not be posted, so the thread was left open", "resolve it manually"],
+        "resolve-failed": ["the explanation was posted, but the thread could not be resolved", "resolve it manually"]
+      }[.status];
+    ([ .[] | select(.status == "resolved") ]) as $done
+    | ([ .[] | select(what != null) ]) as $open
+    | [ (if ($done | length) > 0 then
+           "**Finding threads:** resolved \($done | length) earlier finding thread(s) this change fixed: "
+           + ([ $done | to_entries[] | "[\(.key + 1)](\(.value.url))" ] | join(", ")) + "."
+         else empty end),
+        (if ($open | length) > 0 then
+           "**Finding threads left open (\($open | length)):**\n"
+           + ([ $open | to_entries[] | (.value | what) as $w
+                | "\(.key + 1). [Thread](\(.value.url)): \($w[0]). **Next step:** \($w[1])." ] | join("\n"))
+         else empty end) ]
+    | join("\n\n")
+  ' <<< "${FINDING_THREAD_ENTRIES}")"
+  if [[ -n "${FINDING_THREADS_NOTICE}" ]]; then
+    forge_post_comment "${FINDING_THREADS_NOTICE}" \
+      || echo "::warning::Failed to post the finding thread notice"
+  fi
 fi
 
 # ---------------------------------------------------------------------------

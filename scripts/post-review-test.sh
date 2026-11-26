@@ -593,6 +593,14 @@ if [[ "\$1" == "label" ]] && [[ "\$2" == "create" ]] && [[ "\$3" == risk/* ]]; t
   exit 0
 fi
 
+# gh issue comment --body-file - → the separate finding-thread notice. The
+# body is saved for assertions.
+if [[ "\$1" == "issue" ]] && [[ "\$2" == "comment" ]]; then
+  echo "gh \$*" >> "${GH_LOG}"
+  cat > "${TMPDIR}/last-thread-notice.txt"
+  exit 0
+fi
+
 # Log all other calls
 echo "gh \$*" >> "${GH_LOG}"
 MOCKEOF
@@ -750,8 +758,12 @@ if [[ "\${METHOD}" == "PUT" ]]; then
   exit 0
 fi
 
-# POST /merge_requests/:iid/notes → success
+# POST /merge_requests/:iid/notes → success. The body is saved for the
+# finding-thread notice assertions.
 if [[ "\${METHOD}" == "POST" ]]; then
+  for arg in "\$@"; do
+    [[ "\${arg}" == body=* ]] && printf '%s' "\${arg#body=}" > "${TMPDIR}/last-thread-notice.txt"
+  done
   echo '{"id":1}'
   exit 0
 fi
@@ -5785,7 +5797,8 @@ run_persona_drop_test "projection-carries-dimension" "none" \
 # Finding threads: a prior finding the review settles (resolved_by_change with
 # rationale and evidence, and not reported again) gets an explanation in its
 # one exact review-bot thread, then the thread is resolved. Everything else
-# stays open; the ones that need a human are listed in the review body.
+# stays open; the ones that need a human are listed in a separate comment
+# posted after the review is published.
 # ---------------------------------------------------------------------------
 unset MOCK_REVIEW_THREADS_JSON MOCK_REVIEW_THREADS_RESPONSE MOCK_PR_AUTHOR
 FT_HEAD_SHA="abcdef0123456789abcdef0123456789abcdef01"
@@ -5829,9 +5842,13 @@ ft_log_has() { grep -qF -- "$1" "${GH_LOG}"; }
 ft_log_lacks() { ! grep -qF -- "$1" "${GH_LOG}"; }
 ft_reply_has() { grep -qF -- "$1" "${TMPDIR}/last-thread-reply.txt" 2>/dev/null; }
 ft_no_reply() { [[ ! -e "${TMPDIR}/last-thread-reply.txt" ]]; }
+# The finding-thread notice is a separate comment posted after the review, not
+# part of the review body.
+ft_notice_has() { grep -qF -- "$1" "${TMPDIR}/last-thread-notice.txt" 2>/dev/null; }
+ft_no_notice() { [[ ! -e "${TMPDIR}/last-thread-notice.txt" ]]; }
 
 ft_github_case() {
-  rm -f "${TMPDIR}/last-thread-reply.txt"
+  rm -f "${TMPDIR}/last-thread-reply.txt" "${TMPDIR}/last-thread-notice.txt"
   run_disposition_case "$@"
 }
 
@@ -5845,8 +5862,12 @@ ft_check "finding-thread-github-resolves-exact-thread" "reply carries marker" \
   ft_reply_has "<!-- fullsend:review-resolve finding=f_fix1 head=${FT_HEAD_SHA} -->"
 ft_check "finding-thread-github-resolves-exact-thread" "reply explains why" ft_reply_has "**Why:** The sum is now correct."
 ft_check "finding-thread-github-resolves-exact-thread" "reply gives evidence" ft_reply_has "**Evidence:** src/add.go:2 returns a + b"
+ft_check "finding-thread-github-resolves-exact-thread" "notice lists the resolved thread" \
+  ft_notice_has "resolved 1 earlier finding thread(s) this change fixed: [1](https://github.com/test-org/test-repo/pull/99#discussion_r11)"
+ft_check "finding-thread-github-resolves-exact-thread" "notice has no open list or id" \
+  bash -c '! grep -qE "left open|f_fix1" "$1"' _ "${TMPDIR}/last-thread-notice.txt"
 assert_last_result "finding-thread-github-resolves-exact-thread" \
-  '(.body | contains("resolved 1 earlier finding thread(s) this change fixed: [1](https://github.com/test-org/test-repo/pull/99#discussion_r11)")) and (.body | contains("left open") | not) and (.body | contains("f_fix1") | not)'
+  '(.body | contains("Finding threads") | not) and (.body | contains("f_fix1") | not)'
 
 # The explanation is posted before the thread is resolved.
 ft_check "finding-thread-github-resolves-exact-thread" "reply before resolve" \
@@ -5905,8 +5926,8 @@ export MOCK_REVIEW_THREADS_JSON
 ft_github_case "finding-thread-github-human-owned-stays-open" "${FT_REVIEW}" "${FT_PRIOR}" "${FT_RESOLVED_LEDGER}"
 ft_check "finding-thread-github-human-owned-stays-open" "no reply" ft_no_reply
 ft_check "finding-thread-github-human-owned-stays-open" "no resolve" ft_log_lacks "resolveReviewThread(input"
-assert_last_result "finding-thread-github-human-owned-stays-open" \
-  '(.body | contains("**Finding threads left open (1):**\n1. [Thread](https://github.com/test-org/test-repo/pull/99#discussion_r11): the thread was not started by the review bot. **Next step:**"))'
+ft_check "finding-thread-github-human-owned-stays-open" "notice lists the open thread" \
+  ft_notice_has $'**Finding threads left open (1):**\n1. [Thread](https://github.com/test-org/test-repo/pull/99#discussion_r11): the thread was not started by the review bot. **Next step:**'
 
 # Two open review-bot threads with the same stamp: neither is touched.
 MOCK_REVIEW_THREADS_JSON="$(ft_threads "$(ft_thread T1 '<!-- finding:f_fix1 --> The sum is wrong.')" "$(ft_thread T2 '<!-- finding:f_fix1 --> The sum is wrong again.')")"
@@ -5914,7 +5935,7 @@ export MOCK_REVIEW_THREADS_JSON
 ft_github_case "finding-thread-github-ambiguous-stays-open" "${FT_REVIEW}" "${FT_PRIOR}" "${FT_RESOLVED_LEDGER}"
 ft_check "finding-thread-github-ambiguous-stays-open" "no reply" ft_no_reply
 ft_check "finding-thread-github-ambiguous-stays-open" "no resolve" ft_log_lacks "resolveReviewThread(input"
-assert_last_result "finding-thread-github-ambiguous-stays-open" '(.body | contains("more than one open thread carries this finding"))'
+ft_check "finding-thread-github-ambiguous-stays-open" "notice explains" ft_notice_has "more than one open thread carries this finding"
 
 # A resolved historical thread with the same stamp does not make the open one
 # ambiguous.
@@ -5929,7 +5950,7 @@ export MOCK_REVIEW_THREADS_JSON
 ft_github_case "finding-thread-github-changed-head-stays-open" "${FT_REVIEW}" "${FT_PRIOR}" "${FT_RESOLVED_LEDGER}"
 ft_check "finding-thread-github-changed-head-stays-open" "no reply" ft_no_reply
 ft_check "finding-thread-github-changed-head-stays-open" "no resolve" ft_log_lacks "resolveReviewThread(input"
-assert_last_result "finding-thread-github-changed-head-stays-open" '(.body | contains("the PR head moved after this review"))'
+ft_check "finding-thread-github-changed-head-stays-open" "notice explains" ft_notice_has "the PR head moved after this review"
 
 # A human comment in the thread may still need an answer.
 MOCK_REVIEW_THREADS_JSON="$(ft_threads "$(ft_thread T1 '<!-- finding:f_fix1 --> The sum is wrong.' false "${FT_HUMAN_REPLY}")")"
@@ -5937,7 +5958,8 @@ export MOCK_REVIEW_THREADS_JSON
 ft_github_case "finding-thread-github-human-reply-stays-open" "${FT_REVIEW}" "${FT_PRIOR}" "${FT_RESOLVED_LEDGER}"
 ft_check "finding-thread-github-human-reply-stays-open" "no reply" ft_no_reply
 ft_check "finding-thread-github-human-reply-stays-open" "no resolve" ft_log_lacks "resolveReviewThread(input"
-assert_last_result "finding-thread-github-human-reply-stays-open" '(.body | contains("someone other than the review bot commented in the thread. **Next step:** answer the comment"))'
+ft_check "finding-thread-github-human-reply-stays-open" "notice explains" \
+  ft_notice_has "someone other than the review bot commented in the thread. **Next step:** answer the comment"
 
 # Already resolved: nothing to do and nothing to report.
 MOCK_REVIEW_THREADS_JSON="$(ft_threads "$(ft_thread T1 '<!-- finding:f_fix1 --> The sum is wrong.' true)")"
@@ -5945,7 +5967,7 @@ export MOCK_REVIEW_THREADS_JSON
 ft_github_case "finding-thread-github-already-resolved" "${FT_REVIEW}" "${FT_PRIOR}" "${FT_RESOLVED_LEDGER}"
 ft_check "finding-thread-github-already-resolved" "no reply" ft_no_reply
 ft_check "finding-thread-github-already-resolved" "no resolve" ft_log_lacks "resolveReviewThread(input"
-assert_last_result "finding-thread-github-already-resolved" '(.body | contains("Finding threads") | not)'
+ft_check "finding-thread-github-already-resolved" "no notice" ft_no_notice
 
 # A rerun finds its own explanation and only resolves.
 FT_OWN_REPLY="$(jq -nc --arg body "<!-- fullsend:review-resolve finding=f_fix1 head=${FT_HEAD_SHA} -->
@@ -5964,44 +5986,47 @@ export MOCK_REVIEW_THREADS_JSON MOCK_REVIEW_THREAD_NODE_JSON
 ft_github_case "finding-thread-github-refetch-sees-concurrent-resolve" "${FT_REVIEW}" "${FT_PRIOR}" "${FT_RESOLVED_LEDGER}"
 ft_check "finding-thread-github-refetch-sees-concurrent-resolve" "no reply" ft_no_reply
 ft_check "finding-thread-github-refetch-sees-concurrent-resolve" "no resolve" ft_log_lacks "resolveReviewThread(input"
-assert_last_result "finding-thread-github-refetch-sees-concurrent-resolve" '(.body | contains("Finding threads") | not)'
+ft_check "finding-thread-github-refetch-sees-concurrent-resolve" "no notice" ft_no_notice
 
 # A human reply that arrived between the first read and the re-read.
 MOCK_REVIEW_THREAD_NODE_JSON="$(ft_threads "$(ft_thread T1 '<!-- finding:f_fix1 --> The sum is wrong.' false "${FT_HUMAN_REPLY}")")"
 export MOCK_REVIEW_THREAD_NODE_JSON
 ft_github_case "finding-thread-github-refetch-sees-new-human-reply" "${FT_REVIEW}" "${FT_PRIOR}" "${FT_RESOLVED_LEDGER}"
 ft_check "finding-thread-github-refetch-sees-new-human-reply" "no reply" ft_no_reply
-assert_last_result "finding-thread-github-refetch-sees-new-human-reply" '(.body | contains("someone other than the review bot commented in the thread"))'
+ft_check "finding-thread-github-refetch-sees-new-human-reply" "notice explains" ft_notice_has "someone other than the review bot commented in the thread"
 unset MOCK_REVIEW_THREAD_NODE_JSON
 
 # Per-thread API failures never fail the review run.
 export MOCK_THREAD_REPLY_FAIL=1
 ft_github_case "finding-thread-github-reply-failure-leaves-open" "${FT_REVIEW}" "${FT_PRIOR}" "${FT_RESOLVED_LEDGER}"
 ft_check "finding-thread-github-reply-failure-leaves-open" "no resolve" ft_log_lacks "resolveReviewThread(input"
-assert_last_result "finding-thread-github-reply-failure-leaves-open" '(.body | contains("the explanation could not be posted, so the thread was left open"))'
+ft_check "finding-thread-github-reply-failure-leaves-open" "notice explains" \
+  ft_notice_has "the explanation could not be posted, so the thread was left open"
 unset MOCK_THREAD_REPLY_FAIL
 
 export MOCK_RESOLVE_THREAD_FAIL=1
 ft_github_case "finding-thread-github-resolve-failure-reported" "${FT_REVIEW}" "${FT_PRIOR}" "${FT_RESOLVED_LEDGER}"
 ft_check "finding-thread-github-resolve-failure-reported" "reply posted" ft_log_has "addPullRequestReviewThreadReply"
-assert_last_result "finding-thread-github-resolve-failure-reported" '(.body | contains("the explanation was posted, but the thread could not be resolved"))'
+ft_check "finding-thread-github-resolve-failure-reported" "notice explains" \
+  ft_notice_has "the explanation was posted, but the thread could not be resolved"
 unset MOCK_RESOLVE_THREAD_FAIL
 
 export MOCK_REVIEW_THREAD_NODE_FAIL=1
 ft_github_case "finding-thread-github-refetch-failure-leaves-open" "${FT_REVIEW}" "${FT_PRIOR}" "${FT_RESOLVED_LEDGER}"
 ft_check "finding-thread-github-refetch-failure-leaves-open" "no reply" ft_no_reply
-assert_last_result "finding-thread-github-refetch-failure-leaves-open" '(.body | contains("the review threads could not be read"))'
+ft_check "finding-thread-github-refetch-failure-leaves-open" "notice explains" ft_notice_has "the review threads could not be read"
 unset MOCK_REVIEW_THREAD_NODE_FAIL
 
 export MOCK_REVIEW_THREADS_FAIL=1
 ft_github_case "finding-thread-github-fetch-failure-leaves-open" "${FT_REVIEW}" "${FT_PRIOR}" "${FT_RESOLVED_LEDGER}"
 ft_check "finding-thread-github-fetch-failure-leaves-open" "no reply" ft_no_reply
-assert_last_result "finding-thread-github-fetch-failure-leaves-open" '(.body | contains("the review threads could not be read. **Next step:**")) and (.body | contains("[Thread](https://github.com/test-org/test-repo/pull/99)"))'
+ft_check "finding-thread-github-fetch-failure-leaves-open" "notice explains" ft_notice_has "the review threads could not be read. **Next step:**"
+ft_check "finding-thread-github-fetch-failure-leaves-open" "notice links the PR" ft_notice_has "[Thread](https://github.com/test-org/test-repo/pull/99)"
 unset MOCK_REVIEW_THREADS_FAIL
 
-# Accepted ordering: threads close before the review is posted, so a failed
-# publication leaves the thread closed and fails the run. The rerun finds the
-# thread already resolved (see finding-thread-github-already-resolved).
+# Threads close only after the review is published: a failed publication fails
+# the run and leaves every thread untouched, with no notice posted, so the
+# published ledger and the threads never disagree.
 MOCK_REVIEW_THREADS_JSON="$(ft_threads "$(ft_thread T1 '<!-- finding:f_fix1 --> The sum is wrong.')")"
 export MOCK_REVIEW_THREADS_JSON MOCK_POST_REVIEW_FAIL=1
 ft_post_fail_exit=0
@@ -6011,7 +6036,7 @@ ft_post_fail_exit=0
   printf '%s' "${FT_REVIEW}" > "${ft_run_dir}/iteration-1/output/agent-result.json"
   printf '%s' "${FT_PRIOR}" > "${ft_run_dir}/prior.json"
   : > "${GH_LOG}"
-  rm -f "${TMPDIR}/last-thread-reply.txt"
+  rm -f "${TMPDIR}/last-thread-reply.txt" "${TMPDIR}/last-thread-notice.txt"
   cd "${ft_run_dir}"
   export PATH="${MOCK_BIN}:${PATH}"
   export REVIEW_TOKEN="fake-token" PR_NUMBER="99" REPO_FULL_NAME="test-org/test-repo"
@@ -6021,7 +6046,9 @@ ft_post_fail_exit=0
 ) > "${TMPDIR}/stdout-finding-thread-github-post-failure.log" 2>&1 || ft_post_fail_exit=$?
 ft_check "finding-thread-github-post-failure" "run fails" test "${ft_post_fail_exit}" -ne 0
 ft_check "finding-thread-github-post-failure" "review publication attempted" ft_log_has "fullsend post-review"
-ft_check "finding-thread-github-post-failure" "thread closed before the failed post" ft_log_has "resolveReviewThread(input"
+ft_check "finding-thread-github-post-failure" "no reply" ft_no_reply
+ft_check "finding-thread-github-post-failure" "no resolve" ft_log_lacks "resolveReviewThread(input"
+ft_check "finding-thread-github-post-failure" "no notice" ft_no_notice
 unset MOCK_POST_REVIEW_FAIL
 
 # No ledger projection (a dimension failed): the closure is not recorded, so
@@ -6042,7 +6069,7 @@ ft_discussion() {
      notes: ([{id: 11, body: $body, system: false, resolvable: true, resolved: $resolved, author: {username: $author}}] + $extra)}'
 }
 ft_gitlab_case() {
-  rm -f "${TMPDIR}/last-thread-reply.txt"
+  rm -f "${TMPDIR}/last-thread-reply.txt" "${TMPDIR}/last-thread-notice.txt"
   : > "${GH_LOG}"
   run_gitlab_disposition_case "$@"
 }
@@ -6054,22 +6081,22 @@ ft_check "finding-thread-gitlab-resolves-exact-thread" "reply posted" ft_log_has
 ft_check "finding-thread-gitlab-resolves-exact-thread" "thread resolved" ft_log_has "curl PUT https://gitlab.com/api/v4/projects/test-org%2Ftest-repo/merge_requests/99/discussions/D1"
 ft_check "finding-thread-gitlab-resolves-exact-thread" "reply carries marker" \
   ft_reply_has "<!-- fullsend:review-resolve finding=f_fix1 head=${FT_HEAD_SHA} -->"
-assert_last_result "finding-thread-gitlab-resolves-exact-thread" \
-  '(.body | contains("resolved 1 earlier finding thread(s) this change fixed: [1](https://gitlab.com/test-org/test-repo/-/merge_requests/99#note_11)"))'
+ft_check "finding-thread-gitlab-resolves-exact-thread" "notice lists the resolved thread" \
+  ft_notice_has "resolved 1 earlier finding thread(s) this change fixed: [1](https://gitlab.com/test-org/test-repo/-/merge_requests/99#note_11)"
 
 MOCK_GITLAB_DISCUSSIONS_JSON="[$(ft_discussion D1 '<!-- finding:f_fix1 --> The sum is wrong.' false '[{"id":12,"body":"Please also cover zero.","system":false,"resolvable":true,"resolved":false,"author":{"username":"alice"}}]')]"
 export MOCK_GITLAB_DISCUSSIONS_JSON
 ft_gitlab_case "finding-thread-gitlab-human-reply-stays-open" "${FT_REVIEW}" "${FT_PRIOR}" "${FT_RESOLVED_LEDGER}"
 ft_check "finding-thread-gitlab-human-reply-stays-open" "no reply" ft_no_reply
 ft_check "finding-thread-gitlab-human-reply-stays-open" "no resolve" ft_log_lacks "curl PUT"
-assert_last_result "finding-thread-gitlab-human-reply-stays-open" \
-  '(.body | contains("1. [Thread](https://gitlab.com/test-org/test-repo/-/merge_requests/99#note_11): someone other than the review bot commented in the thread."))'
+ft_check "finding-thread-gitlab-human-reply-stays-open" "notice explains" \
+  ft_notice_has "1. [Thread](https://gitlab.com/test-org/test-repo/-/merge_requests/99#note_11): someone other than the review bot commented in the thread."
 
 MOCK_GITLAB_DISCUSSIONS_JSON="[$(ft_discussion D1 '<!-- finding:f_fix1 --> I disagree.' false '[]' alice)]"
 export MOCK_GITLAB_DISCUSSIONS_JSON
 ft_gitlab_case "finding-thread-gitlab-human-owned-stays-open" "${FT_REVIEW}" "${FT_PRIOR}" "${FT_RESOLVED_LEDGER}"
 ft_check "finding-thread-gitlab-human-owned-stays-open" "no resolve" ft_log_lacks "curl PUT"
-assert_last_result "finding-thread-gitlab-human-owned-stays-open" '(.body | contains("the thread was not started by the review bot"))'
+ft_check "finding-thread-gitlab-human-owned-stays-open" "notice explains" ft_notice_has "the thread was not started by the review bot"
 
 MOCK_GITLAB_DISCUSSIONS_JSON="[$(ft_discussion D1 '<!-- finding:f_fix1 --> The sum is wrong.')]"
 export MOCK_GITLAB_DISCUSSIONS_JSON
@@ -6077,7 +6104,7 @@ export MOCK_MR_SHA="2222222222222222222222222222222222222222"
 ft_gitlab_case "finding-thread-gitlab-changed-head-stays-open" "${FT_REVIEW}" "${FT_PRIOR}" "${FT_RESOLVED_LEDGER}"
 ft_check "finding-thread-gitlab-changed-head-stays-open" "no reply" ft_no_reply
 ft_check "finding-thread-gitlab-changed-head-stays-open" "no resolve" ft_log_lacks "curl PUT"
-assert_last_result "finding-thread-gitlab-changed-head-stays-open" '(.body | contains("the PR head moved after this review"))'
+ft_check "finding-thread-gitlab-changed-head-stays-open" "notice explains" ft_notice_has "the PR head moved after this review"
 unset MOCK_MR_SHA
 
 MOCK_GITLAB_DISCUSSIONS_JSON="[$(ft_discussion D1 '<!-- finding:f_fix1 --> The sum is wrong.' true)]"
@@ -6090,18 +6117,20 @@ MOCK_GITLAB_DISCUSSIONS_JSON="[$(ft_discussion D1 '<!-- finding:f_fix1 --> The s
 export MOCK_GITLAB_DISCUSSIONS_JSON MOCK_GITLAB_REPLY_FAIL=1
 ft_gitlab_case "finding-thread-gitlab-reply-failure-leaves-open" "${FT_REVIEW}" "${FT_PRIOR}" "${FT_RESOLVED_LEDGER}"
 ft_check "finding-thread-gitlab-reply-failure-leaves-open" "no resolve" ft_log_lacks "curl PUT"
-assert_last_result "finding-thread-gitlab-reply-failure-leaves-open" '(.body | contains("the explanation could not be posted, so the thread was left open"))'
+ft_check "finding-thread-gitlab-reply-failure-leaves-open" "notice explains" \
+  ft_notice_has "the explanation could not be posted, so the thread was left open"
 unset MOCK_GITLAB_REPLY_FAIL
 
 export MOCK_GITLAB_RESOLVE_FAIL=1
 ft_gitlab_case "finding-thread-gitlab-resolve-failure-reported" "${FT_REVIEW}" "${FT_PRIOR}" "${FT_RESOLVED_LEDGER}"
-assert_last_result "finding-thread-gitlab-resolve-failure-reported" '(.body | contains("the explanation was posted, but the thread could not be resolved"))'
+ft_check "finding-thread-gitlab-resolve-failure-reported" "notice explains" \
+  ft_notice_has "the explanation was posted, but the thread could not be resolved"
 unset MOCK_GITLAB_RESOLVE_FAIL
 
 export MOCK_GITLAB_DISCUSSIONS_FAIL=1
 ft_gitlab_case "finding-thread-gitlab-fetch-failure-leaves-open" "${FT_REVIEW}" "${FT_PRIOR}" "${FT_RESOLVED_LEDGER}"
 ft_check "finding-thread-gitlab-fetch-failure-leaves-open" "no reply" ft_no_reply
-assert_last_result "finding-thread-gitlab-fetch-failure-leaves-open" '(.body | contains("the review threads could not be read"))'
+ft_check "finding-thread-gitlab-fetch-failure-leaves-open" "notice explains" ft_notice_has "the review threads could not be read"
 unset MOCK_GITLAB_DISCUSSIONS_FAIL MOCK_GITLAB_DISCUSSIONS_JSON
 
 # --- Summary ---
