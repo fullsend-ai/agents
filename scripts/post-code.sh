@@ -1423,11 +1423,11 @@ precommit_run_gate() {
     # Re-derive changed files after the amend.
     local _pg_new_changed=""
     if [ -n "${_pg_merge_base}" ]; then
-      _pg_new_changed="$(git diff --name-only "${_pg_merge_base}..HEAD")"
+      _pg_new_changed="$(git -c core.quotePath=false diff --name-only "${_pg_merge_base}..HEAD")"
     else
-      _pg_new_changed="$(git diff --name-only \
+      _pg_new_changed="$(git -c core.quotePath=false diff --name-only \
         "origin/${_pg_target_branch}..HEAD" 2>/dev/null \
-        || git diff --name-only HEAD~1..HEAD 2>/dev/null || true)"
+        || git -c core.quotePath=false diff --name-only HEAD~1..HEAD 2>/dev/null || true)"
     fi
 
     if [ -z "${_pg_new_changed}" ]; then
@@ -4339,11 +4339,11 @@ echo "Token source: ${PUSH_TOKEN_SOURCE:-unknown}"
 # ---------------------------------------------------------------------------
 MERGE_BASE="$(git merge-base "origin/${TARGET_BRANCH}" HEAD 2>/dev/null)" || MERGE_BASE=""
 if [ -n "${MERGE_BASE}" ]; then
-  CHANGED_FILES="$(git diff --name-only "${MERGE_BASE}..HEAD")"
+  CHANGED_FILES="$(git -c core.quotePath=false diff --name-only "${MERGE_BASE}..HEAD")"
 else
   gha_echo warning "Could not determine merge-base — trying origin/${TARGET_BRANCH}..HEAD"
-  CHANGED_FILES="$(git diff --name-only "origin/${TARGET_BRANCH}..HEAD" 2>/dev/null \
-    || git diff --name-only HEAD~1..HEAD 2>/dev/null || true)"
+  CHANGED_FILES="$(git -c core.quotePath=false diff --name-only "origin/${TARGET_BRANCH}..HEAD" 2>/dev/null \
+    || git -c core.quotePath=false diff --name-only HEAD~1..HEAD 2>/dev/null || true)"
 fi
 
 if [ -z "${CHANGED_FILES}" ]; then

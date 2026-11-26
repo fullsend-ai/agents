@@ -526,6 +526,127 @@ run_test_autofix "autofix-amends-and-retries" 0 "pass" "" "true" "false"
 run_test_autofix "autofix-secret-rescan-fails" 1 "fail" "secret-scan" "true" "true"
 
 # ---------------------------------------------------------------------------
+# Part 5: non-ASCII filenames reach the hooks (issue #2155)
+#
+# With git's default core.quotePath, `git diff --name-only` prints
+# "docs-caf\303\251.md" for docs-café.md. pre-commit drops --files paths that
+# do not exist, so a quoted name was silently skipped and the gate passed.
+# The stub mirrors that filtering, so a quoted path yields "no files to
+# check" and exit 0 exactly as real pre-commit does.
+# ---------------------------------------------------------------------------
+
+NONASCII_FILE="docs-café.md"
+
+# make_existing_files_stub <bindir> <mode>
+#   Logs "checked <path>" for every --files path that exists and ignores the
+#   rest, like pre-commit. mode: trailing-ws (fail if any checked file has
+#   trailing whitespace) | autofix (first call strips trailing whitespace
+#   from checked files and fails; later calls pass if a file was checked).
+make_existing_files_stub() {
+  local bindir="$1" mode="$2"
+  mkdir -p "${bindir}"
+  cat > "${bindir}/pre-commit" <<STUB
+#!/usr/bin/env bash
+checked=()
+for f in "\$@"; do
+  case "\$f" in run|--files) continue ;; esac
+  [ -f "\$f" ] && checked+=("\$f")
+done
+if [ "\${#checked[@]}" -eq 0 ]; then
+  echo "no trailing whitespace...............................(no files to check)Skipped"
+  exit 0
+fi
+for f in "\${checked[@]}"; do echo "checked \$f" | tee -a "${bindir}/checked.log"; done
+case "${mode}" in
+  trailing-ws)
+    if grep -qE " +\$" "\${checked[@]}"; then
+      echo "no trailing whitespace...................................................Failed"
+      echo "- hook id: no-trailing-ws"
+      exit 1
+    fi ;;
+  autofix)
+    if [ ! -f "${bindir}/.ran-once" ]; then
+      touch "${bindir}/.ran-once"
+      for f in "\${checked[@]}"; do printf 'x\n' > "\$f"; done
+      echo "- files were modified by this hook"
+      exit 1
+    fi ;;
+esac
+exit 0
+STUB
+  printf '#!/bin/sh\nexit 0\n' > "${bindir}/gitleaks"
+  chmod +x "${bindir}/pre-commit" "${bindir}/gitleaks"
+}
+
+# make_nonascii_fixture <dir> — base commit on main (origin/main), then an
+# agent commit adding NONASCII_FILE with trailing whitespace.
+make_nonascii_fixture() {
+  local dir="$1"
+  make_repo_fixture "${dir}" "true" "false" "false"
+  (
+    cd "${dir}"
+    printf 'x  \n' > "${NONASCII_FILE}"
+    git add -- "${NONASCII_FILE}"
+    git commit -q -m "agent"
+  )
+}
+
+# The validator derives the file list itself and must hand the hook the real
+# path, so the trailing whitespace fails the gate.
+run_test_nonascii_validator() {
+  local test_name="nonascii-filename-reaches-hooks"
+  local test_dir="${TMPDIR}/${test_name}" repo_dir="${TMPDIR}/${test_name}/repo" bin_dir="${TMPDIR}/${test_name}/bin"
+  mkdir -p "${test_dir}/output"
+  echo '{"target_branch":"main"}' > "${test_dir}/output/agent-result.json"
+  make_nonascii_fixture "${repo_dir}"
+  make_existing_files_stub "${bin_dir}" "trailing-ws"
+  local fake_home="${test_dir}/home"; mkdir -p "${fake_home}"
+  local exit_code=0
+  HOME="${fake_home}" PATH="${bin_dir}:${PATH}" \
+  FULLSEND_OUTPUT_SCHEMA="${SCHEMA}" TARGET_REPO_DIR="${repo_dir}" TARGET_BRANCH="main" \
+    bash -c "cd '${test_dir}' && bash '${VALIDATOR}'" > "${TMPDIR}/stdout.log" 2>&1 || exit_code=$?
+  if [[ ${exit_code} -ne 0 ]] \
+     && grep -qF "FAIL: pre-commit-blocked" "${TMPDIR}/stdout.log" \
+     && grep -qxF "checked ${NONASCII_FILE}" "${bin_dir}/checked.log" 2>/dev/null; then
+    echo "PASS: ${test_name}"
+  else
+    echo "FAIL: ${test_name} — expected the hook to check ${NONASCII_FILE} and fail the gate; got exit ${exit_code}"
+    head -20 "${TMPDIR}/stdout.log"
+    FAILURES=$((FAILURES + 1))
+  fi
+}
+run_test_nonascii_validator
+
+# The auto-fix retry re-derives the file list inside the library; the retry
+# must check the amended non-ASCII file, not skip a quoted path.
+run_test_nonascii_autofix_rederive() {
+  local test_name="nonascii-filename-autofix-retry-reaches-hooks"
+  local repo_dir="${TMPDIR}/${test_name}/repo" bin_dir="${TMPDIR}/${test_name}/bin"
+  make_nonascii_fixture "${repo_dir}"
+  make_existing_files_stub "${bin_dir}" "autofix"
+  local base
+  base="$(git -C "${repo_dir}" rev-parse refs/remotes/origin/main)"
+  local out
+  out="$(cd "${repo_dir}" && PATH="${bin_dir}:${PATH}" NONASCII_FILE="${NONASCII_FILE}" bash -c '
+    set -euo pipefail
+    source "'"${LIB_DIR}"'/post-failure-report.lib.sh"
+    source "'"${LIB_DIR}"'/precommit-gate.lib.sh"
+    files=("${NONASCII_FILE}")
+    precommit_run_gate files "'"${base}"'..HEAD" main "'"${base}"'" >/dev/null 2>&1
+    printf "result=%s files=%s\n" "${PRECOMMIT_GATE_RESULT}" "${files[*]}"
+  ' 2>&1)"
+  local checks
+  checks="$(grep -cxF "checked ${NONASCII_FILE}" "${bin_dir}/checked.log" 2>/dev/null || true)"
+  if [[ "${out}" == "result=pass files=${NONASCII_FILE}" && "${checks}" == "2" ]]; then
+    echo "PASS: ${test_name}"
+  else
+    echo "FAIL: ${test_name} — expected result=pass files=${NONASCII_FILE} and 2 checks; got: ${out} (checks=${checks})"
+    FAILURES=$((FAILURES + 1))
+  fi
+}
+run_test_nonascii_autofix_rederive
+
+# ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
 
