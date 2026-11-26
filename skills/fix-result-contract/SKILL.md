@@ -31,7 +31,7 @@ output points here instead of restating the rules.
   "trigger_source": "bot",
   "iteration": 1,
   "actions": [
-    {"type": "fix", "finding": "Missing input validation", "path": "src/input.sh", "description": "Reject empty input before processing"},
+    {"type": "fix", "finding": "Missing input validation", "finding_id": "f_3fa94c2e17b05d68", "disposition": "fixed", "path": "src/input.sh", "description": "Reject empty input before processing"},
     {"type": "disagree", "finding": "Rename the public command", "path": "src/cli.sh", "reason": "The existing name is part of the documented public interface"}
   ],
   "decision_points": [{"description": "Preserve the public command name", "alternatives": ["Rename the command", "Keep the documented name"], "rationale": "Renaming would break existing callers"}],
@@ -58,6 +58,14 @@ that gather these). `trigger_source` is `"bot"`/`"human"`. Action types:
 `type`, `finding`, `reason`). Required top-level fields: `pr_number`,
 `trigger_source`, `actions` (≥1), `summary`, `tests_passed`,
 `files_changed`.
+
+An action on a stamped review finding also carries `finding_id` (the
+exact `f_...` id) and `disposition`: `fixed` (type `fix`), `declined`
+(type `disagree`), or `needs_human` (either type). The two fields always
+appear together, and each id gets one action. Omit both for standalone
+human instructions and CI fixes. The post-script posts the action's
+`description` (fixed) or `reason` (declined) as a reply in the finding's
+thread, so write it for that reader. See the `finding-ids` skill.
 
 ## Propose PR/MR metadata
 

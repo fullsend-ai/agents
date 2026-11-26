@@ -22,6 +22,10 @@
 #   FIX_CONFLICT_UPDATE_STRATEGY
 #                      — merge (default) or rebase; how to publish a
 #                        forge-reported merge conflict the agent reconciled
+#   RUNNER_TEMP        — GitHub: directory the finding-thread manifest is
+#                        written to (mounted into the sandbox by the harness)
+#   FULLSEND_APP_SET   — GitHub: app-set prefix whose -review bot is also
+#                        trusted as a finding-thread author
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -162,6 +166,24 @@ if ! is_bot_user "${TRIGGER_SOURCE}" && [[ -n "${HUMAN_INSTRUCTION:-}" ]]; then
   # Truncate instruction in logs to avoid leaking long user input.
   INSTR_PREVIEW="${HUMAN_INSTRUCTION:0:200}"
   echo "  HUMAN_INSTRUCTION=${INSTR_PREVIEW}..."
+fi
+
+# ---------------------------------------------------------------------------
+# Finding-thread manifest (GitHub, issue #2187)
+#
+# Hand the fix agent every open review-bot finding thread with its stable
+# f_... id, link and full comment context (human replies included). The
+# harness mounts the file into the sandbox; post-fix reads it back to see
+# which replies the agent had. A stale file from an earlier run is removed
+# first. Without RUNNER_TEMP (outside GitHub Actions) nothing is written.
+# ---------------------------------------------------------------------------
+if [ "${FULLSEND_FORGE}" = "github" ]; then
+  if FINDING_THREADS_MANIFEST="$(finding_threads_manifest_path)"; then
+    rm -f "${FINDING_THREADS_MANIFEST}"
+    forge_write_finding_threads_manifest "${FINDING_THREADS_MANIFEST}"
+  else
+    echo "RUNNER_TEMP is not set — no finding-thread manifest written"
+  fi
 fi
 
 # ---------------------------------------------------------------------------

@@ -30,6 +30,8 @@
 #   - Post a summary comment on the PR documenting fixes and disagreements
 #   - Apply a proposed pr_title / pr_body (after schema validation and the
 #     result-file secret scan pass; skipped on a concurrent edit; non-fatal)
+#   - Reply to and resolve the review-bot finding threads the agent gave a
+#     disposition, and resolve outdated review-bot threads (GitHub; non-fatal)
 #   - Apply labels (needs-human) if the iteration cap is approaching
 #
 # Required environment variables:
@@ -55,6 +57,10 @@
 #                       forge-reported merge conflict the agent reconciled
 #   POST_FAILURE_DETAIL_MAX_LINES
 #                     — max lines of failure detail in issue/PR comments (default: 30)
+#   RUNNER_TEMP       — GitHub: directory holding the finding-thread manifest
+#                       pre-fix wrote for the agent
+#   FULLSEND_APP_SET  — GitHub: app-set prefix whose -review bot is also
+#                       trusted as a finding-thread author
 #
 # Exit codes:
 #   0  — branch pushed, PR updated
@@ -1263,9 +1269,11 @@ else
   # and passed (FIX_RESULT_SECRET_SCAN=passed). gitleaks is only installed on
   # push runs, so install it for a metadata-only (no-push) run that proposes
   # metadata; if that fails the summary is still posted without the update.
+  # Finding-thread replies (issue #2187) carry agent text too, so a run that
+  # recorded finding dispositions needs the scan as well.
   if ! command -v gitleaks >/dev/null 2>&1 \
-    && jq -e '(.pr_title // "") != "" or (.pr_body // "") != ""' "${RESULT_FILE}" >/dev/null 2>&1; then
-    install_gitleaks || gha_echo warning "Could not install gitleaks — proposed PR metadata will not be applied"
+    && jq -e '(.pr_title // "") != "" or (.pr_body // "") != "" or any(.actions[]?; (.disposition // "") != "")' "${RESULT_FILE}" >/dev/null 2>&1; then
+    install_gitleaks || gha_echo warning "Could not install gitleaks — proposed PR metadata and finding-thread replies will not be applied"
   fi
   FIX_RESULT_SECRET_SCAN=skipped
   if command -v gitleaks >/dev/null 2>&1; then
@@ -1276,6 +1284,9 @@ else
     # too: a secret written with \uXXXX escapes does not match in the raw file.
     jq -r '(.pr_title // "") | strings' "${RESULT_FILE}" > "${SCAN_DIR}/pr_title.txt" 2>/dev/null || true
     jq -r '(.pr_body // "") | strings' "${RESULT_FILE}" > "${SCAN_DIR}/pr_body.txt" 2>/dev/null || true
+    # Finding-thread replies post the decoded action text the same way.
+    jq -r '.actions[]? | (.description // ""), (.reason // "") | strings' "${RESULT_FILE}" \
+      > "${SCAN_DIR}/actions.txt" 2>/dev/null || true
     if ! gitleaks detect --source "${SCAN_DIR}" --no-git --redact 2>/dev/null; then
       rm -rf "${SCAN_DIR}"
       post_fail_to_pr secret-scan "${POST_FAILURE_SECRET_SCAN_MESSAGE}"
@@ -1284,10 +1295,23 @@ else
     FIX_RESULT_SECRET_SCAN=passed
   fi
 
+  # Finding threads (GitHub, issue #2187): the processor replies to and
+  # resolves review-bot finding threads only while the live PR head is the
+  # commit this run left behind, and compares thread replies with the
+  # manifest pre-fix gave the agent.
+  FIX_PUBLISHED_HEAD_SHA=""
+  FIX_FINDING_THREADS_MANIFEST=""
+  if [ "${FULLSEND_FORGE}" = "github" ]; then
+    FIX_PUBLISHED_HEAD_SHA="$(git rev-parse HEAD 2>/dev/null || true)"
+    FIX_FINDING_THREADS_MANIFEST="$(finding_threads_manifest_path || true)"
+  fi
+
   echo "Processing agent-result.json: ${RESULT_FILE}"
   PROCESS_EXIT=0
   SIGNOFF_STRIPPED_COUNT="${SIGNOFF_STRIPPED_COUNT}" \
   FIX_RESULT_SECRET_SCAN="${FIX_RESULT_SECRET_SCAN}" \
+  FIX_PUBLISHED_HEAD_SHA="${FIX_PUBLISHED_HEAD_SHA}" \
+  FIX_FINDING_THREADS_MANIFEST="${FIX_FINDING_THREADS_MANIFEST}" \
     python3 "${PROCESS_SCRIPT}" "${RESULT_FILE}" "${REPO_FULL_NAME}" "${PR_NUMBER}" || PROCESS_EXIT=$?
   if [ "${PROCESS_EXIT}" -eq 1 ]; then
     post_fail_to_pr process-output-failed \

@@ -31,6 +31,8 @@
 #   - Post a summary comment on the PR documenting fixes and disagreements
 #   - Apply a proposed pr_title / pr_body (after schema validation and the
 #     result-file secret scan pass; skipped on a concurrent edit; non-fatal)
+#   - Reply to and resolve the review-bot finding threads the agent gave a
+#     disposition, and resolve outdated review-bot threads (GitHub; non-fatal)
 #   - Apply labels (needs-human) if the iteration cap is approaching
 #
 # Required environment variables:
@@ -56,6 +58,10 @@
 #                       forge-reported merge conflict the agent reconciled
 #   POST_FAILURE_DETAIL_MAX_LINES
 #                     — max lines of failure detail in issue/PR comments (default: 30)
+#   RUNNER_TEMP       — GitHub: directory holding the finding-thread manifest
+#                       pre-fix wrote for the agent
+#   FULLSEND_APP_SET  — GitHub: app-set prefix whose -review bot is also
+#                       trusted as a finding-thread author
 #
 # Exit codes:
 #   0  — branch pushed, PR updated
@@ -660,6 +666,160 @@ forge_get_workspace_dir() {
 forge_append_path() {
   local dir="$1"
   echo "${dir}" >> "${GITHUB_PATH:-/dev/null}"
+}
+
+# --- Finding threads ---
+
+# finding_threads_manifest_path — where pre-fix writes the finding-thread
+# manifest and post-fix reads it back (issue #2187). harness/fix.yaml mounts
+# the same path into the sandbox as /sandbox/workspace/finding-threads.json.
+# Fails when RUNNER_TEMP is unset (outside GitHub Actions).
+finding_threads_manifest_path() {
+  [[ -n "${RUNNER_TEMP:-}" ]] || return 1
+  printf '%s/fullsend-fix-finding-threads.json\n' "${RUNNER_TEMP}"
+}
+
+# _finding_threads_manifest_from_nodes COMPLETE HEAD_SHA — reads a JSON array
+# of reviewThreads.nodes on stdin and prints the manifest. A thread is listed
+# when it is unresolved and its first comment is a trusted review-bot comment
+# carrying exactly one <!-- finding:f_... --> stamp. Every comment in the
+# thread is kept, human replies included. Trusted review bots are
+# <org>-review, fullsend-ai-review and, when FULLSEND_APP_SET is set,
+# <app-set>-review (the same identities post-review trusts).
+_finding_threads_manifest_from_nodes() {
+  local complete="$1" head_sha="$2"
+  jq -c --argjson complete "${complete}" --arg head "${head_sha}" \
+    --arg org "${REPO_FULL_NAME%%/*}" --arg app_set "${FULLSEND_APP_SET:-}" '
+    ([ ($org + "-review"), ($org + "-review[bot]"),
+       "fullsend-ai-review", "fullsend-ai-review[bot]",
+       (if $app_set == "" then empty else ($app_set + "-review"), ($app_set + "-review[bot]") end)
+     ] | map(ascii_downcase)) as $trusted
+    | def review_bot:
+        (.author.__typename // "") == "Bot"
+        and (((.author.login // "") | ascii_downcase) as $l | ($trusted | index($l)) != null);
+    [ .[]
+      | select(type == "object" and .isResolved == false)
+      | (.comments.nodes // [] | map(select(type == "object"))) as $cs
+      | select(($cs | length) > 0)
+      | select($cs[0] | review_bot)
+      | ([ $cs[0].body // "" | scan("<!--[[:space:]]+finding:(f_[A-Za-z0-9]+)[[:space:]]+-->") | .[0] ] | unique) as $ids
+      | select(($ids | length) == 1)
+      | {
+          finding_id: $ids[0],
+          url: ($cs[0].url // ""),
+          path: .path,
+          line: .line,
+          is_outdated: (.isOutdated == true),
+          comments_complete: ((.comments.pageInfo.hasNextPage // false) | not),
+          comments: [ $cs[] | {
+            id: .databaseId,
+            author: (.author.login // "ghost"),
+            review_bot: review_bot,
+            created_at: .createdAt,
+            url: .url,
+            body: (.body // "")
+          } ]
+        }
+    ] as $threads
+    | ([ $threads | group_by(.finding_id)[] | select(length > 1) | .[0].finding_id ]) as $dups
+    | {
+        complete: $complete,
+        head_sha: $head,
+        threads: [ $threads[] | . + {ambiguous: (.finding_id as $f | ($dups | index($f)) != null)} ]
+      }
+  '
+}
+
+# forge_write_finding_threads_manifest PATH — write the open review-bot
+# finding threads of the PR to PATH for the fix agent (issue #2187).
+# Best-effort: a failed or truncated fetch writes a manifest with
+# complete=false (and whatever threads were read) and still succeeds, so the
+# run is never blocked on it.
+forge_write_finding_threads_manifest() {
+  local out="$1"
+  local owner name query cursor has_next page response page_nodes nodes_json
+  local head_sha complete tmp
+  local -a gh_args
+
+  owner="${REPO_FULL_NAME%%/*}"
+  name="${REPO_FULL_NAME##*/}"
+  cursor=""
+  has_next="true"
+  page=0
+  nodes_json="[]"
+  head_sha=""
+  complete="true"
+
+  query='query($owner: String!, $name: String!, $number: Int!, $cursor: String) {
+    repository(owner: $owner, name: $name) {
+      pullRequest(number: $number) {
+        headRefOid
+        reviewThreads(first: 100, after: $cursor) {
+          pageInfo { hasNextPage endCursor }
+          nodes {
+            isResolved
+            isOutdated
+            path
+            line
+            comments(first: 100) {
+              pageInfo { hasNextPage }
+              nodes {
+                databaseId
+                url
+                body
+                createdAt
+                author { __typename login }
+              }
+            }
+          }
+        }
+      }
+    }
+  }'
+
+  while [[ "${has_next}" == "true" ]]; do
+    page=$((page + 1))
+    if [[ "${page}" -gt 20 ]]; then
+      gha_echo warning "Review thread pagination hit page cap — finding-thread manifest is incomplete"
+      complete="false"
+      break
+    fi
+    gh_args=(api graphql
+      -f owner="${owner}"
+      -f name="${name}"
+      -F number="${PR_NUMBER}"
+      -f query="${query}")
+    if [[ -n "${cursor}" ]]; then
+      gh_args+=(-f cursor="${cursor}")
+    fi
+    if ! response="$(GH_TOKEN="${PUSH_TOKEN:-${GH_TOKEN:-}}" gh "${gh_args[@]}" 2>/dev/null)" \
+      || ! jq -e '(.errors // []) == [] and (.data.repository.pullRequest.reviewThreads.nodes | type) == "array"' \
+        <<< "${response}" >/dev/null 2>&1; then
+      gha_echo warning "Could not read review threads — finding-thread manifest is incomplete"
+      complete="false"
+      break
+    fi
+    page_nodes="$(jq -c '.data.repository.pullRequest.reviewThreads.nodes' <<< "${response}")"
+    nodes_json="$(jq -c --argjson page "${page_nodes}" '. + $page' <<< "${nodes_json}")"
+    head_sha="$(jq -r '.data.repository.pullRequest.headRefOid // empty' <<< "${response}")"
+    has_next="$(jq -r '.data.repository.pullRequest.reviewThreads.pageInfo.hasNextPage // false' <<< "${response}")"
+    cursor="$(jq -r '.data.repository.pullRequest.reviewThreads.pageInfo.endCursor // empty' <<< "${response}")"
+    if [[ "${has_next}" == "true" && -z "${cursor}" ]]; then
+      gha_echo warning "Review thread page missing cursor — finding-thread manifest is incomplete"
+      complete="false"
+      break
+    fi
+  done
+
+  tmp="$(mktemp "${out}.XXXXXX")" || return 0
+  if _finding_threads_manifest_from_nodes "${complete}" "${head_sha}" <<< "${nodes_json}" > "${tmp}" \
+    && mv -f "${tmp}" "${out}"; then
+    echo "Wrote finding-thread manifest: $(jq '.threads | length' "${out}") open thread(s), complete=${complete}"
+  else
+    rm -f "${tmp}"
+    gha_echo warning "Could not write the finding-thread manifest"
+  fi
+  return 0
 }
 # END bundled: lib/github-fix-ops.lib.sh
     ;;
@@ -3660,9 +3820,11 @@ else
   # and passed (FIX_RESULT_SECRET_SCAN=passed). gitleaks is only installed on
   # push runs, so install it for a metadata-only (no-push) run that proposes
   # metadata; if that fails the summary is still posted without the update.
+  # Finding-thread replies (issue #2187) carry agent text too, so a run that
+  # recorded finding dispositions needs the scan as well.
   if ! command -v gitleaks >/dev/null 2>&1 \
-    && jq -e '(.pr_title // "") != "" or (.pr_body // "") != ""' "${RESULT_FILE}" >/dev/null 2>&1; then
-    install_gitleaks || gha_echo warning "Could not install gitleaks — proposed PR metadata will not be applied"
+    && jq -e '(.pr_title // "") != "" or (.pr_body // "") != "" or any(.actions[]?; (.disposition // "") != "")' "${RESULT_FILE}" >/dev/null 2>&1; then
+    install_gitleaks || gha_echo warning "Could not install gitleaks — proposed PR metadata and finding-thread replies will not be applied"
   fi
   FIX_RESULT_SECRET_SCAN=skipped
   if command -v gitleaks >/dev/null 2>&1; then
@@ -3673,6 +3835,9 @@ else
     # too: a secret written with \uXXXX escapes does not match in the raw file.
     jq -r '(.pr_title // "") | strings' "${RESULT_FILE}" > "${SCAN_DIR}/pr_title.txt" 2>/dev/null || true
     jq -r '(.pr_body // "") | strings' "${RESULT_FILE}" > "${SCAN_DIR}/pr_body.txt" 2>/dev/null || true
+    # Finding-thread replies post the decoded action text the same way.
+    jq -r '.actions[]? | (.description // ""), (.reason // "") | strings' "${RESULT_FILE}" \
+      > "${SCAN_DIR}/actions.txt" 2>/dev/null || true
     if ! gitleaks detect --source "${SCAN_DIR}" --no-git --redact 2>/dev/null; then
       rm -rf "${SCAN_DIR}"
       post_fail_to_pr secret-scan "${POST_FAILURE_SECRET_SCAN_MESSAGE}"
@@ -3681,10 +3846,23 @@ else
     FIX_RESULT_SECRET_SCAN=passed
   fi
 
+  # Finding threads (GitHub, issue #2187): the processor replies to and
+  # resolves review-bot finding threads only while the live PR head is the
+  # commit this run left behind, and compares thread replies with the
+  # manifest pre-fix gave the agent.
+  FIX_PUBLISHED_HEAD_SHA=""
+  FIX_FINDING_THREADS_MANIFEST=""
+  if [ "${FULLSEND_FORGE}" = "github" ]; then
+    FIX_PUBLISHED_HEAD_SHA="$(git rev-parse HEAD 2>/dev/null || true)"
+    FIX_FINDING_THREADS_MANIFEST="$(finding_threads_manifest_path || true)"
+  fi
+
   echo "Processing agent-result.json: ${RESULT_FILE}"
   PROCESS_EXIT=0
   SIGNOFF_STRIPPED_COUNT="${SIGNOFF_STRIPPED_COUNT}" \
   FIX_RESULT_SECRET_SCAN="${FIX_RESULT_SECRET_SCAN}" \
+  FIX_PUBLISHED_HEAD_SHA="${FIX_PUBLISHED_HEAD_SHA}" \
+  FIX_FINDING_THREADS_MANIFEST="${FIX_FINDING_THREADS_MANIFEST}" \
     python3 "${PROCESS_SCRIPT}" "${RESULT_FILE}" "${REPO_FULL_NAME}" "${PR_NUMBER}" || PROCESS_EXIT=$?
   if [ "${PROCESS_EXIT}" -eq 1 ]; then
     post_fail_to_pr process-output-failed \

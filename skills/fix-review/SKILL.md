@@ -106,7 +106,16 @@ Read the entire review carefully. Identify: (1) the reviewer's overall concern, 
 
 **Step 2c — Build your action list:**
 
-For each finding, record: `finding`, `path`, `description`, `related_findings`. Ignore `<details>` blocks (prior iterations). Inline PR comments are not used; humans direct fixes via `/fs-fix`.
+For each finding, record: `finding`, `path`, `description`, `related_findings`. Ignore `<details>` blocks (prior iterations). Other inline PR comments are not used; humans direct fixes via `/fs-fix`.
+
+**Step 2d — Read the finding threads (GitHub, any trigger):**
+
+If `/sandbox/workspace/finding-threads.json` exists, read every thread in
+it, human replies included, as described in the `finding-ids` skill.
+Match each thread to a finding in your action list by its stable
+`finding_id`, never by display number. A thread with no matching
+review-body finding still needs an action. Record the `finding_id` on
+that action. Do not fetch review threads yourself.
 
 **If trigger type is `"human"`:** Use `HUMAN_INSTRUCTION` as primary directive. If empty or vague, also follow step 2a.
 

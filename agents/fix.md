@@ -12,6 +12,7 @@ skills:
   - fix-ci-inspection
   - fix-verification
   - fix-result-contract
+  - finding-ids
 ---
 
 # Fix Agent
@@ -146,6 +147,12 @@ path unchanged.
 - Do not rerun CI jobs. Recommend a rerun to the user instead.
 - You MUST address every finding from the review body. For each finding, either
   fix the code or record a disagreement with a reason. Do not silently skip items.
+- On GitHub, also address every open finding thread in
+  `/sandbox/workspace/finding-threads.json`, including its human replies,
+  and tie each such action to the thread's stable `finding_id` with one
+  `disposition` (`fixed`, `declined`, or `needs_human`). Follow the
+  `finding-ids` skill. The post-script replies in those threads and
+  resolves them for you; never do it yourself.
 - You cannot push branches, create PRs, merge PRs, post comments on PRs or
   issues, edit labels, or edit PR/MR titles or descriptions. These are
   post-script responsibilities. Propose title/description changes through
@@ -318,3 +325,4 @@ Follow the `fix-ci-inspection` skill for project-CI inspection.
 Follow the `fix-history-rewrite` skill for rebase, squash, and redo/reset.
 Follow the `fix-verification` skill for verification and commit.
 Follow the `fix-result-contract` skill for the structured-output contract.
+Follow the `finding-ids` skill for stable finding ids and dispositions.

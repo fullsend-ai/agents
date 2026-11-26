@@ -14,7 +14,18 @@ Usage:
 Environment:
     FIX_RESULT_SECRET_SCAN — set to "passed" by post-fix.sh only when its
                              gitleaks scan of the result file ran and passed;
-                             any other value blocks the metadata update.
+                             any other value blocks the metadata update
+                             and the finding-thread replies.
+    FIX_PUBLISHED_HEAD_SHA — GitHub: the PR head this run left behind. When
+                             set, finding dispositions are applied to their
+                             review threads and outdated review-bot threads
+                             are resolved (issue #2187).
+    FIX_FINDING_THREADS_MANIFEST
+                           — GitHub: the finding-thread manifest pre-fix gave
+                             the agent; used to tell which human replies the
+                             agent read.
+    FULLSEND_APP_SET       — optional app-set prefix whose -review bot is
+                             also trusted as a finding-thread author.
 
 Exit codes:
     0 — summary posted (or dry-run completed)
@@ -33,6 +44,15 @@ try:
     import jsonschema
 except ImportError:
     jsonschema = None
+
+
+def _finding_tag(action):
+    """` [`f_…`, disposition]` for an action tied to a stable finding id."""
+    finding_id = action.get("finding_id")
+    if not finding_id:
+        return ""
+    disposition = action.get("disposition")
+    return f" [`{finding_id}`, {disposition}]" if disposition else f" [`{finding_id}`]"
 
 
 def build_summary_body(data):
@@ -55,7 +75,7 @@ def build_summary_body(data):
             desc = a.get("description", "")
             path = a.get("path", "")
             path_suffix = f" (`{path}`)" if path else ""
-            items.append(f"{i}. **{finding}**{path_suffix}: {desc}")
+            items.append(f"{i}. **{finding}**{path_suffix}{_finding_tag(a)}: {desc}")
         fixes_text = "\n".join(items)
 
     disagree_text = ""
@@ -64,7 +84,7 @@ def build_summary_body(data):
         for i, a in enumerate(disagreed, 1):
             finding = a.get("finding", "unknown")
             reason = a.get("reason", "No reason provided.")
-            items.append(f"{i}. **{finding}**: {reason}")
+            items.append(f"{i}. **{finding}**{_finding_tag(a)}: {reason}")
         disagree_text = "\n".join(items)
 
     dp_text = ""
@@ -1194,6 +1214,467 @@ def apply_pr_metadata(data, repo, pr_number, schema_validated, secret_scan_passe
     return notes + [f"{name} updated" for name in changed]
 
 
+# ---------------------------------------------------------------------------
+# Finding threads (GitHub, issue #2187)
+#
+# Each review-bot inline finding comment carries a <!-- finding:f_... -->
+# stamp. A fix action with a finding_id and a disposition is applied to the
+# one open thread whose first comment is a trusted review-bot comment with
+# that stamp: an explanatory reply first, then resolve for fixed / declined;
+# needs_human gets the reply and stays open. Anything uncertain is left open
+# and listed in the PR summary. Outdated threads made only of outdated
+# review-bot comments are resolved with the same conditions post-review uses.
+# Forge failures never change the exit code.
+# ---------------------------------------------------------------------------
+
+FINDING_ID_RE = re.compile(r"^f_[A-Za-z0-9]+$")
+FINDING_STAMP_RE = re.compile(r"<!--\s+finding:(f_[A-Za-z0-9]+)\s+-->")
+THREAD_PAGE_CAP = 20
+
+_THREADS_QUERY = """query($owner: String!, $name: String!, $number: Int!, $cursor: String) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {
+      headRefOid
+      reviewThreads(first: 100, after: $cursor) {
+        pageInfo { hasNextPage endCursor }
+        nodes {
+          id
+          isResolved
+          isOutdated
+          viewerCanResolve
+          comments(first: 100) {
+            pageInfo { hasNextPage }
+            nodes { databaseId url body outdated viewerDidAuthor author { __typename login } }
+          }
+        }
+      }
+    }
+  }
+}"""
+
+_REPLY_MUTATION = """mutation($threadId: ID!, $body: String!) {
+  addPullRequestReviewThreadReply(input: {pullRequestReviewThreadId: $threadId, body: $body}) {
+    comment { id }
+  }
+}"""
+
+_RESOLVE_MUTATION = """mutation($threadId: ID!) {
+  resolveReviewThread(input: {threadId: $threadId}) { thread { isResolved } }
+}"""
+
+_RERUN = "rerun `/fs-fix <instructions>`"
+
+# status -> (what happened, suggested next step or None when nothing is needed)
+THREAD_STATUS = {
+    "resolved": ("replied and resolved", None),
+    "already-resolved": ("thread was already resolved", None),
+    "replied": (
+        "replied; left open for a human decision",
+        f"read the reply, then resolve the thread or {_RERUN}",
+    ),
+    "missing": (
+        "no open review-bot thread carries this ID",
+        "check whether the finding still applies; nothing was changed",
+    ),
+    "ambiguous": (
+        "more than one review-bot thread carries this ID; none was changed",
+        "resolve the matching thread manually",
+    ),
+    "human-owned": (
+        "the ID only appears in a thread the review bot did not start; it was not changed",
+        "resolve the thread manually if it is addressed",
+    ),
+    "incomplete": (
+        "the review threads could not be read completely; nothing was changed",
+        f"read the thread, then resolve it manually or {_RERUN}",
+    ),
+    "changed-head": (
+        "the PR head changed after this run; the thread was left open",
+        f"check the thread against the latest commit, then resolve it manually or {_RERUN}",
+    ),
+    "new-reply": (
+        "the thread has a human reply the fix agent did not read; it was left open",
+        f"read the reply, then resolve the thread manually or {_RERUN}",
+    ),
+    "duplicate-action": (
+        "the fix result gave this ID more than one action; the thread was left open",
+        f"resolve the thread manually or {_RERUN}",
+    ),
+    "not-posted": (
+        "the fix result was not schema-validated and secret-scanned; the thread was left open",
+        f"resolve the thread manually or {_RERUN}",
+    ),
+    "fetch-failed": (
+        "the review threads could not be read; the thread was left open",
+        f"resolve the thread manually or {_RERUN}",
+    ),
+    "reply-failed": (
+        "the explanation could not be posted; the thread was left open",
+        f"resolve the thread manually or {_RERUN}",
+    ),
+    "resolve-failed": (
+        "the explanation was posted but the thread could not be resolved",
+        "resolve the thread manually",
+    ),
+    "outdated-resolve-failed": (
+        "outdated review-bot thread could not be resolved",
+        "resolve the thread manually",
+    ),
+}
+
+
+def trusted_review_logins(repo):
+    """Logins of the review bots whose stamps are trusted (as post-review)."""
+    names = [f"{repo.split('/', 1)[0]}-review", "fullsend-ai-review"]
+    app_set = os.environ.get("FULLSEND_APP_SET", "")
+    if app_set:
+        names.append(f"{app_set}-review")
+    return {n.lower() for name in names for n in (name, f"{name}[bot]")}
+
+
+def _gh_graphql(query, **variables):
+    cmd = ["gh", "api", "graphql", "-f", f"query={query}"]
+    for key, value in variables.items():
+        if value is None:
+            continue
+        flag = "-F" if isinstance(value, int) else "-f"
+        cmd += [flag, f"{key}={value}"]
+    result = subprocess.run(cmd, check=True, capture_output=True, text=True)
+    data = json.loads(result.stdout)
+    if not isinstance(data, dict) or data.get("errors"):
+        raise ValueError("GraphQL request returned errors")
+    return data.get("data") or {}
+
+
+def fetch_review_threads(repo, pr_number):
+    """Return (threads, head_sha, complete). Raises when a page cannot be read."""
+    owner, name = repo.split("/", 1)
+    threads, head_sha, cursor = [], "", None
+    for _ in range(THREAD_PAGE_CAP):
+        data = _gh_graphql(
+            _THREADS_QUERY, owner=owner, name=name, number=int(pr_number), cursor=cursor
+        )
+        pr = (data.get("repository") or {}).get("pullRequest") or {}
+        review_threads = pr.get("reviewThreads") or {}
+        nodes = review_threads.get("nodes")
+        if not isinstance(nodes, list):
+            raise ValueError("review threads missing from the response")
+        threads.extend(n for n in nodes if isinstance(n, dict))
+        head_sha = pr.get("headRefOid") or head_sha
+        page = review_threads.get("pageInfo") or {}
+        if not page.get("hasNextPage"):
+            return threads, head_sha, True
+        cursor = page.get("endCursor")
+        if not cursor:
+            return threads, head_sha, False
+    return threads, head_sha, False
+
+
+def _thread_comments(thread):
+    nodes = (thread.get("comments") or {}).get("nodes") or []
+    return [c for c in nodes if isinstance(c, dict)]
+
+
+def _thread_comments_complete(thread):
+    return not ((thread.get("comments") or {}).get("pageInfo") or {}).get("hasNextPage", False)
+
+
+def _thread_url(thread):
+    comments = _thread_comments(thread)
+    return (comments[0].get("url") or "") if comments else ""
+
+
+def _is_review_bot(comment, trusted):
+    author = comment.get("author") or {}
+    return author.get("__typename") == "Bot" and (author.get("login") or "").lower() in trusted
+
+
+def _is_own_bot_comment(comment):
+    """A comment written by the token's own account, and only when that account is a Bot.
+
+    viewerDidAuthor alone means "the API token's owner wrote it". With a
+    human-owned PAT that is a person whose replies the agent still has to read.
+    """
+    author = comment.get("author") or {}
+    return bool(comment.get("viewerDidAuthor")) and author.get("__typename") == "Bot"
+
+
+def _owned_finding_id(thread, trusted):
+    """The id stamped on the thread's first comment when the review bot wrote it."""
+    comments = _thread_comments(thread)
+    if not comments or not _is_review_bot(comments[0], trusted):
+        return None
+    ids = set(FINDING_STAMP_RE.findall(comments[0].get("body") or ""))
+    return ids.pop() if len(ids) == 1 else None
+
+
+def _stamped_ids(thread):
+    ids = set()
+    for comment in _thread_comments(thread):
+        ids.update(FINDING_STAMP_RE.findall(comment.get("body") or ""))
+    return ids
+
+
+def load_seen_comment_ids(path):
+    """Map finding id -> {comment id: body} the fix agent was given, or None if unknown.
+
+    The body is kept so a comment edited after the manifest was built (same
+    id, new text) is not mistaken for one the agent read. A manifest comment
+    without a string body maps to None, which never matches a live comment.
+    """
+    if not path:
+        return None
+    try:
+        with open(path) as f:
+            manifest = json.load(f)
+    except (OSError, ValueError):
+        return None
+    if not isinstance(manifest, dict) or not isinstance(manifest.get("threads"), list):
+        return None
+    seen = {}
+    for thread in manifest["threads"]:
+        if not isinstance(thread, dict) or not isinstance(thread.get("finding_id"), str):
+            continue
+        ids = seen.setdefault(thread["finding_id"], {})
+        for comment in thread.get("comments") or []:
+            if isinstance(comment, dict) and isinstance(comment.get("id"), int):
+                body = comment.get("body")
+                ids[comment["id"]] = body if isinstance(body, str) else None
+    return seen
+
+
+def _reply_marker(finding_id, disposition, head_sha):
+    return f"<!-- fullsend:fix-reply finding={finding_id} disposition={disposition} head={head_sha} -->"
+
+
+def _reply_body(action, disposition, marker, commit_url):
+    """The explanation posted in the thread, led by the idempotency marker."""
+    first, second = ("reason", "description") if disposition == "declined" else ("description", "reason")
+    # Convert carriage returns to newlines rather than deleting them: removing a
+    # character after the secret scan could rejoin a token the scan saw split.
+    detail = _normalize_newlines(action.get(first) or action.get(second) or "").strip()
+    if disposition == "declined":
+        text = f"**Declined by the fix agent:** {detail}\n\n_Resolving this thread. Reply or {_RERUN} if you disagree._"
+    elif disposition == "needs_human":
+        text = (
+            f"**Needs a human decision:** {detail}\n\n"
+            f"_The fix agent is leaving this thread open. Resolve it when settled, or {_RERUN}._"
+        )
+    else:
+        text = f"**Fixed by the fix agent** in {commit_url}: {detail}\n\n_Resolving this thread._"
+    return f"{marker}\n{text}"
+
+
+def reconcile_finding_threads(data, repo, pr_number, head_sha, can_post, manifest_path=None, dry_run=False):
+    """Apply finding dispositions and sweep outdated threads.
+
+    Returns (entries, outdated_resolved). Each entry is a dict with
+    finding_id, disposition, status and url.
+    """
+    trusted = trusted_review_logins(repo)
+    server = os.environ.get("GITHUB_SERVER_URL", "https://github.com").rstrip("/")
+    pr_url = f"{server}/{repo}/pull/{pr_number}"
+    commit_url = f"{server}/{repo}/commit/{head_sha}"
+
+    requested = [
+        a
+        for a in data.get("actions") or []
+        if isinstance(a, dict)
+        and isinstance(a.get("finding_id"), str)
+        and FINDING_ID_RE.match(a["finding_id"])
+        and a.get("disposition") in ("fixed", "declined", "needs_human")
+    ]
+    counts = {}
+    for a in requested:
+        counts[a["finding_id"]] = counts.get(a["finding_id"], 0) + 1
+
+    try:
+        threads, live_head, complete = fetch_review_threads(repo, pr_number)
+        fetch_error = None
+    except (subprocess.CalledProcessError, ValueError, OSError) as e:
+        threads, live_head, complete = [], "", False
+        fetch_error = e
+        detail = _sanitize(getattr(e, "stderr", None) or e)
+        print(f"::warning::Could not read review threads: {detail}", file=sys.stderr)
+
+    seen = load_seen_comment_ids(manifest_path)
+    # Every thread a disposition names, whatever its outcome. The outdated
+    # sweep must not resolve these: the run may have deliberately left one open.
+    targeted = {
+        t.get("id")
+        for t in threads
+        if any(fid in _stamped_ids(t) for fid in counts)
+    }
+    entries = []
+    done = set()
+
+    for action in requested:
+        fid = action["finding_id"]
+        if fid in done:
+            continue
+        done.add(fid)
+        disposition = action["disposition"]
+
+        def entry(status, thread=None, *, fid=fid, disposition=disposition):
+            url = _thread_url(thread) if thread else ""
+            entries.append(
+                {"finding_id": fid, "disposition": disposition, "status": status, "url": url or pr_url}
+            )
+
+        if counts[fid] > 1:
+            entry("duplicate-action")
+            continue
+        if not can_post:
+            entry("not-posted")
+            continue
+        if fetch_error is not None:
+            entry("fetch-failed")
+            continue
+        candidates = [t for t in threads if fid in _stamped_ids(t)]
+        owned = [t for t in candidates if _owned_finding_id(t, trusted) == fid]
+        if not complete:
+            entry("incomplete", owned[0] if len(owned) == 1 else None)
+            continue
+        if not candidates:
+            entry("missing")
+            continue
+        if not owned:
+            entry("human-owned", candidates[0])
+            continue
+        # Ambiguity is judged among unresolved threads only: resolved historical
+        # threads reusing the id must not block reconciling the open one.
+        unresolved = [t for t in owned if not t.get("isResolved")]
+        if not unresolved:
+            entry("already-resolved", owned[0])
+            continue
+        if len(unresolved) > 1:
+            entry("ambiguous", unresolved[0])
+            continue
+        thread = unresolved[0]
+        if not _thread_comments_complete(thread):
+            entry("incomplete", thread)
+            continue
+        if not head_sha or live_head != head_sha:
+            entry("changed-head", thread)
+            continue
+        comments = _thread_comments(thread)
+        if disposition in ("fixed", "declined"):
+            known = None if seen is None else seen.get(fid, {})
+            unread = [
+                c
+                for c in comments
+                if not _is_review_bot(c, trusted)
+                and not _is_own_bot_comment(c)
+                and (
+                    known is None
+                    or c.get("databaseId") not in known
+                    or known[c.get("databaseId")] != (c.get("body") or "")
+                )
+            ]
+            if unread:
+                entry("new-reply", thread)
+                continue
+
+        marker = _reply_marker(fid, disposition, head_sha)
+        replied = any(c.get("viewerDidAuthor") and marker in (c.get("body") or "") for c in comments)
+        if not replied:
+            body = _reply_body(action, disposition, marker, commit_url)
+            if dry_run:
+                print(f"  [dry-run] Would reply to the thread for {fid} ({disposition})")
+            else:
+                try:
+                    _gh_graphql(_REPLY_MUTATION, threadId=thread.get("id"), body=body)
+                except (subprocess.CalledProcessError, ValueError, OSError) as e:
+                    detail = _sanitize(getattr(e, "stderr", None) or e)
+                    print(f"::warning::Could not reply to the thread for {fid}: {detail}", file=sys.stderr)
+                    entry("reply-failed", thread)
+                    continue
+        if disposition == "needs_human":
+            entry("replied", thread)
+            continue
+        if not thread.get("viewerCanResolve"):
+            print(f"::warning::Cannot resolve the thread for {fid} (not permitted)", file=sys.stderr)
+            entry("resolve-failed", thread)
+            continue
+        if dry_run:
+            print(f"  [dry-run] Would resolve the thread for {fid}")
+        else:
+            try:
+                _gh_graphql(_RESOLVE_MUTATION, threadId=thread.get("id"))
+            except (subprocess.CalledProcessError, ValueError, OSError) as e:
+                detail = _sanitize(getattr(e, "stderr", None) or e)
+                print(f"::warning::Could not resolve the thread for {fid}: {detail}", file=sys.stderr)
+                entry("resolve-failed", thread)
+                continue
+        entry("resolved", thread)
+
+    # The sweep is bound by the same global gates as the dispositions: it acts
+    # only on a validated result, a complete read, and an unchanged head.
+    sweep_ok = can_post and fetch_error is None and complete and bool(head_sha) and live_head == head_sha
+    outdated_resolved = 0
+    for thread in threads if sweep_ok else []:
+        comments = _thread_comments(thread)
+        if (
+            thread.get("id") is None
+            or thread.get("id") in targeted
+            or thread.get("isResolved") is not False
+            or thread.get("viewerCanResolve") is not True
+            or thread.get("isOutdated") is not True
+            or not _thread_comments_complete(thread)
+            or not comments
+            or not all(c.get("outdated") is True for c in comments)
+            or not all(_is_review_bot(c, trusted) for c in comments)
+        ):
+            continue
+        if dry_run:
+            print("  [dry-run] Would resolve an outdated review-bot thread")
+            outdated_resolved += 1
+            continue
+        try:
+            _gh_graphql(_RESOLVE_MUTATION, threadId=thread["id"])
+            outdated_resolved += 1
+        except (subprocess.CalledProcessError, ValueError, OSError) as e:
+            detail = _sanitize(getattr(e, "stderr", None) or e)
+            print(f"::warning::Could not resolve an outdated review thread: {detail}", file=sys.stderr)
+            stamped = _owned_finding_id(thread, trusted) or ""
+            entries.append(
+                {
+                    "finding_id": stamped,
+                    "disposition": "",
+                    "status": "outdated-resolve-failed",
+                    "url": _thread_url(thread) or pr_url,
+                }
+            )
+    if outdated_resolved:
+        print(f"Resolved {outdated_resolved} outdated review-bot thread(s)")
+    return entries, outdated_resolved
+
+
+def render_finding_threads(entries, outdated_resolved):
+    """Markdown for the PR summary; empty when there is nothing to report."""
+    if not entries and not outdated_resolved:
+        return ""
+    done, attention = [], []
+    for e in entries:
+        what, next_step = THREAD_STATUS[e["status"]]
+        label = f"`{e['finding_id']}`" if e["finding_id"] else "Outdated thread"
+        disposition = f" ({e['disposition']})" if e["disposition"] else ""
+        link = f"[thread]({e['url']})"
+        if next_step is None:
+            done.append(f"- {label}{disposition}: {what} — {link}")
+        else:
+            attention.append(f"{len(attention) + 1}. {label}{disposition}: {what} — {link}. **Next step:** {next_step}.")
+    sections = []
+    if done or outdated_resolved:
+        lines = list(done)
+        if outdated_resolved:
+            lines.append(f"- Resolved {outdated_resolved} outdated review-bot thread(s)")
+        sections.append("**Finding threads:**\n" + "\n".join(lines))
+    if attention:
+        sections.append(f"**Finding threads that need attention ({len(attention)}):**\n" + "\n".join(attention))
+    return "\n\n".join(sections)
+
+
 def main(argv=None):
     if argv is None:
         argv = sys.argv[1:]
@@ -1269,6 +1750,26 @@ def main(argv=None):
         metadata_notes = ["proposed update failed"]
     if metadata_notes:
         summary_body += "\n\n**PR metadata:** " + "; ".join(metadata_notes)
+    # Finding threads: only on GitHub, and only when post-fix says which head
+    # this run left the PR at (it is what the replies describe).
+    head_sha = os.environ.get("FIX_PUBLISHED_HEAD_SHA", "")
+    if os.environ.get("FULLSEND_FORGE", "github") == "github" and head_sha:
+        try:
+            entries, outdated_resolved = reconcile_finding_threads(
+                data,
+                repo,
+                pr_number,
+                head_sha,
+                can_post=schema_validated and os.environ.get("FIX_RESULT_SECRET_SCAN") == "passed",
+                manifest_path=os.environ.get("FIX_FINDING_THREADS_MANIFEST", ""),
+                dry_run=dry_run,
+            )
+            threads_text = render_finding_threads(entries, outdated_resolved)
+        except Exception as e:  # never let a thread problem block the summary
+            print(f"::warning::Finding-thread reconciliation failed: {_sanitize(e)}", file=sys.stderr)
+            threads_text = ""
+        if threads_text:
+            summary_body += "\n\n" + threads_text
     # Record the post-script's trailer strip so the rewrite is visible.
     signoff_note = ""
     try:

@@ -23,6 +23,10 @@
 #   FIX_CONFLICT_UPDATE_STRATEGY
 #                      — merge (default) or rebase; how to publish a
 #                        forge-reported merge conflict the agent reconciled
+#   RUNNER_TEMP        — GitHub: directory the finding-thread manifest is
+#                        written to (mounted into the sandbox by the harness)
+#   FULLSEND_APP_SET   — GitHub: app-set prefix whose -review bot is also
+#                        trusted as a finding-thread author
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -579,6 +583,160 @@ forge_get_workspace_dir() {
 forge_append_path() {
   local dir="$1"
   echo "${dir}" >> "${GITHUB_PATH:-/dev/null}"
+}
+
+# --- Finding threads ---
+
+# finding_threads_manifest_path — where pre-fix writes the finding-thread
+# manifest and post-fix reads it back (issue #2187). harness/fix.yaml mounts
+# the same path into the sandbox as /sandbox/workspace/finding-threads.json.
+# Fails when RUNNER_TEMP is unset (outside GitHub Actions).
+finding_threads_manifest_path() {
+  [[ -n "${RUNNER_TEMP:-}" ]] || return 1
+  printf '%s/fullsend-fix-finding-threads.json\n' "${RUNNER_TEMP}"
+}
+
+# _finding_threads_manifest_from_nodes COMPLETE HEAD_SHA — reads a JSON array
+# of reviewThreads.nodes on stdin and prints the manifest. A thread is listed
+# when it is unresolved and its first comment is a trusted review-bot comment
+# carrying exactly one <!-- finding:f_... --> stamp. Every comment in the
+# thread is kept, human replies included. Trusted review bots are
+# <org>-review, fullsend-ai-review and, when FULLSEND_APP_SET is set,
+# <app-set>-review (the same identities post-review trusts).
+_finding_threads_manifest_from_nodes() {
+  local complete="$1" head_sha="$2"
+  jq -c --argjson complete "${complete}" --arg head "${head_sha}" \
+    --arg org "${REPO_FULL_NAME%%/*}" --arg app_set "${FULLSEND_APP_SET:-}" '
+    ([ ($org + "-review"), ($org + "-review[bot]"),
+       "fullsend-ai-review", "fullsend-ai-review[bot]",
+       (if $app_set == "" then empty else ($app_set + "-review"), ($app_set + "-review[bot]") end)
+     ] | map(ascii_downcase)) as $trusted
+    | def review_bot:
+        (.author.__typename // "") == "Bot"
+        and (((.author.login // "") | ascii_downcase) as $l | ($trusted | index($l)) != null);
+    [ .[]
+      | select(type == "object" and .isResolved == false)
+      | (.comments.nodes // [] | map(select(type == "object"))) as $cs
+      | select(($cs | length) > 0)
+      | select($cs[0] | review_bot)
+      | ([ $cs[0].body // "" | scan("<!--[[:space:]]+finding:(f_[A-Za-z0-9]+)[[:space:]]+-->") | .[0] ] | unique) as $ids
+      | select(($ids | length) == 1)
+      | {
+          finding_id: $ids[0],
+          url: ($cs[0].url // ""),
+          path: .path,
+          line: .line,
+          is_outdated: (.isOutdated == true),
+          comments_complete: ((.comments.pageInfo.hasNextPage // false) | not),
+          comments: [ $cs[] | {
+            id: .databaseId,
+            author: (.author.login // "ghost"),
+            review_bot: review_bot,
+            created_at: .createdAt,
+            url: .url,
+            body: (.body // "")
+          } ]
+        }
+    ] as $threads
+    | ([ $threads | group_by(.finding_id)[] | select(length > 1) | .[0].finding_id ]) as $dups
+    | {
+        complete: $complete,
+        head_sha: $head,
+        threads: [ $threads[] | . + {ambiguous: (.finding_id as $f | ($dups | index($f)) != null)} ]
+      }
+  '
+}
+
+# forge_write_finding_threads_manifest PATH — write the open review-bot
+# finding threads of the PR to PATH for the fix agent (issue #2187).
+# Best-effort: a failed or truncated fetch writes a manifest with
+# complete=false (and whatever threads were read) and still succeeds, so the
+# run is never blocked on it.
+forge_write_finding_threads_manifest() {
+  local out="$1"
+  local owner name query cursor has_next page response page_nodes nodes_json
+  local head_sha complete tmp
+  local -a gh_args
+
+  owner="${REPO_FULL_NAME%%/*}"
+  name="${REPO_FULL_NAME##*/}"
+  cursor=""
+  has_next="true"
+  page=0
+  nodes_json="[]"
+  head_sha=""
+  complete="true"
+
+  query='query($owner: String!, $name: String!, $number: Int!, $cursor: String) {
+    repository(owner: $owner, name: $name) {
+      pullRequest(number: $number) {
+        headRefOid
+        reviewThreads(first: 100, after: $cursor) {
+          pageInfo { hasNextPage endCursor }
+          nodes {
+            isResolved
+            isOutdated
+            path
+            line
+            comments(first: 100) {
+              pageInfo { hasNextPage }
+              nodes {
+                databaseId
+                url
+                body
+                createdAt
+                author { __typename login }
+              }
+            }
+          }
+        }
+      }
+    }
+  }'
+
+  while [[ "${has_next}" == "true" ]]; do
+    page=$((page + 1))
+    if [[ "${page}" -gt 20 ]]; then
+      gha_echo warning "Review thread pagination hit page cap — finding-thread manifest is incomplete"
+      complete="false"
+      break
+    fi
+    gh_args=(api graphql
+      -f owner="${owner}"
+      -f name="${name}"
+      -F number="${PR_NUMBER}"
+      -f query="${query}")
+    if [[ -n "${cursor}" ]]; then
+      gh_args+=(-f cursor="${cursor}")
+    fi
+    if ! response="$(GH_TOKEN="${PUSH_TOKEN:-${GH_TOKEN:-}}" gh "${gh_args[@]}" 2>/dev/null)" \
+      || ! jq -e '(.errors // []) == [] and (.data.repository.pullRequest.reviewThreads.nodes | type) == "array"' \
+        <<< "${response}" >/dev/null 2>&1; then
+      gha_echo warning "Could not read review threads — finding-thread manifest is incomplete"
+      complete="false"
+      break
+    fi
+    page_nodes="$(jq -c '.data.repository.pullRequest.reviewThreads.nodes' <<< "${response}")"
+    nodes_json="$(jq -c --argjson page "${page_nodes}" '. + $page' <<< "${nodes_json}")"
+    head_sha="$(jq -r '.data.repository.pullRequest.headRefOid // empty' <<< "${response}")"
+    has_next="$(jq -r '.data.repository.pullRequest.reviewThreads.pageInfo.hasNextPage // false' <<< "${response}")"
+    cursor="$(jq -r '.data.repository.pullRequest.reviewThreads.pageInfo.endCursor // empty' <<< "${response}")"
+    if [[ "${has_next}" == "true" && -z "${cursor}" ]]; then
+      gha_echo warning "Review thread page missing cursor — finding-thread manifest is incomplete"
+      complete="false"
+      break
+    fi
+  done
+
+  tmp="$(mktemp "${out}.XXXXXX")" || return 0
+  if _finding_threads_manifest_from_nodes "${complete}" "${head_sha}" <<< "${nodes_json}" > "${tmp}" \
+    && mv -f "${tmp}" "${out}"; then
+    echo "Wrote finding-thread manifest: $(jq '.threads | length' "${out}") open thread(s), complete=${complete}"
+  else
+    rm -f "${tmp}"
+    gha_echo warning "Could not write the finding-thread manifest"
+  fi
+  return 0
 }
 # END bundled: lib/github-fix-ops.lib.sh
     ;;
@@ -1176,6 +1334,24 @@ if ! is_bot_user "${TRIGGER_SOURCE}" && [[ -n "${HUMAN_INSTRUCTION:-}" ]]; then
   # Truncate instruction in logs to avoid leaking long user input.
   INSTR_PREVIEW="${HUMAN_INSTRUCTION:0:200}"
   echo "  HUMAN_INSTRUCTION=${INSTR_PREVIEW}..."
+fi
+
+# ---------------------------------------------------------------------------
+# Finding-thread manifest (GitHub, issue #2187)
+#
+# Hand the fix agent every open review-bot finding thread with its stable
+# f_... id, link and full comment context (human replies included). The
+# harness mounts the file into the sandbox; post-fix reads it back to see
+# which replies the agent had. A stale file from an earlier run is removed
+# first. Without RUNNER_TEMP (outside GitHub Actions) nothing is written.
+# ---------------------------------------------------------------------------
+if [ "${FULLSEND_FORGE}" = "github" ]; then
+  if FINDING_THREADS_MANIFEST="$(finding_threads_manifest_path)"; then
+    rm -f "${FINDING_THREADS_MANIFEST}"
+    forge_write_finding_threads_manifest "${FINDING_THREADS_MANIFEST}"
+  else
+    echo "RUNNER_TEMP is not set — no finding-thread manifest written"
+  fi
 fi
 
 # ---------------------------------------------------------------------------

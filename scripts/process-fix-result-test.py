@@ -2129,5 +2129,483 @@ class TestPrMetadataSchema(unittest.TestCase):
         self.assertFalse(self._valid(pr_title="t", pr_title_base_sha256=_sha("x") + "\n"))
 
 
+# ---------------------------------------------------------------------------
+# Finding threads (issue #2187)
+# ---------------------------------------------------------------------------
+
+HEAD = "a" * 40
+BOT = {"__typename": "Bot", "login": "org-review"}
+HUMAN = {"__typename": "User", "login": "alice"}
+FIXER = {"__typename": "Bot", "login": "org-coder"}
+
+
+def _comment(cid, author, body="", outdated=False, viewer=False):
+    return {
+        "databaseId": cid,
+        "url": f"https://github.com/org/repo/pull/42#discussion_r{cid}",
+        "body": body,
+        "outdated": outdated,
+        "viewerDidAuthor": viewer,
+        "author": author,
+    }
+
+
+def _thread(tid, comments, resolved=False, outdated=False, can_resolve=True, more_comments=False):
+    return {
+        "id": tid,
+        "isResolved": resolved,
+        "isOutdated": outdated,
+        "viewerCanResolve": can_resolve,
+        "comments": {"pageInfo": {"hasNextPage": more_comments}, "nodes": comments},
+    }
+
+
+def _bot_thread(tid, finding_id, cid, *extra, **kw):
+    first = _comment(cid, BOT, f"Problem here.\n\n<!-- finding:{finding_id} -->", outdated=kw.pop("c_outdated", False))
+    return _thread(tid, [first, *extra], **kw)
+
+
+def _action(finding_id, disposition, type_=None, **kw):
+    type_ = type_ or ("disagree" if disposition == "declined" else "fix")
+    a = {"type": type_, "finding": f"finding {finding_id}", "finding_id": finding_id, "disposition": disposition}
+    if type_ == "fix":
+        a["description"] = kw.get("description", "Rejected empty input.")
+    else:
+        a["reason"] = kw.get("reason", "The caller already validates this.")
+    return a
+
+
+def _thread_result(*actions):
+    return {
+        "pr_number": 42,
+        "trigger_source": "bot",
+        "actions": list(actions) or [{"type": "fix", "finding": "ci", "description": "Fixed lint."}],
+        "summary": "Done.",
+        "tests_passed": True,
+        "files_changed": [],
+    }
+
+
+class FakeThreadsForge:
+    """Fake gh for review-thread GraphQL calls plus the summary comment."""
+
+    def __init__(self, pages, head=HEAD, fail_fetch=False, fail_reply=(), fail_resolve=()):
+        self.pages = pages if pages and isinstance(pages[0], list) else [pages]
+        self.head = head
+        self.fail_fetch = fail_fetch
+        self.fail_reply = set(fail_reply)
+        self.fail_resolve = set(fail_resolve)
+        self.calls = []
+        self.replies = []
+        self.resolved = []
+        self.order = []
+        self.summary = None
+
+    @staticmethod
+    def _arg(cmd, name):
+        prefix = f"{name}="
+        return next((a[len(prefix):] for a in cmd if a.startswith(prefix)), None)
+
+    def __call__(self, cmd, **kwargs):
+        self.calls.append(cmd)
+        if cmd[:3] == ["gh", "pr", "comment"]:
+            self.summary = kwargs.get("input")
+            return subprocess.CompletedProcess(cmd, 0, stdout="")
+        assert cmd[:3] == ["gh", "api", "graphql"], cmd
+        query = self._arg(cmd, "query")
+        if "reviewThreads" in query:
+            if self.fail_fetch:
+                raise subprocess.CalledProcessError(1, cmd, stderr="HTTP 502")
+            cursor = self._arg(cmd, "cursor")
+            index = int(cursor) if cursor else 0
+            has_next = index + 1 < len(self.pages)
+            payload = {
+                "data": {
+                    "repository": {
+                        "pullRequest": {
+                            "headRefOid": self.head,
+                            "reviewThreads": {
+                                "pageInfo": {"hasNextPage": has_next, "endCursor": str(index + 1) if has_next else None},
+                                "nodes": self.pages[index],
+                            },
+                        }
+                    }
+                }
+            }
+            return subprocess.CompletedProcess(cmd, 0, stdout=json.dumps(payload))
+        thread_id = self._arg(cmd, "threadId")
+        if "addPullRequestReviewThreadReply" in query:
+            if thread_id in self.fail_reply:
+                raise subprocess.CalledProcessError(1, cmd, stderr="HTTP 403")
+            self.replies.append((thread_id, self._arg(cmd, "body")))
+            self.order.append(("reply", thread_id))
+            return subprocess.CompletedProcess(cmd, 0, stdout='{"data": {}}')
+        if "resolveReviewThread" in query:
+            if thread_id in self.fail_resolve:
+                raise subprocess.CalledProcessError(1, cmd, stderr="HTTP 403")
+            self.resolved.append(thread_id)
+            self.order.append(("resolve", thread_id))
+            return subprocess.CompletedProcess(cmd, 0, stdout='{"data": {}}')
+        raise AssertionError(f"unexpected graphql call: {query}")
+
+
+def _manifest(finding_id, thread):
+    """A pre-fix manifest listing every comment of the thread with its body."""
+    comments = [{"id": c["databaseId"], "body": c["body"]} for c in thread["comments"]["nodes"]]
+    return {"complete": True, "threads": [{"finding_id": finding_id, "comments": comments}]}
+
+
+_THREADS_ENV = {
+    **_SCHEMA_ENV,
+    "FIX_RESULT_SECRET_SCAN": "passed",
+    "FULLSEND_FORGE": "github",
+    "FIX_PUBLISHED_HEAD_SHA": HEAD,
+    "FIX_FINDING_THREADS_MANIFEST": "",
+    "GITHUB_SERVER_URL": "https://github.com",
+}
+
+
+@patch.dict(os.environ, _THREADS_ENV)
+class TestFindingThreads(unittest.TestCase):
+    def _run(self, data, forge, manifest=None, env=None):
+        with tempfile.TemporaryDirectory() as tmp:
+            result = os.path.join(tmp, "agent-result.json")
+            with open(result, "w") as f:
+                json.dump(data, f)
+            extra = dict(env or {})
+            if manifest is not None:
+                path = os.path.join(tmp, "manifest.json")
+                with open(path, "w") as f:
+                    json.dump(manifest, f)
+                extra["FIX_FINDING_THREADS_MANIFEST"] = path
+            out = io.StringIO()
+            with patch.dict(os.environ, extra), patch("subprocess.run", side_effect=forge), \
+                    contextlib.redirect_stderr(out), contextlib.redirect_stdout(out):
+                rc = main([result, "org/repo", "42"])
+        return rc, out.getvalue()
+
+    def _attention(self, forge):
+        body = forge.summary or ""
+        marker = "**Finding threads that need attention"
+        return body[body.index(marker):] if marker in body else ""
+
+    def test_fixed_replies_then_resolves(self):
+        forge = FakeThreadsForge([_bot_thread("T1", "f_aaa", 1)])
+        rc, _ = self._run(_thread_result(_action("f_aaa", "fixed", description="Rejected empty input.")), forge)
+        self.assertEqual(rc, 0)
+        self.assertEqual(forge.order, [("reply", "T1"), ("resolve", "T1")])
+        (_, body), = forge.replies
+        self.assertIn(f"<!-- fullsend:fix-reply finding=f_aaa disposition=fixed head={HEAD} -->", body)
+        self.assertIn(f"https://github.com/org/repo/commit/{HEAD}", body)
+        self.assertIn("Rejected empty input.", body)
+        self.assertIn("`f_aaa` (fixed): replied and resolved", forge.summary)
+        self.assertIn("discussion_r1", forge.summary)
+        self.assertEqual(self._attention(forge), "")
+
+    def test_declined_replies_with_reason_then_resolves(self):
+        forge = FakeThreadsForge([_bot_thread("T1", "f_aaa", 1)])
+        self._run(_thread_result(_action("f_aaa", "declined", reason="Duplicate of the input check.")), forge)
+        self.assertEqual(forge.order, [("reply", "T1"), ("resolve", "T1")])
+        self.assertIn("Declined by the fix agent:** Duplicate of the input check.", forge.replies[0][1])
+
+    def test_reply_does_not_rejoin_text_split_by_carriage_returns(self):
+        # The secret scan sees the raw text; the posted reply must not delete
+        # characters and so reassemble a token the scan saw split.
+        forge = FakeThreadsForge([_bot_thread("T1", "f_aaa", 1)])
+        self._run(_thread_result(_action("f_aaa", "fixed", description="ghp_abcd\refgh\r\nijkl")), forge)
+        body = forge.replies[0][1]
+        self.assertNotIn("\r", body)
+        self.assertNotIn("ghp_abcdefgh", body)
+        self.assertIn("ghp_abcd\nefgh\nijkl", body)
+
+    def test_needs_human_replies_and_stays_open(self):
+        forge = FakeThreadsForge([_bot_thread("T1", "f_aaa", 1)])
+        self._run(_thread_result(_action("f_aaa", "needs_human", "disagree", reason="Needs a product call.")), forge)
+        self.assertEqual(forge.resolved, [])
+        self.assertIn("Needs a human decision:** Needs a product call.", forge.replies[0][1])
+        attention = self._attention(forge)
+        self.assertIn("(1)", attention)
+        self.assertIn("`f_aaa` (needs_human): replied; left open", attention)
+        self.assertIn("discussion_r1", attention)
+        self.assertIn("**Next step:**", attention)
+
+    def test_human_reply_seen_by_agent_allows_resolve(self):
+        thread = _bot_thread("T1", "f_aaa", 1, _comment(2, HUMAN, "Please also cover nulls."))
+        manifest = _manifest("f_aaa", thread)
+        forge = FakeThreadsForge([thread])
+        self._run(_thread_result(_action("f_aaa", "fixed")), forge, manifest=manifest)
+        self.assertEqual(forge.resolved, ["T1"])
+
+    def test_human_reply_edited_after_manifest_leaves_thread_untouched(self):
+        read = _bot_thread("T1", "f_aaa", 1, _comment(2, HUMAN, "Looks fine."))
+        manifest = _manifest("f_aaa", read)
+        edited = _bot_thread("T1", "f_aaa", 1, _comment(2, HUMAN, "Actually, do not merge this."))
+        forge = FakeThreadsForge([edited])
+        rc, _ = self._run(_thread_result(_action("f_aaa", "fixed")), forge, manifest=manifest)
+        self.assertEqual(rc, 0)
+        self.assertEqual((forge.replies, forge.resolved), ([], []))
+        self.assertIn("human reply the fix agent did not read", self._attention(forge))
+
+    def test_edited_reply_by_token_owner_human_leaves_thread_untouched(self):
+        # A human-owned PAT makes viewerDidAuthor true for that person's replies.
+        read = _bot_thread("T1", "f_aaa", 1, _comment(2, HUMAN, "Looks fine.", viewer=True))
+        manifest = _manifest("f_aaa", read)
+        edited = _bot_thread("T1", "f_aaa", 1, _comment(2, HUMAN, "Actually, do not merge this.", viewer=True))
+        forge = FakeThreadsForge([edited])
+        self._run(_thread_result(_action("f_aaa", "fixed")), forge, manifest=manifest)
+        self.assertEqual((forge.replies, forge.resolved), ([], []))
+        self.assertIn("human reply the fix agent did not read", self._attention(forge))
+
+    def test_new_reply_by_token_owner_human_leaves_thread_untouched(self):
+        thread = _bot_thread("T1", "f_aaa", 1, _comment(2, HUMAN, "One more thing.", viewer=True))
+        manifest = _manifest("f_aaa", _bot_thread("T1", "f_aaa", 1))
+        forge = FakeThreadsForge([thread])
+        self._run(_thread_result(_action("f_aaa", "declined")), forge, manifest=manifest)
+        self.assertEqual((forge.replies, forge.resolved), ([], []))
+
+    def test_manifest_comment_without_body_is_not_trusted(self):
+        thread = _bot_thread("T1", "f_aaa", 1, _comment(2, HUMAN, "Hi."))
+        manifest = {"complete": True, "threads": [{"finding_id": "f_aaa", "comments": [{"id": 1}, {"id": 2}]}]}
+        forge = FakeThreadsForge([thread])
+        self._run(_thread_result(_action("f_aaa", "fixed")), forge, manifest=manifest)
+        self.assertEqual((forge.replies, forge.resolved), ([], []))
+
+    def test_human_reply_after_manifest_leaves_thread_untouched(self):
+        thread = _bot_thread("T1", "f_aaa", 1, _comment(2, HUMAN), _comment(3, HUMAN, "Wait, one more thing."))
+        manifest = _manifest("f_aaa", _bot_thread("T1", "f_aaa", 1, _comment(2, HUMAN)))
+        forge = FakeThreadsForge([thread])
+        rc, _ = self._run(_thread_result(_action("f_aaa", "fixed")), forge, manifest=manifest)
+        self.assertEqual(rc, 0)
+        self.assertEqual((forge.replies, forge.resolved), ([], []))
+        self.assertIn("human reply the fix agent did not read", self._attention(forge))
+
+    def test_human_reply_without_manifest_leaves_thread_untouched(self):
+        forge = FakeThreadsForge([_bot_thread("T1", "f_aaa", 1, _comment(2, HUMAN))])
+        self._run(_thread_result(_action("f_aaa", "declined")), forge)
+        self.assertEqual((forge.replies, forge.resolved), ([], []))
+
+    def test_missing_thread_reported_with_pr_link(self):
+        forge = FakeThreadsForge([_bot_thread("T1", "f_other", 1)])
+        self._run(_thread_result(_action("f_aaa", "fixed")), forge)
+        self.assertEqual((forge.replies, forge.resolved), ([], []))
+        attention = self._attention(forge)
+        self.assertIn("`f_aaa` (fixed): no open review-bot thread carries this ID", attention)
+        self.assertIn("(https://github.com/org/repo/pull/42)", attention)
+
+    def test_ambiguous_match_left_open(self):
+        forge = FakeThreadsForge([_bot_thread("T1", "f_aaa", 1), _bot_thread("T2", "f_aaa", 2)])
+        self._run(_thread_result(_action("f_aaa", "fixed")), forge)
+        self.assertEqual((forge.replies, forge.resolved), ([], []))
+        self.assertIn("more than one review-bot thread", self._attention(forge))
+
+    def test_resolved_historical_match_does_not_block_open_thread(self):
+        forge = FakeThreadsForge([_bot_thread("T1", "f_aaa", 1, resolved=True), _bot_thread("T2", "f_aaa", 2)])
+        self._run(_thread_result(_action("f_aaa", "fixed")), forge)
+        self.assertEqual(forge.order, [("reply", "T2"), ("resolve", "T2")])
+
+    def test_two_open_matches_stay_ambiguous_despite_resolved_one(self):
+        forge = FakeThreadsForge([
+            _bot_thread("T1", "f_aaa", 1, resolved=True),
+            _bot_thread("T2", "f_aaa", 2),
+            _bot_thread("T3", "f_aaa", 3),
+        ])
+        self._run(_thread_result(_action("f_aaa", "fixed")), forge)
+        self.assertEqual((forge.replies, forge.resolved), ([], []))
+        self.assertIn("more than one review-bot thread", self._attention(forge))
+
+    def test_human_owned_thread_left_open(self):
+        # A human started the thread and pasted the stamp; a reply from the
+        # review bot in a human thread does not make it the finding's thread.
+        human_first = _thread("T1", [
+            _comment(1, HUMAN, "see <!-- finding:f_aaa -->"),
+            _comment(2, BOT, "<!-- finding:f_aaa -->"),
+        ])
+        untrusted_bot = _thread("T2", [_comment(3, {"__typename": "Bot", "login": "evil-review"}, "<!-- finding:f_aaa -->")])
+        forge = FakeThreadsForge([human_first, untrusted_bot])
+        self._run(_thread_result(_action("f_aaa", "fixed")), forge)
+        self.assertEqual((forge.replies, forge.resolved), ([], []))
+        self.assertIn("thread the review bot did not start", self._attention(forge))
+
+    def test_truncated_comments_left_open(self):
+        forge = FakeThreadsForge([_bot_thread("T1", "f_aaa", 1, more_comments=True)])
+        self._run(_thread_result(_action("f_aaa", "fixed")), forge)
+        self.assertEqual((forge.replies, forge.resolved), ([], []))
+        self.assertIn("could not be read completely", self._attention(forge))
+
+    def test_changed_head_left_open(self):
+        forge = FakeThreadsForge([_bot_thread("T1", "f_aaa", 1)], head="b" * 40)
+        self._run(_thread_result(_action("f_aaa", "fixed")), forge)
+        self.assertEqual((forge.replies, forge.resolved), ([], []))
+        self.assertIn("PR head changed", self._attention(forge))
+
+    def test_already_resolved_is_not_touched(self):
+        forge = FakeThreadsForge([_bot_thread("T1", "f_aaa", 1, resolved=True)])
+        self._run(_thread_result(_action("f_aaa", "fixed")), forge)
+        self.assertEqual((forge.replies, forge.resolved), ([], []))
+        self.assertIn("`f_aaa` (fixed): thread was already resolved", forge.summary)
+        self.assertEqual(self._attention(forge), "")
+
+    def test_rerun_does_not_duplicate_reply(self):
+        marker = f"<!-- fullsend:fix-reply finding=f_aaa disposition=fixed head={HEAD} -->"
+        prior = _comment(2, FIXER, f"{marker}\nFixed.", viewer=True)
+        forge = FakeThreadsForge([_bot_thread("T1", "f_aaa", 1, prior)])
+        self._run(_thread_result(_action("f_aaa", "fixed")), forge)
+        self.assertEqual(forge.replies, [])
+        self.assertEqual(forge.resolved, ["T1"])
+
+    def test_forged_marker_from_human_does_not_count(self):
+        marker = f"<!-- fullsend:fix-reply finding=f_aaa disposition=needs_human head={HEAD} -->"
+        forge = FakeThreadsForge([_bot_thread("T1", "f_aaa", 1, _comment(2, HUMAN, marker))])
+        self._run(_thread_result(_action("f_aaa", "needs_human")), forge)
+        self.assertEqual(len(forge.replies), 1)
+
+    def test_reply_failure_does_not_resolve(self):
+        forge = FakeThreadsForge([_bot_thread("T1", "f_aaa", 1), _bot_thread("T2", "f_bbb", 2)], fail_reply={"T1"})
+        rc, out = self._run(_thread_result(_action("f_aaa", "fixed"), _action("f_bbb", "fixed")), forge)
+        self.assertEqual(rc, 0)
+        self.assertEqual(forge.resolved, ["T2"])
+        self.assertIn("Could not reply to the thread for f_aaa", out)
+        attention = self._attention(forge)
+        self.assertIn("`f_aaa` (fixed): the explanation could not be posted", attention)
+        self.assertNotIn("f_bbb", attention)
+
+    def test_resolve_failure_reported(self):
+        forge = FakeThreadsForge([_bot_thread("T1", "f_aaa", 1)], fail_resolve={"T1"})
+        rc, _ = self._run(_thread_result(_action("f_aaa", "declined")), forge)
+        self.assertEqual(rc, 0)
+        self.assertEqual(len(forge.replies), 1)
+        self.assertIn("explanation was posted but the thread could not be resolved", self._attention(forge))
+
+    def test_fetch_failure_does_not_fail_run(self):
+        forge = FakeThreadsForge([], fail_fetch=True)
+        rc, _ = self._run(_thread_result(_action("f_aaa", "fixed")), forge)
+        self.assertEqual(rc, 0)
+        self.assertIn("could not be read; the thread was left open", self._attention(forge))
+
+    def test_duplicate_actions_for_one_id_left_open(self):
+        forge = FakeThreadsForge([_bot_thread("T1", "f_aaa", 1)])
+        self._run(_thread_result(_action("f_aaa", "fixed"), _action("f_aaa", "needs_human")), forge)
+        self.assertEqual((forge.replies, forge.resolved), ([], []))
+        self.assertEqual(self._attention(forge).count("more than one action"), 1)
+
+    def test_unscanned_result_posts_nothing(self):
+        forge = FakeThreadsForge([_bot_thread("T1", "f_aaa", 1)])
+        self._run(_thread_result(_action("f_aaa", "fixed")), forge, env={"FIX_RESULT_SECRET_SCAN": "skipped"})
+        self.assertEqual((forge.replies, forge.resolved), ([], []))
+        self.assertIn("not schema-validated and secret-scanned", self._attention(forge))
+
+    def test_paginated_threads_are_matched(self):
+        forge = FakeThreadsForge([[_bot_thread("T1", "f_other", 1)], [_bot_thread("T2", "f_aaa", 2)]])
+        self._run(_thread_result(_action("f_aaa", "fixed")), forge)
+        self.assertEqual(forge.resolved, ["T2"])
+
+    def test_outdated_sweep_resolves_only_all_bot_outdated_threads(self):
+        eligible = _bot_thread("T1", "f_old", 1, outdated=True, c_outdated=True)
+        mixed = _bot_thread("T2", "f_mix", 2, _comment(3, HUMAN, outdated=True), outdated=True, c_outdated=True)
+        current_comment = _bot_thread("T3", "f_cur", 4, outdated=True)  # comment not outdated
+        incomplete = _bot_thread("T4", "f_inc", 5, outdated=True, c_outdated=True, more_comments=True)
+        not_resolvable = _bot_thread("T5", "f_nr", 6, outdated=True, c_outdated=True, can_resolve=False)
+        forge = FakeThreadsForge([eligible, mixed, current_comment, incomplete, not_resolvable])
+        rc, _ = self._run(_thread_result(), forge)
+        self.assertEqual(rc, 0)
+        self.assertEqual(forge.resolved, ["T1"])
+        self.assertEqual(forge.replies, [])
+        self.assertIn("Resolved 1 outdated review-bot thread(s)", forge.summary)
+
+    def _outdated_bot_thread(self, tid="T1", fid="f_aaa", cid=1):
+        return _bot_thread(tid, fid, cid, outdated=True, c_outdated=True)
+
+    def test_outdated_sweep_skips_needs_human_thread(self):
+        forge = FakeThreadsForge([self._outdated_bot_thread()])
+        self._run(_thread_result(_action("f_aaa", "needs_human", "disagree")), forge)
+        self.assertEqual(forge.resolved, [])
+        self.assertIn("`f_aaa` (needs_human): replied; left open", self._attention(forge))
+        self.assertNotIn("outdated review-bot thread(s)", forge.summary)
+
+    def test_outdated_sweep_skips_thread_when_reply_fails(self):
+        forge = FakeThreadsForge([self._outdated_bot_thread()], fail_reply={"T1"})
+        self._run(_thread_result(_action("f_aaa", "fixed")), forge)
+        self.assertEqual(forge.resolved, [])
+        self.assertIn("the explanation could not be posted", self._attention(forge))
+
+    def test_outdated_sweep_skips_thread_when_head_changed(self):
+        forge = FakeThreadsForge([self._outdated_bot_thread()], head="b" * 40)
+        self._run(_thread_result(_action("f_aaa", "fixed")), forge)
+        self.assertEqual((forge.replies, forge.resolved), ([], []))
+        self.assertIn("the PR head changed", self._attention(forge))
+
+    def test_outdated_sweep_skips_other_threads_when_head_changed(self):
+        forge = FakeThreadsForge([self._outdated_bot_thread()], head="b" * 40)
+        self._run(_thread_result(), forge)
+        self.assertEqual(forge.resolved, [])
+
+    def test_outdated_sweep_skips_unposted_result(self):
+        forge = FakeThreadsForge([self._outdated_bot_thread(), self._outdated_bot_thread("T2", "f_bbb", 2)])
+        self._run(_thread_result(_action("f_aaa", "fixed")), forge, env={"FIX_RESULT_SECRET_SCAN": ""})
+        self.assertEqual(forge.resolved, [])
+
+    def test_outdated_sweep_skips_duplicate_action_thread(self):
+        forge = FakeThreadsForge([self._outdated_bot_thread()])
+        self._run(_thread_result(_action("f_aaa", "fixed"), _action("f_aaa", "declined")), forge)
+        self.assertEqual(forge.resolved, [])
+
+    def test_outdated_sweep_failure_reported_per_thread(self):
+        eligible = _bot_thread("T1", "f_old", 1, outdated=True, c_outdated=True)
+        forge = FakeThreadsForge([eligible], fail_resolve={"T1"})
+        rc, _ = self._run(_thread_result(), forge)
+        self.assertEqual(rc, 0)
+        attention = self._attention(forge)
+        self.assertIn("`f_old`: outdated review-bot thread could not be resolved", attention)
+        self.assertIn("discussion_r1", attention)
+
+    def test_no_published_head_makes_no_thread_calls(self):
+        forge = FakeThreadsForge([_bot_thread("T1", "f_aaa", 1)])
+        self._run(_thread_result(_action("f_aaa", "fixed")), forge, env={"FIX_PUBLISHED_HEAD_SHA": ""})
+        self.assertTrue(all(c[:3] == ["gh", "pr", "comment"] for c in forge.calls), forge.calls)
+        self.assertNotIn("Finding threads", forge.summary)
+
+    def test_gitlab_makes_no_thread_calls(self):
+        forge = FakeThreadsForge([_bot_thread("T1", "f_aaa", 1)])
+        with patch.object(mod, "_post_comment_gitlab"):
+            self._run(_thread_result(_action("f_aaa", "fixed")), forge, env={"FULLSEND_FORGE": "gitlab"})
+        self.assertEqual(forge.calls, [])
+
+    def test_summary_tags_actions_with_finding_id(self):
+        body = build_summary_body(_thread_result(_action("f_aaa", "needs_human")))
+        self.assertIn("[`f_aaa`, needs_human]", body)
+
+
+class TestFindingIdSchema(unittest.TestCase):
+    def _valid(self, action):
+        import jsonschema
+
+        with open(_SCHEMA_PATH) as f:
+            schema = json.load(f)
+        try:
+            jsonschema.validate(instance=_thread_result(action), schema=schema)
+            return True
+        except jsonschema.ValidationError:
+            return False
+
+    def test_dispositions_and_types(self):
+        self.assertTrue(self._valid(_action("f_abc123", "fixed")))
+        self.assertTrue(self._valid(_action("f_abc123", "declined")))
+        self.assertTrue(self._valid(_action("f_abc123", "needs_human", "fix")))
+        self.assertTrue(self._valid(_action("f_abc123", "needs_human", "disagree")))
+        self.assertFalse(self._valid(_action("f_abc123", "fixed", "disagree")))
+        self.assertFalse(self._valid(_action("f_abc123", "declined", "fix")))
+        self.assertFalse(self._valid({**_action("f_abc123", "fixed"), "disposition": "wontfix"}))
+
+    def test_id_and_disposition_go_together(self):
+        with_id = _action("f_abc123", "fixed")
+        self.assertFalse(self._valid({k: v for k, v in with_id.items() if k != "disposition"}))
+        self.assertFalse(self._valid({k: v for k, v in with_id.items() if k != "finding_id"}))
+        self.assertTrue(self._valid({"type": "fix", "finding": "human ask", "description": "Done."}))
+
+    def test_rejects_display_numbers_as_ids(self):
+        for bad in ("2", "#2", "finding 2", "F_abc", "f_", "f_ab-c"):
+            self.assertFalse(self._valid(_action("f_x", "fixed") | {"finding_id": bad}), bad)
+
+
 if __name__ == "__main__":
     unittest.main()
