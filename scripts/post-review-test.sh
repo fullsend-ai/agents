@@ -6084,6 +6084,22 @@ ft_check "finding-thread-gitlab-resolves-exact-thread" "reply carries marker" \
 ft_check "finding-thread-gitlab-resolves-exact-thread" "notice lists the resolved thread" \
   ft_notice_has "resolved 1 earlier finding thread(s) this change fixed: [1](https://gitlab.com/test-org/test-repo/-/merge_requests/99#note_11)"
 
+# GitLab runs a slash-command line in a note as a quick action, so model text
+# must not leave one at the start of a line, in either field.
+ft_reply_line_absent() { ! grep -qE -- "$1" "${TMPDIR}/last-thread-reply.txt" 2>/dev/null; }
+ft_gitlab_case "finding-thread-gitlab-reply-neutralizes-quick-actions-rationale" \
+  "$(jq -c '.dispositions[0].rationale = "Fixed.\n/close\n  /label ~urgent\r/assign @eve"' <<< "${FT_REVIEW}")" "${FT_PRIOR}" "${FT_RESOLVED_LEDGER}"
+ft_check "finding-thread-gitlab-reply-neutralizes-quick-actions-rationale" "reply posted" ft_log_has "curl POST https://gitlab.com/api/v4/projects/test-org%2Ftest-repo/merge_requests/99/discussions/D1/notes"
+ft_check "finding-thread-gitlab-reply-neutralizes-quick-actions-rationale" "no line starts with a slash" ft_reply_line_absent '^[[:space:]]*/'
+ft_check "finding-thread-gitlab-reply-neutralizes-quick-actions-rationale" "text kept" ft_reply_has '\/close'
+ft_check "finding-thread-gitlab-reply-neutralizes-quick-actions-rationale" "marker line intact" \
+  ft_reply_has "<!-- fullsend:review-resolve finding=f_fix1 head=${FT_HEAD_SHA} -->"
+ft_gitlab_case "finding-thread-gitlab-reply-neutralizes-quick-actions-evidence" \
+  "$(jq -c '.dispositions[0].evidence = "src/add.go\n/close\n\t/unlabel"' <<< "${FT_REVIEW}")" "${FT_PRIOR}" "${FT_RESOLVED_LEDGER}"
+ft_check "finding-thread-gitlab-reply-neutralizes-quick-actions-evidence" "reply posted" ft_log_has "curl POST https://gitlab.com/api/v4/projects/test-org%2Ftest-repo/merge_requests/99/discussions/D1/notes"
+ft_check "finding-thread-gitlab-reply-neutralizes-quick-actions-evidence" "no line starts with a slash" ft_reply_line_absent '^[[:space:]]*/'
+ft_check "finding-thread-gitlab-reply-neutralizes-quick-actions-evidence" "text kept" ft_reply_has '\/close'
+
 MOCK_GITLAB_DISCUSSIONS_JSON="[$(ft_discussion D1 '<!-- finding:f_fix1 --> The sum is wrong.' false '[{"id":12,"body":"Please also cover zero.","system":false,"resolvable":true,"resolved":false,"author":{"username":"alice"}}]')]"
 export MOCK_GITLAB_DISCUSSIONS_JSON
 ft_gitlab_case "finding-thread-gitlab-human-reply-stays-open" "${FT_REVIEW}" "${FT_PRIOR}" "${FT_RESOLVED_LEDGER}"

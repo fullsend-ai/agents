@@ -987,7 +987,19 @@ forge_fetch_finding_thread() {
 }
 
 forge_reply_finding_thread() {
-  local thread_id="$1" body="$2"
+  local thread_id="$1" body="$2" line safe=""
+  # GitLab runs a quick action (/close, /label, ...) from any note line that
+  # starts with "/", with the posting token's permissions. The body carries
+  # model text derived from untrusted PR content and keeps its newlines, so a
+  # leading backslash on such a line stops it parsing as a command while the
+  # text still renders as written.
+  while IFS= read -r line || [[ -n "${line}" ]]; do
+    if [[ "${line}" =~ ^[[:space:]]*/ ]]; then
+      line="\\${line}"
+    fi
+    safe+="${line}"$'\n'
+  done <<< "${body}"
+  body="${safe%$'\n'}"
   _gitlab_api POST "/projects/${REPO_ENCODED}/merge_requests/${PR_NUMBER}/discussions/${thread_id}/notes" \
     --data-urlencode "body=${body}" > /dev/null 2>&1
 }
