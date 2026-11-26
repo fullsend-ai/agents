@@ -1249,6 +1249,104 @@ run_last_resort_warning_escapes_number_test() {
 run_last_resort_warning_escapes_number_test \
   "last-resort-warning-escapes-crafted-number"
 
+# External reporting works without a hook and keeps the fixed secret-scan
+# body. A second report in the same process must not invoke the hook again.
+for hook_mode in absent success failure; do
+  # The sourced reporter reads these globals and invokes the hook indirectly.
+  # shellcheck disable=SC2030,SC2031,SC2034,SC2317
+  hook_output="$(
+    export EXTERNAL_WORK_ITEM=true WORK_ITEM_KEY=TESTPROJ-42 REPO_FULL_NAME=test-org/test-repo
+    POST_FAILURE_REPORTED=false
+    unset -f post_external_failure_comment
+    if [ "${hook_mode}" != absent ]; then
+      post_external_failure_comment() {
+        printf 'HOOK:%s\n' "$1"
+        [ "${hook_mode}" = success ]
+      }
+    fi
+    set_post_failure secret-scan 'RAW SCANNER DETAIL MUST NOT BE POSTED'
+    report_post_failure_to_issue 1
+    report_post_failure_to_issue 1
+  )"
+  if [ "${hook_mode}" = absent ]; then expected_calls=0; else expected_calls=1; fi
+  actual_calls="$(printf '%s\n' "${hook_output}" | grep -c '^HOOK:' || true)"
+  if [ "${actual_calls}" -ne "${expected_calls}" ] \
+     || { [ "${hook_mode}" = success ] && printf '%s' "${hook_output}" | grep -q 'see workflow logs'; } \
+     || { [ "${hook_mode}" != success ] && ! printf '%s' "${hook_output}" | grep -q 'see workflow logs'; } \
+     || printf '%s' "${hook_output}" | grep -q 'RAW SCANNER DETAIL MUST NOT BE POSTED'; then
+    echo "FAIL: external-failure-hook-${hook_mode}"
+    FAILURES=$((FAILURES + 1))
+  elif [ "${hook_mode}" != absent ] \
+       && ! printf '%s' "${hook_output}" | grep -qF "${POST_FAILURE_SECRET_SCAN_MESSAGE}"; then
+    echo "FAIL: external-failure-hook-${hook_mode}-safe-body"
+    FAILURES=$((FAILURES + 1))
+  else
+    echo "PASS: external-failure-hook-${hook_mode}"
+  fi
+done
+
+# Missing or invalid system-filter lookups fail clearly before traps exist.
+for _lookup_tool in sed awk tail cat grep; do
+  for _lookup_mode in missing empty relative nonexecutable; do
+    for _lookup_target in sourced bundled; do
+      _lookup_rc=0
+      _lookup_output="$(LOOKUP_TOOL="${_lookup_tool}" LOOKUP_MODE="${_lookup_mode}" LOOKUP_TARGET="${_lookup_target}" bash -c '
+        set -euo pipefail
+        command() {
+          if [ "${1:-}" = -p ] && [ "${2:-}" = -v ] && [ "${3:-}" = "$LOOKUP_TOOL" ]; then
+            case "$LOOKUP_MODE" in
+              missing) return 1 ;;
+              empty) return 0 ;;
+              relative) printf "%s" "$LOOKUP_TOOL" ;;
+              nonexecutable) printf "/nonexistent/system-filter" ;;
+            esac
+          else
+            builtin command "$@"
+          fi
+        }
+        if [ "$LOOKUP_TARGET" = bundled ]; then
+          export -f command
+          bash "$2"
+        else
+          source "$1"
+        fi
+        echo SOURCE_CONTINUED
+      ' _ "${SCRIPT_DIR}/lib/post-failure-report.lib.sh" "${SCRIPT_DIR}/validate-code-output.sh" 2>&1)" || _lookup_rc=$?
+      if [ "${_lookup_rc}" -ne 1 ] \
+           || ! grep -qF "required system filter ${_lookup_tool} is unavailable" <<< "${_lookup_output}" \
+           || grep -qF SOURCE_CONTINUED <<< "${_lookup_output}" \
+           || grep -qF "return:" <<< "${_lookup_output}"; then
+        echo "FAIL: system-filter-${_lookup_tool}-${_lookup_mode}-${_lookup_target}"
+        FAILURES=$((FAILURES + 1))
+      else
+        echo "PASS: system-filter-${_lookup_tool}-${_lookup_mode}-${_lookup_target}"
+      fi
+    done
+  done
+done
+
+# Even a hostile PATH present before library loading must not select filters.
+_filter_tmp="$(mktemp -d)"
+for _filter in sed awk tail cat grep; do
+  printf '#!/usr/bin/env bash\nprintf "untrusted filter invoked\\n" >> "%s"\nexit 99\n' \
+    "${_filter_tmp}/invocations" > "${_filter_tmp}/${_filter}"
+  chmod +x "${_filter_tmp}/${_filter}"
+done
+_filter_actual="$(
+  export PATH="${_filter_tmp}:${PATH}"
+  unset POST_FAILURE_REPORT_SH_LOADED
+  source "${SCRIPT_DIR}/lib/post-failure-report.lib.sh"
+  PUSH_TOKEN='arbitrary-filter-test-credential'
+  sanitize_failure_detail '::warning::arbitrary-filter-test-credential' 1
+)"
+if [ "${_filter_actual}" != '[REDACTED]' ] || [ -e "${_filter_tmp}/invocations" ]; then
+  echo "FAIL: sanitizer-ignores-hostile-starting-path"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: sanitizer-ignores-hostile-starting-path"
+fi
+rm -rf "${_filter_tmp}"
+
 echo ""
 if [ ${FAILURES} -gt 0 ]; then
   echo "${FAILURES} test(s) failed"

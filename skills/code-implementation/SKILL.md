@@ -247,7 +247,8 @@ derive it from `ISSUE_URL`; do not assume a target-forge issue
 number exists.
 
 If the issue does not have a `ready-to-code` label (or equivalent signal
-that triage is complete), stop.
+that triage is complete), follow "Stopping without a commit" in `agents/code.md`
+to initialize output, set `no_pr_reason`, validate, and stop.
 
 ### 2. Gather context
 
@@ -306,14 +307,16 @@ and `Glob` to inspect project configuration:
    `package.json`, `pyproject.toml`, or equivalent build config.
 3. **Check for linter configuration.** Use `Glob` to find files like
    `.golangci.yml`, `.eslintrc*`, `.pre-commit-config.yaml`, `ruff.toml`.
-4. **Check for PR title conventions** in `CLAUDE.md`, `CONTRIBUTING.md`,
-   `COMMITS.md`, `commitlint.config.*`, or `.github/workflows/`.
-   Conventional Commits v1.0.0 item 4: "A scope MUST consist of a noun
+4. **Check commit/PR-title rules** in `AGENTS.md`, `CLAUDE.md`, their
+   delegated docs, `CONTRIBUTING.md`, `COMMITS.md`, `commitlint.config.*`,
+   and `.github/workflows/`. Explicit repo rules win: experiment/package/
+   component rules are **area-scope**, derived from the rule and changed paths.
+   Otherwise **ticket-scope** if ticket IDs are preferred (`feat(#1234):`),
+   even alongside Conventional Commits. Without that preference,
+   **area-scope** if Conventional Commits v1.0.0 item 4 applies:
+   "A scope MUST consist of a noun
    describing a section of the codebase surrounded by parenthesis, e.g.,
-   `fix(parser):`". **ticket-scope** if any ticket-id preference exists
-   (docs, commitlint, CI), even with a CC citation (`feat(#1234):` is
-   correct, wrong for area-scope); **area-scope** only if that MUST
-   applies with no ticket-id preference; else **unknown**.
+   `fix(parser):`"; else **unknown**.
 5. **Check for PR template.** Find the repo's pull request template(s).
    If multiple templates exist, note them — you will select the right
    one in step 10d after classifying the task type. If found, read and
@@ -396,11 +399,9 @@ using the forge-appropriate command from your forge skill (e.g.,
 `curl` on GitLab).
 
 - **Open PR/MR exists for this branch:** The work is already done and under
-  review. Validate structured output — step 3 already wrote it, but on a
-  validation retry the output directory was cleared, so write it again
-  before validating — then **stop.** Do not add more commits on top of a
-  working implementation — that causes scope creep and timeouts. Your exit
-  state (no new commit) tells the post-script there is nothing new to push.
+  review. Recreate step 3's result file if a validation retry cleared it, then
+  set `no_pr_reason` (see `agents/code.md`), validate, and **stop**. Do not add
+  commits to a working implementation; no new commit signals no new work.
 
   ```bash
   fullsend-check-output "${FULLSEND_OUTPUT_DIR}/agent-result.json"
@@ -468,12 +469,12 @@ Before planning, determine what kind of work this issue requires:
 - **Test-only** — the issue asks for tests, not production code changes. Write
   tests that cover the described behavior. Do not modify production code unless
   tests require it (e.g., exporting a function for testability).
-- **Already-fixed** — if step 7 reveals the bug no longer exists, validate
-  structured output and stop cleanly. Do not implement a fix for a resolved
-  issue.
+- **Already-fixed** — if step 7 reveals the bug no longer exists, set
+  `no_pr_reason` (agents/code.md), validate, and stop. Do not implement a fix for
+  a resolved issue.
 - **Label-gated** — if the issue has a label like `do-not-implement` or a gate
-  label that signals no work should be done, validate structured output and
-  stop cleanly:
+  label that signals no work should be done, set `no_pr_reason`, validate, and
+  stop:
 
   ```bash
   fullsend-check-output "${FULLSEND_OUTPUT_DIR}/agent-result.json"
@@ -488,7 +489,7 @@ Before implementing, confirm the reported behavior is still present:
 2. If there is a quick way to verify — run a targeted test, check a return
    value, trace the logic — do it.
 3. If the bug has already been fixed (by a recent commit, a dependency update,
-   or another PR), validate structured output and **stop**. Do not implement
+   or another PR), set `no_pr_reason`, validate, and **stop**. Do not implement
    a fix for a resolved issue. Your exit state (no commit) tells the
    post-script to report accordingly.
 
@@ -993,14 +994,13 @@ trailer ~90 characters.
 
 The commit message must:
 
-- **Use the repo's commit convention as discovered in step 3.** If
-  `CONTRIBUTING.md`, `CLAUDE.md`, `.gitlint`, or the existing commit history
-  uses a specific format (e.g., Conventional Commits, Angular-style, ticket
-  prefixes), follow it.
-- **Scope from step 3** (post-script uses the commit subject as the PR
-  title): ticket-scope/unknown use `<type>(#<number>):` (or a Jira key);
-  area-scope uses a codebase-area noun and sets
-  `inject_issue_scope: false` in the result file (step 10d).
+- **Follow step 3's commit format**, including `AGENTS.md` and delegated docs.
+- **Scope from step 3 item 4** (also the PR title):
+  ticket-scope/unknown use `<type>(#<number>):` (or a Jira key);
+  area-scope follows the repo rule. Before committing, check conditional
+  rules: if a condition fails (e.g., multiple experiments), use the
+  documented alternative or omit the scope.
+  Area-scope sets `inject_issue_scope: false` in step 10d even when scopeless.
 - **Reference the issue number in the body.** If your implementation
   fully addresses the issue scope, use `Closes #<number>`. If your
   implementation addresses only a subset of the issue (e.g., the triage
@@ -1015,10 +1015,8 @@ The commit message must:
 test -f .gitlint && cat .gitlint
 ```
 
-Most repos enforce a title length limit (commonly 72 characters). If
-`.gitlint` has `[title-max-length] line-length=72`, keep the title
-(first line) under that limit: keep the classified scope (ticket or
-area) and shorten only the `<description>`.
+Keep the subject within the configured title limit (commonly 72): retain
+any chosen scope and shorten only the description.
 
 **Body line length — comply with the repo's gitlint config:**
 
@@ -1159,8 +1157,7 @@ echo "::notice::STEP 11: Validate structured output"
 cat "${FULLSEND_OUTPUT_DIR}/agent-result.json"
 ```
 
-The file must be valid JSON with `target_branch` (required) and
-optionally `pr_body`, `closes_issue`, and `inject_issue_scope`:
+Write valid JSON with required `target_branch` and optional `pr_body`, `no_pr_reason`, `closes_issue`, and `inject_issue_scope`:
 
 ```json
 {
@@ -1170,9 +1167,7 @@ optionally `pr_body`, `closes_issue`, and `inject_issue_scope`:
 }
 ```
 
-**Schema compliance:** The schema uses `additionalProperties: false`.
-Only `target_branch`, `pr_body`, `closes_issue`, and `inject_issue_scope`
-are allowed. Any other fields will cause validation to fail.
+**Schema:** `additionalProperties: false`; only the fields listed above are allowed.
 
 Validate the output against the schema:
 

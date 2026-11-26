@@ -9,7 +9,7 @@ model: opus
 # effort is unset (internal/runtime/pi_run.go piDefaultThinking). Revisit
 # when the model: above moves to a generation with a different default.
 effort: high
-image: ghcr.io/fullsend-ai/fullsend-sandbox@sha256:40d00451d1e1927f9c6575e668d2b316fb096ae74b870d13c9960bc94c184086
+image: ghcr.io/fullsend-ai/fullsend-sandbox@sha256:0cf64e79147c6c75f56ae7593f96d416e8c8f1b8bbe2aaa58a056ffb78dcf41b
 policy: policies/base.yaml
 providers:
   - vertex-ai
@@ -50,9 +50,22 @@ host_files:
   - src: ${GCP_OIDC_TOKEN_FILE}
     dest: /sandbox/workspace/.gcp-oidc-token
     optional: true
+  # A Jira-originated run cannot read its work item from the sandbox: there is
+  # no Atlassian route and no Jira credential. pre-retro fetches the issue and
+  # its comments on the host into the path named by RETRO_JIRA_CONTEXT_FILE,
+  # which is mounted read-only here and read by the agent as
+  # RETRO_JIRA_CONTEXT. The src is ${VAR}-expanded because fullsend refuses a
+  # literal absolute path in a harness loaded from a URL or used as a `base:`
+  # (resolveBaseHostFiles -> validateBaseRelPath), and the documented overlay
+  # is exactly that. An unset value skips the mount, so a forge-originated run
+  # uploads nothing and pre-retro refuses a Jira-originated run without it.
+  - src: ${RETRO_JIRA_CONTEXT_FILE}
+    dest: /sandbox/workspace/jira-origin.json
+    optional: true
 
 skills:
   - skills/retro-analysis
+  - skills/retro-analysis/jira
   - skills/finding-agent-runs
   - skills/agent-scaffolding
   - skills/autonomy-readiness
@@ -68,6 +81,9 @@ env:
     ORIGINATING_URL: "${ORIGINATING_URL}"
     RETRO_COMMENT: "${RETRO_COMMENT}"
     REPO_FULL_NAME: "${REPO_FULL_NAME}"
+    # Read-only copy of the originating Jira issue and its comments, written
+    # by pre-retro and mounted by host_files above. Absent on forge runs.
+    RETRO_JIRA_CONTEXT: /sandbox/workspace/jira-origin.json
 
 validation_loop:
   script: scripts/validate-output-schema.sh

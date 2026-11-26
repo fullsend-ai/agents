@@ -8,6 +8,8 @@
 #
 # Run from the repo root:
 #   bash scripts/example-link-check-test.sh
+# The post-script runs under the same bash as this test ("${BASH}"), so
+# `/bin/bash scripts/example-link-check-test.sh` checks it on bash 3.2.
 
 set -euo pipefail
 
@@ -41,20 +43,49 @@ run_post() {
       && ISSUE_URL="${ISSUE_URL_OVERRIDE:-https://github.com/fullsend-ai/demo/pull/99}" \
          GH_TOKEN="test-token" \
          POST_LINK_CHECK_DRY_RUN=1 \
-         env "$@" bash "${POST_SCRIPT}" ) > "${workdir}/stdout" 2> "${workdir}/stderr" || rc=$?
+         env "$@" "${BASH:-bash}" "${POST_SCRIPT}" ) > "${workdir}/stdout" 2> "${workdir}/stderr" || rc=$?
   LAST_STDOUT="$(cat "${workdir}/stdout")"
   LAST_STDERR="$(cat "${workdir}/stderr")"
   rm -rf "${workdir}"
   return "${rc}"
 }
 
-# run_post_live <result-json> [old-cli]
+# The --only-if-exists and --keep-history lines of `fullsend issues
+# post-comment --help`, after and before fullsend-ai/fullsend#9399.
+NEW_CLI_HELP='  --keep-history          deprecated: no effect (every result is posted as a new comment; sticky comments were removed) (default true)
+  --only-if-exists        post only when an earlier comment with this marker exists (for an all-clear that follows earlier findings)'
+OLD_CLI_HELP='  --keep-history          append previous content as collapsed history blocks (set false to replace in-place) (default true)
+  --only-if-exists        update an existing comment with this marker but never create one (for an all-clear that should replace earlier findings)'
+# A fullsend that lists --only-if-exists but not --keep-history; the same
+# flag table under a prose line naming --keep-history without "deprecated",
+# so only a probe that reads the flag table, not the whole text, leaves the
+# flag out; #9399's flag table with the flag marked in capitals; a help
+# whose prose names --only-if-exists though its flag table lacks it; and one
+# whose flag table marks --only-if-exists deprecated.
+NO_KEEP_HISTORY_CLI_HELP='  --only-if-exists        post only when an earlier comment with this marker exists (for an all-clear that follows earlier findings)'
+PROSE_CLI_HELP="Earlier releases used --keep-history to fold old runs into the comment.
+${NO_KEEP_HISTORY_CLI_HELP}"
+UPPERCASE_DEPRECATED_CLI_HELP='  --keep-history          DEPRECATED: no effect (every result is posted as a new comment; sticky comments were removed) (default true)
+  --only-if-exists        post only when an earlier comment with this marker exists (for an all-clear that follows earlier findings)'
+PROSE_ONLY_IF_EXISTS_CLI_HELP='Later releases add --only-if-exists for an all-clear after earlier findings.
+  --dry-run               print what would be posted without posting anything'
+DEPRECATED_ONLY_IF_EXISTS_CLI_HELP='  --only-if-exists        Deprecated: post only when an earlier comment with this marker exists'
+
+# run_post_live <result-json> [cli]
 # Like run_post but WITHOUT dry run, with a stub `fullsend` first on PATH that
 # records its arguments instead of talking to a forge. This is the only way to
 # see what the script does on the path that actually posts. The stub answers
-# `--help` the way the real CLI does, listing --only-if-exists — or, with the
-# optional "old-cli" argument, NOT listing it and failing on any post, which
-# is what a runner pinned to a fullsend release older than the generator does.
+# `--help` the way the real CLI does since fullsend-ai/fullsend#9399, where
+# every post is a new comment, --only-if-exists posts only after an earlier
+# marked comment, and --keep-history is deprecated (passing it prints a
+# warning, as the real CLI does). With "edit-in-place-cli" it answers the way
+# a fullsend from before #9399 does: --only-if-exists then replaces the
+# earlier comment. With "old-cli" it does NOT list --only-if-exists and fails
+# on any post, which is what a runner pinned to a fullsend release older than
+# the generator does. "no-keep-history-cli", "prose-cli",
+# "uppercase-deprecated-cli", "prose-only-if-exists-cli" and
+# "deprecated-only-if-exists-cli" behave like the default stub with the help
+# texts named above. Any other name aborts the test run.
 # With "broken-cli:<rc>" the stub's --help itself exits <rc> (127 stands in
 # for a fullsend that is not installed), and any post is recorded.
 # With "failing-cli" the stub lists the flag but every post exits non-zero,
@@ -70,11 +101,28 @@ run_post_live() {
   if [[ "${cli}" == broken-cli:* ]]; then
     printf '#!/usr/bin/env bash\nif [[ "$*" == *--help* ]]; then echo "fullsend: broken" >&2; exit %s; fi\nprintf "%%s\\n" "$@" > "%s/args"\ncat > /dev/null\n' "${cli#broken-cli:}" "${stubdir}" > "${stubdir}/fullsend"
   elif [[ "${cli}" == "failing-cli" ]]; then
-    printf '#!/usr/bin/env bash\nif [[ "$*" == *--help* ]]; then echo "  --only-if-exists   update an existing comment but never create one"; exit 0; fi\nprintf "%%s\\n" "$@" > "%s/args"\ncat > /dev/null\necho "Error: cannot resolve the authenticated login" >&2; exit 1\n' "${stubdir}" > "${stubdir}/fullsend"
+    printf '#!/usr/bin/env bash\nif [[ "$*" == *--help* ]]; then printf "%%s\\n" "%s"; exit 0; fi\nprintf "%%s\\n" "$@" > "%s/args"\ncat > /dev/null\necho "Error: cannot resolve the authenticated login" >&2; exit 1\n' "${NEW_CLI_HELP}" "${stubdir}" > "${stubdir}/fullsend"
   elif [[ "${cli}" == "old-cli" ]]; then
     printf '#!/usr/bin/env bash\nif [[ "$*" == *--help* ]]; then echo "  --dry-run   print what would be posted"; exit 0; fi\nprintf "%%s\\n" "$@" > "%s/args"\necho "Error: unknown flag: --only-if-exists" >&2; exit 1\n' "${stubdir}" > "${stubdir}/fullsend"
+  elif [[ "${cli}" == "edit-in-place-cli" ]]; then
+    printf '#!/usr/bin/env bash\nif [[ "$*" == *--help* ]]; then printf "%%s\\n" "%s"; exit 0; fi\nprintf "%%s\\n" "$@" > "%s/args"\ncat > "%s/stdin"\n' "${OLD_CLI_HELP}" "${stubdir}" "${stubdir}" > "${stubdir}/fullsend"
   else
-    printf '#!/usr/bin/env bash\nif [[ "$*" == *--help* ]]; then echo "  --only-if-exists   update an existing comment but never create one"; exit 0; fi\nprintf "%%s\\n" "$@" > "%s/args"\ncat > "%s/stdin"\n' "${stubdir}" "${stubdir}" > "${stubdir}/fullsend"
+    local help="${NEW_CLI_HELP}"
+    case "${cli}" in
+      no-keep-history-cli) help="${NO_KEEP_HISTORY_CLI_HELP}" ;;
+      prose-cli) help="${PROSE_CLI_HELP}" ;;
+      uppercase-deprecated-cli) help="${UPPERCASE_DEPRECATED_CLI_HELP}" ;;
+      prose-only-if-exists-cli) help="${PROSE_ONLY_IF_EXISTS_CLI_HELP}" ;;
+      deprecated-only-if-exists-cli) help="${DEPRECATED_ONLY_IF_EXISTS_CLI_HELP}" ;;
+      new-cli) ;;
+      *)
+        # A misspelt or renamed stub must not silently test #9399's CLI.
+        echo "run_post_live: unknown stub '${cli}'" >&2
+        rm -rf "${workdir}" "${stubdir}"
+        exit 2
+        ;;
+    esac
+    printf '#!/usr/bin/env bash\nif [[ "$*" == *--help* ]]; then printf "%%s\\n" "%s"; exit 0; fi\nif [[ "$*" == *--keep-history* ]]; then echo "warning: --keep-history is deprecated and has no effect; every result is posted as a new comment" >&2; fi\nprintf "%%s\\n" "$@" > "%s/args"\ncat > "%s/stdin"\n' "${help}" "${stubdir}" "${stubdir}" > "${stubdir}/fullsend"
   fi
   chmod +x "${stubdir}/fullsend"
   local rc=0
@@ -82,7 +130,7 @@ run_post_live() {
       && PATH="${stubdir}:${PATH}" \
          ISSUE_URL="${LIVE_ISSUE_URL:-https://github.com/fullsend-ai/demo/pull/99}" \
          GH_TOKEN="test..." \
-         bash "${POST_SCRIPT}" ) > "${workdir}/stdout" 2> "${workdir}/stderr" || rc=$?
+         "${BASH:-bash}" "${POST_SCRIPT}" ) > "${workdir}/stdout" 2> "${workdir}/stderr" || rc=$?
   LAST_STDOUT="$(cat "${workdir}/stdout")"
   LAST_STDERR="$(cat "${workdir}/stderr")"
   LAST_FULLSEND_ARGS="$(cat "${stubdir}/args" 2>/dev/null || true)"
@@ -160,35 +208,61 @@ else
 fi
 
 # The arguments every live post must carry: the repository and number parsed
-# from ISSUE_URL, and the marker that lets post-comment edit the earlier
-# comment instead of adding a second one.
+# from ISSUE_URL, and the marker that tells a later clean run this work item
+# has had a link-check comment.
 EXPECTED_TARGET_ARGS=$'issues\npost-comment\n--tracker\ngithub\n--project\nfullsend-ai/demo\n--number\n99\n--marker\n<!-- fullsend:link-check-agent -->\n'
 
-# --- status ok on the live path replaces an earlier findings comment ---
+# --- status ok on the live path posts the all-clear after an earlier comment ---
 #
-# The decision "is there an earlier comment to replace" belongs to
+# The decision "is there an earlier marked comment" belongs to
 # `fullsend issues post-comment --only-if-exists`, which finds the marked
 # comment through the forge client. The script must delegate, not reimplement.
+# Since fullsend-ai/fullsend#9399 the all-clear is a new comment and any
+# earlier marked comment counts, so each clean run after a findings comment
+# delegates again: the script never suppresses a later all-clear itself.
+# A fullsend from before #9399 replaces the earlier comment instead, and gets
+# --keep-history=false so repeated clean runs do not stack identical
+# "Previous run" blocks. A fullsend with #9399 does not: the flag is
+# deprecated with no effect there, and passing it prints a warning. Nor does
+# a fullsend whose help does not list --keep-history in its flag table, even
+# when prose in the help names it, nor one whose flag line says DEPRECATED.
 
-if run_post_live '{"status":"ok","summary":"all good","comment":"All documentation links resolve."}'; then
-  if [[ "${LAST_FULLSEND_ARGS}" == *$'issues\npost-comment\n'* && "${LAST_FULLSEND_ARGS}" == *$'--only-if-exists\n'* && "${LAST_FULLSEND_ARGS}" == *$'--marker\n'* ]]; then
-    pass "ok-status-live-delegates-only-if-exists"
+for _cli in new-cli edit-in-place-cli no-keep-history-cli prose-cli uppercase-deprecated-cli; do
+  if [[ "${_cli}" == "edit-in-place-cli" ]]; then
+    _expected_flags=$'--only-if-exists\n--keep-history=false\n--result\n-'
   else
-    fail "ok-status-live-delegates-only-if-exists" "expected fullsend issues post-comment --only-if-exists, got args: ${LAST_FULLSEND_ARGS}"
+    _expected_flags=$'--only-if-exists\n--result\n-'
   fi
-  if [[ "${LAST_FULLSEND_ARGS}" == "${EXPECTED_TARGET_ARGS}"$'--only-if-exists\n--keep-history=false\n--result\n-' ]]; then
-    pass "ok-status-live-targets-the-work-item"
+  if run_post_live '{"status":"ok","summary":"all good","comment":"All documentation links resolve."}' "${_cli}"; then
+    if [[ "${LAST_FULLSEND_ARGS}" == *$'issues\npost-comment\n'* && "${LAST_FULLSEND_ARGS}" == *$'--only-if-exists\n'* && "${LAST_FULLSEND_ARGS}" == *$'--marker\n'* ]]; then
+      pass "ok-status-live-delegates-only-if-exists:${_cli}"
+    else
+      fail "ok-status-live-delegates-only-if-exists:${_cli}" "expected fullsend issues post-comment --only-if-exists, got args: ${LAST_FULLSEND_ARGS}"
+    fi
+    if [[ "${LAST_FULLSEND_ARGS}" == "${EXPECTED_TARGET_ARGS}${_expected_flags}" ]]; then
+      pass "ok-status-live-targets-the-work-item:${_cli}"
+    else
+      fail "ok-status-live-targets-the-work-item:${_cli}" "got args: ${LAST_FULLSEND_ARGS}"
+    fi
+    if [[ "${LAST_FULLSEND_STDIN}" == $'**all good**\n\nAll documentation links resolve.' ]]; then
+      pass "ok-status-live-sends-the-all-clear-body:${_cli}"
+    else
+      fail "ok-status-live-sends-the-all-clear-body:${_cli}" "unexpected all-clear body on stdin: ${LAST_FULLSEND_STDIN}"
+    fi
+    # Every stub here but the pre-#9399 one is built on the #9399 stub, which
+    # warns when it is passed --keep-history; the pre-#9399 one never warns,
+    # so it cannot fail this check and is skipped.
+    if [[ "${_cli}" != "edit-in-place-cli" ]]; then
+      if [[ "${LAST_STDERR}" != *"deprecated"* ]]; then
+        pass "ok-status-live-no-deprecation-warning:${_cli}"
+      else
+        fail "ok-status-live-no-deprecation-warning:${_cli}" "fullsend warned about a deprecated flag: ${LAST_STDERR}"
+      fi
+    fi
   else
-    fail "ok-status-live-targets-the-work-item" "got args: ${LAST_FULLSEND_ARGS}"
+    fail "ok-status-live-delegates-only-if-exists:${_cli}" "script exited non-zero: ${LAST_STDERR}"
   fi
-  if [[ "${LAST_FULLSEND_STDIN}" == *"All documentation links resolve."* ]]; then
-    pass "ok-status-live-sends-the-all-clear-body"
-  else
-    fail "ok-status-live-sends-the-all-clear-body" "all-clear body not piped to fullsend: ${LAST_FULLSEND_STDIN}"
-  fi
-else
-  fail "ok-status-live-delegates-only-if-exists" "script exited non-zero: ${LAST_STDERR}"
-fi
+done
 
 # --- status ok on a runner whose fullsend predates --only-if-exists ---
 #
@@ -206,10 +280,28 @@ else
   fail "ok-status-live-older-fullsend-posts-nothing" "script exited non-zero on an older fullsend: ${LAST_STDERR}"
 fi
 
+# --- status ok when the flag table does not offer --only-if-exists ---
+#
+# The probe reads the flag table, so a help whose prose mentions the flag
+# but whose flag table lacks it, or whose flag line marks it deprecated, is
+# a CLI without the flag: post nothing.
+
+for _cli in prose-only-if-exists-cli deprecated-only-if-exists-cli; do
+  if run_post_live '{"status":"ok","summary":"all good","comment":"All documentation links resolve."}' "${_cli}"; then
+    if [[ "${LAST_STDERR}" == *"nothing to post"* && -z "${LAST_FULLSEND_ARGS}" ]]; then
+      pass "ok-status-live-posts-nothing:${_cli}"
+    else
+      fail "ok-status-live-posts-nothing:${_cli}" "expected a nothing-to-post notice and no post call; stderr: ${LAST_STDERR}; args: ${LAST_FULLSEND_ARGS}"
+    fi
+  else
+    fail "ok-status-live-posts-nothing:${_cli}" "script exited non-zero: ${LAST_STDERR}"
+  fi
+done
+
 # --- status ok with a fullsend whose --help fails ---
 #
 # A missing or broken fullsend is a broken runner, not an older CLI: the run
-# must fail, naming the --help failure, rather than skip the replacement as
+# must fail, naming the --help failure, rather than skip the all-clear as
 # if the flag were merely absent.
 
 for _rc in 1 127; do
@@ -357,7 +449,7 @@ fi
 workdir="$(mktemp -d "${TEST_TMP}/t.XXXXXX")"
 rc=0
 ( cd "${workdir}" && ISSUE_URL="https://github.com/fullsend-ai/demo/pull/99" \
-    GH_TOKEN=t POST_LINK_CHECK_DRY_RUN=1 bash "${POST_SCRIPT}" ) >/dev/null 2>"${workdir}/err" || rc=$?
+    GH_TOKEN=t POST_LINK_CHECK_DRY_RUN=1 "${BASH:-bash}" "${POST_SCRIPT}" ) >/dev/null 2>"${workdir}/err" || rc=$?
 if [[ "${rc}" -ne 0 ]] && grep -q "no agent-result.json found" "${workdir}/err"; then
   pass "rejects-missing-result-file"
 else
@@ -374,7 +466,7 @@ for n in 1 2; do
     > "${workdir}/iteration-${n}/output/agent-result.json"
 done
 out=$( cd "${workdir}" && ISSUE_URL="https://github.com/fullsend-ai/demo/pull/99" \
-    GH_TOKEN=t POST_LINK_CHECK_DRY_RUN=1 bash "${POST_SCRIPT}" 2>/dev/null )
+    GH_TOKEN=t POST_LINK_CHECK_DRY_RUN=1 "${BASH:-bash}" "${POST_SCRIPT}" 2>/dev/null )
 if [[ "${out}" == *"iteration 2"* ]]; then
   pass "uses-the-last-iteration"
 else
@@ -386,7 +478,7 @@ fi
 out=$( cd "${workdir}" && ISSUE_URL="https://github.com/fullsend-ai/demo/pull/99" \
     GH_TOKEN=t POST_LINK_CHECK_DRY_RUN=1 \
     FULLSEND_VALIDATED_ITERATION_DIR="${workdir}/iteration-1/output" \
-    bash "${POST_SCRIPT}" 2>/dev/null )
+    "${BASH:-bash}" "${POST_SCRIPT}" 2>/dev/null )
 if [[ "${out}" == *"iteration 1"* ]]; then
   pass "validated-iteration-wins"
 else
@@ -403,7 +495,7 @@ for n in 9 10; do
     > "${workdir}/iteration-${n}/output/agent-result.json"
 done
 out=$( cd "${workdir}" && ISSUE_URL="https://github.com/fullsend-ai/demo/pull/99" \
-    GH_TOKEN=t POST_LINK_CHECK_DRY_RUN=1 bash "${POST_SCRIPT}" 2>/dev/null )
+    GH_TOKEN=t POST_LINK_CHECK_DRY_RUN=1 "${BASH:-bash}" "${POST_SCRIPT}" 2>/dev/null )
 if [[ "${out}" == *"iteration 10"* ]]; then
   pass "iteration-10-beats-iteration-9"
 else
@@ -421,7 +513,7 @@ rc=0
 ( cd "${workdir}" && ISSUE_URL="https://github.com/fullsend-ai/demo/pull/99" \
     GH_TOKEN=t POST_LINK_CHECK_DRY_RUN=1 \
     FULLSEND_VALIDATED_ITERATION_DIR="${workdir}/empty" \
-    bash "${POST_SCRIPT}" ) >/dev/null 2>"${workdir}/err" || rc=$?
+    "${BASH:-bash}" "${POST_SCRIPT}" ) >/dev/null 2>"${workdir}/err" || rc=$?
 if [[ "${rc}" -ne 0 ]] && grep -q "no agent-result.json" "${workdir}/err"; then
   pass "validated-dir-without-result-is-an-error"
 else
@@ -469,7 +561,7 @@ for _var in GH_TOKEN ISSUE_URL; do
     > "${workdir}/iteration-1/output/agent-result.json"
   rc=0
   ( cd "${workdir}" && env GH_TOKEN=t ISSUE_URL="https://github.com/fullsend-ai/demo/pull/99" \
-      POST_LINK_CHECK_DRY_RUN=1 env -u "${_var}" bash "${POST_SCRIPT}" ) \
+      POST_LINK_CHECK_DRY_RUN=1 env -u "${_var}" "${BASH:-bash}" "${POST_SCRIPT}" ) \
       >/dev/null 2>"${workdir}/err" || rc=$?
   if [[ "${rc}" -ne 0 ]] && grep -qF "${_var} must be set" "${workdir}/err"; then
     pass "${_name}"

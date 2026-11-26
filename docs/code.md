@@ -37,7 +37,7 @@ work items).
 
 | Label | Meaning |
 |-------|---------|
-| `ready-to-code` | Triggers the code agent. Applied by the [triage](triage.md) agent for low-risk categories (bug, documentation, performance), or manually by a human for feature work after prioritization. Not applied when the triage result sets `requires_workflow_changes`, since the code agent cannot modify workflow files. Auto-promotion is also subject to `TRIAGE_AUTO_CODE` — see [Ready-to-code promotion](triage.md#ready-to-code-promotion). |
+| `ready-to-code` | Triggers the code agent. Applied by the [triage](triage.md) agent for low-risk categories (bug, documentation, performance), or manually by a human for feature work after prioritization. Not applied when the triage result sets `requires_workflow_changes`, since the code agent cannot modify workflow files. Auto-promotion is also subject to `TRIAGE_AUTO_CODE` — see [Ready-to-code promotion](triage.md#ready-to-code-promotion) — and never happens while the issue carries a [skip label](triage.md#skip-labels). |
 | `ready-for-review` | Applied by the code agent after pushing a PR. In per-repo installs, triggers the [review agent](review.md) when applied to a PR. Also marks workflow state for humans and the [retro agent](retro.md). |
 | `code-agent-failed` | Last-resort fallback applied to the issue when the post-code script fails and cannot post a failure comment even after retrying transient forge errors. Does not trigger or block the agent — it exists purely so the failure stays discoverable when the forge outage also swallows the comment. |
 
@@ -50,6 +50,8 @@ See [Customizing with AGENTS.md](https://fullsend.sh/docs/guides/user/customizin
 
 | Variable | Description | Default | Valid values |
 |----------|-------------|---------|--------------|
+| `CODE_JIRA_STARTED_TRANSITION` | Named Jira transition after Jira preflight accepts the run, before sandbox creation; configure through a derived harness's `env.runner`. See [Jira workflow transitions](#jira-workflow-transitions). | `"off"` (disabled) | Exact Jira transition name, or `"off"` |
+| `CODE_JIRA_PR_READY_TRANSITION` | Named Jira transition to execute after the post-script confirms an open, non-draft PR/MR; configure through a derived harness's `env.runner`. See [Jira workflow transitions](#jira-workflow-transitions). | `"off"` (disabled) | Exact Jira transition name, or `"off"` |
 | `CODE_ALLOWED_TARGET_BRANCHES` | Restricts which branches the code agent can target when pushing. The post-code script reads it from the runner when present and validates the agent's chosen target branch before pushing. It is never injected into the sandbox. | Repo default branch (auto-detected via forge API; falls back to `main`) | Comma-separated branch names (e.g. `main,develop`) or `*` for any branch |
 | `FULLSEND_FORGE` | Forge platform. Set automatically by the harness overlay `env` section (matched via `when: 'runtime.forge == "<platform>"'`). | (set by harness) | `"github"`, `"gitlab"` |
 | `FULLSEND_TRACKER` | Source tracker for the work item (matches triage convention). When set to `"jira"`, the code agent reads the Jira work item directly via provider-backed Jira API access (fullsend's builtin `jira` provider handles credential injection at the network layer). Set by the Jira-source overlay in `harness/code.yaml`. | (unset — forge-native) | `"jira"` |
@@ -71,13 +73,21 @@ This separation ensures the agent never has direct write access to the repositor
 
 When the fix belongs in another repository, the agent reports the upstream
 repository, file, and required change without making a commit or restructuring
-this repository. On GitHub/GitLab source issues, the no-PR path sanitizes
-`pr_body`, keeps only its last 30 lines by default, and posts it as "Agent
-context" under a generic "No PR created — agent determined no changes needed"
-notice with retry guidance. Keep escalation text under 25 lines, put the
-repository, file, and required change first, and omit the normal PR template.
-External-tracker runs (such as Jira) emit only a generic notice; the upstream
-explanation remains in the agent's final message in the run transcript.
+this repository. The agent also sets `no_pr_reason` to a short explanation
+whenever it stops without a commit for another reason (gate label, already
+fixed, blocked, missing acceptance criteria). On GitHub, GitLab and Jira
+source issues, the no-PR path prefers `no_pr_reason`, falling back to `pr_body` for older
+agent outputs. It sanitizes and secret-scans the complete selected explanation,
+then keeps its first 30 lines and adds a `... truncated` marker when more lines
+remain. This fixed agent-context limit is independent of
+`POST_FAILURE_DETAIL_MAX_LINES`, which controls failure-log tails. It posts the
+result as "Agent context" under a generic "No PR created — agent determined no
+changes needed" notice with retry guidance.
+Keep escalation text under 25 lines, put the repository, file, and required
+change first, and omit the normal PR template. On a Jira issue the notice
+goes to an outcome comment with its own marker, so a rerun edits it and it
+never replaces the PR/MR link comment. Other external trackers emit only a
+generic notice in the job log.
 
 If the target is referenced by a pinned SHA and the upstream fix has not
 landed in a newer commit reachable from the intended upstream reference, the
@@ -100,7 +110,7 @@ text scan. If a text scan finds a secret or cannot complete, the issue comment
 omits optional context, and the PR/MR description uses a generic fallback. A
 rejected PR body falls back to the normalized commit body only if that text
 passes the same scan. Raw text-scan diagnostics are not logged.
-Jira-source no-PR runs still emit only their existing generic notice.
+The Jira no-PR notice gets the same sanitization and context secret scan.
 
 ### Reruns on an open pull request
 
@@ -388,13 +398,34 @@ vars. Key differences from single-forge setup:
   The post-script takes the Jira credentials out of its environment before
   it runs any git command, so repo-controlled hooks, including the one that
   fires when it renames the agent branch, cannot read them from their
-  environment or from a parent's `/proc/<pid>/environ`; only this Jira write
-  receives them. These are the same account the Jira poller treats as its own, so the update does not
-  dispatch agents. If the Jira write fails,
+  environment or from a parent's `/proc/<pid>/environ`; only the Jira writes
+  receive them. These are the same account the Jira poller treats as its own, so the update does not
+  dispatch agents. If the PR/MR link write fails,
   the step fails, even though the PR/MR already exists. The branch, commits,
   PR/MR, review and merge stay on the code host: GitHub targets get a GitHub
   PR and GitLab targets get a GitLab MR. For GitLab targets the GitLab host
   is taken from `CI_SERVER_HOST`, because `ISSUE_URL` is the Jira URL.
+  A clean no-op writes the notice and agent's explanation to a comment with
+  the marker `<!-- fullsend:code-agent-outcome -->`. A post-script failure
+  writes its category and sanitized detail under the separate marker
+  `<!-- fullsend:code-agent-failure -->`, including a refused rerun that would
+  replace another author's commits. Retries update the matching comment;
+  neither comment replaces the PR/MR link. A later successful run leaves
+  earlier no-op or failure comments alongside its link. These writes are best-effort: a
+  failed write is a warning and the run keeps its exit code. No-op and failure comments
+  each invoke the CLI once and rely on its HTTP retry policy: 429 responses
+  are retried for all methods; HTTP 500–504 and network failures are retried for
+  idempotent methods. There is no additional shell retry. A rerun after an
+  ambiguous comment POST failure relies on the sticky-marker property lookup
+  to find a comment the earlier request may have created. The shared comment
+  writer removes the saved token, email, OAuth client ID and secret (including
+  normalized values) from the comment body before delivery and from the
+  captured CLI stdout and stderr before logging. It also sanitizes workflow
+  commands in that output and preserves the CLI exit status.
+  Failure details use the same bounded regex/literal-token sanitizer as forge
+  failure comments, rather than `scan_public_text`. Failures can occur before
+  the public-text scanner is initialized; the scanner remains required for
+  optional agent context on the no-op path.
 - **Policy** is `policies/base.yaml` for all forges. Network access is
   provided by profiles (`fullsend-gitlab-code` for GitLab). Custom
   harnesses using `base:` composition should override at the forge level
@@ -407,6 +438,67 @@ vars. Key differences from single-forge setup:
   set automatically by the runner. Validation fails closed when
   `CI_SERVER_HOST` is not set. The GitLab profile in
   `profiles/fullsend-gitlab-code.yaml` must also be updated.
+
+## Jira workflow transitions
+
+To opt in, override `env.runner` in your code harness (using `base:`
+composition), following [ADR 0080](https://github.com/fullsend-ai/fullsend/blob/main/docs/ADRs/0080-config-yaml-vs-agent-env-var-scope.md):
+
+```yaml
+env:
+  runner:
+    CODE_JIRA_STARTED_TRANSITION: "In Progress"
+    CODE_JIRA_PR_READY_TRANSITION: "Review"
+```
+
+These are independent optional settings. Each value is a transition name,
+not a destination status. Jira defines which source states allow it and
+where it leads. The example assumes your workflow has transitions named
+`In Progress` and `Review`; replace them with your team's transition names.
+Choose a workflow transition
+that restricts source states appropriately; a global transition can still
+be available from Blocked or Closed. The literal `off` is reserved for
+disabling this feature. An unset or empty value also disables it.
+
+`CODE_JIRA_STARTED_TRANSITION` runs only at the end of the Jira pre-script,
+after URL validation, existing-PR/child-issue skip checks, and the dependency
+setup phase. A skipped run or failed preflight does not transition. Existing
+nonfatal setup warnings still allow preflight to accept the run. `CODE_FORCE=true` bypasses the existing-PR/child checks and
+can therefore reach the transition. This means preflight accepted the run;
+it does not guarantee that the sandbox was created or inference began.
+A later sandbox failure can leave Jira in the new state; there is no
+automatic rollback.
+
+The pre-script removes Jira credentials from its inherited environment by
+re-executing before running repository dependency tools, keeps them in
+unexported shell variables, and resolves the trusted CLI before installation
+can prepend executables to PATH. It checks supplied runner work-item
+identity against the validated Jira issue URL. Missing credentials, CLI,
+configuration directory, identity conflicts or transition failures warn
+and skip the optional write without stopping coding. As with post-code,
+this does not provide isolation from a same-user process with ptrace access.
+
+After the existing Jira stage comment succeeds, the post-script fetches the
+PR/MR's current state from GitHub or GitLab. Only an explicitly open,
+non-draft PR/MR permits the shared `fullsend issues transition --transition`
+command to run. It uses the same validated source issue and runner-only
+Jira credentials as the comment. Both transition settings require
+[Fullsend v0.56.1](https://github.com/fullsend-ai/fullsend/releases/tag/v0.56.1)
+or later, which includes the shared transition command.
+No Jira API calls are added to the sandbox.
+
+Both settings belong only to the code harness, not parallel `config.yaml`
+behavior field or CI workflow environment setting. Repository overrides
+must update the harness settings. The PR-ready setting applies to readiness
+observed during the code post-script, including updates to an existing PR/MR. Neither setting
+watches later draft-to-ready events or closes issues on merge. Configure
+either setting alone or both; neither depends on the other.
+
+Readiness lookup or transition failures produce a warning and leave the
+successful code result intact. The existing Jira stage-comment failure
+still fails the step. Transitions are not automatically retried; inspect
+Jira after an uncertain response before rerunning, because a workflow can
+allow repeated transitions with side effects.
 
 ## Issue attachments
 

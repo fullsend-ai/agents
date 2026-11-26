@@ -6,9 +6,22 @@
 # triage invocation starts from a clean label baseline, preventing
 # mutual-exclusion violations (Story 2, #125).
 #
+# An issue that carries a skip label (skip-triage, or one listed in
+# TRIAGE_SKIP_LABELS) is skipped through the pre-script output protocol
+# (fullsend docs/normative/prescript-output/v1) before any label changes,
+# unless TRIAGE_SKIP_LABEL_OVERRIDE is "true" (#2076).
+#
+# On GitHub it then stages the issue's authorized images for the sandbox
+# (scripts/lib/github-triage-images.lib.sh, #2172).
+#
 # Required env vars:
 #   ISSUE_URL        — HTML URL of the issue
 #   FULLSEND_TRACKER — "github", "gitlab", or "jira" (falls back to FULLSEND_FORGE)
+#
+# Optional env vars:
+#   TRIAGE_SKIP_LABELS          — comma-separated extra skip labels
+#   TRIAGE_SKIP_LABEL_OVERRIDE  — "true" for a human /fs-triage request
+#   RUNNER_TEMP                 — GitHub: directory the issue images are staged in
 #
 # IMPORTANT: Uses the labels API directly (DELETE /issues/{number}/labels/{name})
 # instead of gh issue edit. gh issue edit uses PATCH /issues/{number}
@@ -22,6 +35,34 @@ FULLSEND_TRACKER="${FULLSEND_TRACKER:-${FULLSEND_FORGE:-}}"
 
 # shellcheck disable=SC2034 # SCRIPT_DIR used by source in .src.sh; unused in bundled .sh
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/prescript-output.lib.sh
+# BEGIN bundled: lib/prescript-output.lib.sh
+# prescript-output.lib.sh — Write pre-script output protocol lines.
+#
+# The pre-script output protocol (fullsend docs/normative/prescript-output/v1,
+# fullsend-ai/fullsend#4718) is the contract between `fullsend run` and a
+# harness pre-script: the CLI exports FULLSEND_PRESCRIPT_OUTPUT naming a
+# file, and the script appends key=value lines to it — `skipped=true` (plus
+# an optional `reason`) stops the run before sandbox creation. Under a CLI
+# that predates the protocol the variable is unset and writes are skipped,
+# so the run proceeds — the protocol's version-skew contract.
+#
+# Source from a pre-script .src.sh:
+#   source "${SCRIPT_DIR}/lib/prescript-output.lib.sh"
+
+# shellcheck shell=bash
+
+[[ -n "${PRESCRIPT_OUTPUT_SH_LOADED:-}" ]] && return 0
+PRESCRIPT_OUTPUT_SH_LOADED=1
+
+# prescript_output KEY VALUE — append a protocol line, if the CLI
+# supports the protocol. Values must be single-line (protocol grammar).
+prescript_output() {
+  if [[ -n "${FULLSEND_PRESCRIPT_OUTPUT:-}" ]]; then
+    printf '%s=%s\n' "$1" "$2" >> "${FULLSEND_PRESCRIPT_OUTPUT}"
+  fi
+}
+# END bundled: lib/prescript-output.lib.sh
 # shellcheck source=lib/triage-ops.lib.sh
 # BEGIN bundled: lib/triage-ops.lib.sh
 # shellcheck shell=bash
@@ -140,6 +181,11 @@ tracker_verify_labels_stripped() {
     echo "ERROR: triage labels still present after reset: ${remaining}" >&2
     return 1
   fi
+}
+
+# Print the issue's labels, one per line. Fails when they cannot be read.
+tracker_list_issue_labels() {
+  gh api "repos/${REPO}/issues/${ISSUE_NUMBER}/labels" --paginate --jq '.[].name'
 }
 
 tracker_list_repo_labels() {
@@ -468,6 +514,13 @@ tracker_verify_labels_stripped() {
   fi
 }
 
+# Print the issue's labels, one per line. Fails when they cannot be read.
+tracker_list_issue_labels() {
+  local issue
+  issue=$(_gitlab_api GET "/projects/${REPO_ENCODED}/issues/${ISSUE_NUMBER}") || return 1
+  printf '%s' "${issue}" | jq -r '.labels[]'
+}
+
 tracker_list_repo_labels() {
   local page=1 max_pages=50
   while [[ "${page}" -le "${max_pages}" ]]; do
@@ -735,6 +788,18 @@ JIRA_TRIAGE_OPS_SH_LOADED=1
 [[ -n "${JIRA_AUTH_SH_LOADED:-}" ]] && return 0
 JIRA_AUTH_SH_LOADED=1
 
+# Emit a GitHub Actions masking command for a secret. Defined here rather
+# than in a caller's library so every bundle that sources Jira auth can mask
+# a minted token, whatever the agent. Percent signs, CR and LF are escaped
+# because an unescaped line break would end the workflow command.
+_jira_auth_gha_mask() {
+  local value="$1"
+  value="${value//%/%25}"
+  value="${value//$'\r'/%0D}"
+  value="${value//$'\n'/%0A}"
+  printf '::add-mask::%s\n' "${value}"
+}
+
 # Selected mode: "token", "client", or "none". Empty until jira_auth_select.
 JIRA_AUTH_MODE=""
 _JIRA_AUTH_CLIENT_ID=""
@@ -891,27 +956,29 @@ _jira_auth_mint_now() {
   token="$(printf '%s' "${body}" | jq -r '.access_token // empty' 2>/dev/null)" || token=""
   expires_in="$(printf '%s' "${body}" | jq -r '.expires_in // empty' 2>/dev/null)" || expires_in=""
   # Atlassian access tokens are JWTs. Anything outside this charset could
-  # break or inject into the ::add-mask:: line, so it is refused unprinted.
+  # break or inject into the workflow command, so it is refused unprinted.
   if [[ ! "${token}" =~ ^[A-Za-z0-9._~+/=-]+$ ]]; then
     echo "ERROR: Jira OAuth token response has no usable access_token" >&2
     return 1
   fi
-  # In the script's own shell the mask goes to stdout. In a subshell, such
-  # as a command substitution, stdout may be captured, so it goes to the
-  # main shell's current stdout through /proc when that is a pipe or a
-  # terminal (the runner log), else to stderr. A file or /dev/null there
-  # means the caller redirected stdout around the call.
-  # ::add-mask:: is GHA-only; on other runners the line would print the token.
-  local main_out="/proc/$$/fd/1"
-  if [[ "${GITHUB_ACTIONS:-}" != "true" ]]; then
-    :
-  elif (( BASH_SUBSHELL == 0 )); then
-    printf '::add-mask::%s\n' "${token}"
-  elif [[ -w "${main_out}" ]] && [[ -p "${main_out}" || -c "${main_out}" ]] \
-    && ! [[ "${main_out}" -ef /dev/null ]]; then
-    printf '::add-mask::%s\n' "${token}" >> "${main_out}"
-  else
-    printf '::add-mask::%s\n' "${token}" >&2
+  # ::add-mask:: is a GitHub Actions workflow command. On any other runner
+  # the line is ordinary log output and would print the token, so the mask
+  # is emitted only when GITHUB_ACTIONS is "true".
+  if [[ "${GITHUB_ACTIONS:-}" == "true" ]]; then
+    # In the script's own shell the mask goes to stdout. In a subshell, such
+    # as a command substitution, stdout may be captured, so it goes to the
+    # main shell's current stdout through /proc when that is a pipe or a
+    # terminal (the runner log), else to stderr. A file or /dev/null there
+    # means the caller redirected stdout around the call.
+    local main_out="/proc/$$/fd/1"
+    if (( BASH_SUBSHELL == 0 )); then
+      _jira_auth_gha_mask "${token}"
+    elif [[ -w "${main_out}" ]] && [[ -p "${main_out}" || -c "${main_out}" ]] \
+      && ! [[ "${main_out}" -ef /dev/null ]]; then
+      _jira_auth_gha_mask "${token}" >> "${main_out}"
+    else
+      _jira_auth_gha_mask "${token}" >&2
+    fi
   fi
   [[ "${expires_in}" =~ ^[0-9]+$ ]] || expires_in=3600
   _JIRA_AUTH_ACCESS_TOKEN="${token}"
@@ -1185,6 +1252,13 @@ tracker_verify_labels_stripped() {
   fi
 }
 
+# Print the issue's labels, one per line. Fails when they cannot be read.
+tracker_list_issue_labels() {
+  local issue
+  issue=$(_jira_api GET "/issue/${ISSUE_NUMBER}?fields=labels") || return 1
+  printf '%s' "${issue}" | jq -r '.fields.labels[]'
+}
+
 # Jira has no per-project label registry like GitHub/GitLab — any string is
 # a valid label with no creation step. As the closest analog to "labels the
 # maintainers already established" (which the "will not auto-create" guard
@@ -1442,11 +1516,236 @@ tracker_dispatch_triage() {
     exit 1
     ;;
 esac
+
+# triage_find_skip_label — print the first skip label on the issue (#2076).
+# A skip label keeps an issue with a planning process: the built-in
+# skip-triage, plus each label in the comma-separated TRIAGE_SKIP_LABELS.
+# Returns 0 when the issue carries one, 1 when it carries none, and 2 when
+# its labels cannot be read. Call after tracker_parse_issue_url.
+triage_find_skip_label() {
+  local issue_labels
+  issue_labels=$(tracker_list_issue_labels) || return 2
+
+  local skip_labels=("skip-triage") extra_labels label
+  IFS=',' read -ra extra_labels <<< "${TRIAGE_SKIP_LABELS:-}"
+  for label in "${extra_labels[@]}"; do
+    label="${label#"${label%%[![:space:]]*}"}"
+    label="${label%"${label##*[![:space:]]}"}"
+    [[ -n "${label}" ]] && skip_labels+=("${label}")
+  done
+
+  local current
+  while IFS= read -r current; do
+    for label in "${skip_labels[@]}"; do
+      if [[ -n "${current}" && "${current}" == "${label}" ]]; then
+        printf '%s\n' "${current}"
+        return 0
+      fi
+    done
+  done <<< "${issue_labels}"
+  return 1
+}
 # END bundled: lib/triage-ops.lib.sh
+# shellcheck source=lib/github-triage-images.lib.sh
+# BEGIN bundled: lib/github-triage-images.lib.sh
+# shellcheck shell=bash
+# github-triage-images.lib.sh — Stage authorized issue images for triage.
+#
+# Bundled into pre-triage.sh. On GitHub, triage looks at the images attached
+# to the issue body and its comments (agents/triage.md Step 1a). Only images
+# posted by the issue author, or by a user whose role on the repository is
+# admin, maintain or write, may reach the model (#2172). This runs on the
+# runner, before the sandbox exists: it checks each poster, downloads the
+# allowed images and writes them, with a manifest, to
+# ${RUNNER_TEMP}/fullsend-triage-images. harness/triage.yaml copies each file
+# into the sandbox with an optional host_files entry; the sandbox itself has
+# no route to the image hosts.
+#
+# An image is left out when its poster lacks the role and when the
+# permission lookup fails. The manifest counts those images so the triage
+# comment can report them.
+#
+# Expected globals (set by tracker_parse_issue_url):
+#   REPO         — owner/repo
+#   ISSUE_NUMBER — issue number
+#
+# Expected env vars:
+#   GH_TOKEN     — GitHub token that can read the issue and its comments
+#   RUNNER_TEMP  — runner temp directory (set by GitHub Actions)
+
+[[ -n "${GITHUB_TRIAGE_IMAGES_SH_LOADED:-}" ]] && return 0
+GITHUB_TRIAGE_IMAGES_SH_LOADED=1
+
+# harness/triage.yaml mounts manifest.json and image-1 .. image-10 from this
+# directory; keep the names and the limit in sync with it.
+TRIAGE_IMAGES_MAX=10
+
+# _triage_image_role_allows ROLE_NAME PERMISSION — succeed for admin,
+# maintain and write. The collaborator permission endpoint reports maintain
+# as permission "write" and triage as "read", so built-in role names are
+# cross-checked against permission and a custom role falls back to its base
+# permission, as fullsend's e2e gate does (internal/e2eauth/role.go).
+_triage_image_role_allows() {
+  local role_name="$1" permission="$2"
+  case "${role_name}" in
+    admin) [[ "${permission}" == "admin" ]] ;;
+    maintain|write) [[ "${permission}" == "write" ]] ;;
+    triage|read) return 1 ;;
+    *) [[ "${permission}" == "admin" || "${permission}" == "write" ]] ;;
+  esac
+}
+
+# _triage_image_poster_allowed LOGIN — succeed when LOGIN has the admin,
+# maintain or write role on REPO. A login that is not a plain user name
+# (empty for a deleted account, or a bot) and a failed lookup both fail.
+_triage_image_poster_allowed() {
+  local login="$1" fields role_name permission
+  [[ "${login}" =~ ^[A-Za-z0-9][A-Za-z0-9-]*$ ]] || return 1
+  fields=$(gh api "repos/${REPO}/collaborators/${login}/permission" \
+    --jq '[(.role_name // ""), (.permission // "")] | @tsv' 2>/dev/null) || return 1
+  IFS=$'\t' read -r role_name permission <<< "${fields}"
+  _triage_image_role_allows "${role_name}" "${permission}"
+}
+
+# _triage_image_download URL OUT — download URL to OUT without credentials
+# and print its content type. Never prints the URL: private image URLs carry
+# a signed token.
+_triage_image_download() {
+  local url="$1" out="$2"
+  curl --fail --silent --proto '=https' --max-time 60 --max-filesize 20000000 \
+    --output "${out}" --write-out '%{content_type}' "${url}" 2>/dev/null
+}
+
+# triage_stage_issue_images — write the allowed images and manifest.json to
+# ${RUNNER_TEMP}/fullsend-triage-images. Never fails the run: when the images
+# cannot be listed, no manifest is written and triage runs without images.
+triage_stage_issue_images() {
+  if [[ -z "${RUNNER_TEMP:-}" ]]; then
+    echo "::warning::RUNNER_TEMP is not set — no issue images staged for triage"
+    return 0
+  fi
+  local dir="${RUNNER_TEMP}/fullsend-triage-images"
+  # A runner that reuses its host could keep an earlier run's images.
+  rm -rf "${dir}"
+  if ! mkdir -p "${dir}"; then
+    echo "::warning::Cannot create the issue image directory — no issue images staged for triage"
+    return 0
+  fi
+
+  local work
+  if ! work=$(mktemp -d); then
+    echo "::warning::Cannot create a work directory — no issue images staged for triage"
+    return 0
+  fi
+  local issue_json="${work}/issue.json" comments_json="${work}/comments.json"
+  # posts.tsv: poster, source, URL. A deleted account's empty login is
+  # written as "-" so the tab-separated fields stay aligned.
+  local posts="${work}/posts.tsv" entries="${work}/entries.jsonl"
+  local imgs='def imgs: [(.body_html // "") | scan("src=\"(https://(?:private-)?user-images\\.githubusercontent\\.com/[A-Za-z0-9._~%&;=?/:+-]+)\"") | .[0] | gsub("&amp;"; "&")] | unique | .[];'
+  local author
+  if ! gh api -H "Accept: application/vnd.github.html+json" \
+        "repos/${REPO}/issues/${ISSUE_NUMBER}" > "${issue_json}" 2>/dev/null \
+      || ! gh api --paginate -H "Accept: application/vnd.github.html+json" \
+        "repos/${REPO}/issues/${ISSUE_NUMBER}/comments" > "${comments_json}" 2>/dev/null \
+      || ! author=$(jq -r '.user.login // ""' "${issue_json}" 2>/dev/null) \
+      || ! jq -r "${imgs}"' . as $i | ($i | imgs) | [(if ($i.user.login // "") == "" then "-" else $i.user.login end), "issue body", .] | @tsv' \
+        "${issue_json}" > "${posts}" 2>/dev/null \
+      || ! jq -r "${imgs}"' .[] | . as $c | ($c | imgs) | [(if ($c.user.login // "") == "" then "-" else $c.user.login end), "comment", .] | @tsv' \
+        "${comments_json}" >> "${posts}" 2>/dev/null; then
+    echo "::warning::Cannot list the images attached to the issue — no issue images staged for triage"
+    rm -rf "${work}"
+    return 0
+  fi
+  : > "${entries}"
+
+  local url_re='^https://(private-)?user-images\.githubusercontent\.com/[A-Za-z0-9._~%&;=?/:+-]+$'
+  local allowed_logins=$'\n' denied_logins=$'\n'
+  local omitted=0 unreadable=0 attempted=0 staged=0
+  local poster source url path ext ctype out
+  while IFS=$'\t' read -r poster source url; do
+    [[ "${url}" =~ ${url_re} ]] || continue
+    path="${url%%\?*}"
+    ext="${path##*.}"
+    case "$(printf '%s' "${ext}" | tr '[:upper:]' '[:lower:]')" in
+      svg|mp4|mov|webm) continue ;;
+    esac
+
+    if [[ -z "${author}" || "${poster}" != "${author}" ]]; then
+      if [[ "${denied_logins}" == *$'\n'"${poster}"$'\n'* ]]; then
+        omitted=$((omitted + 1))
+        continue
+      fi
+      if [[ "${allowed_logins}" != *$'\n'"${poster}"$'\n'* ]]; then
+        if _triage_image_poster_allowed "${poster}"; then
+          allowed_logins+="${poster}"$'\n'
+        else
+          denied_logins+="${poster}"$'\n'
+          omitted=$((omitted + 1))
+          continue
+        fi
+      fi
+    fi
+
+    [[ "${attempted}" -lt "${TRIAGE_IMAGES_MAX}" ]] || continue
+    attempted=$((attempted + 1))
+    out="${dir}/image-${attempted}"
+    ctype=""
+    if ctype=$(_triage_image_download "${url}" "${out}"); then
+      ctype="$(printf '%s' "${ctype%%;*}" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')"
+    else
+      ctype=""
+    fi
+    case "${ctype}" in
+      image/png|image/jpeg|image/gif|image/webp)
+        jq -nc --arg file "image-${attempted}" --arg source "${source}" \
+          --arg posted_by "${poster}" --arg content_type "${ctype}" \
+          '{file: $file, source: $source, posted_by: $posted_by, content_type: $content_type}' >> "${entries}"
+        staged=$((staged + 1))
+        ;;
+      *)
+        rm -f "${out}"
+        unreadable=$((unreadable + 1))
+        ;;
+    esac
+  done < "${posts}"
+
+  if ! jq -n --slurpfile images "${entries}" --argjson omitted "${omitted}" \
+      --argjson unreadable "${unreadable}" \
+      '{images: $images, omitted: $omitted, unreadable: $unreadable}' > "${dir}/manifest.json"; then
+    echo "::warning::Cannot write the issue image manifest — no issue images staged for triage"
+    rm -rf "${dir}" "${work}"
+    return 0
+  fi
+  rm -rf "${work}"
+  echo "Issue images: ${staged} staged, ${omitted} left out (poster not authorized), ${unreadable} unreadable"
+}
+# END bundled: lib/github-triage-images.lib.sh
 
 tracker_validate_issue_url
 echo "::notice::🔗 Triage target: $(_gha_sanitize "${ISSUE_URL}")"
 tracker_parse_issue_url
+
+# Skip labels (#2076): skip-triage, or a label listed in TRIAGE_SKIP_LABELS,
+# keeps the issue with a planning process. Skip before the label reset so a
+# skipped run changes no labels and posts no comment. A human /fs-triage
+# overrides the skip: harness/triage.yaml sets TRIAGE_SKIP_LABEL_OVERRIDE for
+# that event.
+if [[ "${TRIAGE_SKIP_LABEL_OVERRIDE:-}" == "true" ]]; then
+  echo "Human /fs-triage request — skip labels do not apply"
+else
+  skip_rc=0
+  SKIP_LABEL="$(triage_find_skip_label)" || skip_rc=$?
+  if [[ "${skip_rc}" -eq 0 ]]; then
+    SAFE_SKIP_LABEL="$(_gha_sanitize "${SKIP_LABEL}")"
+    echo "::notice::Issue carries skip label '${SAFE_SKIP_LABEL}' — skipping triage"
+    prescript_output "skipped" "true"
+    prescript_output "reason" "issue carries skip label '${SAFE_SKIP_LABEL}'; comment /fs-triage to triage it anyway"
+    exit 0
+  elif [[ "${skip_rc}" -ne 1 ]]; then
+    echo "::error::Cannot read the issue labels to check for skip labels" >&2
+    exit 1
+  fi
+fi
 
 echo "Resetting triage labels on ${REPO}#${ISSUE_NUMBER}"
 
@@ -1456,3 +1755,10 @@ tracker_strip_labels "${TRIAGE_LABELS[@]}"
 tracker_verify_labels_stripped "${TRIAGE_LABELS[@]}"
 
 echo "Label reset complete."
+
+# Issue images (#2172): on GitHub, stage the images posted by the issue author
+# or by a user with the admin, maintain or write role, for harness/triage.yaml
+# to copy into the sandbox. Images from anyone else never reach the model.
+if [[ "${FULLSEND_TRACKER}" == "github" ]]; then
+  triage_stage_issue_images
+fi

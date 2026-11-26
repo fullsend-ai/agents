@@ -100,6 +100,11 @@ tracker_verify_labels_stripped() {
   fi
 }
 
+# Print the issue's labels, one per line. Fails when they cannot be read.
+tracker_list_issue_labels() {
+  gh api "repos/${REPO}/issues/${ISSUE_NUMBER}/labels" --paginate --jq '.[].name'
+}
+
 tracker_list_repo_labels() {
   gh api "repos/${REPO}/labels" --paginate --jq '.[].name' 2>/dev/null || true
 }

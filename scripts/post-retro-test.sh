@@ -26,6 +26,7 @@ trap 'rm -rf "${TMPDIR}"' EXIT
 #   "401"             — fail with HTTP 401
 #   "500"             — fail with HTTP 500
 #   "422"             — fail with HTTP 422
+#   "forbidden"       — fail with a permission word but no HTTP status code
 GH_LOG="${TMPDIR}/gh-calls.log"
 MOCK_BIN="${TMPDIR}/bin"
 mkdir -p "${MOCK_BIN}"
@@ -90,6 +91,10 @@ if [[ "$1" == "api" && "$2" == *"/comments" ]]; then
       echo "HTTP 422: Unprocessable Entity" >&2
       exit 1
       ;;
+    forbidden)
+      echo "error: forbidden: Resource not accessible by integration" >&2
+      exit 1
+      ;;
     *)
       echo '{"id": 1, "html_url": "https://github.com/test-org/test-repo/pull/10#issuecomment-1"}'
       exit 0
@@ -102,7 +107,85 @@ exit 0
 MOCKEOF
 chmod +x "${MOCK_BIN}/gh"
 
-# --- Mock curl (for GitLab tests) ---
+# --- Mock fullsend CLI (for Jira tests) ---
+FULLSEND_LOG="${TMPDIR}/fullsend-calls.log"
+FULLSEND_ENV_LOG="${TMPDIR}/fullsend-env.log"
+FULLSEND_STDIN_LOG="${TMPDIR}/fullsend-stdin.log"
+cat > "${MOCK_BIN}/fullsend" <<MOCKEOF
+#!/usr/bin/env bash
+echo "fullsend \$*" >> "${FULLSEND_LOG}"
+echo "token=\${FULLSEND_JIRA_TOKEN-unset} email=\${FULLSEND_JIRA_EMAIL-unset}" >> "${FULLSEND_ENV_LOG}"
+if [[ "\$1" == "issues" ]] && [[ "\$2" == "create" ]]; then
+  if [[ "\$3" == "--help" ]]; then
+    # Cobra prints the usage header and the command path on separate lines.
+    case "\${FULLSEND_MOCK_CREATE_HELP:-}" in
+      missing-fullsend-dir)
+        printf 'Usage:\n  fullsend issues create [flags]\n\nFlags:\n'
+        echo "  --tracker string"
+        exit 0
+        ;;
+      missing-tracker)
+        printf 'Usage:\n  fullsend issues create [flags]\n\nFlags:\n'
+        echo "  --fullsend-dir string"
+        exit 0
+        ;;
+      unrelated-usage)
+        printf 'Usage:\n  fullsend issues something-else [flags]\n\nFlags:\n'
+        echo "  --fullsend-dir string"
+        echo "  --tracker string"
+        exit 0
+        ;;
+    esac
+    printf 'Usage:\n  fullsend issues create [flags]\n\nFlags:\n'
+    echo "  --fullsend-dir string"
+    echo "  --tracker string"
+    exit 0
+  fi
+  if [[ -n "\${FULLSEND_MOCK_FAIL_TITLE:-}" ]] && [[ "\$*" == *"--title \${FULLSEND_MOCK_FAIL_TITLE}"* ]]; then
+    echo "ERROR: mocked creation failure for \${FULLSEND_MOCK_FAIL_TITLE}" >&2
+    exit 1
+  fi
+  # Answer with a key in the requested project, so a test that files into a
+  # secondary target exercises the success path instead of failing the
+  # ^<project>-[0-9]+$ key check.
+  MOCK_PROJECT=""
+  MOCK_PREV=""
+  for mock_arg in "\$@"; do
+    if [[ "\${MOCK_PREV}" == "--project" ]]; then
+      MOCK_PROJECT="\${mock_arg}"
+    fi
+    MOCK_PREV="\${mock_arg}"
+  done
+  cat >> "${FULLSEND_STDIN_LOG}"
+  echo "{\"number\":100,\"key\":\"\${MOCK_PROJECT:-PROJ}-100\",\"title\":\"mock title\",\"url\":\"https://mock.atlassian.net/browse/\${MOCK_PROJECT:-PROJ}-100\"}"
+  exit 0
+fi
+if [[ "\$1" == "issues" ]] && [[ "\$2" == "post-comment" ]]; then
+  if [[ "\$3" == "--help" ]]; then
+    echo "Usage: fullsend issues post-comment [flags]"
+    case "\${FULLSEND_MOCK_KEEP_HISTORY:-}" in
+      supported)
+        echo "  --keep-history          append previous content as collapsed history blocks (set false to replace in-place) (default true)"
+        ;;
+      deprecated)
+        echo "  --keep-history          deprecated: no effect (every result is posted as a new comment; sticky comments were removed) (default true)"
+        ;;
+    esac
+    exit 0
+  fi
+  if [[ -n "\${FULLSEND_MOCK_POST_COMMENT_FAIL:-}" ]]; then
+    echo "Error: request failed: \${FULLSEND_MOCK_POST_COMMENT_FAIL}" >&2
+    exit 1
+  fi
+  cat >> "${FULLSEND_STDIN_LOG}"
+  echo '{"id":10,"url":"https://mock.atlassian.net/browse/PROJ-10#comment-1"}'
+  exit 0
+fi
+exit 0
+MOCKEOF
+chmod +x "${MOCK_BIN}/fullsend"
+
+# --- Mock curl (for GitLab and Jira tests) ---
 # CURL_MOCK_COMMENT_FAIL controls how the mock responds to note-posting calls.
 CURL_LOG="${TMPDIR}/curl-calls.log"
 cat > "${MOCK_BIN}/curl" <<'MOCKEOF'
@@ -116,6 +199,123 @@ for arg in "$@"; do
     URL="${arg}"
   fi
 done
+
+# Jira Cloud tenant info (cloud ID discovery, unauthenticated)
+if [[ "${URL}" == *"/_edge/tenant_info" ]]; then
+  if [[ "${JIRA_MOCK_TENANT_INFO_FAIL:-}" == "1" ]]; then
+    echo "curl: (22) The requested URL returned error: 500" >&2
+    exit 22
+  fi
+  echo '{"cloudId":"11111111-2222-3333-4444-555555555555","url":"https://mock.atlassian.net"}'
+  exit 0
+fi
+
+# Atlassian OAuth token endpoint (client-credentials mode). Every call is
+# already recorded in CURL_LOG, so tests can count exchanges.
+if [[ "${URL}" == "https://auth.atlassian.com/oauth/token" ]]; then
+  # Drain the request body: _jira_auth_mint_now feeds it from `jq | curl
+  # --data @-`, so exiting before jq writes fails jq with a broken pipe and
+  # pipefail reports that as the mint's exit status.
+  cat > /dev/null
+  # Emulate --write-out '\n%{http_code}': _jira_auth_mint_now reads the status
+  # from the last line of the response.
+  if [[ "${JIRA_MOCK_TOKEN_FAIL:-}" == "1" ]]; then
+    printf '%s\n%s' '{"error":"invalid_client"}' '500'
+    exit 0
+  fi
+  printf '%s\n%s' '{"access_token":"mock-access-token","expires_in":3600,"token_type":"Bearer"}' '200'
+  exit 0
+fi
+
+# Jira Cloud REST API
+if [[ "${URL}" == *"/rest/api/3/"* ]]; then
+  case "${URL}" in
+    # Jira validates label updates against the edit screen, not the create
+    # screen, so the edit metadata decides label support.
+    */issue/PROJ-*/editmeta)
+      if [[ "${JIRA_MOCK_NO_EDIT_LABELS:-}" == "1" ]]; then
+        echo '{"fields":{"summary":{"required":true},"description":{"required":false}}}'
+      else
+        echo '{"fields":{"summary":{"required":true},"description":{"required":false},"labels":{"required":false,"schema":{"type":"array"}}}}'
+      fi
+      ;;
+    */issue/createmeta/PROJ/issuetypes\?*)
+      if [[ "${JIRA_MOCK_CREATEMETA_PAGES:-}" == "1" ]]; then
+        META_START=$(printf '%s' "$*" | sed -n 's/.*startAt=\([0-9][0-9]*\).*/\1/p')
+        if [[ "${META_START:-0}" == "0" ]]; then
+          echo '{"issueTypes":[{"id":"10000","name":"Other"}],"total":2,"isLast":false}'
+        else
+          echo '{"issueTypes":[{"id":"10001","name":"Task"}],"total":2,"isLast":true}'
+        fi
+      else
+        echo '{"issueTypes":[{"id":"10001","name":"Task"}]}'
+      fi
+      ;;
+    */issue/createmeta/PROJ/issuetypes/10001\?*)
+      if [[ "${JIRA_MOCK_REQUIRED_FIELD:-}" == "1" ]]; then
+        echo '{"fields":[{"fieldId":"summary","required":true,"hasDefaultValue":false},{"fieldId":"customfield_10050","required":true,"hasDefaultValue":false}]}'
+      elif [[ "${JIRA_MOCK_NO_DESCRIPTION:-}" == "1" ]]; then
+        echo '{"fields":[{"fieldId":"summary","required":true,"hasDefaultValue":false},{"fieldId":"labels","required":false,"hasDefaultValue":false}]}'
+      elif [[ "${JIRA_MOCK_CREATE_NO_LABELS:-}" == "1" ]]; then
+        echo '{"fields":[{"fieldId":"summary","required":true,"hasDefaultValue":false},{"fieldId":"description","required":false,"hasDefaultValue":false}]}'
+      elif [[ "${JIRA_MOCK_REPORTER_REQUIRED:-}" == "1" ]]; then
+        # An account with Modify Reporter permission sees reporter as required
+        # with no default, though Jira still fills it with the caller.
+        echo '{"fields":[{"fieldId":"summary","required":true,"hasDefaultValue":false},{"fieldId":"description","required":false,"hasDefaultValue":false},{"fieldId":"labels","required":false,"hasDefaultValue":false},{"fieldId":"reporter","required":true,"hasDefaultValue":false}]}'
+      else
+        echo '{"fields":[{"fieldId":"summary","required":true,"hasDefaultValue":false},{"fieldId":"description","required":false,"hasDefaultValue":false},{"fieldId":"labels","required":false,"hasDefaultValue":false},{"fieldId":"reporter","required":true,"hasDefaultValue":true}]}'
+      fi
+      ;;
+    */issue/createmeta/OTHER/issuetypes\?*)
+      echo '{"issueTypes":[{"id":"10001","name":"Task"}]}'
+      ;;
+    */issue/createmeta/OTHER/issuetypes/10001\?*)
+      echo '{"fields":[{"fieldId":"summary","required":true,"hasDefaultValue":false},{"fieldId":"description","required":false,"hasDefaultValue":false},{"fieldId":"labels","required":false,"hasDefaultValue":false}]}'
+      ;;
+    */issue/createmeta/PROJ/issuetypes/10000\?*)
+      echo '{"fields":[{"fieldId":"summary","required":true,"hasDefaultValue":false},{"fieldId":"description","required":false,"hasDefaultValue":false},{"fieldId":"labels","required":false,"hasDefaultValue":false}]}'
+      ;;
+    */search/jql)
+      if [[ "${JIRA_MOCK_BAD_SEARCH:-}" == "html" ]]; then
+        echo '<html>maintenance</html>'
+      elif [[ "${JIRA_MOCK_SEARCH_MISSING_TOKEN:-}" == "1" ]]; then
+        echo '{"issues":[],"isLast":false}'
+      elif [[ "${JIRA_MOCK_SEARCH_PAGE_CAP_DUP:-}" == "1" ]]; then
+        echo '{"issues":[{"key":"PROJ-7","fields":{"summary":"Improve error handling in widget service"}}],"nextPageToken":"page-next","isLast":false}'
+      elif [[ "${JIRA_MOCK_SEARCH_PAGE2_DUP:-}" == "1" ]]; then
+        if [[ "$*" == *'page-2'* ]]; then
+          echo '{"issues":[{"key":"PROJ-7","fields":{"summary":"Improve error handling in widget service"}}],"isLast":true}'
+        else
+          echo '{"issues":[],"nextPageToken":"page-2","isLast":false}'
+        fi
+      elif [[ "${JIRA_MOCK_SEARCH_ALWAYS_MORE:-}" == "1" ]]; then
+        echo '{"issues":[],"nextPageToken":"page-next","isLast":false}'
+      elif [[ "${JIRA_MOCK_DUP_PROJECT_ONLY:-}" == "1" ]]; then
+        echo '{"issues":[{"key":"PROJ-7","fields":{"summary":"a to be"}}],"isLast":true}'
+      elif [[ "${JIRA_MOCK_STOPWORD_DUP:-}" == "1" ]]; then
+        echo '{"issues":[{"key":"PROJ-7","fields":{"summary":"Fix this bug"}}],"isLast":true}'
+      elif [[ "${JIRA_MOCK_MULTILINE_DUP:-}" == "1" ]]; then
+        echo '{"issues":[{"key":"PROJ-7","fields":{"summary":"Fix Jira API search"}}],"isLast":true}'
+      elif [[ "${JIRA_MOCK_DUP:-}" == "1" ]]; then
+        echo '{"issues":[{"key":"PROJ-7","fields":{"summary":"Improve error handling in widget service"}}],"isLast":true}'
+      else
+        echo '{"issues":[],"isLast":true}'
+      fi
+      ;;
+    */issue/PROJ-*)
+      if [[ "${JIRA_MOCK_LABEL_FAIL:-}" == "1" ]]; then
+        echo '{"errorMessages":["Custom label field update failed"]}'
+        printf '\n500'
+      else
+        printf '\n204'
+      fi
+      ;;
+    *)
+      exit 22
+      ;;
+  esac
+  exit 0
+fi
 
 # Label creation — succeed silently
 if [[ "${URL}" == *"/labels" ]] && [[ " $* " == *" POST "* || " $* " == *" -X POST "* ]]; then
@@ -193,6 +393,8 @@ CURL_BODY_LOG="${TMPDIR}/curl-body.log"
 export PATH="${MOCK_BIN}:${PATH}"
 export GH_LOG="${GH_LOG}"
 export CURL_LOG="${CURL_LOG}"
+export FULLSEND_LOG="${FULLSEND_LOG}"
+export FULLSEND_ENV_LOG="${FULLSEND_ENV_LOG}"
 export GH_STDIN_LOG="${GH_STDIN_LOG}"
 export CURL_BODY_LOG="${CURL_BODY_LOG}"
 export ORIGINATING_URL="https://github.com/test-org/test-repo/pull/10"
@@ -741,6 +943,46 @@ FIXTURE_CREATE_FAIL_THEN_OK='{
   ]
 }'
 
+# Fixture: two proposals with the identical summary in one run. The duplicate
+# search cannot see the issue the first iteration just created, because
+# /search/jql is eventually consistent, so the run-scoped title set is the only
+# thing standing between this and two identical Jira issues.
+FIXTURE_SAME_TITLE_TWICE='{
+  "summary": "The retro analysis found one improvement opportunity.",
+  "proposals": [
+    {
+      "target_repo": "test-org/target-repo",
+      "title": "Improve error handling in widget service",
+      "what_happened": "The widget service crashed.",
+      "what_could_go_better": "It should not crash.",
+      "proposed_change": "Handle the empty input.",
+      "validation_criteria": "Widget service survives empty input.",
+      "related_issues": {
+        "searched": [
+          "skip review dispatch zero files",
+          "review dispatch routing"
+        ],
+        "found": []
+      }
+    },
+    {
+      "target_repo": "test-org/target-repo",
+      "title": "Improve error handling in widget service",
+      "what_happened": "The widget service crashed again.",
+      "what_could_go_better": "It should not crash.",
+      "proposed_change": "Handle the empty input.",
+      "validation_criteria": "Widget service survives empty input.",
+      "related_issues": {
+        "searched": [
+          "skip review dispatch zero files",
+          "review dispatch routing"
+        ],
+        "found": []
+      }
+    }
+  ]
+}'
+
 run_test() {
   local test_name="$1"
   local json_content="$2"
@@ -757,6 +999,9 @@ run_test() {
   : > "${GH_LOG}"
   : > "${GH_STDIN_LOG}"
   : > "${CURL_LOG}"
+  : > "${FULLSEND_LOG}"
+  : > "${FULLSEND_ENV_LOG}"
+  : > "${FULLSEND_STDIN_LOG}"
   # shellcheck disable=SC2031 # GH_MOCK_COMMENT_FAIL exported for subshell test run
   export GH_MOCK_COMMENT_FAIL="${comment_fail}"
 
@@ -805,6 +1050,9 @@ run_test_stdout() {
   : > "${GH_LOG}"
   : > "${GH_STDIN_LOG}"
   : > "${CURL_LOG}"
+  : > "${FULLSEND_LOG}"
+  : > "${FULLSEND_ENV_LOG}"
+  : > "${FULLSEND_STDIN_LOG}"
   # shellcheck disable=SC2031 # GH_MOCK_COMMENT_FAIL exported for subshell test run
   export GH_MOCK_COMMENT_FAIL="${comment_fail}"
 
@@ -1096,6 +1344,14 @@ run_test_stdout "comment-422-fatal" \
   "ERROR: failed to post summary comment" \
   "true" \
   "422"
+
+# A forge failure that only contains the word "forbidden" remains fatal: the
+# word match is applied only when the comment target is Jira.
+run_test_stdout "comment-forbidden-without-403-fatal" \
+  "${FIXTURE_ONE_PROPOSAL}" \
+  "ERROR: failed to post summary comment" \
+  "true" \
+  "forbidden"
 
 # 403 with no proposals — still non-fatal.
 run_test_stdout "comment-403-no-proposals" \
@@ -1644,6 +1900,42 @@ run_validated_dir_test "validated-dir-neither-filename" \
   "none" \
   "" \
   "true"
+
+# ---------------------------------------------------------------------------
+# RETRO_MODE on a forge tracker
+# RETRO_MODE applies to the GitHub/GitLab filing path, not only to Jira:
+# summary_only must file nothing, and issues_only must file issues without
+# posting the summary comment.
+# ---------------------------------------------------------------------------
+
+unset FULLSEND_TRACKER
+
+# summary_only: no issue is created and the proposal is listed in the summary.
+export RETRO_MODE="summary_only"
+run_test_no_gh_call "github-summary-only-no-issue" \
+  "${FIXTURE_ONE_PROPOSAL}" \
+  "gh issue create" \
+  "Mode is summary_only — skipping issue creation for proposal[0]"
+assert_file_contains "github-summary-only-in-summary" "${GH_STDIN_LOG}" \
+  "### Proposals (issue creation disabled)"
+assert_file_contains "github-summary-only-proposal-listed" "${GH_STDIN_LOG}" \
+  "- **Improve error handling in widget service** (\`test-org/target-repo\`)"
+
+# issues_only: the issue is filed and no summary comment is posted.
+export RETRO_MODE="issues_only"
+run_test "github-issues-only-files-issue" \
+  "${FIXTURE_ONE_PROPOSAL}" \
+  "gh issue create"
+assert_file_contains "github-issues-only-skips-comment" "${TMPDIR}/stdout.log" \
+  "Mode is issues_only — skipping summary comment posting"
+if [[ -s "${GH_STDIN_LOG}" ]]; then
+  echo "FAIL: github-issues-only-no-comment — a summary comment body was posted"
+  cat "${GH_STDIN_LOG}"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: github-issues-only-no-comment"
+fi
+unset RETRO_MODE
 
 # ===========================================================================
 # GitLab test cases (FULLSEND_FORGE=gitlab)
@@ -2340,6 +2632,1459 @@ elif [[ -s "${GH_LOG}" ]]; then
 else
   echo "PASS: gl-validated-dir (FULLSEND_VALIDATED_ITERATION_DIR works under GitLab)"
 fi
+
+# ---------------------------------------------------------------------------
+# Jira tracker test cases (FULLSEND_FORGE=github, FULLSEND_TRACKER=jira)
+# ---------------------------------------------------------------------------
+
+JIRA_WORKSPACE="${TMPDIR}/jira-workspace"
+mkdir -p "${JIRA_WORKSPACE}"
+export GITHUB_WORKSPACE="${JIRA_WORKSPACE}"
+
+export FULLSEND_FORGE="github"
+export GH_TOKEN="fake-token"
+export ORIGINATING_URL="https://github.com/test-org/test-repo/pull/10"
+export FULLSEND_TRACKER="jira"
+export JIRA_BASE_URL="https://mock.atlassian.net"
+mkdir -p "${TMPDIR}/dot-fullsend"
+# For a Jira tracker the allowlist and primary project are read from
+# FULLSEND_DIR, the directory the fullsend CLI reads.
+cat > "${TMPDIR}/dot-fullsend/config.yaml" <<CFGEOF
+tracker:
+  jira:
+    base_url: https://mock.atlassian.net
+    project: PROJ
+    allowed_targets:
+      projects:
+        - PROJ
+CFGEOF
+export JIRA_USER_EMAIL="bot@mock.example"
+export JIRA_TOKEN="fake-jira-token"
+export FULLSEND_DIR="${TMPDIR}/dot-fullsend"
+export FULLSEND_JIRA_CLIENT_ID=""
+export FULLSEND_JIRA_CLIENT_SECRET=""
+export RETRO_JIRA_PROJECT="PROJ"
+export RETRO_MODE="all"
+
+# 1. Live creates issue in Jira
+run_test_stdout "jira/live-creates-issue" \
+  "${FIXTURE_ONE_PROPOSAL}" \
+  "Created: https://mock.atlassian.net/browse/PROJ-100"
+
+if grep -qF 'fullsend issues create --tracker jira' "${FULLSEND_LOG}" 2>/dev/null \
+  && grep -qF -- '--project PROJ' "${FULLSEND_LOG}" 2>/dev/null; then
+  echo "PASS: jira/live-create-scoped-to-project"
+else
+  echo "FAIL: jira/live-create-scoped-to-project — fullsend issues create not called with --project PROJ"
+  cat "${FULLSEND_LOG}" 2>/dev/null || true
+  FAILURES=$((FAILURES + 1))
+fi
+
+if grep -F 'fullsend issues create' "${FULLSEND_LOG}" 2>/dev/null | grep -qF -- '--token'; then
+  echo "FAIL: jira/live-create-no-token-arg — token exposed in command line arguments"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: jira/live-create-no-token-arg"
+fi
+
+if grep -qF "token=fake-jira-token email=bot@mock.example" "${FULLSEND_ENV_LOG}" 2>/dev/null \
+  && grep -qF -- '--user bot@mock.example:fake-jira-token' "${CURL_LOG}"; then
+  echo "PASS: jira/live-basic-auth-with-email"
+else
+  echo "FAIL: jira/live-basic-auth-with-email — expected Basic auth with email"
+  cat "${FULLSEND_ENV_LOG}" "${CURL_LOG}" 2>/dev/null || true
+  FAILURES=$((FAILURES + 1))
+fi
+
+# Summary comment links Jira issue
+if grep -qF -- "- [Improve error handling in widget service](https://mock.atlassian.net/browse/PROJ-100) (in \`PROJ\`)" "${GH_STDIN_LOG}" 2>/dev/null; then
+  echo "PASS: jira/summary-links-jira-issue"
+else
+  echo "FAIL: jira/summary-links-jira-issue — Jira issue link missing from summary comment"
+  cat "${GH_STDIN_LOG}" 2>/dev/null || true
+  FAILURES=$((FAILURES + 1))
+fi
+
+# 2. Service account Bearer auth (when email unset/empty)
+unset JIRA_USER_EMAIL
+run_test_stdout "jira/live-bearer-auth" \
+  "${FIXTURE_ONE_PROPOSAL}" \
+  "Created: https://mock.atlassian.net/browse/PROJ-100"
+if grep -qF -- '--oauth2-bearer fake-jira-token' "${CURL_LOG}" \
+  && ! grep -qF -- '--user' "${CURL_LOG}"; then
+  echo "PASS: jira/live-bearer-auth-no-basic"
+else
+  echo "FAIL: jira/live-bearer-auth-no-basic — expected Bearer auth"
+  cat "${CURL_LOG}" 2>/dev/null || true
+  FAILURES=$((FAILURES + 1))
+fi
+export JIRA_USER_EMAIL="bot@mock.example"
+
+# 3. Duplicate issue check (idempotency): skips creation and links existing issue
+export JIRA_MOCK_DUP="1"
+run_test_stdout "jira/duplicate-skipped-and-linked" \
+  "${FIXTURE_ONE_PROPOSAL}" \
+  "already exists in Jira: https://mock.atlassian.net/browse/PROJ-7"
+if grep -F 'fullsend issues create' "${FULLSEND_LOG}" 2>/dev/null | grep -qvF -- '--help'; then
+  echo "FAIL: jira/duplicate-no-creates — fullsend issues create called when duplicate exists"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: jira/duplicate-no-creates"
+fi
+if grep -qF -- "- [Improve error handling in widget service](https://mock.atlassian.net/browse/PROJ-7) (in \`PROJ\`)" "${GH_STDIN_LOG}" 2>/dev/null; then
+  echo "PASS: jira/duplicate-linked-in-summary"
+else
+  echo "FAIL: jira/duplicate-linked-in-summary — existing issue link missing from summary"
+  cat "${GH_STDIN_LOG}" 2>/dev/null || true
+  FAILURES=$((FAILURES + 1))
+fi
+# The existing issue was not filed by this run, so it must not be reported as
+# if it had been.
+if grep -qF "### Already filed (existing issue)" "${GH_STDIN_LOG}" 2>/dev/null \
+  && ! grep -qF "### Proposals filed" "${GH_STDIN_LOG}" 2>/dev/null; then
+  echo "PASS: jira/duplicate-reported-as-existing"
+else
+  echo "FAIL: jira/duplicate-reported-as-existing — duplicate listed under proposals filed"
+  cat "${GH_STDIN_LOG}" 2>/dev/null || true
+  FAILURES=$((FAILURES + 1))
+fi
+if grep -qF 'project = \"PROJ\" AND summary ~ \"handling\"' "${CURL_LOG}" 2>/dev/null \
+  && ! grep -qF 'summary ~ \"\\\"' "${CURL_LOG}" 2>/dev/null; then
+  echo "PASS: jira/duplicate-jql-unphrased"
+else
+  echo "FAIL: jira/duplicate-jql-unphrased — expected unphrased terms in JQL search"
+  cat "${CURL_LOG}" 2>/dev/null || true
+  FAILURES=$((FAILURES + 1))
+fi
+unset JIRA_MOCK_DUP
+
+# 3b. Same summary twice in one run: file it once. The search index lags behind
+# writes, so the second proposal cannot rely on tracker_find_existing_issue.
+run_test_stdout "jira/same-title-in-run-files-once" \
+  "${FIXTURE_SAME_TITLE_TWICE}" \
+  "an issue with this summary was already filed or found in this run"
+CREATES=$(grep -F 'fullsend issues create' "${FULLSEND_LOG}" 2>/dev/null | grep -cvF -- '--help' || true)
+if [[ "${CREATES}" -eq 1 ]]; then
+  echo "PASS: jira/same-title-in-run-one-create"
+else
+  echo "FAIL: jira/same-title-in-run-one-create — expected 1 create, got ${CREATES}"
+  cat "${FULLSEND_LOG}" 2>/dev/null || true
+  FAILURES=$((FAILURES + 1))
+fi
+# The first proposal is reported as filed; the second belongs to the
+# already-filed section, which must name the issue the first one created.
+ALREADY_SECTION="$(sed -n '/### Already filed (existing issue)/,$p' "${GH_STDIN_LOG}" 2>/dev/null || true)"
+if [[ "${ALREADY_SECTION}" == *"https://mock.atlassian.net/browse/PROJ-100"* ]]; then
+  echo "PASS: jira/same-title-in-run-reported-as-existing"
+else
+  echo "FAIL: jira/same-title-in-run-reported-as-existing — second proposal not reported as already filed"
+  cat "${GH_STDIN_LOG}" 2>/dev/null || true
+  FAILURES=$((FAILURES + 1))
+fi
+
+# 4. Duplicate search failure: refuses to create blindly
+export JIRA_MOCK_BAD_SEARCH="html"
+run_test_stdout "jira/duplicate-check-fail-refuses-create" \
+  "${FIXTURE_ONE_PROPOSAL}" \
+  "Jira duplicate check failed"
+if grep -F 'fullsend issues create' "${FULLSEND_LOG}" 2>/dev/null | grep -qvF -- '--help'; then
+  echo "FAIL: jira/duplicate-fail-no-creates — create called after duplicate search failure"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: jira/duplicate-fail-no-creates"
+fi
+if grep -qF "### Proposals not filed (issue creation failed)" "${GH_STDIN_LOG}" 2>/dev/null; then
+  echo "PASS: jira/duplicate-fail-reported-not-filed"
+else
+  echo "FAIL: jira/duplicate-fail-reported-not-filed — proposal not listed under not filed"
+  cat "${GH_STDIN_LOG}" 2>/dev/null || true
+  FAILURES=$((FAILURES + 1))
+fi
+unset JIRA_MOCK_BAD_SEARCH
+
+# Duplicate search pagination fails closed on malformed continuation, checks
+# later pages, and respects the configured page cap.
+export JIRA_MOCK_SEARCH_PAGE2_DUP="1"
+run_test_stdout "jira/duplicate-search-page-two-match" \
+  "${FIXTURE_ONE_PROPOSAL}" \
+  "already exists in Jira: https://mock.atlassian.net/browse/PROJ-7"
+unset JIRA_MOCK_SEARCH_PAGE2_DUP
+export JIRA_MOCK_SEARCH_MISSING_TOKEN="1"
+run_test_stdout "jira/duplicate-search-missing-token-fails-closed" \
+  "${FIXTURE_ONE_PROPOSAL}" \
+  "Jira duplicate check failed"
+unset JIRA_MOCK_SEARCH_MISSING_TOKEN
+export JIRA_MOCK_SEARCH_ALWAYS_MORE="1" RETRO_JIRA_MAX_PAGES=1
+run_test_stdout "jira/duplicate-search-page-cap-fails-closed" \
+  "${FIXTURE_ONE_PROPOSAL}" \
+  "duplicate check was truncated"
+unset JIRA_MOCK_SEARCH_ALWAYS_MORE RETRO_JIRA_MAX_PAGES
+export JIRA_MOCK_SEARCH_PAGE_CAP_DUP="1" RETRO_JIRA_MAX_PAGES=1
+export JIRA_MOCK_DUP="1"
+run_test_stdout "jira/duplicate-search-page-cap-match-wins" \
+  "${FIXTURE_ONE_PROPOSAL}" \
+  "already exists in Jira: https://mock.atlassian.net/browse/PROJ-7"
+unset JIRA_MOCK_SEARCH_PAGE_CAP_DUP RETRO_JIRA_MAX_PAGES
+unset JIRA_MOCK_DUP
+
+# Stop words are excluded from duplicate terms, title tokenization builds a
+# single candidate query, and an empty term set uses project-only search.
+JIRA_STOPWORD_TITLE_FIXTURE=$(printf '%s' "${FIXTURE_ONE_PROPOSAL}" | jq -c '.proposals[0].title = "Fix this bug"')
+export JIRA_MOCK_STOPWORD_DUP="1"
+run_test_stdout "jira/duplicate-stopword-title" \
+  "${JIRA_STOPWORD_TITLE_FIXTURE}" \
+  "already exists in Jira: https://mock.atlassian.net/browse/PROJ-7"
+if grep -qF 'project = ' "${CURL_LOG}" && ! grep -qF 'summary ~ "this"' "${CURL_LOG}" \
+  && ! grep -qF 'summary ~ "the"' "${CURL_LOG}"; then
+  echo "PASS: jira/duplicate-stopword-title-search"
+else
+  echo "FAIL: jira/duplicate-stopword-title-search — stop word required or no project fallback"
+  FAILURES=$((FAILURES + 1))
+fi
+unset JIRA_MOCK_STOPWORD_DUP
+JIRA_MULTILINE_TITLE_FIXTURE=$(printf '%s' "${FIXTURE_ONE_PROPOSAL}" | jq -c '.proposals[0].title = "Fix Jira API\nsearch"')
+export JIRA_MOCK_MULTILINE_DUP="1"
+run_test_stdout "jira/duplicate-multiline-title" \
+  "${JIRA_MULTILINE_TITLE_FIXTURE}" \
+  "already exists in Jira: https://mock.atlassian.net/browse/PROJ-7"
+unset JIRA_MOCK_MULTILINE_DUP
+
+# Jira Cloud rejects a summary over 255 characters or with a line break, and
+# the retro schema allows both (maxLength 256, newlines allowed). The title is
+# normalized once, before the in-run title set, the duplicate search and the
+# create, so neither a schema-valid long title nor a multi-line one fails to
+# file — and the duplicate search compares the value Jira actually stores.
+JIRA_LONG_TITLE_FIXTURE=$(printf '%s' "${FIXTURE_ONE_PROPOSAL}" \
+  | jq -c --arg t "$(jq -rn '"x" * 256')" '.proposals[0].title = $t')
+run_test_stdout "jira/title-truncated-to-summary-limit" \
+  "${JIRA_LONG_TITLE_FIXTURE}" \
+  "title normalized to the Jira summary limit"
+if grep -qF -- "--title $(jq -rn '"x" * 255') --body" "${FULLSEND_LOG}" 2>/dev/null; then
+  echo "PASS: jira/title-truncated-to-summary-limit-create"
+else
+  echo "FAIL: jira/title-truncated-to-summary-limit-create — create did not receive a 255-character title"
+  cat "${FULLSEND_LOG}" 2>/dev/null || true
+  FAILURES=$((FAILURES + 1))
+fi
+JIRA_NEWLINE_TITLE_FIXTURE=$(printf '%s' "${FIXTURE_ONE_PROPOSAL}" \
+  | jq -c '.proposals[0].title = "Improve\nerror handling in widget service"')
+run_test_stdout "jira/title-newline-normalized" \
+  "${JIRA_NEWLINE_TITLE_FIXTURE}" \
+  "title normalized to the Jira summary limit"
+if grep -qF -- "--title Improve error handling in widget service --body" "${FULLSEND_LOG}" 2>/dev/null; then
+  echo "PASS: jira/title-newline-normalized-create"
+else
+  echo "FAIL: jira/title-newline-normalized-create — create received a title with a line break"
+  cat "${FULLSEND_LOG}" 2>/dev/null || true
+  FAILURES=$((FAILURES + 1))
+fi
+# A whitespace-only title is schema-valid but normalizes to "", so it must be
+# rejected in the validation pass. The first proposal is valid, so filing it
+# before the rejection would leave a Jira issue behind and skip the summary.
+JIRA_BLANK_TITLE_FIXTURE=$(printf '%s' "${FIXTURE_SAME_TITLE_TWICE}" \
+  | jq -c '.proposals[1].title = "   "')
+run_test_stdout "jira/blank-title-rejected-before-filing" \
+  "${JIRA_BLANK_TITLE_FIXTURE}" \
+  "title is empty after trimming for Jira" \
+  true
+if grep -F 'fullsend issues create' "${FULLSEND_LOG}" 2>/dev/null | grep -qvF -- '--help'; then
+  echo "FAIL: jira/blank-title-no-creates — create called before the blank title was rejected"
+  cat "${FULLSEND_LOG}" 2>/dev/null || true
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: jira/blank-title-no-creates"
+fi
+JIRA_ALL_STOPWORDS_FIXTURE=$(printf '%s' "${FIXTURE_ONE_PROPOSAL}" | jq -c '.proposals[0].title = "a to be"')
+export JIRA_MOCK_DUP_PROJECT_ONLY="1"
+run_test_stdout "jira/duplicate-stopword-project-fallback" \
+  "${JIRA_ALL_STOPWORDS_FIXTURE}" \
+  "already exists in Jira: https://mock.atlassian.net/browse/PROJ-7"
+if grep -qF 'project = ' "${CURL_LOG}" && ! grep -qF 'summary ~ ' "${CURL_LOG}"; then
+  echo "PASS: jira/duplicate-stopword-project-fallback-query"
+else
+  echo "FAIL: jira/duplicate-stopword-project-fallback-query"
+  FAILURES=$((FAILURES + 1))
+fi
+unset JIRA_MOCK_DUP_PROJECT_ONLY
+
+# 5. Createmeta preflight check failure: required field missing reports proposal as not filed and posts summary
+export JIRA_MOCK_REQUIRED_FIELD="1"
+run_test_stdout "jira/createmeta-required-field-reported-not-filed" \
+  "${FIXTURE_ONE_PROPOSAL}" \
+  "Jira project validation failed"
+if grep -qF "### Proposals not filed (issue creation failed)" "${GH_STDIN_LOG}" 2>/dev/null; then
+  echo "PASS: jira/createmeta-required-field-reported-not-filed"
+else
+  echo "FAIL: jira/createmeta-required-field-reported-not-filed — proposal not listed under not filed"
+  cat "${GH_STDIN_LOG}" 2>/dev/null || true
+  FAILURES=$((FAILURES + 1))
+fi
+unset JIRA_MOCK_REQUIRED_FIELD
+
+# 6. Createmeta preflight check failure: Description field missing reports proposal as not filed and posts summary
+export JIRA_MOCK_NO_DESCRIPTION="1"
+run_test_stdout "jira/createmeta-no-description-reported-not-filed" \
+  "${FIXTURE_ONE_PROPOSAL}" \
+  "has no Description field on its create screen"
+if grep -qF "### Proposals not filed (issue creation failed)" "${GH_STDIN_LOG}" 2>/dev/null; then
+  echo "PASS: jira/createmeta-no-description-reported-not-filed"
+else
+  echo "FAIL: jira/createmeta-no-description-reported-not-filed — proposal not listed under not filed"
+  cat "${GH_STDIN_LOG}" 2>/dev/null || true
+  FAILURES=$((FAILURES + 1))
+fi
+unset JIRA_MOCK_NO_DESCRIPTION
+
+# 6b. A required Reporter with no default is not a blocker: Jira fills it with
+# the calling account when the create omits it, so the proposal is still filed.
+export JIRA_MOCK_REPORTER_REQUIRED="1"
+run_test_stdout "jira/createmeta-required-reporter-files" \
+  "${FIXTURE_ONE_PROPOSAL}" \
+  "Created: https://mock.atlassian.net/browse/PROJ-100"
+unset JIRA_MOCK_REPORTER_REQUIRED
+
+# Createmeta must collect all pages before choosing the configured issue type.
+export JIRA_MOCK_CREATEMETA_PAGES="1"
+run_test_stdout "jira/createmeta-paginated-issue-type" \
+  "${FIXTURE_ONE_PROPOSAL}" \
+  "Created: https://mock.atlassian.net/browse/PROJ-100"
+unset JIRA_MOCK_CREATEMETA_PAGES
+
+# 7. Output mode: summary_only disables issue creation
+export RETRO_MODE="summary_only"
+run_test_stdout "jira/summary-only-mode" \
+  "${FIXTURE_ONE_PROPOSAL}" \
+  "Mode is summary_only — skipping issue creation"
+if grep -F 'fullsend issues create' "${FULLSEND_LOG}" 2>/dev/null | grep -qvF -- '--help'; then
+  echo "FAIL: jira/summary-only-no-creates — create called in summary_only mode"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: jira/summary-only-no-creates"
+fi
+if grep -qF "### Proposals (issue creation disabled)" "${GH_STDIN_LOG}" 2>/dev/null; then
+  echo "PASS: jira/summary-only-proposals-in-summary"
+else
+  echo "FAIL: jira/summary-only-proposals-in-summary — proposals not listed in summary"
+  cat "${GH_STDIN_LOG}" 2>/dev/null || true
+  FAILURES=$((FAILURES + 1))
+fi
+export RETRO_MODE="all"
+
+# 8. Output mode: issues_only skips posting summary comment
+export RETRO_MODE="issues_only"
+run_test_stdout "jira/issues-only-mode" \
+  "${FIXTURE_ONE_PROPOSAL}" \
+  "Mode is issues_only — skipping summary comment posting"
+if grep -q "/comments" "${GH_LOG}" 2>/dev/null; then
+  echo "FAIL: jira/issues-only-no-summary-post — summary comment was posted"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: jira/issues-only-no-summary-post"
+fi
+if grep -qF 'fullsend issues create --tracker jira' "${FULLSEND_LOG}" 2>/dev/null; then
+  echo "PASS: jira/issues-only-files-issue"
+else
+  echo "FAIL: jira/issues-only-files-issue — issue was not created in issues_only mode"
+  cat "${FULLSEND_LOG}" 2>/dev/null || true
+  FAILURES=$((FAILURES + 1))
+fi
+export RETRO_MODE="all"
+
+# 8b. Client-credentials mode mints one token per run, not one per REST call.
+# Every Jira REST call runs in a command substitution, so a mint performed
+# there is lost with the subshell and repeats the OAuth exchange for the
+# createmeta reads, the duplicate search, the label write and the create.
+export JIRA_TOKEN=""
+export FULLSEND_JIRA_CLIENT_ID="client-id"
+export FULLSEND_JIRA_CLIENT_SECRET="client-secret"
+run_test_stdout "jira/client-credentials-creates-issue" \
+  "${FIXTURE_ONE_PROPOSAL}" \
+  "Created: https://mock.atlassian.net/browse/PROJ-100"
+MINT_CALLS=$(grep -cF 'https://auth.atlassian.com/oauth/token' "${CURL_LOG}" 2>/dev/null || true)
+if [[ "${MINT_CALLS}" == "1" ]]; then
+  echo "PASS: jira/client-credentials-mints-once"
+else
+  echo "FAIL: jira/client-credentials-mints-once — ${MINT_CALLS:-0} token exchange(s), expected 1"
+  grep -F 'https://auth.atlassian.com/oauth/token' "${CURL_LOG}" 2>/dev/null || true
+  FAILURES=$((FAILURES + 1))
+fi
+if grep -qF -- '--oauth2-bearer mock-access-token' "${CURL_LOG}" 2>/dev/null; then
+  echo "PASS: jira/client-credentials-bearer-auth"
+else
+  echo "FAIL: jira/client-credentials-bearer-auth — REST calls did not use the minted token"
+  FAILURES=$((FAILURES + 1))
+fi
+# The REST root (2-4 yq reads plus the tenant_info lookup) is resolved once
+# too; re-resolving it per call repeats the unauthenticated tenant request.
+TENANT_CALLS=$(grep -cF '/_edge/tenant_info' "${CURL_LOG}" 2>/dev/null || true)
+if [[ "${TENANT_CALLS}" == "1" ]]; then
+  echo "PASS: jira/client-credentials-resolves-cloud-id-once"
+else
+  echo "FAIL: jira/client-credentials-resolves-cloud-id-once — ${TENANT_CALLS:-0} tenant_info call(s), expected 1"
+  FAILURES=$((FAILURES + 1))
+fi
+export JIRA_TOKEN="fake-jira-token"
+export FULLSEND_JIRA_CLIENT_ID=""
+export FULLSEND_JIRA_CLIENT_SECRET=""
+
+# 8b2. A failed Jira init (here a token-endpoint error) must not stop the run
+# before the summary comment: every proposal is reported as not filed and the
+# summary is still posted.
+export JIRA_TOKEN=""
+export FULLSEND_JIRA_CLIENT_ID="client-id"
+export FULLSEND_JIRA_CLIENT_SECRET="client-secret"
+export JIRA_MOCK_TOKEN_FAIL="1"
+run_test_stdout "jira/init-failure-still-posts-summary" \
+  "${FIXTURE_ONE_PROPOSAL}" \
+  "cannot initialize Jira REST access"
+if grep -qF "### Proposals not filed (issue creation failed)" "${GH_STDIN_LOG}" 2>/dev/null \
+  && grep -qF '**Improve error handling in widget service**' "${GH_STDIN_LOG}" 2>/dev/null; then
+  echo "PASS: jira/init-failure-summary-posted"
+else
+  echo "FAIL: jira/init-failure-summary-posted — summary comment missing or proposal not listed"
+  cat "${GH_STDIN_LOG}" 2>/dev/null || true
+  FAILURES=$((FAILURES + 1))
+fi
+if grep -F 'fullsend issues create' "${FULLSEND_LOG}" 2>/dev/null | grep -qvF -- '--help'; then
+  echo "FAIL: jira/init-failure-no-create — create attempted without Jira REST access"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: jira/init-failure-no-create"
+fi
+unset JIRA_MOCK_TOKEN_FAIL
+export JIRA_TOKEN="fake-jira-token"
+export FULLSEND_JIRA_CLIENT_ID=""
+export FULLSEND_JIRA_CLIENT_SECRET=""
+
+# 8c. Labels are applied with an issue update, which Jira validates against the
+# edit screen: an issue type whose edit screen has no Labels field gets no
+# label write, and the issue is still filed.
+export JIRA_MOCK_NO_EDIT_LABELS="1"
+run_test_stdout "jira/edit-screen-without-labels" \
+  "${FIXTURE_ONE_PROPOSAL}" \
+  "has no Labels field on its edit screen; labels will be omitted"
+if grep -qF -- '--request PUT' "${CURL_LOG}" 2>/dev/null; then
+  echo "FAIL: jira/edit-screen-without-labels-no-label-write — label PUT issued without an edit-screen Labels field"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: jira/edit-screen-without-labels-no-label-write"
+fi
+if grep -qF "Created: https://mock.atlassian.net/browse/PROJ-100" "${TMPDIR}/stdout.log" 2>/dev/null; then
+  echo "PASS: jira/edit-screen-without-labels-still-created"
+else
+  echo "FAIL: jira/edit-screen-without-labels-still-created — issue was not filed"
+  FAILURES=$((FAILURES + 1))
+fi
+unset JIRA_MOCK_NO_EDIT_LABELS
+
+# 8c2. A create screen without a Labels field does not block the label write:
+# the update is checked against the edit screen, which lists Labels here.
+export JIRA_MOCK_CREATE_NO_LABELS="1"
+run_test_stdout "jira/create-screen-without-labels-still-labelled" \
+  "${FIXTURE_ONE_PROPOSAL}" \
+  "Created: https://mock.atlassian.net/browse/PROJ-100"
+if grep -qF -- '--request PUT' "${CURL_LOG}" 2>/dev/null \
+  && grep -qF '/issue/PROJ-100' "${CURL_LOG}" 2>/dev/null; then
+  echo "PASS: jira/create-screen-without-labels-still-labelled-put"
+else
+  echo "FAIL: jira/create-screen-without-labels-still-labelled-put — label PUT was skipped"
+  cat "${CURL_LOG}" 2>/dev/null || true
+  FAILURES=$((FAILURES + 1))
+fi
+unset JIRA_MOCK_CREATE_NO_LABELS
+
+# 8c3. The edit-screen probe runs once per run, not once per proposal.
+JIRA_LABEL_TWO_PROPOSAL_FIXTURE=$(printf '%s' "${FIXTURE_ONE_PROPOSAL}" \
+  | jq -c '.proposals += [(.proposals[0] | .title = "Second proposal title")]')
+run_test_stdout "jira/editmeta-probe-cached" \
+  "${JIRA_LABEL_TWO_PROPOSAL_FIXTURE}" \
+  "Post-retro complete."
+JIRA_EDITMETA_PROBES=$(grep -cF '/editmeta' "${CURL_LOG}" 2>/dev/null || true)
+if [[ "${JIRA_EDITMETA_PROBES}" -eq 1 ]]; then
+  echo "PASS: jira/editmeta-probe-cached-once"
+else
+  echo "FAIL: jira/editmeta-probe-cached-once — ${JIRA_EDITMETA_PROBES} editmeta probe(s) for 2 proposals"
+  grep -F '/editmeta' "${CURL_LOG}" 2>/dev/null || true
+  FAILURES=$((FAILURES + 1))
+fi
+
+# 8d. A failed create is reported under "Proposals not filed" instead of
+# silently disappearing from the summary.
+export FULLSEND_MOCK_FAIL_TITLE="Improve error handling in widget service"
+run_test_stdout "jira/create-failure-reported" \
+  "${FIXTURE_ONE_PROPOSAL}" \
+  "All 1 proposal(s) validated"
+if grep -qF "### Proposals not filed (issue creation failed)" "${GH_STDIN_LOG}" 2>/dev/null \
+  && grep -qF '**Improve error handling in widget service**' "${GH_STDIN_LOG}" 2>/dev/null; then
+  echo "PASS: jira/create-failure-listed-in-summary"
+else
+  echo "FAIL: jira/create-failure-listed-in-summary — failed proposal missing from summary"
+  cat "${GH_STDIN_LOG}" 2>/dev/null || true
+  FAILURES=$((FAILURES + 1))
+fi
+unset FULLSEND_MOCK_FAIL_TITLE
+
+# 9. Retrospectives on Jira-originated items (no forge token required under GHA)
+SAVED_GH_TOKEN="${GH_TOKEN:-}"
+SAVED_GITLAB_TOKEN="${GITLAB_TOKEN:-}"
+unset GH_TOKEN GITLAB_TOKEN
+GITHUB_ACTIONS="true" \
+ORIGINATING_URL="https://mock.atlassian.net/browse/PROJ-123" \
+  run_test_stdout "jira/originating-jira-item" \
+  "${FIXTURE_ONE_PROPOSAL}" \
+  "Posting summary comment on PROJ#PROJ-123"
+if grep -qF 'fullsend issues post-comment --tracker jira' "${FULLSEND_LOG}" 2>/dev/null \
+  && grep -qF -- '--project PROJ --number 123' "${FULLSEND_LOG}" 2>/dev/null; then
+  echo "PASS: jira/originating-jira-comment-posted"
+else
+  echo "FAIL: jira/originating-jira-comment-posted — post-comment not called for Jira issue"
+  cat "${FULLSEND_LOG}" 2>/dev/null || true
+  FAILURES=$((FAILURES + 1))
+fi
+
+# 9b. Retrospectives on Jira-originated items with GitLab forge (no gitlab token required under GHA)
+unset GH_TOKEN GITLAB_TOKEN
+FULLSEND_FORGE="gitlab" \
+GITHUB_ACTIONS="true" \
+ORIGINATING_URL="https://mock.atlassian.net/browse/PROJ-123" \
+  run_test_stdout "jira/originating-jira-item-gitlab-forge-no-token" \
+  "${FIXTURE_ONE_PROPOSAL}" \
+  "Posting summary comment on PROJ#PROJ-123"
+if grep -qF 'fullsend issues post-comment --tracker jira' "${FULLSEND_LOG}" 2>/dev/null \
+  && grep -qF -- '--project PROJ --number 123' "${FULLSEND_LOG}" 2>/dev/null; then
+  echo "PASS: jira/originating-jira-comment-posted-gitlab-forge"
+else
+  echo "FAIL: jira/originating-jira-comment-posted-gitlab-forge — post-comment not called for Jira issue"
+  cat "${FULLSEND_LOG}" 2>/dev/null || true
+  FAILURES=$((FAILURES + 1))
+fi
+[[ -n "${SAVED_GH_TOKEN}" ]] && export GH_TOKEN="${SAVED_GH_TOKEN}"
+[[ -n "${SAVED_GITLAB_TOKEN}" ]] && export GITLAB_TOKEN="${SAVED_GITLAB_TOKEN}"
+export FULLSEND_FORGE="github"
+
+# 9c. issues_only on a Jira-originated run files issues and posts no Jira comment.
+export RETRO_MODE="issues_only"
+GITHUB_ACTIONS="true" \
+ORIGINATING_URL="https://mock.atlassian.net/browse/PROJ-123" \
+  run_test_stdout "jira/originating-issues-only-no-comment" \
+  "${FIXTURE_ONE_PROPOSAL}" \
+  "Mode is issues_only — skipping summary comment posting"
+if grep -F 'fullsend issues post-comment' "${FULLSEND_LOG}" 2>/dev/null | grep -qvF -- '--help'; then
+  echo "FAIL: jira/originating-issues-only-no-post — post-comment called in issues_only mode"
+  cat "${FULLSEND_LOG}" 2>/dev/null || true
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: jira/originating-issues-only-no-post"
+fi
+export RETRO_MODE="all"
+
+# 9d. A Jira comment permission error is a warning, not a failed run, and the
+# detection does not depend on the CLI's exact error prefix (the issues were
+# already filed).
+export FULLSEND_MOCK_POST_COMMENT_FAIL="401 Unauthorized"
+GITHUB_ACTIONS="true" \
+ORIGINATING_URL="https://mock.atlassian.net/browse/PROJ-123" \
+  run_test_stdout "jira/originating-comment-401-graceful" \
+  "${FIXTURE_ONE_PROPOSAL}" \
+  "insufficient permissions"
+unset FULLSEND_MOCK_POST_COMMENT_FAIL
+
+# 9e. post-retro removes the context file once the run ends, so a reused runner
+# does not keep the originating issue text on disk.
+CTX_FILE="${TMPDIR}/jira-origin-cleanup.json"
+printf '{"issue":{"key":"PROJ-123"}}' > "${CTX_FILE}"
+RETRO_JIRA_CONTEXT_FILE="${CTX_FILE}" \
+ORIGINATING_URL="https://mock.atlassian.net/browse/PROJ-123" \
+  run_test_stdout "jira/originating-context-removed-after-run" \
+  "${FIXTURE_ONE_PROPOSAL}" \
+  "Post-retro complete."
+if [[ -e "${CTX_FILE}" ]]; then
+  echo "FAIL: jira/originating-context-file-gone — context file still exists"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: jira/originating-context-file-gone"
+fi
+
+# 10. GitLab forge + Jira tracker: creates Jira issue and posts note to GitLab MR
+ORIGINATING_URL="https://gitlab.com/test-group/test-project/-/merge_requests/10" \
+FULLSEND_FORGE="gitlab" \
+CI_SERVER_HOST="gitlab.com" \
+GITLAB_TOKEN="fake-gitlab-token" \
+CI_PROJECT_DIR="${JIRA_WORKSPACE}" \
+  run_test_stdout "jira/gitlab-mr-originating" \
+  "${GL_FIXTURE_ONE_PROPOSAL}" \
+  "Posting summary comment on test-group/test-project#10"
+if grep -qF 'fullsend issues create --tracker jira' "${FULLSEND_LOG}" 2>/dev/null \
+  && grep -qF -- '--project PROJ' "${FULLSEND_LOG}" 2>/dev/null; then
+  echo "PASS: jira/gitlab-mr-created-jira-issue"
+else
+  echo "FAIL: jira/gitlab-mr-created-jira-issue — fullsend issues create not called with --project PROJ"
+  cat "${FULLSEND_LOG}" 2>/dev/null || true
+  FAILURES=$((FAILURES + 1))
+fi
+if grep -q "/merge_requests/10/notes" "${CURL_LOG}" 2>/dev/null; then
+  echo "PASS: jira/gitlab-mr-comment-posted"
+else
+  echo "FAIL: jira/gitlab-mr-comment-posted — notes endpoint not called for GitLab MR"
+  cat "${CURL_LOG}" 2>/dev/null || true
+  FAILURES=$((FAILURES + 1))
+fi
+
+# 11. Failed label update returns status 2, issue treated as created and linked in summary
+export JIRA_MOCK_LABEL_FAIL="1"
+export FULLSEND_FORGE="github"
+export GH_TOKEN="fake-token"
+export ORIGINATING_URL="https://github.com/test-org/test-repo/pull/10"
+export FULLSEND_TRACKER="jira"
+export JIRA_BASE_URL="https://mock.atlassian.net"
+export JIRA_USER_EMAIL="bot@mock.example"
+export JIRA_TOKEN="fake-jira-token"
+export FULLSEND_DIR="${TMPDIR}/dot-fullsend"
+mkdir -p "${FULLSEND_DIR}"
+cat > "${FULLSEND_DIR}/config.yaml" <<CFGEOF
+tracker:
+  jira:
+    base_url: https://mock.atlassian.net
+    project: PROJ
+    allowed_targets:
+      projects:
+        - PROJ
+CFGEOF
+export RETRO_JIRA_PROJECT="PROJ"
+export RETRO_MODE="all"
+export GITHUB_WORKSPACE="${JIRA_WORKSPACE}"
+
+run_test_stdout "jira/label-fail-treated-as-created" \
+  "${FIXTURE_ONE_PROPOSAL}" \
+  "Created: https://mock.atlassian.net/browse/PROJ-100"
+
+if grep -qF -- "- [Improve error handling in widget service](https://mock.atlassian.net/browse/PROJ-100) (in \`PROJ\`)" "${GH_STDIN_LOG}" 2>/dev/null; then
+  echo "PASS: jira/label-fail-linked-in-summary"
+else
+  echo "FAIL: jira/label-fail-linked-in-summary — created issue link missing from summary"
+  cat "${GH_STDIN_LOG}" 2>/dev/null || true
+  FAILURES=$((FAILURES + 1))
+fi
+
+if grep -qF "Proposals not filed" "${GH_STDIN_LOG}" 2>/dev/null; then
+  echo "FAIL: jira/label-fail-not-under-failed — issue incorrectly listed under Proposals not filed"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: jira/label-fail-not-under-failed"
+fi
+
+if grep -qF "Issue created but failed to apply label in Jira" "${TMPDIR}/stdout.log" 2>/dev/null; then
+  echo "PASS: jira/label-fail-warned"
+else
+  echo "FAIL: jira/label-fail-warned — label failure was not reported"
+  cat "${TMPDIR}/stdout.log" 2>/dev/null || true
+  FAILURES=$((FAILURES + 1))
+fi
+unset JIRA_MOCK_LABEL_FAIL
+
+# 12. An explicit empty list denies other projects when the primary project differs.
+cat > "${FULLSEND_DIR}/config.yaml" <<CFGEOF
+version: "1"
+tracker:
+  jira:
+    project: OTHER
+    allowed_targets:
+      projects: []
+CFGEOF
+export RETRO_JIRA_PROJECT="PROJ"
+run_test_stdout "jira/allowlist-explicit-empty-denies" \
+  "${FIXTURE_ONE_PROPOSAL}" \
+  "Skipping issue creation in Jira project 'PROJ' — not in tracker.jira.allowed_targets"
+
+if grep -qF "Proposals skipped (target repo not allowed)" "${GH_STDIN_LOG}" 2>/dev/null; then
+  echo "PASS: jira/allowlist-explicit-empty-summary"
+else
+  echo "FAIL: jira/allowlist-explicit-empty-summary — proposal missing from skipped section"
+  FAILURES=$((FAILURES + 1))
+fi
+
+# 12b. Explicit empty targets keep the primary project and exclude others.
+cat > "${FULLSEND_DIR}/config.yaml" <<CFGEOF
+version: "1"
+tracker:
+  jira:
+    project: PROJ
+    allowed_targets:
+      projects: []
+CFGEOF
+run_test_stdout "jira/allowlist-empty-only-revokes-cross-project" \
+  "${FIXTURE_ONE_PROPOSAL}" \
+  "Created: https://mock.atlassian.net/browse/PROJ-100"
+
+# Without an explicit cross-project list, RETRO_JIRA_PROJECT must be the
+# configured primary project; the CLI itself rejects any other project.
+cat > "${FULLSEND_DIR}/config.yaml" <<CFGEOF
+version: "1"
+tracker:
+  jira:
+    project: OTHER
+CFGEOF
+export RETRO_JIRA_PROJECT="PROJ"
+run_test_stdout "jira/allowlist-unlisted-primary-mismatch-denies" \
+  "${FIXTURE_ONE_PROPOSAL}" \
+  "Skipping issue creation in Jira project 'PROJ'"
+export RETRO_JIRA_PROJECT="PROJ"
+cat > "${FULLSEND_DIR}/config.yaml" <<CFGEOF
+version: "1"
+tracker:
+  jira:
+    project: PROJ
+CFGEOF
+
+cat > "${FULLSEND_DIR}/config.yaml" <<CFGEOF
+version: "1"
+tracker:
+  jira:
+    project: PROJ
+    allowed_targets:
+      projects:
+        - OTHER
+CFGEOF
+run_test_stdout "jira/allowlist-primary-with-other-targets-allows" \
+  "${FIXTURE_ONE_PROPOSAL}" \
+  "Created: https://mock.atlassian.net/browse/PROJ-100"
+if grep -qF 'fullsend issues create --tracker jira' "${FULLSEND_LOG}"; then
+  echo "PASS: jira/allowlist-primary-create-called"
+else
+  echo "FAIL: jira/allowlist-primary-create-not-called"
+  FAILURES=$((FAILURES + 1))
+fi
+
+# 13. Allowlist: config parse error fails closed
+printf 'version: "1"\ntracker: [invalid yaml\n' > "${FULLSEND_DIR}/config.yaml"
+run_test_stdout "jira/allowlist-parse-failure-denies" \
+  "${FIXTURE_ONE_PROPOSAL}" \
+  "cannot parse config.yaml — cross-repo issue creation disabled"
+
+# 14. Allowlist: missing yq fails closed
+cat > "${FULLSEND_DIR}/config.yaml" <<CFGEOF
+version: "1"
+tracker:
+  jira:
+    allowed_targets:
+      projects:
+        - PROJ
+CFGEOF
+MOCK_NO_YQ_BIN="${TMPDIR}/bin-no-yq"
+MOCK_BIN_NO_YQ="${TMPDIR}/mock-bin-no-yq"
+mkdir -p "${MOCK_NO_YQ_BIN}"
+mkdir -p "${MOCK_BIN_NO_YQ}"
+for tool in bash jq sed grep awk cat date mktemp rm tr tail curl dirname basename seq printf cut head sort uniq env wc mkdir; do
+  p=$(which "${tool}" 2>/dev/null || true)
+  [[ -n "${p}" ]] && ln -sf "${p}" "${MOCK_NO_YQ_BIN}/${tool}"
+  if [[ -x "${MOCK_BIN}/${tool}" ]]; then
+    ln -sf "${MOCK_BIN}/${tool}" "${MOCK_BIN_NO_YQ}/${tool}"
+  elif [[ -n "${p}" ]]; then
+    ln -sf "${p}" "${MOCK_BIN_NO_YQ}/${tool}"
+  fi
+done
+ln -sf "${MOCK_BIN}/gh" "${MOCK_BIN_NO_YQ}/gh"
+SAVED_PATH="${PATH}"
+SAVED_GITHUB_WORKSPACE="${GITHUB_WORKSPACE}"
+export PATH="${MOCK_BIN_NO_YQ}"
+export GITHUB_WORKSPACE="${JIRA_WORKSPACE}"
+run_test_stdout "jira/allowlist-missing-yq-denies" \
+  "${FIXTURE_ONE_PROPOSAL}" \
+  "yq not found"
+export PATH="${SAVED_PATH}"
+export GITHUB_WORKSPACE="${SAVED_GITHUB_WORKSPACE}"
+if grep -F 'fullsend issues create' "${FULLSEND_LOG}" 2>/dev/null | grep -qvF -- '--help'; then
+  echo "FAIL: jira/allowlist-missing-yq-no-creates — create called without yq"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: jira/allowlist-missing-yq-no-creates"
+fi
+rm -rf "${MOCK_NO_YQ_BIN}" "${MOCK_BIN_NO_YQ}"
+export PATH="${MOCK_BIN}:${SAVED_PATH}"
+
+# 15. Allowlist: unset config denies issue creation
+rm -f "${FULLSEND_DIR}/config.yaml"
+rm -f "${FULLSEND_DIR}/config.base.yaml"
+run_test_stdout "jira/allowlist-unset-denies" \
+  "${FIXTURE_ONE_PROPOSAL}" \
+  "Skipping issue creation in Jira project 'PROJ'"
+
+# 15b. An overlay that sets tracker replaces the preset's tracker as a whole
+# object, so a Jira tracker without a primary project grants nothing even
+# when config.base.yaml names one (no base-layer fallback).
+cat > "${FULLSEND_DIR}/config.base.yaml" <<CFGEOF
+tracker:
+  jira:
+    base_url: https://mock.atlassian.net
+    project: PROJ
+CFGEOF
+cat > "${FULLSEND_DIR}/config.yaml" <<CFGEOF
+version: "1"
+tracker:
+  jira: {}
+CFGEOF
+run_test_stdout "jira/allowlist-overlay-without-project-denies" \
+  "${FIXTURE_ONE_PROPOSAL}" \
+  "Skipping issue creation in Jira project 'PROJ'"
+
+cat > "${FULLSEND_DIR}/config.yaml" <<CFGEOF
+version: "1"
+tracker:
+  jira:
+    allowed_targets:
+      projects: []
+CFGEOF
+run_test_stdout "jira/allowlist-empty-targets-no-project-denies" \
+  "${FIXTURE_ONE_PROPOSAL}" \
+  "Skipping issue creation in Jira project 'PROJ'"
+
+# A null tracker inherits the preset, including its primary project.
+cat > "${FULLSEND_DIR}/config.yaml" <<CFGEOF
+version: "1"
+tracker:
+CFGEOF
+run_test_stdout "jira/allowlist-null-tracker-inherits-primary" \
+  "${FIXTURE_ONE_PROPOSAL}" \
+  "Created: https://mock.atlassian.net/browse/PROJ-100"
+rm -f "${FULLSEND_DIR}/config.base.yaml"
+
+# A Jira tracker that also names another provider grants no cross-project
+# targets, but keeps permitting the primary project.
+cat > "${FULLSEND_DIR}/config.yaml" <<CFGEOF
+version: "1"
+tracker:
+  github:
+    allowed_targets:
+      orgs:
+        - test-org
+  jira:
+    project: PROJ
+    allowed_targets:
+      projects:
+        - OTHER
+CFGEOF
+export RETRO_JIRA_PROJECT="PROJ"
+run_test_stdout "jira/allowlist-multi-provider-primary-allowed" \
+  "${FIXTURE_ONE_PROPOSAL}" \
+  "Created: https://mock.atlassian.net/browse/PROJ-100"
+export RETRO_JIRA_PROJECT="OTHER"
+run_test_stdout "jira/allowlist-multi-provider-cross-project-denied" \
+  "${FIXTURE_ONE_PROPOSAL}" \
+  "Skipping issue creation in Jira project 'OTHER'"
+export RETRO_JIRA_PROJECT="PROJ"
+
+cat > "${FULLSEND_DIR}/config.yaml" <<CFGEOF
+version: "1"
+tracker:
+  jira:
+    project: OTHER
+CFGEOF
+run_test_stdout "jira/allowlist-no-policy-primary-mismatch-denies" \
+  "${FIXTURE_ONE_PROPOSAL}" \
+  "Skipping issue creation in Jira project 'PROJ'"
+# Restore valid config.yaml
+cat > "${FULLSEND_DIR}/config.yaml" <<CFGEOF
+version: "1"
+tracker:
+  jira:
+    project: PROJ
+    allowed_targets:
+      projects:
+        - PROJ
+CFGEOF
+
+# 16. Summary-only mode with unset RETRO_JIRA_PROJECT and configured allowlist
+export RETRO_MODE="summary_only"
+unset RETRO_JIRA_PROJECT
+run_test_stdout "jira/summary-only-unset-project-with-allowlist" \
+  "${FIXTURE_ONE_PROPOSAL}" \
+  "Mode is summary_only — skipping issue creation for proposal[0]"
+
+if grep -qF "### Proposals (issue creation disabled)" "${GH_STDIN_LOG}" 2>/dev/null; then
+  echo "PASS: jira/summary-only-unset-project-in-summary"
+else
+  echo "FAIL: jira/summary-only-unset-project-in-summary — proposal missing from summary"
+  cat "${GH_STDIN_LOG}" 2>/dev/null || true
+  FAILURES=$((FAILURES + 1))
+fi
+
+# 17. Summary-only mode includes proposals without dedup receipt
+export RETRO_JIRA_PROJECT="PROJ"
+run_test_stdout "jira/summary-only-no-dedup-receipt" \
+  "${FIXTURE_NO_RECEIPT}" \
+  "Mode is summary_only — skipping issue creation for proposal[0]"
+
+if grep -qF "### Proposals (issue creation disabled)" "${GH_STDIN_LOG}" 2>/dev/null \
+  && ! grep -qF "missing or malformed dedup receipt" "${TMPDIR}/stdout.log" 2>/dev/null; then
+  echo "PASS: jira/summary-only-no-dedup-receipt-collected"
+else
+  echo "FAIL: jira/summary-only-no-dedup-receipt-collected — proposal not properly collected in summary-only mode"
+  cat "${TMPDIR}/stdout.log" 2>/dev/null || true
+  FAILURES=$((FAILURES + 1))
+fi
+export RETRO_MODE="all"
+cat > "${FULLSEND_DIR}/config.yaml" <<CFGEOF
+tracker:
+  jira:
+    base_url: https://mock.atlassian.net
+    project: PROJ
+CFGEOF
+
+# 18. An explicit empty list denies a non-primary project and does not fall
+# through to the Jira-originating project's generic forge allowance.
+cat > "${FULLSEND_DIR}/config.yaml" <<CFGEOF
+version: "1"
+tracker:
+  jira:
+    project: OTHER
+    allowed_targets:
+      projects: []
+CFGEOF
+export RETRO_JIRA_PROJECT="PROJ"
+run_test_stdout "jira/allowlist-primary-project-revoked-by-empty-targets" \
+  "${FIXTURE_ONE_PROPOSAL}" \
+  "Skipping issue creation in Jira project 'PROJ'"
+
+# A case-insensitive explicit target is admitted by the pre-create gate.
+cat > "${FULLSEND_DIR}/config.yaml" <<CFGEOF
+version: "1"
+tracker:
+  jira:
+    project: PROJ
+    allowed_targets:
+      projects:
+        - other
+CFGEOF
+export RETRO_JIRA_PROJECT="OTHER"
+run_test_stdout "jira/allowlist-explicit-target-case-insensitive" \
+  "${FIXTURE_ONE_PROPOSAL}" \
+  "Created: https://mock.atlassian.net/browse/OTHER-100"
+# The mock answers with a key in the requested project, so this asserts the
+# create actually succeeded rather than passing on a failed key check.
+if grep -qF -- '--project OTHER' "${FULLSEND_LOG}" 2>/dev/null \
+  && ! grep -qF "### Proposals not filed" "${GH_STDIN_LOG}" 2>/dev/null; then
+  echo "PASS: jira/allowlist-explicit-target-case-insensitive-created"
+else
+  echo "FAIL: jira/allowlist-explicit-target-case-insensitive-created — create did not succeed for OTHER"
+  cat "${FULLSEND_LOG}" 2>/dev/null || true
+  FAILURES=$((FAILURES + 1))
+fi
+export RETRO_JIRA_PROJECT="PROJ"
+cat > "${FULLSEND_DIR}/config.yaml" <<CFGEOF
+version: "1"
+tracker:
+  jira:
+    project: PROJ
+    allowed_targets:
+      projects:
+        - PROJ
+CFGEOF
+
+# A config that exists only under <FULLSEND_DIR>/.fullsend/ is not read: the
+# CLI treats --fullsend-dir as the directory that holds config.yaml, and the
+# Jira REST routing reads the same path. The run must say so and fail closed
+# rather than admit targets from a config the CLI cannot see.
+NESTED_FULLSEND="${TMPDIR}/nested-fullsend"
+mkdir -p "${NESTED_FULLSEND}/.fullsend"
+cat > "${NESTED_FULLSEND}/.fullsend/config.yaml" <<CFGEOF
+version: "1"
+tracker:
+  jira:
+    project: PROJ
+CFGEOF
+SAVED_FULLSEND_DIR="${FULLSEND_DIR}"
+export FULLSEND_DIR="${NESTED_FULLSEND}"
+export RETRO_MODE="issues_only"
+run_test_stdout "jira/nested-config-not-read" \
+  "${FIXTURE_ONE_PROPOSAL}" \
+  "no config.yaml in FULLSEND_DIR" \
+  "true"
+if grep -qF 'fullsend issues create --tracker jira' "${FULLSEND_LOG}" 2>/dev/null; then
+  echo "FAIL: jira/nested-config-no-create — create attempted without a config the CLI can read"
+  cat "${FULLSEND_LOG}" 2>/dev/null || true
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: jira/nested-config-no-create"
+fi
+export RETRO_MODE="all"
+export FULLSEND_DIR="${SAVED_FULLSEND_DIR}"
+
+# 19. Issues_only mode exits non-zero if proposals are skipped due to allowlist
+cat > "${FULLSEND_DIR}/config.yaml" <<CFGEOF
+version: "1"
+tracker:
+  jira:
+    project: OTHER
+    allowed_targets:
+      projects: []
+CFGEOF
+export RETRO_JIRA_PROJECT="PROJ"
+export RETRO_MODE="issues_only"
+run_test_stdout "jira/issues-only-skipped-exits-error" \
+  "${FIXTURE_ONE_PROPOSAL}" \
+  "issues_only mode encountered proposal failures or skipped targets" \
+  "true"
+export RETRO_MODE="all"
+
+# RETRO_JIRA_LABELS is the applied-label allowlist; it can replace or suppress
+# the default ready-for-triage label for Jira without changing forge labels.
+export RETRO_JIRA_LABELS="retro"
+cat > "${FULLSEND_DIR}/config.yaml" <<CFGEOF
+version: "1"
+tracker:
+  jira:
+    project: PROJ
+    allowed_targets:
+      projects:
+        - PROJ
+CFGEOF
+run_test_stdout "jira/custom-label-policy-applied" \
+  "${FIXTURE_ONE_PROPOSAL}" \
+  "Created: https://mock.atlassian.net/browse/PROJ-100"
+if grep -qF 'retro' "${CURL_LOG}" && grep -qF '/issue/PROJ-100' "${CURL_LOG}"; then
+  echo "PASS: jira/custom-label-policy-label-sent"
+else
+  echo "FAIL: jira/custom-label-policy-label-sent"
+  FAILURES=$((FAILURES + 1))
+fi
+export RETRO_JIRA_LABELS=""
+run_test_stdout "jira/empty-label-policy-no-labels" \
+  "${FIXTURE_ONE_PROPOSAL}" \
+  "Created: https://mock.atlassian.net/browse/PROJ-100"
+if grep -qF 'curl ' "${CURL_LOG}" && grep -qF '/issue/PROJ-100' "${CURL_LOG}"; then
+  echo "FAIL: jira/empty-label-policy-put — label update was sent"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: jira/empty-label-policy-no-label-update"
+fi
+unset RETRO_JIRA_LABELS
+cat > "${FULLSEND_DIR}/config.yaml" <<CFGEOF
+version: "1"
+tracker:
+  jira:
+    project: PROJ
+    allowed_targets:
+      projects:
+        - PROJ
+CFGEOF
+
+# Restore valid config.yaml
+cat > "${FULLSEND_DIR}/config.yaml" <<CFGEOF
+version: "1"
+tracker:
+  jira:
+    allowed_targets:
+      projects:
+        - PROJ
+CFGEOF
+
+# 20. Target repository line and forge issue URL rendered in Jira issue body
+export RETRO_JIRA_PROJECT="PROJ"
+export FULLSEND_TRACKER="jira"
+export FULLSEND_FORGE="github"
+export JIRA_BASE_URL="https://mock.atlassian.net"
+export JIRA_TOKEN="fake-jira-token"
+export FULLSEND_DIR="${TMPDIR}/dot-fullsend"
+run_test_stdout "jira/body-target-repo-and-forge-url" \
+  "${FIXTURE_RECEIPT_FOUND}" \
+  "Created: https://mock.atlassian.net/browse/PROJ-100"
+if grep -qF "**Target repository:** test-org/target-repo" "${FULLSEND_STDIN_LOG}" 2>/dev/null \
+  && grep -qF "https://github.com/test-org/target-repo/issues/2476" "${FULLSEND_STDIN_LOG}" 2>/dev/null; then
+  echo "PASS: jira/body-target-repo-and-forge-url"
+else
+  echo "FAIL: jira/body-target-repo-and-forge-url — body missing target repo or full forge URL"
+  cat "${FULLSEND_STDIN_LOG}" 2>/dev/null || true
+  FAILURES=$((FAILURES + 1))
+fi
+
+# 20b. Target repository line and GitLab self-managed URL rendered in Jira issue body
+export FULLSEND_FORGE="gitlab"
+export ORIGINATING_URL="https://gitlab.example.com/test-org/source-repo/-/merge_requests/10"
+export GITLAB_HOST="gitlab.example.com"
+export CI_SERVER_HOST="gitlab.example.com"
+export CI_PROJECT_DIR="${JIRA_WORKSPACE}"
+run_test_stdout "jira/body-target-repo-and-gitlab-url" \
+  "${FIXTURE_RECEIPT_FOUND}" \
+  "Created: https://mock.atlassian.net/browse/PROJ-100"
+if grep -qF "**Target repository:** test-org/target-repo" "${FULLSEND_STDIN_LOG}" 2>/dev/null \
+  && grep -qF "https://gitlab.example.com/test-org/target-repo/-/issues/2476" "${FULLSEND_STDIN_LOG}" 2>/dev/null; then
+  echo "PASS: jira/body-target-repo-and-gitlab-url"
+else
+  echo "FAIL: jira/body-target-repo-and-gitlab-url — body missing target repo or self-managed GitLab URL"
+  cat "${FULLSEND_STDIN_LOG}" 2>/dev/null || true
+  FAILURES=$((FAILURES + 1))
+fi
+
+# 20c. Target repository line and GitLab fallback reference when host is unknown
+unset GITLAB_HOST CI_SERVER_HOST
+export ORIGINATING_URL="https://mock.atlassian.net/browse/PROJ-123"
+export CI_PROJECT_DIR="${JIRA_WORKSPACE}"
+run_test_stdout "jira/body-target-repo-and-gitlab-no-host" \
+  "${FIXTURE_RECEIPT_FOUND}" \
+  "Created: https://mock.atlassian.net/browse/PROJ-100"
+if grep -qF "test-org/target-repo#2476" "${FULLSEND_STDIN_LOG}" 2>/dev/null; then
+  echo "PASS: jira/body-target-repo-and-gitlab-no-host"
+else
+  echo "FAIL: jira/body-target-repo-and-gitlab-no-host — body missing repo#number format when host unknown"
+  cat "${FULLSEND_STDIN_LOG}" 2>/dev/null || true
+  FAILURES=$((FAILURES + 1))
+fi
+export FULLSEND_FORGE="github"
+
+# 21. Comment truncation at the Jira 32000-byte cap for Jira-originated runs
+ORIGINATING_URL="https://mock.atlassian.net/browse/PROJ-123" \
+  run_test_stdout "jira/comment-truncated-at-32000" \
+  "${FIXTURE_OVERSIZED}" \
+  "Posting summary comment on PROJ#PROJ-123"
+JIRA_COMMENT_LEN=$(wc -c < "${FULLSEND_STDIN_LOG}")
+if [[ ${JIRA_COMMENT_LEN} -le 32000 ]]; then
+  echo "PASS: jira/comment-truncated-length"
+else
+  echo "FAIL: jira/comment-truncated-length — comment length ${JIRA_COMMENT_LEN} exceeds 32000"
+  FAILURES=$((FAILURES + 1))
+fi
+if grep -qF "...(truncated)" "${FULLSEND_STDIN_LOG}" 2>/dev/null; then
+  echo "PASS: jira/comment-truncated-marker"
+else
+  echo "FAIL: jira/comment-truncated-marker — missing truncation notice"
+  FAILURES=$((FAILURES + 1))
+fi
+
+# 21b. The Jira comment cap is in bytes, not characters: the CLI converts the
+# comment to ADF and MarkdownToADF refuses anything over 32768 bytes. A
+# summary of 32000 two-byte characters is 64000 bytes but only 32000
+# characters, so a character-count cut leaves it over the limit and the post
+# fails after the issues were already filed.
+JIRA_WIDE_SUMMARY=$(jq -nr '"é" * 32000')
+FIXTURE_JIRA_WIDE_COMMENT=$(jq -nc --arg s "${JIRA_WIDE_SUMMARY}" '{summary: $s, proposals: []}')
+ORIGINATING_URL="https://mock.atlassian.net/browse/PROJ-123" \
+  run_test_stdout "jira/comment-truncated-bytes" \
+  "${FIXTURE_JIRA_WIDE_COMMENT}" \
+  "Posting summary comment on PROJ#PROJ-123"
+JIRA_WIDE_COMMENT_BYTES=$(wc -c < "${FULLSEND_STDIN_LOG}" | tr -d '[:space:]')
+if [[ "${JIRA_WIDE_COMMENT_BYTES}" -le 32768 ]]; then
+  echo "PASS: jira/comment-truncated-bytes-under-cap (${JIRA_WIDE_COMMENT_BYTES} bytes)"
+else
+  echo "FAIL: jira/comment-truncated-bytes-under-cap — comment is ${JIRA_WIDE_COMMENT_BYTES} bytes (limit 32768)"
+  FAILURES=$((FAILURES + 1))
+fi
+if [[ "${JIRA_WIDE_COMMENT_BYTES}" -gt 31000 ]]; then
+  echo "PASS: jira/comment-truncated-bytes-near-cap (${JIRA_WIDE_COMMENT_BYTES} bytes)"
+else
+  echo "FAIL: jira/comment-truncated-bytes-near-cap — comment shrank to ${JIRA_WIDE_COMMENT_BYTES} bytes"
+  FAILURES=$((FAILURES + 1))
+fi
+if grep -qF "...(truncated)" "${FULLSEND_STDIN_LOG}" 2>/dev/null; then
+  echo "PASS: jira/comment-truncated-bytes-marker"
+else
+  echo "FAIL: jira/comment-truncated-bytes-marker — truncation marker missing from the comment"
+  FAILURES=$((FAILURES + 1))
+fi
+# The cut must land on a code-point boundary; a split two-byte character
+# leaves invalid UTF-8, which iconv rejects.
+if iconv -f UTF-8 -t UTF-8 "${FULLSEND_STDIN_LOG}" > /dev/null 2>&1; then
+  echo "PASS: jira/comment-truncated-bytes-valid-utf8"
+else
+  echo "FAIL: jira/comment-truncated-bytes-valid-utf8 — truncation split a multi-byte character"
+  FAILURES=$((FAILURES + 1))
+fi
+
+# 22. REST reads route through the Atlassian API gateway, as fullsend does:
+# tracker.jira.api_url (default https://api.atlassian.com) plus the cloud ID
+# discovered from the site. The site URL is never used as a REST base.
+export FULLSEND_FORGE="github"
+export ORIGINATING_URL="https://github.com/test-org/test-repo/pull/10"
+export JIRA_BASE_URL="https://mock.atlassian.net"
+export RETRO_JIRA_PROJECT="PROJ"
+export RETRO_MODE="all"
+cat > "${FULLSEND_DIR}/config.yaml" <<CFGEOF
+version: "1"
+tracker:
+  jira:
+    base_url: https://mock.atlassian.net
+    project: PROJ
+CFGEOF
+run_test_stdout "jira/rest-routes-through-gateway" \
+  "${FIXTURE_ONE_PROPOSAL}" \
+  "Created: https://mock.atlassian.net/browse/PROJ-100"
+if grep -qF "https://api.atlassian.com/ex/jira/11111111-2222-3333-4444-555555555555/rest/api/3/issue/createmeta/PROJ/issuetypes" "${CURL_LOG}" \
+  && grep -qF "https://mock.atlassian.net/_edge/tenant_info" "${CURL_LOG}" \
+  && ! grep -qF "https://mock.atlassian.net/rest/api/3" "${CURL_LOG}"; then
+  echo "PASS: jira/rest-routes-through-gateway-endpoints"
+else
+  echo "FAIL: jira/rest-routes-through-gateway-endpoints — REST did not use the gateway"
+  cat "${CURL_LOG}" 2>/dev/null || true
+  FAILURES=$((FAILURES + 1))
+fi
+
+# tracker.jira.api_url overrides the gateway base.
+cat > "${FULLSEND_DIR}/config.yaml" <<CFGEOF
+version: "1"
+tracker:
+  jira:
+    base_url: https://mock.atlassian.net
+    api_url: https://jira-gateway.example.com
+    project: PROJ
+CFGEOF
+run_test_stdout "jira/rest-api-url-override" \
+  "${FIXTURE_ONE_PROPOSAL}" \
+  "Created: https://mock.atlassian.net/browse/PROJ-100"
+if grep -qF "https://jira-gateway.example.com/ex/jira/11111111-2222-3333-4444-555555555555/rest/api/3" "${CURL_LOG}"; then
+  echo "PASS: jira/rest-api-url-override-endpoint"
+else
+  echo "FAIL: jira/rest-api-url-override-endpoint — api_url was not used"
+  cat "${CURL_LOG}" 2>/dev/null || true
+  FAILURES=$((FAILURES + 1))
+fi
+
+# A config that names another Jira tenant fails closed before any read.
+cat > "${FULLSEND_DIR}/config.yaml" <<CFGEOF
+version: "1"
+tracker:
+  jira:
+    base_url: https://other-site.atlassian.net
+    project: PROJ
+CFGEOF
+run_test_stdout "jira/rest-base-url-mismatch-denies" \
+  "${FIXTURE_ONE_PROPOSAL}" \
+  "does not match JIRA_BASE_URL"
+if grep -F 'fullsend issues create' "${FULLSEND_LOG}" 2>/dev/null | grep -qvF -- '--help'; then
+  echo "FAIL: jira/rest-base-url-mismatch-no-create — create called despite tenant mismatch"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: jira/rest-base-url-mismatch-no-create"
+fi
+
+# Cloud ID discovery failure fails closed.
+cat > "${FULLSEND_DIR}/config.yaml" <<CFGEOF
+version: "1"
+tracker:
+  jira:
+    base_url: https://mock.atlassian.net
+    project: PROJ
+CFGEOF
+export JIRA_MOCK_TENANT_INFO_FAIL="1"
+run_test_stdout "jira/rest-cloud-id-failure-denies" \
+  "${FIXTURE_ONE_PROPOSAL}" \
+  "failed to discover the Jira cloud ID"
+if grep -F 'fullsend issues create' "${FULLSEND_LOG}" 2>/dev/null | grep -qvF -- '--help'; then
+  echo "FAIL: jira/rest-cloud-id-failure-no-create — create called without a cloud ID"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: jira/rest-cloud-id-failure-no-create"
+fi
+unset JIRA_MOCK_TENANT_INFO_FAIL
+
+# 23. issues_only files issues without posting a comment, so it does not
+# need a forge token.
+export RETRO_MODE="issues_only"
+JIRA_SAVED_GH_TOKEN="${GH_TOKEN:-}"
+unset GH_TOKEN
+run_test_stdout "jira/issues-only-no-forge-token" \
+  "${FIXTURE_ONE_PROPOSAL}" \
+  "Created: https://mock.atlassian.net/browse/PROJ-100"
+export GH_TOKEN="${JIRA_SAVED_GH_TOKEN}"
+export RETRO_MODE="all"
+
+# 24. A failed createmeta check is not retried for every proposal.
+JIRA_TWO_PROPOSAL_FIXTURE=$(printf '%s' "${FIXTURE_ONE_PROPOSAL}" \
+  | jq -c '.proposals += [(.proposals[0] | .title = "Second proposal title")]')
+export JIRA_MOCK_REQUIRED_FIELD="1"
+run_test_stdout "jira/createmeta-failure-not-retried" \
+  "${JIRA_TWO_PROPOSAL_FIXTURE}" \
+  "Jira project validation failed"
+JIRA_CREATEMETA_PROBES=$(grep -cF 'issue/createmeta/PROJ/issuetypes?' "${CURL_LOG}" || true)
+if [[ "${JIRA_CREATEMETA_PROBES}" -eq 1 ]]; then
+  echo "PASS: jira/createmeta-failure-not-retried-once"
+else
+  echo "FAIL: jira/createmeta-failure-not-retried-once — ${JIRA_CREATEMETA_PROBES} createmeta probes for 2 proposals"
+  cat "${CURL_LOG}" 2>/dev/null || true
+  FAILURES=$((FAILURES + 1))
+fi
+unset JIRA_MOCK_REQUIRED_FIELD
+
+# 24b. Help output must confirm the create command and both options used.
+for jira_help_case in missing-fullsend-dir missing-tracker unrelated-usage; do
+  export FULLSEND_MOCK_CREATE_HELP="${jira_help_case}"
+  run_test_stdout "jira/cli-help-${jira_help_case}" \
+    "${FIXTURE_ONE_PROPOSAL}" \
+    "does not support 'issues create --tracker jira --fullsend-dir'"
+  if grep -F 'fullsend issues create' "${FULLSEND_LOG}" 2>/dev/null | grep -qvF -- '--help'; then
+    echo "FAIL: jira/cli-help-${jira_help_case}-no-create — create called with incomplete CLI support"
+    FAILURES=$((FAILURES + 1))
+  else
+    echo "PASS: jira/cli-help-${jira_help_case}-no-create"
+  fi
+done
+unset FULLSEND_MOCK_CREATE_HELP
+
+# 25. Numeric forge references on GitHub Enterprise link to the run's server.
+export GITHUB_SERVER_URL="https://ghe.example.com"
+export ORIGINATING_URL="https://ghe.example.com/test-org/test-repo/pull/10"
+run_test_stdout "jira/body-ghes-link" \
+  "${FIXTURE_RECEIPT_FOUND}" \
+  "Created: https://mock.atlassian.net/browse/PROJ-100"
+if grep -qF "https://ghe.example.com/test-org/target-repo/issues/2476" "${FULLSEND_STDIN_LOG}" 2>/dev/null; then
+  echo "PASS: jira/body-ghes-link"
+else
+  echo "FAIL: jira/body-ghes-link — body did not use GITHUB_SERVER_URL"
+  cat "${FULLSEND_STDIN_LOG}" 2>/dev/null || true
+  FAILURES=$((FAILURES + 1))
+fi
+unset GITHUB_SERVER_URL
+export ORIGINATING_URL="https://github.com/test-org/test-repo/pull/10"
+
+# 26. Dotted and hyphenated tokens are not split into search fragments.
+JIRA_DOTTED_TITLE_FIXTURE=$(printf '%s' "${FIXTURE_ONE_PROPOSAL}" \
+  | jq -c '.proposals[0].title = "Fix post-retro.sh crash"')
+run_test_stdout "jira/duplicate-dotted-token" \
+  "${JIRA_DOTTED_TITLE_FIXTURE}" \
+  "Post-retro complete."
+if ! grep -qF 'summary ~ \"post\"' "${CURL_LOG}" 2>/dev/null \
+  && ! grep -qF 'summary ~ \"retro\"' "${CURL_LOG}" 2>/dev/null \
+  && grep -qF 'summary ~ \"crash\"' "${CURL_LOG}" 2>/dev/null; then
+  echo "PASS: jira/duplicate-dotted-token-not-split"
+else
+  echo "FAIL: jira/duplicate-dotted-token-not-split — JQL split a dotted or hyphenated token"
+  cat "${CURL_LOG}" 2>/dev/null || true
+  FAILURES=$((FAILURES + 1))
+fi
+JIRA_DOTTED_ONLY_FIXTURE=$(printf '%s' "${FIXTURE_ONE_PROPOSAL}" \
+  | jq -c '.proposals[0].title = "post-retro.sh result.json"')
+run_test_stdout "jira/duplicate-dotted-only" \
+  "${JIRA_DOTTED_ONLY_FIXTURE}" \
+  "Post-retro complete."
+if grep -qF 'project = \"PROJ\"' "${CURL_LOG}" 2>/dev/null \
+  && ! grep -qF 'summary ~ ' "${CURL_LOG}" 2>/dev/null; then
+  echo "PASS: jira/duplicate-dotted-only-project-fallback"
+else
+  echo "FAIL: jira/duplicate-dotted-only-project-fallback — expected project-only search"
+  cat "${CURL_LOG}" 2>/dev/null || true
+  FAILURES=$((FAILURES + 1))
+fi
+
+# 27. On a CLI that still keeps sticky-comment history, pass
+# --keep-history=false so a rerun replaces the summary instead of stacking
+# copies; a CLI that marks the flag deprecated gets no flag. The deprecated
+# branch models the shape fullsend-ai/fullsend#9399 (still open) proposes, so
+# it pins the detection, not released CLI behaviour.
+export FULLSEND_MOCK_KEEP_HISTORY="supported"
+ORIGINATING_URL="https://mock.atlassian.net/browse/PROJ-123" \
+  run_test_stdout "jira/keep-history-supported" \
+  "${FIXTURE_ONE_PROPOSAL}" \
+  "Posting summary comment on PROJ#PROJ-123"
+if grep -qF -- '--keep-history=false' "${FULLSEND_LOG}" 2>/dev/null; then
+  echo "PASS: jira/keep-history-supported-flag-passed"
+else
+  echo "FAIL: jira/keep-history-supported-flag-passed — --keep-history=false was not passed"
+  cat "${FULLSEND_LOG}" 2>/dev/null || true
+  FAILURES=$((FAILURES + 1))
+fi
+export FULLSEND_MOCK_KEEP_HISTORY="deprecated"
+ORIGINATING_URL="https://mock.atlassian.net/browse/PROJ-123" \
+  run_test_stdout "jira/keep-history-deprecated" \
+  "${FIXTURE_ONE_PROPOSAL}" \
+  "Posting summary comment on PROJ#PROJ-123"
+if grep -qF -- '--keep-history' "${FULLSEND_LOG}" 2>/dev/null; then
+  echo "FAIL: jira/keep-history-deprecated-flag-omitted — deprecated flag was passed"
+  cat "${FULLSEND_LOG}" 2>/dev/null || true
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: jira/keep-history-deprecated-flag-omitted"
+fi
+unset FULLSEND_MOCK_KEEP_HISTORY
+
+# 28. Jira credentials never reach an xtrace line.
+JIRA_XTRACE_RUN="${TMPDIR}/run-jira-xtrace"
+mkdir -p "${JIRA_XTRACE_RUN}/iteration-1/output"
+printf '%s' "${FIXTURE_ONE_PROPOSAL}" > "${JIRA_XTRACE_RUN}/iteration-1/output/agent-result.json"
+: > "${GH_LOG}"
+: > "${GH_STDIN_LOG}"
+: > "${CURL_LOG}"
+: > "${FULLSEND_LOG}"
+: > "${FULLSEND_ENV_LOG}"
+: > "${FULLSEND_STDIN_LOG}"
+JIRA_SAVED_GITHUB_ACTIONS="${GITHUB_ACTIONS:-}"
+unset GITHUB_ACTIONS
+JIRA_XTRACE_EXIT=0
+(
+  cd "${JIRA_XTRACE_RUN}"
+  bash -x "${POST_SCRIPT}"
+) > "${TMPDIR}/xtrace.log" 2>&1 || JIRA_XTRACE_EXIT=$?
+if [[ -n "${JIRA_SAVED_GITHUB_ACTIONS}" ]]; then
+  export GITHUB_ACTIONS="${JIRA_SAVED_GITHUB_ACTIONS}"
+fi
+if [[ ${JIRA_XTRACE_EXIT} -eq 0 ]] && ! grep -qF "fake-jira-token" "${TMPDIR}/xtrace.log"; then
+  echo "PASS: jira/xtrace-does-not-leak-token"
+else
+  echo "FAIL: jira/xtrace-does-not-leak-token — token appeared in the trace (exit ${JIRA_XTRACE_EXIT})"
+  grep -F "fake-jira-token" "${TMPDIR}/xtrace.log" | head -5 || true
+  FAILURES=$((FAILURES + 1))
+fi
+
+# 29. A schema-valid proposal body over the CLI's 32 KiB Jira limit is
+# truncated, not refused. Each section below is 8160 characters of a two-byte
+# character (well inside the schema's 8192-character cap), so the body is
+# ~33000 bytes but only ~16500 characters: this pins that the cap is measured
+# in bytes, as fullsend does (len(body) > jira.MaxMarkdownBytes).
+JIRA_OVERSIZED_BODY_FIXTURE=$(jq -nc '
+  ("\u00e9" * 60) as $line
+  | ([range(0;136)] | map($line) | join("\n")) as $wide
+  | {
+      summary: "The retro analysis found one improvement opportunity.",
+      proposals: [
+        {
+          target_repo: "test-org/target-repo",
+          title: "Improve error handling in widget service",
+          what_happened: $wide,
+          what_could_go_better: $wide,
+          proposed_change: "Add a nil check at the entry point.",
+          validation_criteria: "Widget service returns 400 on empty input.",
+          related_issues: {
+            searched: [
+              "skip review dispatch zero files",
+              "review dispatch routing"
+            ],
+            found: []
+          }
+        }
+      ]
+    }')
+# issues_only keeps the create body the only thing written to the stdin log,
+# so its size can be measured directly.
+export RETRO_MODE="issues_only"
+run_test_stdout "jira/body-over-limit-truncated" \
+  "${JIRA_OVERSIZED_BODY_FIXTURE}" \
+  "body exceeded the Jira 32768-byte limit and was truncated"
+JIRA_BODY_BYTES=$(wc -c < "${FULLSEND_STDIN_LOG}" | tr -d '[:space:]')
+if [[ "${JIRA_BODY_BYTES}" -le 32768 ]]; then
+  echo "PASS: jira/body-over-limit-under-cap (${JIRA_BODY_BYTES} bytes)"
+else
+  echo "FAIL: jira/body-over-limit-under-cap — body is ${JIRA_BODY_BYTES} bytes (limit 32768)"
+  FAILURES=$((FAILURES + 1))
+fi
+# Truncated near the cap, not by discarding whole sections.
+if [[ "${JIRA_BODY_BYTES}" -gt 32000 ]]; then
+  echo "PASS: jira/body-over-limit-keeps-near-cap (${JIRA_BODY_BYTES} bytes)"
+else
+  echo "FAIL: jira/body-over-limit-keeps-near-cap — body shrank to ${JIRA_BODY_BYTES} bytes"
+  FAILURES=$((FAILURES + 1))
+fi
+if grep -qF "truncated to fit the Jira issue body limit" "${FULLSEND_STDIN_LOG}" 2>/dev/null; then
+  echo "PASS: jira/body-over-limit-marked"
+else
+  echo "FAIL: jira/body-over-limit-marked — truncation marker missing from the body"
+  FAILURES=$((FAILURES + 1))
+fi
+if grep -qF "_Generated by retro agent from https://github.com/test-org/test-repo/pull/10_" "${FULLSEND_STDIN_LOG}" 2>/dev/null; then
+  echo "PASS: jira/body-over-limit-keeps-footer"
+else
+  echo "FAIL: jira/body-over-limit-keeps-footer — originating-URL footer was cut"
+  FAILURES=$((FAILURES + 1))
+fi
+export RETRO_MODE="all"
+
+unset FULLSEND_TRACKER JIRA_BASE_URL JIRA_USER_EMAIL JIRA_TOKEN FULLSEND_DIR RETRO_JIRA_PROJECT RETRO_MODE
 
 # --- Results ---
 

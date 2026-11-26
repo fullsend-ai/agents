@@ -60,11 +60,11 @@ Small adjustments in response to review feedback are normal iteration — this g
 
 ### Functional tests for external contributors
 
-Functional tests (the `Functional Tests` and `Behaviour Tests` workflows) run
-automatically for same-repository pull requests authored by users with
-**write access or higher** (`write`, `maintain`, or `admin`).
+The `Functional Tests` workflow runs automatically for same-repository pull
+requests authored by users with **write access or higher** (`write`,
+`maintain`, or `admin`).
 
-They need `/ok-to-test <sha>` for:
+It needs `/ok-to-test <sha>` for:
 
 - contributors without write access (including those with read or triage
   roles);
@@ -77,16 +77,30 @@ Someone with write access reviews the latest push and comments on the PR:
 /ok-to-test <full 40-character sha of the latest push>
 ```
 
-The comment's first line must be `/ok-to-test` and the full sha; a short
-prefix is refused. The tests run only when that sha is still the PR head, and
-the `functional-tests-complete` and `behaviour` checks report on that commit.
+The comment's first line must be `/ok-to-test <sha>`, or
+`/ok-to-test <sha> live` to also run the live behaviour suite, with the full
+sha; a short prefix is refused. `Functional Tests` runs only when that sha is still the PR
+head, and the `functional-tests-complete` check reports on that commit.
 **A later push needs a new comment** naming the new head. The `ok-to-test`
 label no longer starts a run.
+
+The live `Behaviour Tests` workflow skips on pull requests; it runs in the
+merge queue and on push to `main`. Someone with write access can run it on a
+pull request with `/ok-to-test <sha> live`, which reports the non-required
+`behaviour-live` check (see
+[Run the live suite on a pull request](docs/behaviour-testing.md#run-the-live-suite-on-a-pull-request)).
 
 This is a separate gate from GitHub's own first-time-contributor
 workflow-approval prompt (the "Approve and run workflows" button). Approving
 that prompt lets `pull_request`-triggered workflows start, but a fork PR's
 functional tests still need `/ok-to-test <sha>`.
+
+The `behaviour-github-emulator` check runs on every pull request, forks
+included, without `/ok-to-test`: it runs the behaviour suite on a GitHub
+emulator and needs no secrets (see
+[On the GitHub emulator](docs/behaviour-testing.md#on-the-github-emulator)).
+`/ok-to-test <sha>` is still needed for the `Functional Tests` workflow, and
+`/ok-to-test <sha> live` runs the live `Behaviour Tests` workflow as well.
 
 ### Merging
 

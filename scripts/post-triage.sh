@@ -170,6 +170,11 @@ tracker_verify_labels_stripped() {
   fi
 }
 
+# Print the issue's labels, one per line. Fails when they cannot be read.
+tracker_list_issue_labels() {
+  gh api "repos/${REPO}/issues/${ISSUE_NUMBER}/labels" --paginate --jq '.[].name'
+}
+
 tracker_list_repo_labels() {
   gh api "repos/${REPO}/labels" --paginate --jq '.[].name' 2>/dev/null || true
 }
@@ -496,6 +501,13 @@ tracker_verify_labels_stripped() {
   fi
 }
 
+# Print the issue's labels, one per line. Fails when they cannot be read.
+tracker_list_issue_labels() {
+  local issue
+  issue=$(_gitlab_api GET "/projects/${REPO_ENCODED}/issues/${ISSUE_NUMBER}") || return 1
+  printf '%s' "${issue}" | jq -r '.labels[]'
+}
+
 tracker_list_repo_labels() {
   local page=1 max_pages=50
   while [[ "${page}" -le "${max_pages}" ]]; do
@@ -763,6 +775,18 @@ JIRA_TRIAGE_OPS_SH_LOADED=1
 [[ -n "${JIRA_AUTH_SH_LOADED:-}" ]] && return 0
 JIRA_AUTH_SH_LOADED=1
 
+# Emit a GitHub Actions masking command for a secret. Defined here rather
+# than in a caller's library so every bundle that sources Jira auth can mask
+# a minted token, whatever the agent. Percent signs, CR and LF are escaped
+# because an unescaped line break would end the workflow command.
+_jira_auth_gha_mask() {
+  local value="$1"
+  value="${value//%/%25}"
+  value="${value//$'\r'/%0D}"
+  value="${value//$'\n'/%0A}"
+  printf '::add-mask::%s\n' "${value}"
+}
+
 # Selected mode: "token", "client", or "none". Empty until jira_auth_select.
 JIRA_AUTH_MODE=""
 _JIRA_AUTH_CLIENT_ID=""
@@ -919,27 +943,29 @@ _jira_auth_mint_now() {
   token="$(printf '%s' "${body}" | jq -r '.access_token // empty' 2>/dev/null)" || token=""
   expires_in="$(printf '%s' "${body}" | jq -r '.expires_in // empty' 2>/dev/null)" || expires_in=""
   # Atlassian access tokens are JWTs. Anything outside this charset could
-  # break or inject into the ::add-mask:: line, so it is refused unprinted.
+  # break or inject into the workflow command, so it is refused unprinted.
   if [[ ! "${token}" =~ ^[A-Za-z0-9._~+/=-]+$ ]]; then
     echo "ERROR: Jira OAuth token response has no usable access_token" >&2
     return 1
   fi
-  # In the script's own shell the mask goes to stdout. In a subshell, such
-  # as a command substitution, stdout may be captured, so it goes to the
-  # main shell's current stdout through /proc when that is a pipe or a
-  # terminal (the runner log), else to stderr. A file or /dev/null there
-  # means the caller redirected stdout around the call.
-  # ::add-mask:: is GHA-only; on other runners the line would print the token.
-  local main_out="/proc/$$/fd/1"
-  if [[ "${GITHUB_ACTIONS:-}" != "true" ]]; then
-    :
-  elif (( BASH_SUBSHELL == 0 )); then
-    printf '::add-mask::%s\n' "${token}"
-  elif [[ -w "${main_out}" ]] && [[ -p "${main_out}" || -c "${main_out}" ]] \
-    && ! [[ "${main_out}" -ef /dev/null ]]; then
-    printf '::add-mask::%s\n' "${token}" >> "${main_out}"
-  else
-    printf '::add-mask::%s\n' "${token}" >&2
+  # ::add-mask:: is a GitHub Actions workflow command. On any other runner
+  # the line is ordinary log output and would print the token, so the mask
+  # is emitted only when GITHUB_ACTIONS is "true".
+  if [[ "${GITHUB_ACTIONS:-}" == "true" ]]; then
+    # In the script's own shell the mask goes to stdout. In a subshell, such
+    # as a command substitution, stdout may be captured, so it goes to the
+    # main shell's current stdout through /proc when that is a pipe or a
+    # terminal (the runner log), else to stderr. A file or /dev/null there
+    # means the caller redirected stdout around the call.
+    local main_out="/proc/$$/fd/1"
+    if (( BASH_SUBSHELL == 0 )); then
+      _jira_auth_gha_mask "${token}"
+    elif [[ -w "${main_out}" ]] && [[ -p "${main_out}" || -c "${main_out}" ]] \
+      && ! [[ "${main_out}" -ef /dev/null ]]; then
+      _jira_auth_gha_mask "${token}" >> "${main_out}"
+    else
+      _jira_auth_gha_mask "${token}" >&2
+    fi
   fi
   [[ "${expires_in}" =~ ^[0-9]+$ ]] || expires_in=3600
   _JIRA_AUTH_ACCESS_TOKEN="${token}"
@@ -1213,6 +1239,13 @@ tracker_verify_labels_stripped() {
   fi
 }
 
+# Print the issue's labels, one per line. Fails when they cannot be read.
+tracker_list_issue_labels() {
+  local issue
+  issue=$(_jira_api GET "/issue/${ISSUE_NUMBER}?fields=labels") || return 1
+  printf '%s' "${issue}" | jq -r '.fields.labels[]'
+}
+
 # Jira has no per-project label registry like GitHub/GitLab — any string is
 # a valid label with no creation step. As the closest analog to "labels the
 # maintainers already established" (which the "will not auto-create" guard
@@ -1470,6 +1503,35 @@ tracker_dispatch_triage() {
     exit 1
     ;;
 esac
+
+# triage_find_skip_label — print the first skip label on the issue (#2076).
+# A skip label keeps an issue with a planning process: the built-in
+# skip-triage, plus each label in the comma-separated TRIAGE_SKIP_LABELS.
+# Returns 0 when the issue carries one, 1 when it carries none, and 2 when
+# its labels cannot be read. Call after tracker_parse_issue_url.
+triage_find_skip_label() {
+  local issue_labels
+  issue_labels=$(tracker_list_issue_labels) || return 2
+
+  local skip_labels=("skip-triage") extra_labels label
+  IFS=',' read -ra extra_labels <<< "${TRIAGE_SKIP_LABELS:-}"
+  for label in "${extra_labels[@]}"; do
+    label="${label#"${label%%[![:space:]]*}"}"
+    label="${label%"${label##*[![:space:]]}"}"
+    [[ -n "${label}" ]] && skip_labels+=("${label}")
+  done
+
+  local current
+  while IFS= read -r current; do
+    for label in "${skip_labels[@]}"; do
+      if [[ -n "${current}" && "${current}" == "${label}" ]]; then
+        printf '%s\n' "${current}"
+        return 0
+      fi
+    done
+  done <<< "${issue_labels}"
+  return 1
+}
 # END bundled: lib/triage-ops.lib.sh
 # shellcheck source=lib/labels.lib.sh
 # BEGIN bundled: lib/labels.lib.sh
@@ -1582,7 +1644,10 @@ echo "Issue: #${ISSUE_NUMBER}"
 # and pr-open before each run; the action handlers below apply the rest.
 # pr-open is also created and applied independently by the code agent's
 # pre-check (scripts/pre-code.sh) when it finds a human PR before dispatching.
-CONTROL_LABELS=("needs-info" "ready-to-code" "duplicate" "feature" "blocked" "triaged" "question" "bug" "documentation" "not-planned" "completed" "pr-open")
+# ready-for-triage dispatches triage, from a human or a bot, so an agent that
+# adds it to the issue it is triaging starts its own next run; the
+# post-script applies it only to the sub-issues it creates (#2082).
+CONTROL_LABELS=("needs-info" "ready-to-code" "duplicate" "feature" "blocked" "triaged" "question" "bug" "documentation" "not-planned" "completed" "pr-open" "ready-for-triage")
 
 is_control_label() {
   local label="$1"
@@ -2010,6 +2075,22 @@ ${FAILED_CREATES}"
       AUTO_CODE_ALLOWED=false
     fi
 
+    # Skip-label guard (#2076): an issue that carries skip-triage, or a label
+    # listed in TRIAGE_SKIP_LABELS, stays with its planning process. A human
+    # /fs-triage may still triage it, but triage never promotes it to
+    # ready-to-code. Labels that cannot be read also withhold promotion.
+    if [[ "${AUTO_CODE_ALLOWED}" == "true" ]]; then
+      skip_rc=0
+      SKIP_LABEL="$(triage_find_skip_label)" || skip_rc=$?
+      if [[ "${skip_rc}" -eq 0 ]]; then
+        echo "::notice::Issue carries skip label '$(_gha_sanitize "${SKIP_LABEL}")' — not promoting to ready-to-code"
+        AUTO_CODE_ALLOWED=false
+      elif [[ "${skip_rc}" -ne 1 ]]; then
+        echo "::warning::Cannot read the issue labels to check for skip labels — not promoting to ready-to-code"
+        AUTO_CODE_ALLOWED=false
+      fi
+    fi
+
     # Workflow-change guard: if triage detected workflow file changes, always
     # log the (#325) warning for operational visibility. Only block auto-
     # promotion (apply triaged early) when the category would otherwise
@@ -2338,6 +2419,21 @@ if [[ "${HAS_COMPONENT_ACTIONS}" == "true" ]]; then
 fi
 
 # --- Apply deferred label (must be last label mutation) ---
+
+if [[ "${DEFERRED_LABEL}" == "ready-to-code" ]]; then
+  # Re-check skip labels (#2076): label_actions may have added one since the
+  # earlier guard ran. A skip label, or labels that cannot be read, withhold
+  # promotion; the issue still gets triaged.
+  skip_rc=0
+  SKIP_LABEL="$(triage_find_skip_label)" || skip_rc=$?
+  if [[ "${skip_rc}" -eq 0 ]]; then
+    echo "::notice::Issue carries skip label '$(_gha_sanitize "${SKIP_LABEL}")' after label_actions — not promoting to ready-to-code"
+    DEFERRED_LABEL="triaged"
+  elif [[ "${skip_rc}" -ne 1 ]]; then
+    echo "::warning::Cannot read the issue labels to re-check skip labels — not promoting to ready-to-code"
+    DEFERRED_LABEL="triaged"
+  fi
+fi
 
 if [[ -n "${DEFERRED_LABEL}" ]]; then
   echo "Applying deferred label '${DEFERRED_LABEL}'..."

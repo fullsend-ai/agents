@@ -6,7 +6,7 @@
 #
 # Required env vars:
 #   ISSUE_URL      — HTML URL of the issue
-#   FULLSEND_FORGE — "github" or "gitlab"
+#   FULLSEND_FORGE — "github", "gitlab", or "jira"
 #
 # GitHub-specific env vars (consumed inside github-prioritize-ops.lib.sh):
 #   GH_TOKEN       — GitHub token with project write + issues write scope
@@ -15,6 +15,17 @@
 #
 # GitLab-specific env vars (consumed inside gitlab-prioritize-ops.lib.sh):
 #   GITLAB_TOKEN   — GitLab personal/project access token
+#
+# Jira-specific env vars (consumed inside jira-prioritize-ops.lib.sh):
+#   JIRA_TOKEN      — Jira API token (from FULLSEND_JIRA_TOKEN)
+#                     or FULLSEND_JIRA_CLIENT_ID and FULLSEND_JIRA_CLIENT_SECRET
+#                     (OAuth 2.0 client credentials) instead; not both
+#   JIRA_USER_EMAIL — optional bot-user email (from FULLSEND_JIRA_EMAIL)
+#   FULLSEND_DIR    — .fullsend dir for tracker.jira: base_url (site for
+#                     cloud-ID discovery), api_url (gateway base, default
+#                     https://api.atlassian.com), and the sticky comment.
+#                     REST goes to <api_url>/ex/jira/<cloudId>/rest/api/3.
+#   JIRA_BASE_URL   — Jira site URL; derived from ISSUE_URL when unset
 
 set -euo pipefail
 
@@ -141,6 +152,32 @@ COMMENT=$(jq -n \
 **Formula:** (\($reach) x \($impact) x \($confidence)) / \($effort) = **\($score)**
 
 </details>"')
+
+# Jira writes Reach, Impact, Effort, and RICE Score as numbers and maps
+# Confidence onto a shared select list. The sticky comment still prints the
+# agent floats (including unmapped Confidence) and the formula. Jira renders
+# markdown, where a <details> block and a table do not survive, so use a
+# heading and a bullet list. Reasoning has HTML tags and newlines removed.
+if [[ "${FULLSEND_FORGE}" == "jira" ]]; then
+  COMMENT=$(jq -r \
+    --arg score "${SCORE}" \
+    --arg reach "${REACH}" \
+    --arg impact "${IMPACT}" \
+    --arg confidence "${CONFIDENCE}" \
+    --arg effort "${EFFORT}" \
+    'def clean: tostring | gsub("<[^>]*>"; "") | gsub("[\r\n]+"; " ");
+    "**RICE Score: \($score)**
+
+**Score breakdown**
+
+* **Reach: \($reach)** — \(.reasoning.reach | clean)
+* **Impact: \($impact)** — \(.reasoning.impact | clean)
+* **Confidence: \($confidence)** — \(.reasoning.confidence | clean)
+* **Effort: \($effort)** — \(.reasoning.effort | clean)
+
+**Formula:** (Reach \($reach) x Impact \($impact) x Confidence \($confidence)) / Effort \($effort) = **\($score)**"' \
+    "${RESULT_FILE}")
+fi
 
 echo "Posting RICE comment..."
 forge_post_sticky_comment "${COMMENT}" "<!-- fullsend:prioritize-agent -->"

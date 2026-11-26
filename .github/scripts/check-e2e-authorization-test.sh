@@ -487,6 +487,43 @@ set_role "forker" "read"
 assert_cmd "/ok-to-test <sha> from read fork author denied" "false" "untrusted_commenter" ""
 export COMMENTER_LOGIN="maint"
 
+# `/ok-to-test <sha> live` passes the same checks and also asks for the live
+# behaviour suite. live is true only for an authorized run.
+# assert_live NAME EXPECTED_AUTH EXPECTED_REASON EXPECTED_SHA EXPECTED_LIVE
+assert_live() {
+  local name="$1" expected_live="$5" output live
+  assert_cmd "$1" "$2" "$3" "$4"
+  output=$(run_auth 1 "test-org/test-repo")
+  live="$(grep -o 'live=[^ ]*' <<<"${output}" | cut -d= -f2)" || live=""
+  if [[ "${live}" == "${expected_live}" ]]; then
+    echo "PASS: ${name} (live=${live})"
+  else
+    echo "FAIL: ${name} — expected live=${expected_live}, got: ${output}"
+    FAILURES=$((FAILURES + 1))
+  fi
+}
+
+write_comment "/ok-to-test ${HEAD_SHA}"
+assert_live "plain /ok-to-test <sha> does not ask for live" "true" "ok_to_test" "${HEAD_SHA}" "false"
+write_comment "/ok-to-test ${HEAD_SHA} live"
+assert_live "/ok-to-test <sha> live from write commenter asks for live" "true" "ok_to_test" "${HEAD_SHA}" "true"
+write_comment "/ok-to-test ${HEAD_SHA}   live  "$'\r\n'"Runtime bump; checking real models."
+assert_live "spaces and CRLF around live still ask for live" "true" "ok_to_test" "${HEAD_SHA}" "true"
+write_comment "/ok-to-test ${HEAD_SHA} LIVE"
+assert_live "uppercase LIVE is missing_sha" "false" "missing_sha" "${HEAD_SHA}" "false"
+write_comment "/ok-to-test ${HEAD_SHA} live please"
+assert_live "words after live are missing_sha" "false" "missing_sha" "${HEAD_SHA}" "false"
+write_comment "/ok-to-test ${HEAD_SHA}live"
+assert_live "live without a space is missing_sha" "false" "missing_sha" "${HEAD_SHA}" "false"
+write_comment "/ok-to-test live ${HEAD_SHA}"
+assert_live "live before the sha is missing_sha" "false" "missing_sha" "${HEAD_SHA}" "false"
+write_comment "/ok-to-test 2222222222222222222222222222222222222222 live"
+assert_live "live on a stale sha does not ask for live" "false" "stale_ok_to_test" "${HEAD_SHA}" "false"
+write_comment "/ok-to-test ${HEAD_SHA} live"
+set_role "maint" "triage"
+assert_live "live from triage commenter denied" "false" "untrusted_commenter" "" "false"
+set_role "maint" "write"
+
 # Comment identity comes from the API by id, never from the payload.
 write_comment "/ok-to-test ${HEAD_SHA}" "someone-else"
 assert_cmd "comment by another user fails closed" "false" "error" ""
