@@ -942,6 +942,115 @@ MOCKEOF
   echo "PASS: ${test_name}"
 }
 
+# ::add-mask:: only on GitHub Actions (#2058): other CI systems print the
+# workflow command verbatim, which would put each token in the job log.
+# Runs through the Drive token mint; the Drive search fails afterwards.
+run_mask_test() {
+  local test_name="$1"
+  local gha="$2"
+  local gh_tok="gh-tok-2058-distinct"
+  local gitlab_tok="gitlab-tok-2058-distinct"
+  local jira_tok="jira-tok-2058-distinct"
+  local sa_email="mask-2058-sa@example.iam.gserviceaccount.com"
+  local access_tok="drive-tok-2058-distinct"
+  local runner_temp="${TMPDIR}/runner-${test_name//\//-}"
+  local bin="${TMPDIR}/bin-${test_name//\//-}"
+  mkdir -p "${runner_temp}" "${bin}"
+
+  local sa_key="${bin}/sa-key.json"
+  local priv_key="${bin}/priv.key"
+  openssl genrsa 2048 > "${priv_key}" 2>/dev/null
+  local priv_key_json
+  priv_key_json=$(awk '{printf "%s\\n", $0}' "${priv_key}")
+  cat > "${sa_key}" <<EOF
+{
+  "client_email": "${sa_email}",
+  "private_key": "${priv_key_json}"
+}
+EOF
+
+  cat > "${bin}/curl" <<MOCKEOF
+#!/usr/bin/env bash
+URL=""
+OUT_FILE=""
+PREV=""
+for arg in "\$@"; do
+  [[ "\${arg}" == https://* ]] && URL="\${arg}"
+  [[ "\${PREV}" == "-o" ]] && OUT_FILE="\${arg}"
+  PREV="\${arg}"
+done
+if [[ "\${URL}" == *oauth2.googleapis.com/token* ]]; then
+  echo '{"access_token":"${access_tok}"}'; exit 0
+elif [[ "\${URL}" == *googleapis.com/drive/v3/files* ]]; then
+  if [[ -n "\${OUT_FILE}" ]]; then echo '{"error":{"code":403,"message":"denied"}}' > "\${OUT_FILE}"; echo "403"; else echo '{"error":{}}'; fi
+  exit 0
+fi
+exit 0
+MOCKEOF
+  chmod +x "${bin}/curl"
+
+  cat > "${bin}/gh" <<'MOCKEOF'
+#!/usr/bin/env bash
+if [[ "$*" == *"/git/trees"* ]]; then echo '{"tree":[]}'; else echo '[]'; fi
+exit 0
+MOCKEOF
+  chmod +x "${bin}/gh"
+
+  local out
+  out=$(
+    if [[ -n "${gha}" ]]; then
+      export GITHUB_ACTIONS="${gha}"
+    else
+      unset GITHUB_ACTIONS
+    fi
+    PATH="${bin}:${PATH}" \
+    RUNNER_TEMP="${runner_temp}" \
+    FULLSEND_FORGE="github" \
+    SCRIBE_REPO="mock-org/mock-repo" \
+    SCRIBE_SEARCH_QUERY="test query" \
+    GOOGLE_APPLICATION_CREDENTIALS="${sa_key}" \
+    GH_TOKEN="${gh_tok}" \
+    GITLAB_TOKEN="${gitlab_tok}" \
+    JIRA_TOKEN="${jira_tok}" \
+    bash "${PRE_SCRIPT}" 2>&1
+  ) || true
+
+  if [[ "${out}" != *"Obtained Drive-scoped access token"* ]]; then
+    echo "FAIL: ${test_name} — run did not reach the Drive token mint"
+    echo "${out}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  local secret
+  if [[ "${gha}" == "true" ]]; then
+    for secret in "${gh_tok}" "${gitlab_tok}" "${jira_tok}" "${sa_email}" "${access_tok}"; do
+      if ! grep -qxF "::add-mask::${secret}" <<< "${out}"; then
+        echo "FAIL: ${test_name} — missing ::add-mask:: for '${secret}'"
+        echo "${out}"
+        FAILURES=$((FAILURES + 1))
+        return
+      fi
+    done
+    # The JWT assertion is minted in the run, so match its shape.
+    if ! grep -qE '^::add-mask::[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$' <<< "${out}"; then
+      echo "FAIL: ${test_name} — missing ::add-mask:: for the JWT assertion"
+      echo "${out}"
+      FAILURES=$((FAILURES + 1))
+      return
+    fi
+  elif grep -qF -e "${gh_tok}" -e "${gitlab_tok}" -e "${jira_tok}" -e "${sa_email}" \
+       -e "${access_tok}" -e "::add-mask::" <<< "${out}"; then
+    echo "FAIL: ${test_name} — token or ::add-mask:: printed outside GitHub Actions"
+    grep -nF -e "${gh_tok}" -e "${gitlab_tok}" -e "${jira_tok}" -e "${sa_email}" \
+      -e "${access_tok}" -e "::add-mask::" <<< "${out}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
 test_meeting_doc_names_persisted() {
   local test_name="meeting-doc-names-persisted"
   local runner_temp="${TMPDIR}/runner-doc-names"
@@ -1619,7 +1728,7 @@ MOCKEOF
   if ! assert_eq "${test_name}: no network calls without JIRA_API_URL" "" "$(cat "${call_log}")"; then return; fi
 
   if ! out=$(
-    PATH="${jira_bin}:${PATH}" \
+    PATH="${jira_bin}:${PATH}" GITHUB_ACTIONS="true" \
     JIRA_BASE_URL="https://mock.atlassian.net" JIRA_API_URL="${gateway}" JIRA_TOKEN="" \
     FULLSEND_JIRA_CLIENT_ID="client-id-1" FULLSEND_JIRA_CLIENT_SECRET="${secret}" \
     SCRIBE_JIRA_PROJECT="PROJ" bash -c '
@@ -1692,7 +1801,7 @@ MOCKEOF
   chmod +x "${jira_bin}/curl"
 
   local rc=0
-  env -u JIRA_TOKEN PATH="${jira_bin}:${PATH}" \
+  env -u JIRA_TOKEN PATH="${jira_bin}:${PATH}" GITHUB_ACTIONS="true" \
     JIRA_BASE_URL="https://mock.atlassian.net" JIRA_API_URL="https://api.atlassian.com/ex/jira/cloud-1" \
     FULLSEND_JIRA_CLIENT_ID="client-id-1" FULLSEND_JIRA_CLIENT_SECRET="mint-fail-secret" \
     SCRIBE_JIRA_PROJECT="PROJ" bash -c '
@@ -1739,6 +1848,9 @@ test_jira_missing_fullsend_dir_fails_preflight
 test_jira_client_credentials
 test_jira_client_mint_then_curl_failure
 test_stale_meta_cleared_on_failed_search
+run_mask_test "mask-skipped-outside-gha" ""
+run_mask_test "mask-skipped-gha-false" "false"
+run_mask_test "mask-printed-on-gha" "true"
 test_meeting_doc_names_persisted
 test_log_doc_names_sanitized
 test_log_doc_names_no_command_injection

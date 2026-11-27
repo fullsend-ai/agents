@@ -986,8 +986,8 @@ _jira_auth_mint_now() {
   fi
   # ::add-mask:: is a GitHub Actions workflow command. On any other runner
   # the line is ordinary log output and would print the token, so the mask
-  # is emitted only when GITHUB_ACTIONS is set.
-  if [[ -n "${GITHUB_ACTIONS:-}" ]]; then
+  # is emitted only when GITHUB_ACTIONS is "true".
+  if [[ "${GITHUB_ACTIONS:-}" == "true" ]]; then
     # In the script's own shell the mask goes to stdout. In a subshell, such
     # as a command substitution, stdout may be captured, so it goes to the
     # main shell's current stdout through /proc when that is a pipe or a
@@ -1567,20 +1567,23 @@ if [[ "${FULLSEND_TRACKER}" == "jira" && -z "${FULLSEND_DIR:-}" ]]; then
   exit 1
 fi
 
-if [[ -n "${GH_TOKEN:-}" ]]; then
-  echo "::add-mask::${GH_TOKEN}"
-fi
-if [[ -n "${GITLAB_TOKEN:-}" ]]; then
-  echo "::add-mask::${GITLAB_TOKEN}"
-fi
-# With FULLSEND_JIRA_CLIENT_ID and FULLSEND_JIRA_CLIENT_SECRET there is no
-# token to mask here: jira-auth.lib.sh masks the access token it mints, the
-# client secret is never printed, and a missing JIRA_API_URL has already
-# failed the load of jira-scribe-ops.lib.sh.
-if [[ -n "${JIRA_TOKEN:-}" ]]; then
-  # Sanitize workflow-command delimiters before interpolating into ::add-mask::
-  # so a crafted token cannot inject additional workflow commands.
-  printf '::add-mask::%s\n' "$(printf '%s' "${JIRA_TOKEN}" | tr -d '\n\r')"
+# ::add-mask:: is GHA-only; on other runners the echo would print the token.
+if [[ "${GITHUB_ACTIONS:-}" == "true" ]]; then
+  if [[ -n "${GH_TOKEN:-}" ]]; then
+    echo "::add-mask::${GH_TOKEN}"
+  fi
+  if [[ -n "${GITLAB_TOKEN:-}" ]]; then
+    echo "::add-mask::${GITLAB_TOKEN}"
+  fi
+  # With FULLSEND_JIRA_CLIENT_ID and FULLSEND_JIRA_CLIENT_SECRET there is no
+  # token to mask here: jira-auth.lib.sh masks the access token it mints, the
+  # client secret is never printed, and a missing JIRA_API_URL has already
+  # failed the load of jira-scribe-ops.lib.sh.
+  if [[ -n "${JIRA_TOKEN:-}" ]]; then
+    # Sanitize workflow-command delimiters before interpolating into ::add-mask::
+    # so a crafted token cannot inject additional workflow commands.
+    printf '::add-mask::%s\n' "$(printf '%s' "${JIRA_TOKEN}" | tr -d '\n\r')"
+  fi
 fi
 
 WORK_DIR="${RUNNER_TEMP:-/tmp}/scribe-workspace"
@@ -1709,7 +1712,9 @@ if [[ -z "${SA_KEY_FILE}" || ! -f "${SA_KEY_FILE}" ]]; then
 fi
 
 SA_EMAIL=$(jq -r '.client_email' "${SA_KEY_FILE}" | tr -d '\n')
-echo "::add-mask::${SA_EMAIL}"
+if [[ "${GITHUB_ACTIONS:-}" == "true" ]]; then
+  echo "::add-mask::${SA_EMAIL}"
+fi
 NOW=$(date +%s)
 EXP=$((NOW + 3600))
 
@@ -1721,7 +1726,9 @@ JWT_SIGNATURE=$(printf '%s.%s' "${JWT_HEADER}" "${JWT_CLAIMS}" \
   | openssl base64 -e -A | tr '+/' '-_' | tr -d '=')
 
 JWT_ASSERTION="${JWT_HEADER}.${JWT_CLAIMS}.${JWT_SIGNATURE}"
-echo "::add-mask::${JWT_ASSERTION}"
+if [[ "${GITHUB_ACTIONS:-}" == "true" ]]; then
+  echo "::add-mask::${JWT_ASSERTION}"
+fi
 
 set +e
 TOKEN_RESPONSE=$(printf 'grant_type=urn%%3Aietf%%3Aparams%%3Aoauth%%3Agrant-type%%3Ajwt-bearer&assertion=%s' "${JWT_ASSERTION}" \
@@ -1741,7 +1748,9 @@ if [[ ${TOKEN_CURL_RC} -ne 0 ]] || [[ -z "${ACCESS_TOKEN}" ]]; then
   unset TOKEN_RESPONSE
   exit 1
 fi
-echo "::add-mask::${ACCESS_TOKEN}"
+if [[ "${GITHUB_ACTIONS:-}" == "true" ]]; then
+  echo "::add-mask::${ACCESS_TOKEN}"
+fi
 unset TOKEN_RESPONSE
 echo "Obtained Drive-scoped access token"
 

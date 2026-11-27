@@ -131,15 +131,18 @@ unset _jira_xtrace_was_on
 # Register the push tokens with the runner's log masker before anything can
 # expand them. A traced run echoes expanded arguments, so the mask has to
 # exist first, and the echo of the value itself must not be traced either.
-_tok_mask_xtrace=0; [[ $- == *x* ]] && _tok_mask_xtrace=1; set +x
-if [ -n "${PUSH_TOKEN:-}" ]; then
-  echo "::add-mask::${PUSH_TOKEN}"
+# ::add-mask:: is GHA-only; on other runners the echo would print the token.
+if [ "${GITHUB_ACTIONS:-}" = "true" ]; then
+  _tok_mask_xtrace=0; [[ $- == *x* ]] && _tok_mask_xtrace=1; set +x
+  if [ -n "${PUSH_TOKEN:-}" ]; then
+    echo "::add-mask::${PUSH_TOKEN}"
+  fi
+  if [ -n "${GITLAB_TOKEN:-}" ]; then
+    echo "::add-mask::${GITLAB_TOKEN}"
+  fi
+  (( _tok_mask_xtrace )) && set -x
+  unset _tok_mask_xtrace
 fi
-if [ -n "${GITLAB_TOKEN:-}" ]; then
-  echo "::add-mask::${GITLAB_TOKEN}"
-fi
-(( _tok_mask_xtrace )) && set -x
-unset _tok_mask_xtrace
 
 SCRIPT_DIR_POST="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/git-graph-policy.lib.sh
@@ -1953,8 +1956,8 @@ _jira_auth_mint_now() {
   fi
   # ::add-mask:: is a GitHub Actions workflow command. On any other runner
   # the line is ordinary log output and would print the token, so the mask
-  # is emitted only when GITHUB_ACTIONS is set.
-  if [[ -n "${GITHUB_ACTIONS:-}" ]]; then
+  # is emitted only when GITHUB_ACTIONS is "true".
+  if [[ "${GITHUB_ACTIONS:-}" == "true" ]]; then
     # In the script's own shell the mask goes to stdout. In a subshell, such
     # as a command substitution, stdout may be captured, so it goes to the
     # main shell's current stdout through /proc when that is a pipe or a

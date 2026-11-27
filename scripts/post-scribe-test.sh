@@ -884,6 +884,68 @@ run_slack_test "github/slack-stalled-webhook" "timeout" \
   "WARNING: Slack notification failed (non-fatal)" \
   "--max-time 30"
 
+# ---------------------------------------------------------------------------
+# ::add-mask:: only on GitHub Actions (#2058): other CI systems print the
+# workflow command verbatim, which would put each secret in the job log.
+# ---------------------------------------------------------------------------
+run_mask_test() {
+  local test_name="$1"
+  local gha="$2"
+  local gh_tok="gh-tok-2058-distinct"
+  local gitlab_tok="gitlab-tok-2058-distinct"
+  local jira_tok="jira-tok-2058-distinct"
+  local webhook="https://hooks.slack.com/services/webhook-2058-distinct"
+
+  local run_dir="${TMPDIR}/run-${test_name}"
+  mkdir -p "${run_dir}/iteration-1/output"
+  echo "${SLACK_OK_JSON}" > "${run_dir}/iteration-1/output/agent-result.json"
+  : > "${GH_LOG}"
+  : > "${CURL_LOG}"
+
+  local -a gha_env=(-u GITHUB_ACTIONS)
+  if [[ -n "${gha}" ]]; then
+    gha_env=("GITHUB_ACTIONS=${gha}")
+  fi
+
+  local exit_code=0
+  (cd "${run_dir}" && env "${gha_env[@]}" \
+    GH_TOKEN="${gh_tok}" GITLAB_TOKEN="${gitlab_tok}" JIRA_TOKEN="${jira_tok}" \
+    SCRIBE_SLACK_WEBHOOK_URL="${webhook}" bash "${POST_SCRIPT}") \
+    > "${TMPDIR}/stdout.log" 2>&1 || exit_code=$?
+
+  if [[ ${exit_code} -ne 0 ]]; then
+    echo "FAIL: ${test_name} — exit code ${exit_code}"
+    cat "${TMPDIR}/stdout.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  local secret
+  if [[ "${gha}" == "true" ]]; then
+    for secret in "${gh_tok}" "${gitlab_tok}" "${jira_tok}" "${webhook}"; do
+      if ! grep -qxF "::add-mask::${secret}" "${TMPDIR}/stdout.log"; then
+        echo "FAIL: ${test_name} — missing ::add-mask:: for '${secret}'"
+        cat "${TMPDIR}/stdout.log"
+        FAILURES=$((FAILURES + 1))
+        return
+      fi
+    done
+  elif grep -qF -e "${gh_tok}" -e "${gitlab_tok}" -e "${jira_tok}" -e "${webhook}" \
+       -e "::add-mask::" "${TMPDIR}/stdout.log"; then
+    echo "FAIL: ${test_name} — secret or ::add-mask:: printed outside GitHub Actions"
+    grep -nF -e "${gh_tok}" -e "${gitlab_tok}" -e "${jira_tok}" -e "${webhook}" \
+      -e "::add-mask::" "${TMPDIR}/stdout.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
+run_mask_test "github/mask-skipped-outside-gha" ""
+run_mask_test "github/mask-skipped-gha-false" "false"
+run_mask_test "github/mask-printed-on-gha" "true"
+
 # --- Jira tracker test cases (FULLSEND_FORGE=github, FULLSEND_TRACKER=jira) ---
 
 JIRA_NEW_ISSUE='{"topics":[],"new_issues":[{"title":"Add dark mode","summary":"Users want dark mode.","body":"## Problem\nNo dark mode.\n\n## Acceptance criteria\n- [ ] Toggle works","confidence":0.9,"public_safe":true,"public_safe_category":null,"labels":["meeting-notes"]}],"stats":{"notes_processed":1,"topics_extracted":0,"existing_matched":0,"new_proposed":1,"omitted":0}}'

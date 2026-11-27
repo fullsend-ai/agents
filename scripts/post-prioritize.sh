@@ -1036,8 +1036,8 @@ _jira_auth_mint_now() {
   fi
   # ::add-mask:: is a GitHub Actions workflow command. On any other runner
   # the line is ordinary log output and would print the token, so the mask
-  # is emitted only when GITHUB_ACTIONS is set.
-  if [[ -n "${GITHUB_ACTIONS:-}" ]]; then
+  # is emitted only when GITHUB_ACTIONS is "true".
+  if [[ "${GITHUB_ACTIONS:-}" == "true" ]]; then
     # In the script's own shell the mask goes to stdout. In a subshell, such
     # as a command substitution, stdout may be captured, so it goes to the
     # main shell's current stdout through /proc when that is a pipe or a

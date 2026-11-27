@@ -130,15 +130,18 @@ unset _jira_xtrace_was_on
 # Register the push tokens with the runner's log masker before anything can
 # expand them. A traced run echoes expanded arguments, so the mask has to
 # exist first, and the echo of the value itself must not be traced either.
-_tok_mask_xtrace=0; [[ $- == *x* ]] && _tok_mask_xtrace=1; set +x
-if [ -n "${PUSH_TOKEN:-}" ]; then
-  echo "::add-mask::${PUSH_TOKEN}"
+# ::add-mask:: is GHA-only; on other runners the echo would print the token.
+if [ "${GITHUB_ACTIONS:-}" = "true" ]; then
+  _tok_mask_xtrace=0; [[ $- == *x* ]] && _tok_mask_xtrace=1; set +x
+  if [ -n "${PUSH_TOKEN:-}" ]; then
+    echo "::add-mask::${PUSH_TOKEN}"
+  fi
+  if [ -n "${GITLAB_TOKEN:-}" ]; then
+    echo "::add-mask::${GITLAB_TOKEN}"
+  fi
+  (( _tok_mask_xtrace )) && set -x
+  unset _tok_mask_xtrace
 fi
-if [ -n "${GITLAB_TOKEN:-}" ]; then
-  echo "::add-mask::${GITLAB_TOKEN}"
-fi
-(( _tok_mask_xtrace )) && set -x
-unset _tok_mask_xtrace
 
 SCRIPT_DIR_POST="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/git-graph-policy.lib.sh

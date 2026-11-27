@@ -2320,6 +2320,65 @@ else
   FAILURES=$((FAILURES + 1))
 fi
 
+# --- ::add-mask:: only on GitHub Actions (#2058) ---------------------------
+# Other CI systems print the workflow command verbatim, so a token that is not
+# a masked CI/CD variable would appear in the job log in full.
+run_code_mask_test() {
+  local test_name="$1"
+  local gha="$2"
+  local run_dir="${SEC_CODE_TMPDIR}/run-${test_name}"
+  local log="${SEC_CODE_TMPDIR}/stdout-${test_name}.log"
+  local push_tok="push-tok-2058-distinct"
+  local gitlab_tok="gitlab-tok-2058-distinct"
+  setup_sec_code_repo "${run_dir}" "agent/99-test-fix"
+
+  local rc=0
+  # shellcheck disable=SC2030,SC2031
+  (
+    cd "${run_dir}"
+    export HOME="${SEC_CODE_TMPDIR}"
+    export PATH="${SEC_CODE_MOCK_BIN}:${PATH}"
+    export PUSH_TOKEN="${push_tok}"
+    export GITLAB_TOKEN="${gitlab_tok}"
+    export REPO_FULL_NAME="test-org/test-repo"
+    export ISSUE_NUMBER="99"
+    export REPO_DIR="repo"
+    export FULLSEND_FORGE="github"
+    export GITHUB_SIGNED_COMMITS="false"
+    if [ -n "${gha}" ]; then
+      export GITHUB_ACTIONS="${gha}"
+    else
+      unset GITHUB_ACTIONS
+    fi
+    bash "${POST_SCRIPT}"
+  ) > "${log}" 2>&1 || rc=$?
+
+  if [ "${rc}" -ne 0 ]; then
+    echo "FAIL: ${test_name} — exit code ${rc}"
+    cat "${log}"
+    FAILURES=$((FAILURES + 1))
+  elif [ "${gha}" = "true" ]; then
+    if grep -qxF "::add-mask::${push_tok}" "${log}" \
+       && grep -qxF "::add-mask::${gitlab_tok}" "${log}"; then
+      echo "PASS: ${test_name}"
+    else
+      echo "FAIL: ${test_name} — expected ::add-mask:: for PUSH_TOKEN and GITLAB_TOKEN"
+      cat "${log}"
+      FAILURES=$((FAILURES + 1))
+    fi
+  elif grep -qF -e "${push_tok}" -e "${gitlab_tok}" -e "::add-mask::" "${log}"; then
+    echo "FAIL: ${test_name} — token or ::add-mask:: printed outside GitHub Actions"
+    grep -nF -e "${push_tok}" -e "${gitlab_tok}" -e "::add-mask::" "${log}"
+    FAILURES=$((FAILURES + 1))
+  else
+    echo "PASS: ${test_name}"
+  fi
+}
+
+run_code_mask_test "mask-skipped-outside-gha" ""
+run_code_mask_test "mask-skipped-gha-false" "false"
+run_code_mask_test "mask-printed-on-gha" "true"
+
 # --- A sandbox-written object-graph rewrite must not hide the agent's delta --
 # The checkout comes from the agent's sandbox, so it can carry refs/replace/*,
 # info/grafts or a forged commit-graph; Git honours all three by default, and
