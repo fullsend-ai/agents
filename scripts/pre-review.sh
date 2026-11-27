@@ -459,6 +459,151 @@ forge_resolve_outdated_review_threads() {
   return 0
 }
 
+# --- Finding threads ---
+#
+# Normalized thread shape shared with gitlab-review-ops.lib.sh and read by
+# forge_reconcile_finding_threads in review-ops.lib.sh:
+#   {id, url, resolved, can_resolve, comments_complete,
+#    comments: [{body, review_bot, own}]}
+# review_bot: written by a trusted review-bot login (a Bot account), the same
+# logins post-review trusts for stamps. own: written by this token's own Bot
+# account, so a person's PAT never makes their replies count as the bot's.
+
+_FINDING_THREAD_FIELDS='id isResolved viewerCanResolve
+  comments(first: 100) {
+    pageInfo { hasNextPage }
+    nodes { url body viewerDidAuthor author { __typename login } }
+  }'
+
+# Run a jq program with norm (raw GraphQL thread -> normalized thread) in
+# scope. $1 is the program; any further arguments go to jq.
+_github_finding_thread_jq() {
+  local program="$1"
+  shift
+  jq -c --arg org "${REPO%%/*}" --arg app_set "${FULLSEND_APP_SET:-}" "$@" '
+    ([ ($org + "-review"), ($org + "-review[bot]"),
+       "fullsend-ai-review", "fullsend-ai-review[bot]",
+       (if $app_set == "" then empty else ($app_set + "-review"), ($app_set + "-review[bot]") end)
+     ] | map(ascii_downcase)) as $trusted
+    | def norm:
+        if type != "object" or (.id | type) != "string" then null else
+        {
+          id,
+          url: ((.comments.nodes // [])[0].url // ""),
+          resolved: (.isResolved == true),
+          can_resolve: (.viewerCanResolve == true),
+          comments_complete: ((.comments.pageInfo.hasNextPage // false) == false),
+          comments: [ (.comments.nodes // [])[] | select(type == "object")
+                      | (.author.__typename // "") as $type
+                      | {
+                          body: (.body // ""),
+                          review_bot: ($type == "Bot" and (((.author.login // "") | ascii_downcase) as $a | ($trusted | index($a)) != null)),
+                          own: (.viewerDidAuthor == true and $type == "Bot")
+                        } ]
+        } end;
+    '"${program}"
+}
+
+# Print {complete, head_sha, threads} for every review thread on the PR.
+# Fails when a page cannot be read; a page cap or missing cursor reports
+# complete: false instead.
+forge_fetch_finding_threads() {
+  local owner name query cursor has_next page response nodes_json head complete
+  local -a gh_args
+
+  owner="${REPO%%/*}"
+  name="${REPO##*/}"
+  cursor=""
+  has_next="true"
+  page=0
+  nodes_json="[]"
+  head=""
+  complete=true
+
+  query='query($owner: String!, $name: String!, $number: Int!, $cursor: String) {
+    repository(owner: $owner, name: $name) {
+      pullRequest(number: $number) {
+        headRefOid
+        reviewThreads(first: 100, after: $cursor) {
+          pageInfo { hasNextPage endCursor }
+          nodes { '"${_FINDING_THREAD_FIELDS}"' }
+        }
+      }
+    }
+  }'
+
+  while [[ "${has_next}" == "true" ]]; do
+    page=$((page + 1))
+    if [[ "${page}" -gt 20 ]]; then
+      complete=false
+      break
+    fi
+    gh_args=(api graphql -f owner="${owner}" -f name="${name}" -F number="${PR_NUMBER}" -f query="${query}")
+    if [[ -n "${cursor}" ]]; then
+      gh_args+=(-f cursor="${cursor}")
+    fi
+    response=$(GH_TOKEN="${REVIEW_TOKEN}" gh "${gh_args[@]}" 2>/dev/null) || return 1
+    jq -e '(.errors | type == "array" and length > 0) | not' <<< "${response}" >/dev/null 2>&1 || return 1
+    jq -e '.data.repository.pullRequest.reviewThreads.nodes | type == "array"' <<< "${response}" >/dev/null 2>&1 || return 1
+    nodes_json=$(jq -c --argjson acc "${nodes_json}" '$acc + .data.repository.pullRequest.reviewThreads.nodes' <<< "${response}") || return 1
+    head=$(jq -r '.data.repository.pullRequest.headRefOid // empty' <<< "${response}")
+    has_next=$(jq -r '.data.repository.pullRequest.reviewThreads.pageInfo.hasNextPage // false' <<< "${response}")
+    cursor=$(jq -r '.data.repository.pullRequest.reviewThreads.pageInfo.endCursor // empty' <<< "${response}")
+    if [[ "${has_next}" == "true" && -z "${cursor}" ]]; then
+      complete=false
+      break
+    fi
+  done
+
+  _github_finding_thread_jq \
+    '{complete: $complete, head_sha: $head, threads: [ .[] | norm | select(. != null) ]}' \
+    --arg head "${head}" --argjson complete "${complete}" <<< "${nodes_json}"
+}
+
+# Print {head_sha, thread} for one thread, re-read just before acting on it.
+# thread is null when the thread no longer exists. Fails when it cannot be read.
+forge_fetch_finding_thread() {
+  local thread_id="$1" query response
+  query='query($threadId: ID!) {
+    node(id: $threadId) {
+      ... on PullRequestReviewThread {
+        pullRequest { headRefOid }
+        '"${_FINDING_THREAD_FIELDS}"'
+      }
+    }
+  }'
+  response=$(GH_TOKEN="${REVIEW_TOKEN}" gh api graphql -f threadId="${thread_id}" -f query="${query}" 2>/dev/null) || return 1
+  jq -e '(.errors | type == "array" and length > 0) | not' <<< "${response}" >/dev/null 2>&1 || return 1
+  _github_finding_thread_jq \
+    '.data.node as $n | {head_sha: ($n.pullRequest.headRefOid // ""), thread: ($n | norm)}' \
+    <<< "${response}"
+}
+
+forge_reply_finding_thread() {
+  local thread_id="$1" body="$2" response
+  response=$(GH_TOKEN="${REVIEW_TOKEN}" gh api graphql \
+    -f threadId="${thread_id}" \
+    -f body="${body}" \
+    -f query='mutation($threadId: ID!, $body: String!) {
+      addPullRequestReviewThreadReply(input: {pullRequestReviewThreadId: $threadId, body: $body}) {
+        comment { id }
+      }
+    }' 2>/dev/null) || return 1
+  jq -e '(.errors | type == "array" and length > 0) | not' <<< "${response}" >/dev/null 2>&1
+}
+
+forge_resolve_finding_thread() {
+  local thread_id="$1" response
+  response=$(GH_TOKEN="${REVIEW_TOKEN}" gh api graphql \
+    -f threadId="${thread_id}" \
+    -f query='mutation($threadId: ID!) {
+      resolveReviewThread(input: {threadId: $threadId}) {
+        thread { isResolved }
+      }
+    }' 2>/dev/null) || return 1
+  jq -e '(.errors | type == "array" and length > 0) | not' <<< "${response}" >/dev/null 2>&1
+}
+
 # --- Human dismissals ---
 
 # --- Labels ---
@@ -766,6 +911,105 @@ forge_resolve_outdated_review_threads() {
   return 0
 }
 
+# --- Finding threads ---
+#
+# Merge-request discussions in the normalized thread shape that
+# forge_reconcile_finding_threads (review-ops.lib.sh) reads; see
+# github-review-ops.lib.sh for the field list. The review bot is the
+# authenticated review-token user, as for human dismissals. System notes are
+# not comments. GitLab returns every note of a discussion, so a thread's
+# comments are always complete.
+
+_GITLAB_FINDING_THREAD_NORM='
+  def norm:
+    if type != "object" or (.id | type) != "string" then null else
+    ([ (.notes // [])[] | select(type == "object" and (.system // false) == false) ]) as $notes
+    | {
+        id,
+        url: (if ($notes[0].id | type) == "number" then $pr_url + "#note_" + ($notes[0].id | tostring) else $pr_url end),
+        resolved: ($notes[0].resolved == true),
+        can_resolve: ($notes[0].resolvable == true),
+        comments_complete: true,
+        comments: [ $notes[]
+                    | ((.author.username // "") | ascii_downcase) as $a
+                    | {body: (.body // ""), review_bot: ($a == $actor), own: ($a == $actor)} ]
+      } end;
+'
+
+_gitlab_review_actor() {
+  _gitlab_api GET "/user" 2>/dev/null | jq -r '.username // empty' 2>/dev/null
+}
+
+_gitlab_mr_head_sha() {
+  _gitlab_api GET "/projects/${REPO_ENCODED}/merge_requests/${PR_NUMBER}" 2>/dev/null \
+    | jq -r '.sha // empty' 2>/dev/null
+}
+
+forge_fetch_finding_threads() {
+  local actor head page batch count all complete
+  actor="$(_gitlab_review_actor)" || return 1
+  [[ -n "${actor}" ]] || return 1
+  head="$(_gitlab_mr_head_sha)" || return 1
+  all='[]'
+  complete=false
+  page=1
+  while [[ "${page}" -le 20 ]]; do
+    batch=$(_gitlab_api GET "/projects/${REPO_ENCODED}/merge_requests/${PR_NUMBER}/discussions?per_page=100&page=${page}" 2>/dev/null) || return 1
+    jq -e 'type == "array"' <<< "${batch}" >/dev/null 2>&1 || return 1
+    all=$(jq -c --argjson acc "${all}" '$acc + .' <<< "${batch}") || return 1
+    count=$(jq 'length' <<< "${batch}")
+    if [[ "${count}" -lt 100 ]]; then
+      complete=true
+      break
+    fi
+    page=$((page + 1))
+  done
+  jq -c --arg pr_url "${PR_URL}" --arg actor "${actor,,}" --arg head "${head}" --argjson complete "${complete}" \
+    "${_GITLAB_FINDING_THREAD_NORM}"'{complete: $complete, head_sha: $head, threads: [ .[] | norm | select(. != null) ]}' \
+    <<< "${all}"
+}
+
+forge_fetch_finding_thread() {
+  local thread_id="$1" actor head response
+  actor="$(_gitlab_review_actor)" || return 1
+  [[ -n "${actor}" ]] || return 1
+  head="$(_gitlab_mr_head_sha)" || return 1
+  if ! response=$(_gitlab_api GET "/projects/${REPO_ENCODED}/merge_requests/${PR_NUMBER}/discussions/${thread_id}" 2>&1); then
+    # A discussion deleted since the first read is gone, not unreadable.
+    if [[ "${response}" == *"error: 404"* ]]; then
+      jq -nc --arg head "${head}" '{head_sha: $head, thread: null}'
+      return 0
+    fi
+    return 1
+  fi
+  jq -c --arg pr_url "${PR_URL}" --arg actor "${actor,,}" --arg head "${head}" \
+    "${_GITLAB_FINDING_THREAD_NORM}"'{head_sha: $head, thread: norm}' <<< "${response}"
+}
+
+forge_reply_finding_thread() {
+  local thread_id="$1" body="$2" line safe=""
+  # GitLab runs a quick action (/close, /label, ...) from any note line that
+  # starts with "/", with the posting token's permissions. The body carries
+  # model text derived from untrusted PR content and keeps its newlines, so a
+  # leading backslash on such a line stops it parsing as a command while the
+  # text still renders as written.
+  while IFS= read -r line || [[ -n "${line}" ]]; do
+    if [[ "${line}" =~ ^[[:space:]]*/ ]]; then
+      line="\\${line}"
+    fi
+    safe+="${line}"$'\n'
+  done <<< "${body}"
+  body="${safe%$'\n'}"
+  _gitlab_api POST "/projects/${REPO_ENCODED}/merge_requests/${PR_NUMBER}/discussions/${thread_id}/notes" \
+    --data-urlencode "body=${body}" > /dev/null 2>&1
+}
+
+forge_resolve_finding_thread() {
+  local thread_id="$1"
+  _gitlab_api PUT "/projects/${REPO_ENCODED}/merge_requests/${PR_NUMBER}/discussions/${thread_id}" \
+    --data-urlencode "resolved=true" > /dev/null 2>&1
+}
+
 # --- Labels ---
 
 forge_add_label() {
@@ -928,6 +1172,155 @@ forge_get_human_dismissals() {
         }
     ]
   ' <<< "${response}" 2>/dev/null || echo '[]'
+}
+
+# Classify one finding id against normalized threads (see the forge libs).
+# Input: {complete, head_sha, threads}. Args: $id, $head (the commit this
+# review evaluated), $marker (the reply idempotency marker). Output:
+# {status, thread_id, url, replied}. Only "ready" may be acted on.
+#
+# The thread must be the single unresolved thread whose first comment is a
+# review-bot comment carrying exactly this id's stamp and no other. A stamp
+# in a human reply never makes a thread the finding's thread.
+_FINDING_THREAD_CLASSIFY='
+  def stamps: [ scan("<!--[[:space:]]+finding:(f_[A-Za-z0-9]+)[[:space:]]+-->") | .[0] ] | unique;
+  (.head_sha // "") as $live
+  | [ (.threads // [])[] | select(any(.comments[]?; .body | stamps | index($id) != null)) ] as $cand
+  | [ $cand[] | select((.comments[0].review_bot // false) and ((.comments[0].body // "") | stamps) == [$id]) ] as $owned
+  | [ $owned[] | select(.resolved | not) ] as $open
+  | if (.complete | not) then {status: "incomplete", thread: (if ($owned | length) == 1 then $owned[0] else null end)}
+    elif ($cand | length) == 0 then {status: "missing", thread: null}
+    elif ($owned | length) == 0 then {status: "human-owned", thread: $cand[0]}
+    elif ($open | length) == 0 then {status: "already-resolved", thread: $owned[0]}
+    elif ($open | length) > 1 then {status: "ambiguous", thread: $open[0]}
+    else $open[0] as $t
+      | if ($t.comments_complete | not) then {status: "incomplete", thread: $t}
+        elif $head == "" or ($live | ascii_downcase) != ($head | ascii_downcase) then {status: "changed-head", thread: $t}
+        elif any($t.comments[]; (.review_bot or .own) | not) then {status: "other-comment", thread: $t}
+        elif ($t.can_resolve | not) then {status: "not-resolvable", thread: $t}
+        else {status: "ready", thread: $t}
+        end
+    end
+  | {
+      status,
+      thread_id: (.thread.id // null),
+      url: (.thread.url // ""),
+      replied: (.thread != null and any(.thread.comments[]?; .own and (.body | contains($marker))))
+    }
+'
+
+# Resolve the review threads of prior findings this review settled.
+#
+# $1 — JSON array of {id, rationale, evidence}: prior ids whose effective
+#      ledger status is resolved_by_change (rationale and evidence given, and
+#      the id not reported again).
+# $2 — the head SHA the review evaluated.
+#
+# Each id must map to one exact, review-bot-stamped, unresolved thread (see
+# _FINDING_THREAD_CLASSIFY). The thread is re-read just before acting and
+# left open when the PR head moved, anyone but the review bot commented in
+# it (a person, or another bot such as the fix agent), or it cannot be read
+# completely or resolved. An explanation is posted first, led by a marker
+# so a rerun at the same head never posts it twice; when the explanation
+# cannot be posted the thread stays open. A thread a concurrent run already
+# resolved counts as done.
+#
+# Prints a JSON array of {id, status, url}. Forge errors are reported per
+# thread and never fail the caller.
+forge_reconcile_finding_threads() {
+  local settled="$1" head="$2"
+  local entries listing item id rationale evidence marker verdict status url thread_id fresh body
+
+  entries='[]'
+  _finding_thread_entry() {
+    entries=$(jq -c --arg id "$1" --arg status "$2" --arg url "${3:-}" --arg pr_url "${PR_URL}" \
+      '. + [{id: $id, status: $status, url: (if $url == "" then $pr_url else $url end)}]' <<< "${entries}")
+  }
+
+  if ! listing="$(forge_fetch_finding_threads)" \
+      || ! jq -e 'type == "object" and (.threads | type) == "array"' <<< "${listing}" >/dev/null 2>&1; then
+    echo "::warning::Could not read review threads — threads of resolved findings left open" >&2
+    listing=""
+  fi
+
+  while IFS= read -r item; do
+    [[ -z "${item}" ]] && continue
+    id="$(jq -r '.id' <<< "${item}")"
+    rationale="$(jq -r '.rationale' <<< "${item}")"
+    evidence="$(jq -r '.evidence' <<< "${item}")"
+    if [[ -z "${listing}" ]]; then
+      _finding_thread_entry "${id}" "fetch-failed"
+      continue
+    fi
+    marker="<!-- fullsend:review-resolve finding=${id} head=${head} -->"
+
+    verdict="$(jq -c --arg id "${id}" --arg head "${head}" --arg marker "${marker}" \
+      "${_FINDING_THREAD_CLASSIFY}" <<< "${listing}")"
+    status="$(jq -r '.status' <<< "${verdict}")"
+    url="$(jq -r '.url' <<< "${verdict}")"
+    thread_id="$(jq -r '.thread_id // empty' <<< "${verdict}")"
+    if [[ "${status}" != "ready" ]]; then
+      _finding_thread_entry "${id}" "${status}" "${url}"
+      continue
+    fi
+
+    # Re-read the thread's current state immediately before acting on it.
+    if ! fresh="$(forge_fetch_finding_thread "${thread_id}")" \
+        || ! jq -e 'type == "object" and has("thread")' <<< "${fresh}" >/dev/null 2>&1; then
+      echo "::warning::Could not re-read the review thread of a resolved finding — left open" >&2
+      _finding_thread_entry "${id}" "fetch-failed" "${url}"
+      continue
+    fi
+    verdict="$(jq -c --arg id "${id}" --arg head "${head}" --arg marker "${marker}" \
+      '{complete: true, head_sha: .head_sha, threads: ([.thread] | map(select(. != null)))} | '"${_FINDING_THREAD_CLASSIFY}" \
+      <<< "${fresh}")"
+    status="$(jq -r '.status' <<< "${verdict}")"
+    if [[ "${status}" != "ready" ]]; then
+      _finding_thread_entry "${id}" "${status}" "${url}"
+      continue
+    fi
+
+    if [[ "$(jq -r '.replied' <<< "${verdict}")" != "true" ]]; then
+      body="$(jq -rn --arg marker "${marker}" --arg id "${id}" --arg sha "${head:0:12}" \
+        --arg rationale "${rationale}" --arg evidence "${evidence}" '
+        # Untrusted model text: no HTML comments (a stamp or marker could be
+        # forged), no finding ids, bounded length.
+        # Text-removing steps run first and the "<!--" escape last, so
+        # removing an id cannot join its neighbours into a new "<!--".
+        def clean:
+          gsub("\r\n?"; "\n")
+          | gsub("\\b" + $id + "\\b"; "") | gsub("\\bf_[0-9a-f]{16}\\b"; "")
+          | gsub("<!--"; "&lt;!--")
+          | .[0:1500];
+        $marker + "\n"
+        + "**Resolved by the review agent:** a later review found this finding fixed at commit " + $sha + ".\n\n"
+        + "**Why:** " + ($rationale | clean) + "\n\n"
+        + "**Evidence:** " + ($evidence | clean) + "\n\n"
+        + "_Resolving this thread. Unresolve it if you disagree._"')"
+      if ! forge_reply_finding_thread "${thread_id}" "${body}"; then
+        if fresh="$(forge_fetch_finding_thread "${thread_id}")" \
+            && jq -e '.thread.resolved == true' <<< "${fresh}" >/dev/null 2>&1; then
+          _finding_thread_entry "${id}" "already-resolved" "${url}"
+        else
+          echo "::warning::Could not post the explanation in the review thread of a resolved finding — left open" >&2
+          _finding_thread_entry "${id}" "reply-failed" "${url}"
+        fi
+        continue
+      fi
+    fi
+
+    if forge_resolve_finding_thread "${thread_id}"; then
+      _finding_thread_entry "${id}" "resolved" "${url}"
+    elif fresh="$(forge_fetch_finding_thread "${thread_id}")" \
+        && jq -e '.thread.resolved == true' <<< "${fresh}" >/dev/null 2>&1; then
+      _finding_thread_entry "${id}" "resolved" "${url}"
+    else
+      echo "::warning::Could not resolve the review thread of a resolved finding" >&2
+      _finding_thread_entry "${id}" "resolve-failed" "${url}"
+    fi
+  done < <(jq -c '.[]?' <<< "${settled}")
+
+  printf '%s\n' "${entries}"
 }
 # END bundled: lib/review-ops.lib.sh
 

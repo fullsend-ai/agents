@@ -26,6 +26,9 @@ Check if `/sandbox/workspace/prior-review.txt` exists and is non-empty:
   - `open`: still present, including when this push did not touch the file.
     Keep the finding in `findings` with its id.
   - `resolved_by_change`: the diff fixes it; `evidence` names the change.
+    The post-script posts `rationale` and `evidence` as a reply in the
+    finding's review thread and resolves it, so write them to read well
+    there, without finding ids.
   - `reclassified`: same concern, different severity or category; `rationale`
     says why. Also emit the finding in `findings` with the same id at its new
     severity and category, even when that severity is below the posting

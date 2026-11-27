@@ -182,6 +182,105 @@ forge_resolve_outdated_review_threads() {
   return 0
 }
 
+# --- Finding threads ---
+#
+# Merge-request discussions in the normalized thread shape that
+# forge_reconcile_finding_threads (review-ops.lib.sh) reads; see
+# github-review-ops.lib.sh for the field list. The review bot is the
+# authenticated review-token user, as for human dismissals. System notes are
+# not comments. GitLab returns every note of a discussion, so a thread's
+# comments are always complete.
+
+_GITLAB_FINDING_THREAD_NORM='
+  def norm:
+    if type != "object" or (.id | type) != "string" then null else
+    ([ (.notes // [])[] | select(type == "object" and (.system // false) == false) ]) as $notes
+    | {
+        id,
+        url: (if ($notes[0].id | type) == "number" then $pr_url + "#note_" + ($notes[0].id | tostring) else $pr_url end),
+        resolved: ($notes[0].resolved == true),
+        can_resolve: ($notes[0].resolvable == true),
+        comments_complete: true,
+        comments: [ $notes[]
+                    | ((.author.username // "") | ascii_downcase) as $a
+                    | {body: (.body // ""), review_bot: ($a == $actor), own: ($a == $actor)} ]
+      } end;
+'
+
+_gitlab_review_actor() {
+  _gitlab_api GET "/user" 2>/dev/null | jq -r '.username // empty' 2>/dev/null
+}
+
+_gitlab_mr_head_sha() {
+  _gitlab_api GET "/projects/${REPO_ENCODED}/merge_requests/${PR_NUMBER}" 2>/dev/null \
+    | jq -r '.sha // empty' 2>/dev/null
+}
+
+forge_fetch_finding_threads() {
+  local actor head page batch count all complete
+  actor="$(_gitlab_review_actor)" || return 1
+  [[ -n "${actor}" ]] || return 1
+  head="$(_gitlab_mr_head_sha)" || return 1
+  all='[]'
+  complete=false
+  page=1
+  while [[ "${page}" -le 20 ]]; do
+    batch=$(_gitlab_api GET "/projects/${REPO_ENCODED}/merge_requests/${PR_NUMBER}/discussions?per_page=100&page=${page}" 2>/dev/null) || return 1
+    jq -e 'type == "array"' <<< "${batch}" >/dev/null 2>&1 || return 1
+    all=$(jq -c --argjson acc "${all}" '$acc + .' <<< "${batch}") || return 1
+    count=$(jq 'length' <<< "${batch}")
+    if [[ "${count}" -lt 100 ]]; then
+      complete=true
+      break
+    fi
+    page=$((page + 1))
+  done
+  jq -c --arg pr_url "${PR_URL}" --arg actor "${actor,,}" --arg head "${head}" --argjson complete "${complete}" \
+    "${_GITLAB_FINDING_THREAD_NORM}"'{complete: $complete, head_sha: $head, threads: [ .[] | norm | select(. != null) ]}' \
+    <<< "${all}"
+}
+
+forge_fetch_finding_thread() {
+  local thread_id="$1" actor head response
+  actor="$(_gitlab_review_actor)" || return 1
+  [[ -n "${actor}" ]] || return 1
+  head="$(_gitlab_mr_head_sha)" || return 1
+  if ! response=$(_gitlab_api GET "/projects/${REPO_ENCODED}/merge_requests/${PR_NUMBER}/discussions/${thread_id}" 2>&1); then
+    # A discussion deleted since the first read is gone, not unreadable.
+    if [[ "${response}" == *"error: 404"* ]]; then
+      jq -nc --arg head "${head}" '{head_sha: $head, thread: null}'
+      return 0
+    fi
+    return 1
+  fi
+  jq -c --arg pr_url "${PR_URL}" --arg actor "${actor,,}" --arg head "${head}" \
+    "${_GITLAB_FINDING_THREAD_NORM}"'{head_sha: $head, thread: norm}' <<< "${response}"
+}
+
+forge_reply_finding_thread() {
+  local thread_id="$1" body="$2" line safe=""
+  # GitLab runs a quick action (/close, /label, ...) from any note line that
+  # starts with "/", with the posting token's permissions. The body carries
+  # model text derived from untrusted PR content and keeps its newlines, so a
+  # leading backslash on such a line stops it parsing as a command while the
+  # text still renders as written.
+  while IFS= read -r line || [[ -n "${line}" ]]; do
+    if [[ "${line}" =~ ^[[:space:]]*/ ]]; then
+      line="\\${line}"
+    fi
+    safe+="${line}"$'\n'
+  done <<< "${body}"
+  body="${safe%$'\n'}"
+  _gitlab_api POST "/projects/${REPO_ENCODED}/merge_requests/${PR_NUMBER}/discussions/${thread_id}/notes" \
+    --data-urlencode "body=${body}" > /dev/null 2>&1
+}
+
+forge_resolve_finding_thread() {
+  local thread_id="$1"
+  _gitlab_api PUT "/projects/${REPO_ENCODED}/merge_requests/${PR_NUMBER}/discussions/${thread_id}" \
+    --data-urlencode "resolved=true" > /dev/null 2>&1
+}
+
 # --- Labels ---
 
 forge_add_label() {
