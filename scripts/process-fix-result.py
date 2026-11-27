@@ -37,8 +37,10 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
+import tempfile
 
 try:
     import jsonschema
@@ -368,6 +370,14 @@ _LIVE_REF_ANYWHERE_RE = re.compile(
 _VERIFICATION_HEADING_RE = re.compile(
     rf"^ {{0,3}}###[ \t]+{re.escape(VERIFICATION_HEADING[4:])}[ \t]*(?:#+[ \t]*)?$"
 )
+
+# Include incomplete comments so an ambiguous origin record blocks an update.
+_WORK_ITEM_ORIGIN_RE = re.compile(
+    r"<!--\s*fullsend:work-item\b.*?(?:-->|$)", re.DOTALL | re.IGNORECASE
+)
+# Any work-item comment, however spaced, for stripping from agent text.
+_WORK_ITEM_COMMENT_RE = re.compile(r"<!--\s*fullsend:work-item\b.*?-->", re.DOTALL | re.IGNORECASE)
+_WORK_ITEM_OPENER_RE = re.compile(r"<!--\s*fullsend:work-item\b", re.IGNORECASE)
 
 
 # Markdown code that forges do not treat as live text. Block code (fenced and
@@ -935,6 +945,18 @@ def _managed_parts(current):
     return refs, "\n".join(tail).strip()
 
 
+def _strip_work_item_origin(text):
+    """Remove every fullsend:work-item comment from text, repeating until
+    stable. The record is post-script-owned, so an agent-written copy is
+    dropped; an unclosed opener, which would hide what follows, goes too."""
+    while True:
+        stripped = _WORK_ITEM_COMMENT_RE.sub("", text)
+        stripped = _WORK_ITEM_OPENER_RE.sub("", stripped)
+        if stripped == text:
+            return text
+        text = stripped
+
+
 def _mask_live_text(text, mask_raw_html=False):
     """Mask everything a forge does not render as live text: fenced, indented
     and inline code, and HTML comments (an unclosed one runs to the end). Raw
@@ -1003,6 +1025,14 @@ def managed_sections_exposed(merged, current):
     cannot be proven.
     """
     refs, tail_text = _managed_parts(current)
+    # Never relocate a record from the description or an earlier heading.
+    # If the selected footer cannot preserve every record, leave the body alone.
+    origins = _WORK_ITEM_ORIGIN_RE.findall(_normalize_newlines(current))
+    if (
+        _WORK_ITEM_ORIGIN_RE.findall(tail_text) != origins
+        or _WORK_ITEM_ORIGIN_RE.findall(_normalize_newlines(merged)) != origins
+    ):
+        return False
     if (refs or tail_text) and _has_unclosed_raw_html(_mask_live_text(merged)):
         return False
     # Raw HTML blocks, tags and link titles are literal, so a heading or
@@ -1038,11 +1068,15 @@ def build_pr_body(proposed, current):
     # Trim before sanitizing, and repeat until the text is stable: trimming
     # can turn an indented line (code at the start of the text) into live text,
     # so the keyword removal must run on the final, trimmed form.
+    # The origin record comes out first: a removed comment can join the text
+    # around it into a keyword or a reference, so the whole pipeline repeats
+    # until none of its steps changes the text.
     description = "\n".join(kept)
     while True:
-        description = _strip_closing_keywords(description.strip())
-        if description == description.strip():
+        normalized = _strip_closing_keywords(_strip_work_item_origin(description.strip())).strip()
+        if normalized == description:
             break
+        description = normalized
     if not description:
         return ""
     parts = [description]
@@ -1067,6 +1101,37 @@ def has_quick_action(text):
     so a parsing mistake cannot let a command through.
     """
     return bool(_QUICK_ACTION_RE.search(_normalize_newlines(text)))
+
+
+def scan_public_text(text):
+    """Scan text bound for a public PR/MR description with gitleaks.
+
+    Returns "clean", "found" or "error" ("error" covers a missing scanner).
+    Built-in rules only, as in post-code's scan_public_text: a file source skips
+    .gitleaks.toml discovery, and the private working directory and explicit
+    ignore path prevent .gitleaksignore discovery. No scanner output is kept,
+    since even a failure may echo sensitive input.
+    """
+    binary = os.environ.get("GITLEAKS_BIN") or shutil.which("gitleaks")
+    if not binary:
+        return "error"
+    env = {k: v for k, v in os.environ.items() if k not in ("GITLEAKS_CONFIG", "GITLEAKS_CONFIG_TOML")}
+    try:
+        with tempfile.TemporaryDirectory() as scan_dir:
+            path = os.path.join(scan_dir, "text")
+            with open(path, "w") as f:
+                f.write(text + "\n")
+            result = subprocess.run(
+                [
+                    binary, "detect", "--source", path, "--no-git", "--redact",
+                    "--exit-code", "2", "--ignore-gitleaks-allow",
+                    "--gitleaks-ignore-path", scan_dir,
+                ],
+                cwd=scan_dir, env=env, capture_output=True, check=False,
+            )
+    except OSError:
+        return "error"
+    return {0: "clean", 2: "found"}.get(result.returncode, "error")
 
 
 def _sha256(text):
@@ -1179,15 +1244,27 @@ def apply_pr_metadata(data, repo, pr_number, schema_validated, secret_scan_passe
             print(
                 "::warning::PR body not updated: the proposed Markdown (for example an"
                 " unclosed code fence or HTML comment) could hide the preserved closing"
-                " references or the post-script verification block",
+                " references or verification block, or the origin metadata is ambiguous",
                 file=sys.stderr,
             )
             notes.append(
                 "body not updated (proposed Markdown could hide the preserved"
-                " references or verification block)"
+                " references or verification block, or origin metadata is ambiguous)"
             )
         else:
-            new_body = merged
+            # The normalized description is what gets published, and removing
+            # an origin comment can join text the proposal's scan saw apart.
+            scan = scan_public_text(merged)
+            if scan == "clean":
+                new_body = merged
+            else:
+                reason = "a secret was detected" if scan == "found" else "the scan did not run"
+                print(
+                    f"::warning::PR body not updated: the final description secret scan"
+                    f" did not pass ({reason})",
+                    file=sys.stderr,
+                )
+                notes.append("body not updated (final description secret scan did not pass)")
 
     if new_title is None and new_body is None:
         return notes
