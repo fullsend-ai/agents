@@ -1318,7 +1318,10 @@ forge_reconcile_finding_threads() {
 forge_validate_pr_url
 forge_parse_pr_url
 
-echo "::add-mask::${REVIEW_TOKEN}"
+# ::add-mask:: is GHA-specific; skip elsewhere to avoid printing the token
+if [[ "${GITHUB_ACTIONS:-}" == "true" ]]; then
+  echo "::add-mask::${REVIEW_TOKEN}"
+fi
 
 # Temp file cleanup: accumulate files to remove on exit so later traps
 # don't overwrite earlier ones.

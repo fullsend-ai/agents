@@ -1233,6 +1233,70 @@ run_label_test_stdout "label-actions-percent-adjacent-fragment-reassembly" \
   '{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"LGTM","label_actions":{"reason":"Test.","actions":[{"action":"add","label":"%0%0aA"}]}}' \
   "::warning::Refused label '%250%250aA'"
 
+# --- Token masking (issue #2192) ---
+# ::add-mask:: is a GitHub Actions workflow command. On any other runner
+# the line is printed verbatim, token included, so post-review must emit
+# it only when GITHUB_ACTIONS is "true".
+
+run_review_token_mask_test() {
+  local test_name="$1"
+  local github_actions="$2"
+  local expect_mask="$3"
+  local token="review-token-mask-sentinel-2192"
+
+  local run_dir="${TMPDIR}/run-${test_name}"
+  mkdir -p "${run_dir}/iteration-1/output"
+  echo '{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"LGTM"}' \
+    > "${run_dir}/iteration-1/output/agent-result.json"
+  : > "${GH_LOG}"
+
+  local exit_code=0
+  # shellcheck disable=SC2030,SC2031
+  (
+    cd "${run_dir}"
+    export PATH="${MOCK_BIN}:${PATH}"
+    export REVIEW_TOKEN="${token}"
+    export PR_NUMBER="99"
+    export REPO_FULL_NAME="test-org/test-repo"
+    export PR_URL="https://github.com/test-org/test-repo/pull/99"
+    export FULLSEND_FORGE="github"
+    export REVIEW_FINDING_SEVERITY_THRESHOLD="low"
+    if [[ -n "${github_actions}" ]]; then
+      export GITHUB_ACTIONS="${github_actions}"
+    else
+      unset GITHUB_ACTIONS
+    fi
+    bash "${POST_SCRIPT}"
+  ) > "${TMPDIR}/stdout-${test_name}.log" 2>&1 || exit_code=$?
+
+  if [[ ${exit_code} -ne 0 ]]; then
+    echo "FAIL: ${test_name} — exit code ${exit_code}"
+    cat "${TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if [[ "${expect_mask}" == "true" ]]; then
+    if ! grep -qxF -- "::add-mask::${token}" "${TMPDIR}/stdout-${test_name}.log"; then
+      echo "FAIL: ${test_name} — expected '::add-mask::' line for REVIEW_TOKEN"
+      cat "${TMPDIR}/stdout-${test_name}.log"
+      FAILURES=$((FAILURES + 1))
+      return
+    fi
+  elif grep -qF -- "${token}" "${TMPDIR}/stdout-${test_name}.log"; then
+    echo "FAIL: ${test_name} — REVIEW_TOKEN printed outside GitHub Actions"
+    cat "${TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
+run_review_token_mask_test "review-token-not-printed-without-gha" "" "false"
+run_review_token_mask_test "review-token-not-printed-gha-false" "false" "false"
+run_review_token_mask_test "review-token-masked-on-gha" "true" "true"
+
 # --- Severity filtering integration tests ---
 # These invoke the real post-review.sh with REVIEW_FINDING_SEVERITY_THRESHOLD
 # set to a non-default value, exercising the production severity_rank() and jq
