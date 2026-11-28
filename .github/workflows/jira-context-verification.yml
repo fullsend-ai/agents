@@ -1,0 +1,166 @@
+name: Jira Context Verification
+
+permissions:
+  contents: read
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - test/aisdlc-624-jira-context
+
+concurrency:
+  group: jira-context-verification-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    name: Verify ${{ matrix.issue-type }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      id-token: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - issue-type: story
+            issue-key: RHOAIENG-103574
+            target-repo: opendatahub-io/data-connect-hub
+          - issue-type: task
+            issue-key: RHOAIENG-103762
+            target-repo: opendatahub-io/eval-hub-contrib
+          - issue-type: bug
+            issue-key: RHOAIENG-103039
+            target-repo: opendatahub-io/feast
+          - issue-type: epic
+            issue-key: RHOAIENG-96376
+            target-repo: opendatahub-io/rhoai-mcp
+    steps:
+      - name: Check out agents harness
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Check out target repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          repository: ${{ matrix.target-repo }}
+          path: target-repo
+          persist-credentials: false
+
+      - name: Check out fullsend source
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          repository: fullsend-ai/fullsend
+          ref: main
+          path: .fullsend-source
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version-file: .fullsend-source/go.mod
+          cache-dependency-path: .fullsend-source/go.sum
+
+      - name: Build fullsend
+        run: |
+          make -C .fullsend-source go-build
+          echo "$PWD/.fullsend-source/bin" >> "$GITHUB_PATH"
+          .fullsend-source/bin/fullsend --version
+
+      - name: Install Podman
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y podman
+
+      - name: Configure rootless Podman
+        run: |
+          whoami_user="$(whoami)"
+          grep -q "^${whoami_user}:" /etc/subuid || sudo usermod --add-subuids 100000-165535 --add-subgids 100000-165535 "${whoami_user}"
+          podman system migrate
+
+      - name: Start Podman API service
+        run: |
+          systemctl --user start podman.socket
+          SOCKET_PATH="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/podman/podman.sock"
+          for _i in $(seq 1 30); do
+            podman --url "unix://${SOCKET_PATH}" info >/dev/null 2>&1 && break
+            sleep 1
+          done
+          if ! podman --url "unix://${SOCKET_PATH}" info >/dev/null 2>&1; then
+            echo "::error::Podman socket not ready at ${SOCKET_PATH}"
+            systemctl --user status podman.socket podman.service --no-pager || true
+            journalctl --user -u podman.socket -u podman.service --no-pager -n 40 || true
+            exit 1
+          fi
+
+      - name: Configure OpenShell gateway
+        run: |
+          eval "$(grep -E '^OPENSHELL_(VERSION|SHA)=' .fullsend-source/.github/scripts/openshell-version.sh)"
+          if [ -z "$OPENSHELL_VERSION" ] || [ -z "$OPENSHELL_SHA" ]; then
+            echo "::error::Failed to resolve OpenShell version from fullsend checkout"
+            exit 1
+          fi
+          echo "OPENSHELL_VERSION=${OPENSHELL_VERSION}" >> "$GITHUB_ENV"
+          echo "OPENSHELL_SHA=${OPENSHELL_SHA}" >> "$GITHUB_ENV"
+          mkdir -p "$HOME/.config/openshell"
+          echo "OPENSHELL_BIND_ADDRESS=0.0.0.0" > "$HOME/.config/openshell/gateway.env"
+          cat > "$HOME/.config/openshell/gateway.toml" << EOF
+          [openshell]
+          version = 2
+
+          [openshell.gateway]
+          compute_driver = "podman"
+
+          [openshell.drivers.podman]
+          supervisor_image = "ghcr.io/nvidia/openshell/supervisor:${OPENSHELL_VERSION}"
+          health_check_interval_secs = 10
+          EOF
+
+      - name: Install OpenShell CLI
+        run: .fullsend-source/.github/scripts/install-openshell.sh
+
+      - name: Authenticate to GCP
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          workload_identity_provider: ${{ secrets.E2E_GCP_WIF_PROVIDER }}
+          service_account: ${{ secrets.E2E_GCP_SERVICE_ACCOUNT }}
+
+      - name: Run code agent without post-script
+        env:
+          FULLSEND_WORK_ITEM_URL: ${{ vars.JIRA_BASE_URL }}/browse/${{ matrix.issue-key }}
+          JIRA_BASE_URL: ${{ vars.JIRA_BASE_URL }}
+          FULLSEND_FORGE: github
+          FULLSEND_TRACKER: jira
+          FULLSEND_JIRA_TOKEN: ${{ secrets.FULLSEND_JIRA_TOKEN }}
+          FULLSEND_JIRA_EMAIL: ${{ secrets.FULLSEND_JIRA_EMAIL }}
+          CODE_FORCE: true
+          CODE_JIRA_STARTED_TRANSITION: off
+          CODE_JIRA_PR_READY_TRANSITION: off
+          GH_TOKEN: ${{ github.token }}
+          REPO_FULL_NAME: ${{ matrix.target-repo }}
+          TARGET_REPO_DIR: ${{ github.workspace }}/target-repo
+          ANTHROPIC_VERTEX_PROJECT_ID: ${{ vars.EVALS_VERTEX_PROJECT_ID }}
+          GOOGLE_CLOUD_PROJECT: ${{ secrets.E2E_GCP_PROJECT_ID }}
+          CLOUD_ML_REGION: ${{ vars.EVALS_GCP_REGION }}
+        run: |
+          set -euo pipefail
+          output_dir="${RUNNER_TEMP}/fullsend-output-${{ matrix.issue-type }}"
+          mkdir -p "$output_dir"
+          fullsend run code \
+            --fullsend-dir "$GITHUB_WORKSPACE" \
+            --target-repo "$GITHUB_WORKSPACE/target-repo" \
+            --output-dir "$output_dir" \
+            --no-post-script
+
+      - name: Upload run artifacts
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: jira-context-${{ matrix.issue-type }}
+          path: |
+            ${{ runner.temp }}/fullsend-output-${{ matrix.issue-type }}/
+          retention-days: 30
