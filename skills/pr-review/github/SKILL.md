@@ -225,24 +225,28 @@ gh api graphql -f query='{ repository(owner:"OWNER", name:"REPO") {
 
 GraphQL mutations are blocked by the sandbox proxy.
 
-## Finding-thread permission lookups
+## GitHub permission lookups
 
-The review token can read permission fields on review threads, such as
-`viewerCanResolve`. For a bot token, these lookups are not reliable
-evidence of whether a reply or resolve mutation will succeed. A `false`
-result does not prove that the thread cannot be resolved. Do not call a
-thread unresolvable because of a permission lookup, in the review body
-or anywhere else. The post-script owns thread replies and resolves, and
-the result of the mutation it attempts is authoritative.
-fullsend-ai/agents#2196 tracks making the post-scripts attempt the
-mutation instead of skipping it on a `false` lookup.
+The review token can read permission fields and endpoints, such as
+`viewerCanResolve` on review threads, `viewerPermission`, or collaborator
+permission lookups. For a bot token, these lookups are not reliable
+evidence of whether a GitHub action (a reply, resolve, comment, label
+change, review submission, or any other mutation) will succeed. A
+`false` or insufficient result does not prove the action cannot be done.
+Do not predict or declare any bot action impossible or unauthorized
+because of a permission lookup, in the review body or anywhere else. The
+post-script owns the GitHub mutations, and the result of the mutation it
+attempts is authoritative. For finding threads, fullsend-ai/agents#2196
+tracks making the post-scripts attempt the mutation instead of skipping
+it on a `false` lookup.
 
-- Leave thread outcomes to the post-script. It reports each thread it
-  could not reply in or resolve in the PR summary, with a link to the
-  exact thread and a next step.
-- If you mention a thread outcome, such as one from a prior run's
-  summary, repeat the post-script's reported result. Include the exact
-  thread link and the next step: resolve the thread manually, or rerun
-  `/fs-fix <instructions>`.
-- Do not ask the PR author to post a closing comment. The manual step is
-  to resolve the thread.
+- Leave mutation outcomes to the post-script. It reports each action it
+  could not complete in the PR summary, for example a thread it could
+  not reply in or resolve, with a link to the exact target and a next
+  step.
+- If you mention an outcome, such as one from a prior run's summary,
+  repeat the post-script's reported result. Include the exact link and
+  the next step: complete the action manually (for a thread, resolve it),
+  or rerun `/fs-fix <instructions>`.
+- Do not ask the PR author to post a closing comment. For a thread, the
+  manual step is to resolve it.
