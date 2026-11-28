@@ -204,7 +204,9 @@ CI_WORKFLOW_CHANGED=true
 DEPENDENCY_FILES_CHANGED=go.mod
 TEST_FILE_RATIO=0.20
 AUTHOR_IS_BOT=false
-AUTHOR_IS_FIRST_TIME=false"
+AUTHOR_IS_FIRST_TIME=false
+TIER1_SCORE=2.88
+RISK_FLOOR=2"
 
   run_test "e2e-full-output" "${actual}" "${expected}"
 }
@@ -269,12 +271,72 @@ CI_WORKFLOW_CHANGED=false
 DEPENDENCY_FILES_CHANGED=none
 TEST_FILE_RATIO=0.00
 AUTHOR_IS_BOT=true
-AUTHOR_IS_FIRST_TIME=true"
+AUTHOR_IS_FIRST_TIME=true
+TIER1_SCORE=1.88
+RISK_FLOOR=1"
 
   run_test "e2e-multi-page-pagination" "${actual}" "${expected}"
 }
 
 e2e_pagination_test
+
+# agents#1227: a valid-but-empty file array must fail closed (all UNKNOWN),
+# not report a PR with zero protected/security paths.
+e2e_empty_file_list_test() {
+  local tmpdir
+  tmpdir=$(mktemp -d)
+  trap 'rm -rf "${tmpdir}"' RETURN
+  cat > "${tmpdir}/gh" <<'STUB'
+#!/usr/bin/env bash
+case "$*" in
+  *pulls/7/files*) echo '[]' ;;
+  *) echo "gh stub: unhandled: $*" >&2; exit 1 ;;
+esac
+STUB
+  chmod +x "${tmpdir}/gh"
+  local actual
+  actual=$(PATH="${tmpdir}:${PATH}" PR_NUMBER=7 REPO_FULL_NAME="test-org/test-repo" main 2>/dev/null)
+  run_test "e2e-empty-file-list-fails-closed" "${actual}" "$(emit_unknown)"
+  run_test "e2e-empty-file-list-floor-unknown" "$(echo "${actual}" | tail -1)" "RISK_FLOOR=UNKNOWN"
+}
+
+e2e_empty_file_list_test
+
+# ---------------------------------------------------------------------------
+# Tier 1 composite + floor (the SKILL.md table, computed by the script)
+# ---------------------------------------------------------------------------
+
+# Anchoring example 1 from SKILL.md: typo fix in README, 1 file, 2 lines,
+# no issue → tier 1 ≈ 1.1. Docs-only, so TEST_FILE_RATIO 0.00 is neutral.
+#   size 1, protected 1, security 1, ci 1, deps 1, tests 1, bot 2, first 1 = 9/8
+run_test "tier1-score-readme-typo" \
+  "$(score_tier1 1 2 small 0 0 false none 0.00 false false false)" "1.12"
+# Same change with a source file: 0.00 test ratio now scores 5 → 13/8
+run_test "tier1-score-source-no-tests" \
+  "$(score_tier1 1 2 small 0 0 false none 0.00 false false true)" "1.62"
+# Every dimension at its worst: 5+5+5+4+5+5 plus bot=false (2) and
+# first-time=true (4) = 35/8. Author signals cap below 5 by design.
+run_test "tier1-score-max" \
+  "$(score_tier1 60 5000 large 2 4 true go.mod,package.json 0.00 false true true)" "4.38"
+# UNKNOWN dimensions are skipped, not counted as 0
+run_test "tier1-score-skips-unknown" \
+  "$(score_tier1 UNKNOWN UNKNOWN UNKNOWN 0 0 false none UNKNOWN UNKNOWN UNKNOWN true)" "1.00"
+run_test "tier1-score-all-unknown" \
+  "$(score_tier1 UNKNOWN UNKNOWN UNKNOWN UNKNOWN UNKNOWN UNKNOWN UNKNOWN UNKNOWN UNKNOWN UNKNOWN true)" "UNKNOWN"
+# Change size is the max of files/lines/blast, not their average
+run_test "tier1-size-max-of-three" \
+  "$(_score_size 2 30 large)" "5"
+run_test "tier1-size-lines-dominate" \
+  "$(_score_size 3 900 small)" "4"
+
+run_test "has-source-docs-only" \
+  "$(has_source_files "README.md" "docs/guide.md" ".github/workflows/ci.yaml")" "false"
+run_test "has-source-mixed" \
+  "$(has_source_files "README.md" "src/main.go")" "true"
+
+run_test "risk-floor-security" "$(risk_floor 1)" "2"
+run_test "risk-floor-clean" "$(risk_floor 0)" "1"
+run_test "risk-floor-unknown" "$(risk_floor UNKNOWN)" "1"
 
 # ---------------------------------------------------------------------------
 # PROTECTED_PATHS drift: hardcoded fallback must match harness/review.yaml
