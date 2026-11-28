@@ -1,0 +1,6 @@
+---
+validation_loop:
+  schema: ''
+overlays:
+  - validation_loop:
+      script: scripts/validate-output-schema.sh

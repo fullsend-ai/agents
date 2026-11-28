@@ -1,0 +1,4 @@
+---
+validation_loop:
+  script: scripts/validate-output-schema.sh
+  schema: /nonexistent/absolute/path/schema.json

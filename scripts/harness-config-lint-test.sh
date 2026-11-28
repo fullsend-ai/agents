@@ -1,0 +1,1158 @@
+#!/usr/bin/env bash
+# shellcheck disable=SC2317  # test functions are reachable via run_test
+# harness-config-lint-test.sh — Test harness config structural invariants.
+#
+# Validates that all harness/*.yaml files follow consistent patterns:
+# - Top-level validation_loop with a script key must have a schema key
+# - Per-location (forge/overlay) validation_loop: absent/null/empty schema inherits from top-level
+# - No env.runner block contains FULLSEND_OUTPUT_SCHEMA
+# - Each referenced schema file exists and is valid JSON
+#
+# Run from the repo root:
+#   bash scripts/harness-config-lint-test.sh
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+HARNESS_DIR="${HARNESS_DIR:-${REPO_ROOT}/harness}"
+FAILURES=0
+
+# Create root temp directory for all fixture tests with automatic cleanup on EXIT
+FIXTURE_ROOT_TEMP=""
+FIXTURE_COUNTER=0
+setup_fixture_cleanup() {
+  if [[ -z "${FIXTURE_ROOT_TEMP}" ]]; then
+    FIXTURE_ROOT_TEMP="$(mktemp -d)" || {
+      echo "ERROR: Failed to create root temp directory for fixtures" >&2
+      exit 1
+    }
+    trap cleanup_fixture_temp EXIT
+  fi
+}
+
+cleanup_fixture_temp() {
+  if [[ -n "${FIXTURE_ROOT_TEMP}" && -d "${FIXTURE_ROOT_TEMP}" ]]; then
+    rm -rf "${FIXTURE_ROOT_TEMP}"
+  fi
+}
+
+# Check for required tools at startup
+if ! command -v yq &>/dev/null; then
+  echo "ERROR: yq (mikefarah/yq) is required but not found in PATH" >&2
+  exit 1
+fi
+if ! command -v jq &>/dev/null; then
+  echo "ERROR: jq is required but not found in PATH" >&2
+  exit 1
+fi
+
+# Verify yq is the mikefarah version (not the python kiss lyuk version)
+YQ_VERSION=$(yq --version 2>&1)
+if ! echo "${YQ_VERSION}" | grep -q "mikefarah\|yq version 4"; then
+  echo "ERROR: yq must be mikefarah version (yq v4+), got: ${YQ_VERSION}" >&2
+  exit 1
+fi
+
+run_test() {
+  local test_name="$1"
+  shift
+  local output
+  local exit_code=0
+  output="$("$@" 2>&1)" || exit_code=$?
+
+  if [[ ${exit_code} -eq 0 ]]; then
+    echo "PASS: ${test_name}"
+  else
+    echo "FAIL: ${test_name}"
+    if [[ -n "${output}" ]]; then
+      echo "  ${output}"
+    fi
+    FAILURES=$((FAILURES + 1))
+  fi
+}
+
+# Helper: check validation_loop at a given path
+# Top-level: require schema if script is present
+# Per-location (forge/overlay): absent/null/empty schema inherits from top-level (which must be non-empty)
+check_validation_loop_at_path() {
+  local harness="$1"
+  local path="$2"
+  local location="${3:-.}"
+  local top_level_script="${4:-}"
+  local harness_name
+  harness_name="$(basename "${harness}")"
+
+  local selector
+  if [[ "${path}" == "." ]]; then
+    selector="has(\"validation_loop\")"
+  else
+    selector="${path} | has(\"validation_loop\")"
+  fi
+
+  local has_validation_loop
+  has_validation_loop="$(yq "${selector}" "${harness}")" || {
+    echo "${harness_name}: yq failed to check validation_loop at ${location}"
+    return 1
+  }
+  if [[ "${has_validation_loop}" != "true" ]]; then
+    return 0
+  fi
+
+  local has_script
+  if [[ "${path}" == "." ]]; then
+    has_script="$(yq ".validation_loop | has(\"script\")" "${harness}")" || {
+      echo "${harness_name}: yq failed to check script at ${location}"
+      return 1
+    }
+  else
+    has_script="$(yq "${path}.validation_loop | has(\"script\")" "${harness}")" || {
+      echo "${harness_name}: yq failed to check script at ${location}"
+      return 1
+    }
+  fi
+
+  if [[ "${has_script}" != "true" ]]; then
+    return 0
+  fi
+
+  # For per-location blocks, allow inheritance only when applicable inherited schema exists
+  if [[ "${path}" != "." ]]; then
+    local per_location_script
+    per_location_script="$(yq "${path}.validation_loop.script" "${harness}")" || {
+      echo "${harness_name}: yq failed to extract script at ${location}"
+      return 1
+    }
+    # Check YAML type of per-location schema to distinguish null from string "null"
+    local per_location_type_selector
+    per_location_type_selector="${path}.validation_loop.schema | type"
+    local per_location_type
+    per_location_type="$(yq "${per_location_type_selector}" "${harness}")" || {
+      echo "${harness_name}: yq failed to check schema type at ${location}"
+      return 1
+    }
+    # Get per-location schema value for empty string check
+    local per_location_value
+    per_location_value="$(yq "${path}.validation_loop.schema" "${harness}")" || {
+      echo "${harness_name}: yq failed to extract per-location schema at ${location}"
+      return 1
+    }
+
+    # Allow inheritance only when schema is YAML null or empty string AND there is a usable top-level schema
+    # Forge and overlays are mutually exclusive (validateOverlays). Each merges with top-level (mergeValidationLoop).
+    # Overlay-to-overlay inheritance is not modeled (stricter repo policy).
+    if [[ "${per_location_type}" == *"null"* && "${per_location_type}" != *"str"* ]] || [[ -z "${per_location_value}" ]]; then
+      # Check if top-level schema exists AND is usable (non-empty, non-null)
+      local top_level_has_schema
+      top_level_has_schema="$(yq '.validation_loop | has("schema")' "${harness}")" || {
+        echo "${harness_name}: yq failed to check top-level schema"
+        return 1
+      }
+      if [[ "${top_level_has_schema}" == "true" ]]; then
+        # Check type of top-level schema to distinguish null from string "null"
+        local top_level_type_selector
+        top_level_type_selector=".validation_loop.schema | type"
+        local top_level_type
+        top_level_type="$(yq "${top_level_type_selector}" "${harness}")" || {
+          echo "${harness_name}: yq failed to check top-level schema type"
+          return 1
+        }
+        # Top-level schema must be non-null and non-empty (can be string "null" but not empty string)
+        if [[ "${top_level_type}" == *"null"* && "${top_level_type}" != *"str"* ]]; then
+          # YAML null - invalid (repo policy, not engine requirement)
+          echo "${harness_name}: ${location} validation_loop has script but schema is null (and top-level schema is also null)"
+          return 1
+        fi
+        # Check for empty string
+        local top_level_schema
+        top_level_schema="$(yq '.validation_loop.schema' "${harness}")" || {
+          echo "${harness_name}: yq failed to extract top-level schema value"
+          return 1
+        }
+        if [[ -z "${top_level_schema}" ]]; then
+          # Empty string - invalid (repo policy, not engine requirement)
+          echo "${harness_name}: ${location} validation_loop has script but schema is null (and top-level schema is also empty)"
+          return 1
+        fi
+        # Top-level schema is valid (non-null, non-empty)
+        return 0
+      else
+        echo "${harness_name}: ${location} validation_loop has script but no schema (and no top-level schema to inherit)"
+        return 1
+      fi
+    fi
+    # For same-script inheritance, schema was either not null/empty or has valid top-level schema
+    # If we reach here with same script, inheritance is valid
+    if [[ -n "${top_level_script}" && "${per_location_script}" == "${top_level_script}" ]]; then
+      return 0
+    fi
+  fi
+
+  # Use helper to validate schema
+  validate_schema_value "${harness}" "${path}" "${location}" || return 1
+  return 0
+}
+
+# Helper: iterate over forge and overlay validation_loop locations
+# Used to avoid duplication in test_validation_loop_schema and test_no_hardcoded_schema and test_schema_files_exist_and_valid
+for_each_forge_and_overlay_location() {
+  local harness="$1"
+  local callback="$2"
+  shift 2
+  local harness_name
+  harness_name="$(basename "${harness}")"
+  local rc=0
+
+  # Iterate forge-specific locations
+  local has_forge
+  has_forge="$(yq 'has("forge")' "${harness}")" || {
+    echo "${harness_name}: yq failed to check forge"
+    return 1
+  }
+  if [[ "${has_forge}" == "true" ]]; then
+    local platforms
+    platforms="$(yq '.forge | keys | .[]' "${harness}")" || {
+      echo "${harness_name}: yq failed to get forge keys"
+      return 1
+    }
+    while IFS= read -r platform; do
+      [[ -z "${platform}" ]] && continue
+      # Validate forge key is alphanumeric/dash to prevent yq selector injection
+      if ! [[ "${platform}" =~ ^[a-zA-Z0-9_-]+$ ]]; then
+        echo "${harness_name}: forge key contains invalid characters: ${platform}"
+        return 1
+      fi
+      "${callback}" "${harness}" ".forge.${platform}" "forge.${platform}" "$@" || rc=1
+    done <<< "${platforms}"
+  fi
+
+  # Iterate overlay locations
+  local overlay_count
+  overlay_count="$(yq '.overlays | length' "${harness}")" || {
+    echo "${harness_name}: yq failed to get overlay count"
+    return 1
+  }
+  if [[ ${overlay_count} -gt 0 ]]; then
+    local i
+    for ((i=0; i<overlay_count; i++)); do
+      "${callback}" "${harness}" ".overlays[${i}]" "overlays[${i}]" "$@" || rc=1
+    done
+  fi
+
+  return "${rc}"
+}
+
+# Helper: validate schema value (has key, non-null type, non-empty string)
+# Returns 0 if valid, 1 if invalid (and prints error message)
+validate_schema_value() {
+  local harness="$1"
+  local path="$2"
+  local location="$3"
+  local harness_name
+  harness_name="$(basename "${harness}")"
+
+  local has_schema_selector
+  if [[ "${path}" == "." ]]; then
+    has_schema_selector=".validation_loop | has(\"schema\")"
+  else
+    has_schema_selector="${path}.validation_loop | has(\"schema\")"
+  fi
+
+  local has_schema
+  has_schema="$(yq "${has_schema_selector}" "${harness}")" || {
+    echo "${harness_name}: yq failed to check schema at ${location}"
+    return 1
+  }
+  if [[ "${has_schema}" != "true" ]]; then
+    echo "${harness_name}: ${location} validation_loop has script but no schema"
+    return 1
+  fi
+
+  local schema_type_selector
+  if [[ "${path}" == "." ]]; then
+    schema_type_selector=".validation_loop.schema | type"
+  else
+    schema_type_selector="${path}.validation_loop.schema | type"
+  fi
+  local schema_type
+  schema_type="$(yq "${schema_type_selector}" "${harness}")" || {
+    echo "${harness_name}: yq failed to check schema type at ${location}"
+    return 1
+  }
+
+  if [[ "${schema_type}" == *"null"* && "${schema_type}" != *"str"* ]]; then
+    echo "${harness_name}: ${location} validation_loop.schema is null"
+    return 1
+  fi
+
+  local schema_value
+  if [[ "${path}" == "." ]]; then
+    schema_value="$(yq ".validation_loop.schema" "${harness}")" || {
+      echo "${harness_name}: yq failed to extract schema at ${location}"
+      return 1
+    }
+  else
+    schema_value="$(yq "${path}.validation_loop.schema" "${harness}")" || {
+      echo "${harness_name}: yq failed to extract schema at ${location}"
+      return 1
+    }
+  fi
+
+  if [[ -z "${schema_value}" ]]; then
+    echo "${harness_name}: ${location} validation_loop.schema is empty"
+    return 1
+  fi
+
+  return 0
+}
+
+# Helper: check that a YAML file contains exactly one document
+check_single_document() {
+  local harness="$1"
+  local harness_name
+  harness_name="$(basename "${harness}")"
+
+  local doc_count
+  doc_count="$(yq ea '[.] | length' "${harness}")" || {
+    echo "${harness_name}: yq failed to count documents"
+    return 1
+  }
+
+  if [[ ${doc_count} -ne 1 ]]; then
+    echo "${harness_name}: harness must contain exactly one YAML document, found ${doc_count}"
+    return 1
+  fi
+
+  return 0
+}
+
+# Top-level callback functions for forge/overlay iteration
+_check_validation_loop_callback() {
+  local h="$1" p="$2" loc="$3" top_script="$4"
+  check_validation_loop_at_path "${h}" "${p}" "${loc}" "${top_script}" || return 1
+}
+
+_check_hardcoded_callback() {
+  local h="$1" p="$2" loc="$3"
+  local has_env_runner
+  has_env_runner="$(yq "${p}.env.runner | has(\"FULLSEND_OUTPUT_SCHEMA\")" "${h}")" || {
+    echo "$(basename "${h}"): yq failed to check ${loc}.env.runner"
+    return 1
+  }
+  if [[ "${has_env_runner}" == "true" ]]; then
+    echo "$(basename "${h}"): ${loc}.env.runner contains hardcoded FULLSEND_OUTPUT_SCHEMA"
+    return 1
+  fi
+
+  local has_runner_env
+  has_runner_env="$(yq "${p}.runner_env | has(\"FULLSEND_OUTPUT_SCHEMA\")" "${h}")" || {
+    echo "$(basename "${h}"): yq failed to check ${loc}.runner_env"
+    return 1
+  }
+  if [[ "${has_runner_env}" == "true" ]]; then
+    echo "$(basename "${h}"): ${loc}.runner_env (deprecated) contains hardcoded FULLSEND_OUTPUT_SCHEMA"
+    return 1
+  fi
+}
+
+_check_schema_callback() {
+  local h="$1" p="$2" loc="$3" root="$4" is_harness_dir="${5:-false}"
+  check_schema_files_at_path "${h}" "${p}" "${loc}" "${root}" "${is_harness_dir}" || return 1
+}
+
+# Helper: check schema file existence at a given validation_loop path
+# For harness/ files (published as URL bases): Applies validateBaseRelPath rules
+#   - Reject absolute paths (must be relative for URL-base consumption)
+#   - Reject any .. segment (no path traversal, even internal normalization)
+#   - Accept relative paths without .. (simple relative paths only)
+# For examples/*/harness files: Can use looser ResolveRelativeTo rules
+#   - Allow some .. traversal for local resolution (but still reject escaping root)
+# Resolves schema paths relative to the provided resolve_root
+check_schema_files_at_path() {
+  local harness="$1"
+  local path="$2"
+  local location="${3:-.}"
+  local resolve_root="$4"
+  local is_harness_dir="${5:-false}"  # Flag: true if file is in HARNESS_DIR
+  local harness_name
+  harness_name="$(basename "${harness}")"
+
+  local has_validation_loop_selector
+  if [[ "${path}" == "." ]]; then
+    has_validation_loop_selector="has(\"validation_loop\")"
+  else
+    has_validation_loop_selector="${path} | has(\"validation_loop\")"
+  fi
+
+  local has_validation_loop
+  has_validation_loop="$(yq "${has_validation_loop_selector}" "${harness}")" || {
+    echo "${harness_name}: yq failed to check validation_loop at ${location}"
+    return 1
+  }
+  if [[ "${has_validation_loop}" != "true" ]]; then
+    return 0
+  fi
+
+  local has_schema_selector
+  if [[ "${path}" == "." ]]; then
+    has_schema_selector=".validation_loop | has(\"schema\")"
+  else
+    has_schema_selector="${path}.validation_loop | has(\"schema\")"
+  fi
+
+  local has_schema
+  has_schema="$(yq "${has_schema_selector}" "${harness}")" || {
+    echo "${harness_name}: yq failed to check schema at ${location}"
+    return 1
+  }
+  if [[ "${has_schema}" != "true" ]]; then
+    return 0
+  fi
+
+  local schema_selector
+  if [[ "${path}" == "." ]]; then
+    schema_selector=".validation_loop.schema"
+  else
+    schema_selector="${path}.validation_loop.schema"
+  fi
+
+  local schema_path
+  schema_path="$(yq "${schema_selector}" "${harness}")" || {
+    echo "${harness_name}: yq failed to extract schema path at ${location}"
+    return 1
+  }
+
+  # Check YAML type to distinguish YAML null from literal string "null"
+  local type_selector
+  if [[ "${path}" == "." ]]; then
+    type_selector=".validation_loop.schema | type"
+  else
+    type_selector="${path}.validation_loop.schema | type"
+  fi
+  local schema_type
+  schema_type="$(yq "${type_selector}" "${harness}")" || {
+    echo "${harness_name}: yq failed to check schema type at ${location}"
+    return 1
+  }
+
+  # Skip if schema is YAML null (inherited schema will be checked separately)
+  # Type output may contain tags like "!!null", so check for null substring
+  # But don't skip literal string "null" (which has type "!!str") - it's a file path
+  if [[ "${schema_type}" == *"null"* && "${schema_type}" != *"str"* ]]; then
+    return 0
+  fi
+
+  # Also skip empty string (inherited schema will be checked separately)
+  if [[ -z "${schema_path}" ]]; then
+    return 0
+  fi
+
+  # For harness/ files (published as URL bases): Apply stricter validateBaseRelPath rules
+  if [[ "${is_harness_dir}" == "true" ]]; then
+    # Reject ${VAR} schema paths in published harness/ files (consumers fetch literal ${...} URL)
+    if [[ "${schema_path}" == *\$\{* ]]; then
+      echo "${harness_name}: ${location} schema path cannot contain \${VAR} (not allowed in published harness/): ${schema_path}"
+      return 1
+    fi
+    # Rule 1: Reject absolute paths (must be relative for URL-base consumption)
+    if [[ "${schema_path}" == /* ]]; then
+      echo "${harness_name}: ${location} schema path must be relative (not absolute): ${schema_path}"
+      return 1
+    fi
+    # Rule 2: Reject any .. segment (no path traversal, enforces flat structure)
+    if [[ "${schema_path}" =~ (^|/)\.\.(/|$) ]]; then
+      echo "${harness_name}: ${location} schema path contains .. traversal (not allowed): ${schema_path}"
+      return 1
+    fi
+  else
+    # For examples/ files: Skip ${VAR} schema paths - these are runtime variables and cannot be validated at lint time
+    if [[ "${schema_path}" == *\$\{* ]]; then
+      return 0
+    fi
+  fi
+
+  # Resolve relative to the provided root (matching engine's ResolveRelativeTo)
+  # If no root provided, fall back to dirname(dirname(harness)) for backwards compatibility
+  local resolve_dir="${resolve_root}"
+  if [[ -z "${resolve_dir}" ]]; then
+    resolve_dir="$(dirname "$(dirname "${harness}")")"
+  fi
+
+  # For examples/*/harness files: Reject relative paths that escape the bundle root directory via .. components
+  # (engine's ResolveRelativeTo enforces containment for relative paths)
+  # This check is redundant for harness/ files (already rejected .. above) but needed for examples files
+  if [[ "${is_harness_dir}" != "true" ]] && [[ "${schema_path}" != /* ]] && [[ "${schema_path}" =~ (^|/)\.\.(/|$) ]]; then
+    # Resolve the path and check containment using Python for portability
+    # (realpath -s is GNU-only and fails on macOS)
+    local normalized_path
+    normalized_path="$(cd "${resolve_dir}" 2>/dev/null && python3 -I -c "import os, sys; print(os.path.abspath(os.path.normpath(sys.argv[1])))" "${schema_path}" 2>/dev/null || echo "")"
+    local resolve_root_real
+    resolve_root_real="$(cd "${resolve_dir}" 2>/dev/null && python3 -I -c "import os; print(os.path.abspath(os.getcwd()))" 2>/dev/null || echo "")"
+
+    # Enforce directory boundary: normalized path must start with resolve_root_real/ (with trailing slash)
+    # This prevents sibling directories with shared prefix (e.g., /bundle/example vs /bundle/example-other) from passing
+    if [[ -z "${normalized_path}" ]] || [[ -z "${resolve_root_real}" ]] || ! [[ "${normalized_path}" == "${resolve_root_real}"/* ]]; then
+      echo "${harness_name}: ${location} schema path escapes bundle root via ..: ${schema_path}"
+      return 1
+    fi
+  fi
+  local full_schema_path
+  # For examples/*/harness files, preserve absolute paths
+  # For harness/ files, all paths are relative (enforced above)
+  if [[ "${schema_path}" == /* ]]; then
+    full_schema_path="${schema_path}"
+  else
+    full_schema_path="${resolve_dir}/${schema_path}"
+  fi
+
+  if [[ ! -f "${full_schema_path}" ]]; then
+    echo "${harness_name}: ${location} schema file not found: ${schema_path}"
+    return 1
+  fi
+
+  if ! jq -s -e 'length == 1' "${full_schema_path}" >/dev/null; then
+    echo "${harness_name}: ${location} schema file is not valid JSON: ${schema_path}"
+    return 1
+  fi
+
+  return 0
+}
+
+# Test 1: Every validation_loop with script must have schema
+# Optional parameter: ALLOW_EXAMPLES_ONLY=1 to skip HARNESS_DIR requirement (for fixture tests)
+test_validation_loop_schema() {
+  local found_error=0
+  local harness_count=0
+  local allow_examples_only="${ALLOW_EXAMPLES_ONLY:-0}"
+  for harness in "${HARNESS_DIR}"/*.yaml; do
+    [[ -f "${harness}" ]] || continue
+    harness_count=$((harness_count + 1))
+    local harness_name
+    harness_name="$(basename "${harness}")"
+
+    # Reject multi-document YAML files
+    check_single_document "${harness}" || found_error=1
+
+    # Check top-level validation_loop
+    check_validation_loop_at_path "${harness}" "." "top-level" || found_error=1
+
+    # Extract top-level script for comparison with per-location blocks
+    local top_level_script=""
+    local has_top_level_validation_loop
+    has_top_level_validation_loop="$(yq 'has("validation_loop")' "${harness}")" || {
+      echo "${harness_name}: yq failed to check has validation_loop"
+      found_error=1
+      continue
+    }
+    if [[ "${has_top_level_validation_loop}" == "true" ]]; then
+      local has_top_level_script
+      has_top_level_script="$(yq '.validation_loop | has("script")' "${harness}")" || {
+        echo "${harness_name}: yq failed to check top-level script"
+        found_error=1
+        continue
+      }
+      if [[ "${has_top_level_script}" == "true" ]]; then
+        top_level_script="$(yq '.validation_loop.script' "${harness}")" || {
+          echo "${harness_name}: yq failed to extract top-level script"
+          found_error=1
+          continue
+        }
+      fi
+    fi
+
+    # Check forge and overlay validation_loops via callback
+    for_each_forge_and_overlay_location "${harness}" _check_validation_loop_callback "${top_level_script}" || found_error=1
+  done
+
+  # Also check examples (but don't require them)
+  for harness in "${REPO_ROOT}"/examples/*/harness/*.yaml; do
+    [[ -f "${harness}" ]] || continue
+    local harness_name
+    harness_name="$(basename "${harness}")"
+
+    check_single_document "${harness}" || found_error=1
+    check_validation_loop_at_path "${harness}" "." "top-level" "is_harness_dir=false" || found_error=1
+
+    local top_level_script=""
+    local has_top_level_validation_loop
+    has_top_level_validation_loop="$(yq 'has("validation_loop")' "${harness}")" || {
+      echo "${harness_name}: yq failed to check has validation_loop"
+      found_error=1
+      continue
+    }
+    if [[ "${has_top_level_validation_loop}" == "true" ]]; then
+      local has_top_level_script
+      has_top_level_script="$(yq '.validation_loop | has("script")' "${harness}")" || {
+        echo "${harness_name}: yq failed to check top-level script"
+        found_error=1
+        continue
+      }
+      if [[ "${has_top_level_script}" == "true" ]]; then
+        local top_level_schema
+        top_level_schema="$(yq '.validation_loop.schema' "${harness}")" || {
+          echo "${harness_name}: yq failed to get top-level schema"
+          found_error=1
+          continue
+        }
+        if [[ -z "${top_level_schema}" ]] || [[ "${top_level_schema}" == "null" ]]; then
+          echo "${harness_name}: top-level validation_loop has script but no schema"
+          found_error=1
+        else
+          top_level_script="${top_level_schema}"
+        fi
+      fi
+    fi
+    for_each_forge_and_overlay_location "${harness}" _check_validation_loop_callback "${top_level_script}" "is_harness_dir=false" || found_error=1
+  done
+
+  if [[ ${harness_count} -eq 0 ]]; then
+    if [[ ${allow_examples_only} -eq 0 ]]; then
+      echo "no harness files found in ${HARNESS_DIR}"
+      return 1
+    fi
+  fi
+  if [[ ${found_error} -eq 0 ]]; then
+    return 0
+  else
+    return 1
+  fi
+}
+
+# Test 2: No env.runner or runner_env contains FULLSEND_OUTPUT_SCHEMA
+# Optional parameter: ALLOW_EXAMPLES_ONLY=1 to skip HARNESS_DIR requirement (for fixture tests)
+test_no_hardcoded_schema() {
+  local found_hardcoded=0
+  local harness_count=0
+  local allow_examples_only="${ALLOW_EXAMPLES_ONLY:-0}"
+  for harness in "${HARNESS_DIR}"/*.yaml; do
+    [[ -f "${harness}" ]] || continue
+    harness_count=$((harness_count + 1))
+    local harness_name
+    harness_name="$(basename "${harness}")"
+
+    # Reject multi-document YAML files
+    check_single_document "${harness}" || found_hardcoded=1
+
+    local has_top_schema
+    has_top_schema="$(yq '.env.runner | has("FULLSEND_OUTPUT_SCHEMA")' "${harness}")" || {
+      echo "${harness_name}: yq failed to check env.runner"
+      found_hardcoded=1
+      continue
+    }
+    if [[ "${has_top_schema}" == "true" ]]; then
+      echo "${harness_name}: env.runner contains hardcoded FULLSEND_OUTPUT_SCHEMA"
+      found_hardcoded=1
+    fi
+
+    local has_top_runner_env
+    has_top_runner_env="$(yq '.runner_env | has("FULLSEND_OUTPUT_SCHEMA")' "${harness}")" || {
+      echo "${harness_name}: yq failed to check runner_env"
+      found_hardcoded=1
+      continue
+    }
+    if [[ "${has_top_runner_env}" == "true" ]]; then
+      echo "${harness_name}: runner_env (deprecated) contains hardcoded FULLSEND_OUTPUT_SCHEMA"
+      found_hardcoded=1
+    fi
+
+    # Check forge and overlay for hardcoded schema via callback
+    for_each_forge_and_overlay_location "${harness}" _check_hardcoded_callback || found_hardcoded=1
+  done
+
+  # Also check examples (but don't require them)
+  for harness in "${REPO_ROOT}"/examples/*/harness/*.yaml; do
+    [[ -f "${harness}" ]] || continue
+    local harness_name
+    harness_name="$(basename "${harness}")"
+
+    check_single_document "${harness}" || found_hardcoded=1
+
+    local has_top_schema
+    has_top_schema="$(yq '.env.runner | has("FULLSEND_OUTPUT_SCHEMA")' "${harness}")" || {
+      echo "${harness_name}: yq failed to check env.runner"
+      found_hardcoded=1
+      continue
+    }
+    if [[ "${has_top_schema}" == "true" ]]; then
+      echo "${harness_name}: env.runner contains hardcoded FULLSEND_OUTPUT_SCHEMA"
+      found_hardcoded=1
+    fi
+
+    local has_top_runner_env
+    has_top_runner_env="$(yq '.runner_env | has("FULLSEND_OUTPUT_SCHEMA")' "${harness}")" || {
+      echo "${harness_name}: yq failed to check runner_env"
+      found_hardcoded=1
+      continue
+    }
+    if [[ "${has_top_runner_env}" == "true" ]]; then
+      echo "${harness_name}: runner_env (deprecated) contains hardcoded FULLSEND_OUTPUT_SCHEMA"
+      found_hardcoded=1
+    fi
+
+    for_each_forge_and_overlay_location "${harness}" _check_hardcoded_callback || found_hardcoded=1
+  done
+
+  if [[ ${harness_count} -eq 0 ]]; then
+    if [[ ${allow_examples_only} -eq 0 ]]; then
+      echo "no harness files found in ${HARNESS_DIR}"
+      return 1
+    fi
+  fi
+
+  if [[ ${found_hardcoded} -eq 0 ]]; then
+    return 0
+  else
+    return 1
+  fi
+}
+
+# Test 3: All referenced schemas exist and are valid JSON
+# Optional parameter: ALLOW_EXAMPLES_ONLY=1 to skip HARNESS_DIR requirement (for fixture tests)
+test_schema_files_exist_and_valid() {
+  local found_error=0
+  local harness_count=0
+  local allow_examples_only="${ALLOW_EXAMPLES_ONLY:-0}"
+
+  # Process harness/ with REPO_ROOT as resolve root
+  # Apply stricter validateBaseRelPath rules (is_harness_dir=true)
+  for harness in "${HARNESS_DIR}"/*.yaml; do
+    [[ -f "${harness}" ]] || continue
+    harness_count=$((harness_count + 1))
+    local harness_name
+    harness_name="$(basename "${harness}")"
+
+    # Reject multi-document YAML files
+    check_single_document "${harness}" || found_error=1
+
+    # Check top-level schema (with validateBaseRelPath enforcement)
+    _check_schema_callback "${harness}" "." "top-level" "${REPO_ROOT}" "true" || found_error=1
+
+    # Check forge and overlay schemas via callback (with validateBaseRelPath enforcement)
+    for_each_forge_and_overlay_location "${harness}" _check_schema_callback "${REPO_ROOT}" "true" || found_error=1
+  done
+
+  # Process examples/*/harness/ with dirname(dirname(harness)) as resolve root
+  # Use looser ResolveRelativeTo rules (is_harness_dir=false)
+  for harness in "${REPO_ROOT}"/examples/*/harness/*.yaml; do
+    [[ -f "${harness}" ]] || continue
+    local harness_name
+    harness_name="$(basename "${harness}")"
+    local resolve_root
+    resolve_root="$(dirname "$(dirname "${harness}")")"
+
+    # Reject multi-document YAML files
+    check_single_document "${harness}" || found_error=1
+
+    # Check top-level schema (with looser rules)
+    _check_schema_callback "${harness}" "." "top-level" "${resolve_root}" "false" || found_error=1
+
+    # Check forge and overlay schemas via callback (with looser rules)
+    for_each_forge_and_overlay_location "${harness}" _check_schema_callback "${resolve_root}" "false" || found_error=1
+  done
+
+  if [[ ${harness_count} -eq 0 ]]; then
+    if [[ ${allow_examples_only} -eq 0 ]]; then
+      echo "no harness files found in ${HARNESS_DIR}"
+      return 1
+    fi
+  fi
+
+  if [[ ${found_error} -eq 0 ]]; then
+    return 0
+  else
+    return 1
+  fi
+}
+
+# Test 4: Verify negative fixtures fail (prove the checks can detect errors)
+test_negative_fixtures() {
+  setup_fixture_cleanup
+  local found_error=0
+  local fixtures_dir="${SCRIPT_DIR}/test-fixtures/harness-config-bad"
+
+  if [[ ! -d "${fixtures_dir}" ]]; then
+    echo "fixtures directory not found: ${fixtures_dir}"
+    return 1
+  fi
+
+  local expected_failures=(
+    "script-no-schema.yaml:test_validation_loop_schema:script-no-schema\.yaml.*top-level validation_loop has script but no schema"
+    "schema-path-explicit-empty.yaml:test_validation_loop_schema:schema-path-explicit-empty\.yaml.*top-level validation_loop\.schema is empty"
+    "schema-escaped-path.yaml:test_schema_files_exist_and_valid:schema-escaped-path\.yaml.*schema path contains.*\\..*traversal.*not allowed"
+    "schema-traversal-to-sibling.yaml:test_schema_files_exist_and_valid:schema-traversal-to-sibling\.yaml.*schema path contains.*\\..*traversal.*not allowed"
+    "forge-script-no-inherited-schema.yaml:test_validation_loop_schema:forge-script-no-inherited-schema\.yaml.*validation_loop has script but no schema.*no top-level schema"
+    "overlay-script-no-inherited-schema.yaml:test_validation_loop_schema:overlay-script-no-inherited-schema\.yaml.*validation_loop has script but no schema.*no top-level schema"
+    "forge-null-inherited-schema.yaml:test_validation_loop_schema:forge-null-inherited-schema\.yaml.*validation_loop has script but schema is null"
+    "overlay-empty-inherited-schema.yaml:test_validation_loop_schema:overlay-empty-inherited-schema\.yaml.*validation_loop has script but schema is null"
+    "hardcoded-env-runner.yaml:test_no_hardcoded_schema:hardcoded-env-runner\.yaml: env\.runner contains hardcoded FULLSEND_OUTPUT_SCHEMA"
+    "hardcoded-forge-env-runner.yaml:test_no_hardcoded_schema:hardcoded-forge-env-runner\.yaml.*forge.*env\.runner contains hardcoded"
+    "hardcoded-forge-runner-env.yaml:test_no_hardcoded_schema:hardcoded-forge-runner-env\.yaml.*forge.*runner_env.*contains hardcoded"
+    "hardcoded-overlay-env-runner.yaml:test_no_hardcoded_schema:hardcoded-overlay-env-runner\.yaml.*overlays\[0\]\.env\.runner contains hardcoded"
+    "hardcoded-runner-env.yaml:test_no_hardcoded_schema:hardcoded-runner-env\.yaml.*runner_env.*contains hardcoded FULLSEND_OUTPUT_SCHEMA"
+    "hardcoded-overlay-runner-env.yaml:test_no_hardcoded_schema:hardcoded-overlay-runner-env\.yaml.*overlays\[0\]\.runner_env.*contains hardcoded"
+    "multi-document.yaml:test_validation_loop_schema:multi-document\.yaml.*harness must contain exactly one YAML document"
+    "hardcoded-overlay-null-schema.yaml:test_no_hardcoded_schema:hardcoded-overlay-null-schema\.yaml.*overlays\[0\]\.runner_env.*contains hardcoded"
+    "hardcoded-overlay-empty-schema.yaml:test_no_hardcoded_schema:hardcoded-overlay-empty-schema\.yaml.*overlays\[0\]\.runner_env.*contains hardcoded"
+    "hardcoded-overlay-clean-first.yaml:test_no_hardcoded_schema:hardcoded-overlay-clean-first\.yaml.*overlays\[1\]\.runner_env.*contains hardcoded"
+    "hardcoded-forge-clean-first.yaml:test_no_hardcoded_schema:hardcoded-forge-clean-first\.yaml.*forge\.gitlab.*runner_env.*contains hardcoded"
+    "script-with-null-schema.yaml:test_validation_loop_schema:script-with-null-schema\.yaml.*top-level validation_loop\.schema is null"
+    "missing-schema-file.yaml:test_schema_files_exist_and_valid:missing-schema-file\.yaml.*schema file not found"
+    "bad-json-schema.yaml:test_schema_files_exist_and_valid:bad-json-schema\.yaml.*schema file is not valid JSON"
+    "invalid-yaml.invalid.yaml:test_validation_loop_schema:invalid-yaml\.invalid\.yaml.*yq failed to count documents"
+    "empty-json-schema.yaml:test_schema_files_exist_and_valid:empty-json-schema\.yaml.*schema file is not valid JSON"
+    "multiple-json-values.yaml:test_schema_files_exist_and_valid:multiple-json-values\.yaml.*schema file is not valid JSON"
+    "forge-missing-schema-file.yaml:test_schema_files_exist_and_valid:forge-missing-schema-file\.yaml.*schema file not found"
+    "overlay-bad-json-schema.yaml:test_schema_files_exist_and_valid:overlay-bad-json-schema\.yaml.*schema file is not valid JSON"
+    "absolute-schema-path.yaml:test_schema_files_exist_and_valid:absolute-schema-path\.yaml.*schema path must be relative.*not absolute"
+    "schema-internal-dotdot-path.yaml:test_schema_files_exist_and_valid:schema-internal-dotdot-path\.yaml.*schema path contains.*\\..*traversal.*not allowed"
+    "forge-literal-null-schema.yaml:test_schema_files_exist_and_valid:forge-literal-null-schema\.yaml.*schema file not found"
+    "schema-traversal-to-sibling-example.yaml:test_schema_files_exist_and_valid:schema-traversal-to-sibling-example\.yaml.*schema path escapes bundle root via"
+    "schema-env-var.yaml:test_schema_files_exist_and_valid:schema-env-var\.yaml.*schema path cannot contain.*VAR.*not allowed in published harness"
+  )
+
+  for fixture_spec in "${expected_failures[@]}"; do
+    local fixture_name="${fixture_spec%%:*}"
+    local rest="${fixture_spec#*:}"
+    local test_func="${rest%%:*}"
+    local expected_message="${rest#*:}"
+    local fixture_file="${fixtures_dir}/${fixture_name}"
+
+    # Check if fixture is in bad-examples subdirectory (for symmetric layout)
+    local bad_examples_dir="${SCRIPT_DIR}/test-fixtures/harness-config-bad-examples"
+    if [[ "${fixture_name}" == *"-example.yaml" ]] && [[ -f "${bad_examples_dir}/${fixture_name}" ]]; then
+      fixture_file="${bad_examples_dir}/${fixture_name}"
+    fi
+
+    if [[ ! -f "${fixture_file}" ]]; then
+      echo "Missing fixture: ${fixture_name}"
+      found_error=1
+      continue
+    fi
+
+    local output
+    local exit_code=0
+    # Create a temporary subdirectory under root temp for this fixture (auto-cleaned via EXIT trap)
+    local test_dir
+    FIXTURE_COUNTER=$((FIXTURE_COUNTER + 1))
+    test_dir="${FIXTURE_ROOT_TEMP}/negative-${FIXTURE_COUNTER}-${fixture_name%.*}"
+    mkdir -p "${test_dir}" || {
+      echo "Failed to create temporary directory for fixture ${fixture_name}"
+      found_error=1
+      continue
+    }
+    # Create subdirectories if fixture is in a subdirectory (e.g., malformed/)
+    local fixture_dir_in_test
+    fixture_dir_in_test="$(dirname "${fixture_name}")"
+    if [[ "${fixture_dir_in_test}" != "." ]]; then
+      mkdir -p "${test_dir}/${fixture_dir_in_test}"
+    fi
+    cp "${fixture_file}" "${test_dir}/${fixture_name}" || {
+      echo "Failed to copy fixture ${fixture_name} to temporary directory"
+      found_error=1
+      continue
+    }
+    # Also copy any schema files the fixture might reference
+    # The fixtures_dir is already harness-config-bad, so we copy from its parent
+    local test_fixtures_parent
+    test_fixtures_parent="$(dirname "${fixtures_dir}")"
+
+    # Copy schemas directory if it exists (one level up from harness-config-bad)
+    if [[ -d "${test_fixtures_parent}/schemas" ]]; then
+      cp -r "${test_fixtures_parent}/schemas" "${test_dir}/" 2>/dev/null || true
+    fi
+
+    # Copy harness-config-bad files that might be referenced
+    # Extract the list of referenced files from the YAML
+    local referenced_files
+    referenced_files="$(yq -r '.validation_loop.schema, .forge[]?.validation_loop.schema, .overlays[]?.validation_loop.schema' "${fixture_file}" 2>/dev/null | grep "^harness-config-bad/" || true)"
+    if [[ -n "${referenced_files}" ]]; then
+      mkdir -p "${test_dir}/harness-config-bad"
+      while IFS= read -r ref; do
+        local source_file
+        source_file="${test_fixtures_parent}/harness-config-bad/$(basename "${ref}")"
+        if [[ -f "${source_file}" ]]; then
+          cp "${source_file}" "${test_dir}/$(dirname "${ref}")/" 2>/dev/null || true
+        fi
+      done <<< "${referenced_files}"
+    fi
+
+    # Special handling for schema-traversal-to-sibling fixture to test shared-prefix boundary bug
+    # This fixture needs a directory structure where the HARNESS_DIR parent contains both a bundle root
+    # and a sibling directory with the same prefix but separate path
+    if [[ "${fixture_name}" == "schema-traversal-to-sibling.yaml" ]]; then
+      local parent_dir="${test_dir}"
+      local bundle_dir="${parent_dir}/example"
+      local sibling_dir="${parent_dir}/example-other"
+      mkdir -p "${bundle_dir}" "${sibling_dir}/schemas" || {
+        echo "Failed to create sibling directory structure for schema-traversal-to-sibling fixture"
+        found_error=1
+        continue
+      }
+      # Move the fixture to the bundle directory (as a harness file within the bundle)
+      mv "${test_dir}/${fixture_name}" "${bundle_dir}/${fixture_name}" || {
+        echo "Failed to move fixture to bundle directory"
+        found_error=1
+        continue
+      }
+      # Create a valid schema file in the sibling directory to prove it exists
+      printf '{"type": "object"}\n' > "${sibling_dir}/schemas/schema.json" || {
+        echo "Failed to create sibling schema file"
+        found_error=1
+        continue
+      }
+      # Set both HARNESS_DIR and REPO_ROOT to the bundle directory
+      # This makes the containment check work: resolve_root is bundle_dir, normalized path ../example-other/...
+      # resolves to parent_dir/example-other which shares the bundle prefix but violates the directory boundary
+      output="$(HARNESS_DIR="${bundle_dir}" REPO_ROOT="${bundle_dir}" ${test_func} 2>&1)" || exit_code=$?
+    # Special handling for examples negative fixtures to test examples/*/harness validation
+    elif [[ "${fixture_name}" == *"-example.yaml" ]] && [[ "${fixture_file}" == *"harness-config-bad-examples"* ]]; then
+      # This is an examples/*/harness negative fixture
+      # Create examples/test-example/ and examples/test-example-other/ structures
+      local parent_dir="${test_dir}/examples"
+      local test_example_dir="${parent_dir}/test-example"
+      local test_example_other_dir="${parent_dir}/test-example-other"
+      mkdir -p "${test_example_dir}/harness" "${test_example_other_dir}/schemas" || {
+        echo "Failed to create examples directory structure for ${fixture_name}"
+        found_error=1
+        continue
+      }
+      # Move the fixture to the test-example/harness directory
+      mv "${test_dir}/${fixture_name}" "${test_example_dir}/harness/${fixture_name}" || {
+        echo "Failed to move examples fixture to test-example/harness directory"
+        found_error=1
+        continue
+      }
+      # Create a valid schema file in the sibling directory to prove it exists
+      printf '{"type": "object"}\n' > "${test_example_other_dir}/schemas/schema.json" || {
+        echo "Failed to create sibling schema file for examples fixture"
+        found_error=1
+        continue
+      }
+      # Run test with test_dir as REPO_ROOT (so examples/ is scanned)
+      output="$(HARNESS_DIR="${test_dir}" REPO_ROOT="${test_dir}" ${test_func} 2>&1)" || exit_code=$?
+    else
+      # Run the test with HARNESS_DIR set to temp dir containing only this fixture
+      # Use test_dir as both HARNESS_DIR and REPO_ROOT so resolve_root is the fixture directory
+      output="$(HARNESS_DIR="${test_dir}" REPO_ROOT="${test_dir}" ${test_func} 2>&1)" || exit_code=$?
+    fi
+
+    if [[ ${exit_code} -ne 0 ]]; then
+      # Match the expected message - should be simpler now since output is from single fixture
+      if echo "${output}" | grep -qE "${expected_message}"; then
+        continue
+      fi
+    fi
+    echo "Fixture ${fixture_name}: exit_code=${exit_code}, expected nonzero with message matching '${expected_message}'"
+    found_error=1
+  done
+
+  if [[ ${found_error} -eq 0 ]]; then
+    return 0
+  else
+    return 1
+  fi
+}
+
+# Test 5: Verify positive fixtures pass (prove the checks allow valid configs)
+test_positive_fixtures() {
+  setup_fixture_cleanup
+  local found_error=0
+  local fixtures_dir="${SCRIPT_DIR}/test-fixtures/harness-config-good"
+
+  if [[ ! -d "${fixtures_dir}" ]]; then
+    echo "positive fixtures directory not found: ${fixtures_dir}"
+    return 1
+  fi
+
+  local expected_passes=(
+    "null-schema-inheritance.yaml"
+    "overlay-valid-inheritance.yaml"
+    "forge-schema-only-empty-override.yaml"
+    "forge-same-script-empty-schema.yaml"
+    "overlay-schema-only-empty-with-inherited-script.yaml"
+    "forge-empty-schema-inherits-top-level.yaml"
+    "schema-with-consecutive-dots.yaml"
+  )
+
+  # Test positive examples/*/harness fixtures from test-fixtures with looser validation rules
+  local examples_fixtures_good_dir="${SCRIPT_DIR}/test-fixtures/harness-config-good-examples"
+  if [[ -d "${examples_fixtures_good_dir}" ]]; then
+    for fixture_file in "${examples_fixtures_good_dir}"/*.yaml; do
+      [[ -f "${fixture_file}" ]] || continue
+      local fixture_name
+      fixture_name="$(basename "${fixture_file}")"
+
+      local output
+      local exit_code=0
+      # Create a temporary subdirectory under root temp for this fixture (auto-cleaned via EXIT trap)
+      local test_dir
+      FIXTURE_COUNTER=$((FIXTURE_COUNTER + 1))
+      test_dir="${FIXTURE_ROOT_TEMP}/positive-examples-${FIXTURE_COUNTER}-${fixture_name%.*}"
+      mkdir -p "${test_dir}/examples/test-harness/harness" "${test_dir}/examples/test-harness/schemas" || {
+        echo "Failed to create temporary directory for examples fixture ${fixture_name}"
+        found_error=1
+        continue
+      }
+
+      # For absolute-path fixture, create the actual directory structure and file inside FIXTURE_ROOT_TEMP
+      if [[ "${fixture_name}" == "schema-with-absolute-path-example.yaml" ]]; then
+        # Create the schema directory inside FIXTURE_ROOT_TEMP for isolation
+        local abs_schema_dir="${test_dir}/example-abs-schema-dir/schemas"
+        mkdir -p "${abs_schema_dir}" || {
+          echo "Failed to create temporary directory ${abs_schema_dir}"
+          found_error=1
+          continue
+        }
+        # Create the actual JSON schema file
+        printf '{"type": "object"}\n' > "${abs_schema_dir}/test-schema.json" || {
+          echo "Failed to create schema file at ${abs_schema_dir}/test-schema.json"
+          found_error=1
+          continue
+        }
+        # Get the absolute path
+        local actual_schema_path
+        actual_schema_path="$(cd "${abs_schema_dir}" && pwd)/test-schema.json"
+
+        # Copy the fixture YAML and modify it to use the generated absolute path
+        cp "${fixture_file}" "${test_dir}/examples/test-harness/harness/${fixture_name}" || {
+          echo "Failed to copy examples fixture ${fixture_name} to temporary directory"
+          found_error=1
+          continue
+        }
+        # Pass path via environment variable to avoid injection from special characters
+        SCHEMA_PATH="${actual_schema_path}" yq -i ".validation_loop.schema = strenv(SCHEMA_PATH)" \
+          "${test_dir}/examples/test-harness/harness/${fixture_name}" || {
+          echo "Failed to modify fixture YAML with absolute path"
+          found_error=1
+          continue
+        }
+      else
+        # For non-absolute-path fixtures, use the standard copy
+        cp "${fixture_file}" "${test_dir}/examples/test-harness/harness/" || {
+          echo "Failed to copy examples fixture ${fixture_name} to temporary directory"
+          found_error=1
+          continue
+        }
+        # Copy schema files from test-fixtures/harness-config-good-examples/
+        if [[ -f "${examples_fixtures_good_dir}/test-schema.json" ]]; then
+          cp "${examples_fixtures_good_dir}/test-schema.json" "${test_dir}/examples/test-harness/schemas/" 2>/dev/null || true
+        fi
+      fi
+
+      # Run all three tests on this fixture
+      # For examples files, we need to set REPO_ROOT to the directory containing examples/
+      local repo_root
+      repo_root="${test_dir}"
+
+      output="$(HARNESS_DIR="${test_dir}" REPO_ROOT="${repo_root}" ALLOW_EXAMPLES_ONLY=1 test_validation_loop_schema 2>&1)" || exit_code=$?
+      if [[ ${exit_code} -ne 0 ]]; then
+        echo "Examples fixture ${fixture_name}: test_validation_loop_schema failed"
+        echo "${output}"
+        found_error=1
+        continue
+      fi
+
+      exit_code=0
+      output="$(HARNESS_DIR="${test_dir}" REPO_ROOT="${repo_root}" ALLOW_EXAMPLES_ONLY=1 test_no_hardcoded_schema 2>&1)" || exit_code=$?
+      if [[ ${exit_code} -ne 0 ]]; then
+        echo "Examples fixture ${fixture_name}: test_no_hardcoded_schema failed"
+        echo "${output}"
+        found_error=1
+        continue
+      fi
+
+      exit_code=0
+      output="$(HARNESS_DIR="${test_dir}" REPO_ROOT="${repo_root}" ALLOW_EXAMPLES_ONLY=1 test_schema_files_exist_and_valid 2>&1)" || exit_code=$?
+      if [[ ${exit_code} -ne 0 ]]; then
+        echo "Examples fixture ${fixture_name}: test_schema_files_exist_and_valid failed"
+        echo "${output}"
+        found_error=1
+        continue
+      fi
+    done
+  fi
+
+  for fixture_name in "${expected_passes[@]}"; do
+    local fixture_file="${fixtures_dir}/${fixture_name}"
+
+    if [[ ! -f "${fixture_file}" ]]; then
+      echo "Missing positive fixture: ${fixture_name}"
+      found_error=1
+      continue
+    fi
+
+    local output
+    local exit_code=0
+    # Create a temporary subdirectory under root temp for this fixture (auto-cleaned via EXIT trap)
+    local test_dir
+    FIXTURE_COUNTER=$((FIXTURE_COUNTER + 1))
+    test_dir="${FIXTURE_ROOT_TEMP}/positive-${FIXTURE_COUNTER}-${fixture_name%.*}"
+    mkdir -p "${test_dir}/schemas" || {
+      echo "Failed to create temporary directory for fixture ${fixture_name}"
+      found_error=1
+      continue
+    }
+    cp "${fixture_file}" "${test_dir}/" || {
+      echo "Failed to copy fixture ${fixture_name} to temporary directory"
+      found_error=1
+      continue
+    }
+    # Copy schema files from test-fixtures/schemas (not from harness-config-good/schemas)
+    if [[ -d "${SCRIPT_DIR}/test-fixtures/schemas" ]]; then
+      cp -r "${SCRIPT_DIR}/test-fixtures/schemas"/* "${test_dir}/schemas/" 2>/dev/null || true
+    fi
+
+    # Run all three tests on this fixture with test_dir as both HARNESS_DIR and REPO_ROOT
+    output="$(HARNESS_DIR="${test_dir}" REPO_ROOT="${test_dir}" test_validation_loop_schema 2>&1)" || exit_code=$?
+    if [[ ${exit_code} -ne 0 ]]; then
+      echo "Fixture ${fixture_name}: test_validation_loop_schema failed"
+      echo "${output}"
+      found_error=1
+      continue
+    fi
+
+    exit_code=0
+    output="$(HARNESS_DIR="${test_dir}" REPO_ROOT="${test_dir}" test_no_hardcoded_schema 2>&1)" || exit_code=$?
+    if [[ ${exit_code} -ne 0 ]]; then
+      echo "Fixture ${fixture_name}: test_no_hardcoded_schema failed"
+      echo "${output}"
+      found_error=1
+      continue
+    fi
+
+    exit_code=0
+    output="$(HARNESS_DIR="${test_dir}" REPO_ROOT="${test_dir}" test_schema_files_exist_and_valid 2>&1)" || exit_code=$?
+    if [[ ${exit_code} -ne 0 ]]; then
+      echo "Fixture ${fixture_name}: test_schema_files_exist_and_valid failed"
+      echo "${output}"
+      found_error=1
+      continue
+    fi
+  done
+
+  if [[ ${found_error} -eq 0 ]]; then
+    return 0
+  else
+    return 1
+  fi
+}
+
+
+# Only run tests if this script is executed directly, not sourced
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+  run_test "validation-loop-has-schema" test_validation_loop_schema
+  run_test "no-hardcoded-schema-in-env" test_no_hardcoded_schema
+  run_test "schema-files-exist-and-valid" test_schema_files_exist_and_valid
+  run_test "negative-fixtures-fail" test_negative_fixtures
+  run_test "positive-fixtures-pass" test_positive_fixtures
+
+  if [[ ${FAILURES} -eq 0 ]]; then
+    echo
+    echo "All tests passed"
+    exit 0
+  else
+    echo
+    echo "${FAILURES} test(s) failed"
+    exit 1
+  fi
+fi
