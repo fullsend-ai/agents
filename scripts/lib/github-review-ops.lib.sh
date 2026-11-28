@@ -362,11 +362,14 @@ forge_resolve_outdated_review_threads() {
 # forge_reconcile_finding_threads in review-ops.lib.sh:
 #   {id, url, resolved, can_resolve, comments_complete,
 #    comments: [{body, review_bot, own}]}
+# can_resolve is GitLab-only (whether the discussion is resolvable at all).
+# GitHub threads omit it: viewerCanResolve is an unreliable proxy for bot
+# tokens, so the resolve mutation's response decides instead.
 # review_bot: written by a trusted review-bot login (a Bot account), the same
 # logins post-review trusts for stamps. own: written by this token's own Bot
 # account, so a person's PAT never makes their replies count as the bot's.
 
-_FINDING_THREAD_FIELDS='id isResolved viewerCanResolve
+_FINDING_THREAD_FIELDS='id isResolved
   comments(first: 100) {
     pageInfo { hasNextPage }
     nodes { url body viewerDidAuthor author { __typename login } }
@@ -388,7 +391,6 @@ _github_finding_thread_jq() {
           id,
           url: ((.comments.nodes // [])[0].url // ""),
           resolved: (.isResolved == true),
-          can_resolve: (.viewerCanResolve == true),
           comments_complete: ((.comments.pageInfo.hasNextPage // false) == false),
           comments: [ (.comments.nodes // [])[] | select(type == "object")
                       | (.author.__typename // "") as $type

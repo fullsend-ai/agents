@@ -149,7 +149,7 @@ _FINDING_THREAD_CLASSIFY='
       | if ($t.comments_complete | not) then {status: "incomplete", thread: $t}
         elif $head == "" or ($live | ascii_downcase) != ($head | ascii_downcase) then {status: "changed-head", thread: $t}
         elif any($t.comments[]; (.review_bot or .own) | not) then {status: "other-comment", thread: $t}
-        elif ($t.can_resolve | not) then {status: "not-resolvable", thread: $t}
+        elif $t.can_resolve == false then {status: "not-resolvable", thread: $t}
         else {status: "ready", thread: $t}
         end
     end
@@ -171,11 +171,12 @@ _FINDING_THREAD_CLASSIFY='
 # Each id must map to one exact, review-bot-stamped, unresolved thread (see
 # _FINDING_THREAD_CLASSIFY). The thread is re-read just before acting and
 # left open when the PR head moved, anyone but the review bot commented in
-# it (a person, or another bot such as the fix agent), or it cannot be read
-# completely or resolved. An explanation is posted first, led by a marker
-# so a rerun at the same head never posts it twice; when the explanation
-# cannot be posted the thread stays open. A thread a concurrent run already
-# resolved counts as done.
+# it (a person, or another bot such as the fix agent), it cannot be read
+# completely, or the forge marks it not resolvable. The reply and resolve
+# mutations are attempted and their responses decide the outcome. An
+# explanation is posted first, led by a marker so a rerun at the same head
+# never posts it twice; when the explanation cannot be posted the thread
+# stays open. A thread a concurrent run already resolved counts as done.
 #
 # Prints a JSON array of {id, status, url}. Forge errors are reported per
 # thread and never fail the caller.

@@ -2537,6 +2537,31 @@ class TestFindingThreads(unittest.TestCase):
         self.assertEqual(len(forge.replies), 1)
         self.assertIn("explanation was posted but the thread could not be resolved", self._attention(forge))
 
+    def test_viewer_cannot_resolve_still_attempts_resolve(self):
+        # viewerCanResolve is unreliable for bot tokens: the mutation decides.
+        forge = FakeThreadsForge([_bot_thread("T1", "f_aaa", 1, can_resolve=False)])
+        rc, out = self._run(_thread_result(_action("f_aaa", "fixed")), forge)
+        self.assertEqual(rc, 0)
+        self.assertEqual(forge.order, [("reply", "T1"), ("resolve", "T1")])
+        self.assertIn("`f_aaa` (fixed): replied and resolved", forge.summary)
+        self.assertEqual(self._attention(forge), "")
+        self.assertNotIn("not permitted", out)
+
+    def test_viewer_cannot_resolve_and_resolve_fails_continues(self):
+        forge = FakeThreadsForge(
+            [_bot_thread("T1", "f_aaa", 1, can_resolve=False), _bot_thread("T2", "f_bbb", 2, can_resolve=False)],
+            fail_resolve={"T1"},
+        )
+        rc, out = self._run(_thread_result(_action("f_aaa", "declined"), _action("f_bbb", "fixed")), forge)
+        self.assertEqual(rc, 0)
+        self.assertEqual(forge.resolved, ["T2"])
+        self.assertIn("Could not resolve the thread for f_aaa", out)
+        attention = self._attention(forge)
+        self.assertIn("`f_aaa` (declined): the explanation was posted but the thread could not be resolved", attention)
+        self.assertIn("discussion_r1", attention)
+        self.assertIn("**Next step:** resolve the thread manually", attention)
+        self.assertNotIn("f_bbb", attention)
+
     def test_fetch_failure_does_not_fail_run(self):
         forge = FakeThreadsForge([], fail_fetch=True)
         rc, _ = self._run(_thread_result(_action("f_aaa", "fixed")), forge)
