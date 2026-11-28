@@ -20,6 +20,9 @@ Environment:
                              set, finding dispositions are applied to their
                              review threads and outdated review-bot threads
                              are resolved (issue #2187).
+    FIX_PRE_PUSH_HEAD_SHA  — GitHub: the PR head this run's push replaced.
+                             While the PR still reports it, GitHub has not
+                             caught up with the push yet (issue #2195).
     FIX_FINDING_THREADS_MANIFEST
                            — GitHub: the finding-thread manifest pre-fix gave
                              the agent; used to tell which human replies the
@@ -39,6 +42,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 
 try:
     import jsonschema
@@ -1230,6 +1234,9 @@ def apply_pr_metadata(data, repo, pr_number, schema_validated, secret_scan_passe
 FINDING_ID_RE = re.compile(r"^f_[A-Za-z0-9]+$")
 FINDING_STAMP_RE = re.compile(r"<!--\s+finding:(f_[A-Za-z0-9]+)\s+-->")
 THREAD_PAGE_CAP = 20
+# GitHub moves a PR's head some seconds after a push. While the PR still
+# reports the head the push replaced, the threads are re-read after each delay.
+HEAD_SETTLE_DELAYS = (2, 4, 8, 16)
 
 _THREADS_QUERY = """query($owner: String!, $name: String!, $number: Int!, $cursor: String) {
   repository(owner: $owner, name: $name) {
@@ -1465,8 +1472,13 @@ def _reply_body(action, disposition, marker, commit_url):
     return f"{marker}\n{text}"
 
 
-def reconcile_finding_threads(data, repo, pr_number, head_sha, can_post, manifest_path=None, dry_run=False):
+def reconcile_finding_threads(
+    data, repo, pr_number, head_sha, can_post, manifest_path=None, dry_run=False, pre_push_head=""
+):
     """Apply finding dispositions and sweep outdated threads.
+
+    pre_push_head is the PR head this run's push replaced; while GitHub still
+    reports it, the threads are re-read for a bounded time.
 
     Returns (entries, outdated_resolved). Each entry is a dict with
     finding_id, disposition, status and url.
@@ -1490,6 +1502,11 @@ def reconcile_finding_threads(data, repo, pr_number, head_sha, can_post, manifes
 
     try:
         threads, live_head, complete = fetch_review_threads(repo, pr_number)
+        for delay in HEAD_SETTLE_DELAYS:
+            if not pre_push_head or live_head != pre_push_head or live_head == head_sha:
+                break
+            time.sleep(delay)
+            threads, live_head, complete = fetch_review_threads(repo, pr_number)
         fetch_error = None
     except (subprocess.CalledProcessError, ValueError, OSError) as e:
         threads, live_head, complete = [], "", False
@@ -1763,6 +1780,7 @@ def main(argv=None):
                 can_post=schema_validated and os.environ.get("FIX_RESULT_SECRET_SCAN") == "passed",
                 manifest_path=os.environ.get("FIX_FINDING_THREADS_MANIFEST", ""),
                 dry_run=dry_run,
+                pre_push_head=os.environ.get("FIX_PRE_PUSH_HEAD_SHA", ""),
             )
             threads_text = render_finding_threads(entries, outdated_resolved)
         except Exception as e:  # never let a thread problem block the summary

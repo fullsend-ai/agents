@@ -177,6 +177,9 @@ GITHUB_FIX_OPS_SH_LOADED=1
 #   PUSH_TOKEN     — GitHub App installation token (GH_TOKEN as fallback)
 #   GIT_BOT_EMAIL  — the App bot's noreply address; only a commit it
 #                    authored keeps an existing Authored-by trailer
+#   FORGE_PUSHED_SHA_FILE — optional; after a successful push, receives the
+#                    commit origin/BRANCH was published at, which can differ
+#                    from HEAD when the local branch could not be moved
 # origin must carry push credentials (forge_set_push_remote) for the final
 # fetch.
 
@@ -362,6 +365,11 @@ _signed_push_repo_id() {
   echo "${id}"
 }
 
+# _forge_record_pushed SHA — writes SHA to FORGE_PUSHED_SHA_FILE when set.
+_forge_record_pushed() {
+  [ -z "${FORGE_PUSHED_SHA_FILE:-}" ] || printf '%s\n' "$1" > "${FORGE_PUSHED_SHA_FILE}"
+}
+
 # _signed_push_update_ref BRANCH BEFORE AFTER FORCE — moves refs/heads/BRANCH
 # from BEFORE (all zeros: create) to AFTER. updateRefs applies it only while
 # the ref is still at BEFORE, the compare-and-swap --force-with-lease needs,
@@ -410,10 +418,12 @@ forge_push_branch() {
         echo "error: no remote-tracking ref origin/${branch} to lease on; refusing the non-fast-forward update" >&2
         return 1
       }
-      git push --force-with-lease="refs/heads/${branch}:${lease}" -u origin -- "${branch}"
+      git push --force-with-lease="refs/heads/${branch}:${lease}" -u origin -- "${branch}" || return
+      _forge_record_pushed "$(git rev-parse "refs/heads/${branch}")"
       return
     fi
-    git push "$@" -u origin -- "${branch}"
+    git push "$@" -u origin -- "${branch}" || return
+    _forge_record_pushed "$(git rev-parse "refs/heads/${branch}")"
     return
   fi
   _SIGNED_PUSH_DIR="$(mktemp -d)"
@@ -462,6 +472,7 @@ _forge_push_branch() {
   else
     _signed_push_update_ref "${branch}" "${remote_sha:-${_SIGNED_PUSH_ZERO}}" "${tip}" false || return 1
   fi
+  _forge_record_pushed "${tip}"
 
   # The push is complete once the ref moved; failing to move the local
   # branch is a warning, not a failed push.
@@ -3747,6 +3758,11 @@ ${REBASE_OUTPUT}"
   # or reset — the agent rewrote history so the remote branch diverged.
   # force-with-lease is safe: it still rejects if someone else pushed in
   # the meantime.
+  #
+  # Finding threads (issue #2195) need the commit the push published and the
+  # PR head it replaced: GitHub moves the PR head some seconds after a push.
+  FIX_PRE_PUSH_HEAD_SHA="$(git rev-parse -q --verify "refs/remotes/origin/${BRANCH}" 2>/dev/null || true)"
+  FORGE_PUSHED_SHA_FILE="$(mktemp)"
   echo "Pushing branch ${BRANCH}..."
   PUSH_OUTPUT="$(forge_push_branch "${BRANCH}" 2>&1)" && PUSH_RC=0 || PUSH_RC=$?
   print_sanitized_gha_log "${PUSH_OUTPUT}"
@@ -3849,11 +3865,20 @@ else
   # Finding threads (GitHub, issue #2187): the processor replies to and
   # resolves review-bot finding threads only while the live PR head is the
   # commit this run left behind, and compares thread replies with the
-  # manifest pre-fix gave the agent.
+  # manifest pre-fix gave the agent. After a push that is the commit the push
+  # published (issue #2195), not HEAD: a signed push can leave the local
+  # branch on the unsigned commits.
   FIX_PUBLISHED_HEAD_SHA=""
   FIX_FINDING_THREADS_MANIFEST=""
   if [ "${FULLSEND_FORGE}" = "github" ]; then
-    FIX_PUBLISHED_HEAD_SHA="$(git rev-parse HEAD 2>/dev/null || true)"
+    if [ "${NO_PUSH}" = "true" ]; then
+      FIX_PUBLISHED_HEAD_SHA="$(git rev-parse HEAD 2>/dev/null || true)"
+    else
+      FIX_PUBLISHED_HEAD_SHA="$(cat "${FORGE_PUSHED_SHA_FILE}" 2>/dev/null || true)"
+      rm -f "${FORGE_PUSHED_SHA_FILE}"
+      [ -n "${FIX_PUBLISHED_HEAD_SHA}" ] \
+        || gha_echo warning "Could not tell which commit the push published — finding threads are not reconciled"
+    fi
     FIX_FINDING_THREADS_MANIFEST="$(finding_threads_manifest_path || true)"
   fi
 
@@ -3862,6 +3887,7 @@ else
   SIGNOFF_STRIPPED_COUNT="${SIGNOFF_STRIPPED_COUNT}" \
   FIX_RESULT_SECRET_SCAN="${FIX_RESULT_SECRET_SCAN}" \
   FIX_PUBLISHED_HEAD_SHA="${FIX_PUBLISHED_HEAD_SHA}" \
+  FIX_PRE_PUSH_HEAD_SHA="${FIX_PRE_PUSH_HEAD_SHA:-}" \
   FIX_FINDING_THREADS_MANIFEST="${FIX_FINDING_THREADS_MANIFEST}" \
     python3 "${PROCESS_SCRIPT}" "${RESULT_FILE}" "${REPO_FULL_NAME}" "${PR_NUMBER}" || PROCESS_EXIT=$?
   if [ "${PROCESS_EXIT}" -eq 1 ]; then

@@ -2189,9 +2189,12 @@ def _thread_result(*actions):
 class FakeThreadsForge:
     """Fake gh for review-thread GraphQL calls plus the summary comment."""
 
-    def __init__(self, pages, head=HEAD, fail_fetch=False, fail_reply=(), fail_resolve=()):
+    def __init__(self, pages, head=HEAD, fail_fetch=False, fail_reply=(), fail_resolve=(), heads=()):
         self.pages = pages if pages and isinstance(pages[0], list) else [pages]
         self.head = head
+        # PR heads reported by successive reads; the last one stays.
+        self.heads = list(heads)
+        self.reads = 0
         self.fail_fetch = fail_fetch
         self.fail_reply = set(fail_reply)
         self.fail_resolve = set(fail_resolve)
@@ -2218,6 +2221,10 @@ class FakeThreadsForge:
                 raise subprocess.CalledProcessError(1, cmd, stderr="HTTP 502")
             cursor = self._arg(cmd, "cursor")
             index = int(cursor) if cursor else 0
+            if not cursor:
+                self.reads += 1
+                if self.heads:
+                    self.head = self.heads.pop(0)
             has_next = index + 1 < len(self.pages)
             payload = {
                 "data": {
@@ -2280,8 +2287,10 @@ class TestFindingThreads(unittest.TestCase):
                 extra["FIX_FINDING_THREADS_MANIFEST"] = path
             out = io.StringIO()
             with patch.dict(os.environ, extra), patch("subprocess.run", side_effect=forge), \
+                    patch("time.sleep") as sleep, \
                     contextlib.redirect_stderr(out), contextlib.redirect_stdout(out):
                 rc = main([result, "org/repo", "42"])
+        self.sleeps = [c.args[0] for c in sleep.call_args_list]
         return rc, out.getvalue()
 
     def _attention(self, forge):
@@ -2437,6 +2446,58 @@ class TestFindingThreads(unittest.TestCase):
         self._run(_thread_result(_action("f_aaa", "fixed")), forge)
         self.assertEqual((forge.replies, forge.resolved), ([], []))
         self.assertIn("PR head changed", self._attention(forge))
+
+    # fullsend#9891 (issue #2195): the fix run started at RUN_START, published
+    # PUBLISHED, and GitHub still reported RUN_START as the PR head right after
+    # the push.
+    RUN_START = "0961ae914bfb3f19a98a677fa6ed89f3c5090f99"
+    PUBLISHED = "d0056943b792daa2ed2f9df76a370c3a4551a5b6"
+
+    def _published_run(self, heads):
+        targeted_outdated = _bot_thread("T3", "f_ccc", 3, outdated=True, c_outdated=True)
+        untargeted_outdated = _bot_thread("T4", "f_old", 4, outdated=True, c_outdated=True)
+        forge = FakeThreadsForge(
+            [_bot_thread("T1", "f_aaa", 1), _bot_thread("T2", "f_bbb", 2), targeted_outdated, untargeted_outdated],
+            heads=heads,
+        )
+        data = _thread_result(_action("f_aaa", "fixed"), _action("f_bbb", "declined"), _action("f_ccc", "fixed"))
+        env = {"FIX_PUBLISHED_HEAD_SHA": self.PUBLISHED, "FIX_PRE_PUSH_HEAD_SHA": self.RUN_START}
+        rc, _ = self._run(data, forge, env=env)
+        self.assertEqual(rc, 0)
+        return forge
+
+    def test_published_head_resolves_once_github_catches_up(self):
+        forge = self._published_run([self.RUN_START, self.RUN_START, self.PUBLISHED])
+        self.assertEqual(self.sleeps, list(mod.HEAD_SETTLE_DELAYS[:2]))
+        self.assertEqual(sorted(forge.resolved), ["T1", "T2", "T3", "T4"])
+        self.assertEqual(sorted(t for t, _ in forge.replies), ["T1", "T2", "T3"])
+        self.assertIn(f"head={self.PUBLISHED}", forge.replies[0][1])
+        self.assertIn(f"/commit/{self.PUBLISHED}", forge.replies[0][1])
+        self.assertIn("Resolved 1 outdated review-bot thread(s)", forge.summary)
+        self.assertEqual(self._attention(forge), "")
+
+    def test_published_head_already_live_needs_no_wait(self):
+        forge = self._published_run([self.PUBLISHED])
+        self.assertEqual(self.sleeps, [])
+        self.assertEqual(sorted(forge.resolved), ["T1", "T2", "T3", "T4"])
+
+    def test_later_head_after_published_leaves_threads_open(self):
+        later = "e" * 40
+        forge = self._published_run([later])
+        self.assertEqual(self.sleeps, [])
+        self.assertEqual((forge.replies, forge.resolved), ([], []))
+        attention = self._attention(forge)
+        self.assertEqual(attention.count("the PR head changed after this run"), 3)
+        self.assertIn("discussion_r1", attention)
+        self.assertIn("**Next step:** check the thread against the latest commit", attention)
+        self.assertNotIn("outdated review-bot thread(s)", forge.summary)
+
+    def test_push_never_seen_leaves_threads_open_after_bounded_wait(self):
+        forge = self._published_run([self.RUN_START])
+        self.assertEqual(self.sleeps, list(mod.HEAD_SETTLE_DELAYS))
+        self.assertEqual(forge.reads, len(mod.HEAD_SETTLE_DELAYS) + 1)
+        self.assertEqual((forge.replies, forge.resolved), ([], []))
+        self.assertEqual(self._attention(forge).count("the PR head changed after this run"), 3)
 
     def test_already_resolved_is_not_touched(self):
         forge = FakeThreadsForge([_bot_thread("T1", "f_aaa", 1, resolved=True)])

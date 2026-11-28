@@ -382,6 +382,34 @@ else
   pass "remote-moved-after-update-leaves-local-branch"
 fi
 
+# --- FORGE_PUSHED_SHA_FILE gets the published commit, not HEAD -------------
+repo="$(setup_repo pushed-sha-file)"
+commit_file "${repo}" "a.txt" "a" "feat: a"
+local_head="$(git -C "${repo}" rev-parse HEAD)"
+main_sha="$(remote_rev "${repo}" "refs/heads/main")"
+pushed_file="${TEST_TMPDIR}/pushed-sha-file.out"
+FORGE_PUSHED_SHA_FILE="${pushed_file}" FAKE_GH_MOVE_AFTER_UPDATE="refs/heads/${BRANCH}=${main_sha}" \
+  push_in "${repo}" "${BRANCH}"
+created="$(printf '%s\n' "${PUSH_OUT}" | sed -n 's/^Created signed commit \([0-9a-f]*\) for .*/\1/p')"
+if [ "${PUSH_RC}" -ne 0 ] || [ -z "${created}" ] || [ "${created}" = "${local_head}" ] \
+   || [ "$(cat "${pushed_file}" 2>/dev/null)" != "${created}" ]; then
+  fail "pushed-sha-file-records-published-commit" "exit ${PUSH_RC}" \
+    "recorded '$(cat "${pushed_file}" 2>/dev/null)' created '${created}'" "${PUSH_OUT}"
+else
+  pass "pushed-sha-file-records-published-commit"
+fi
+
+# A refused push records nothing.
+repo="$(setup_repo pushed-sha-file-refused)"
+commit_file "${repo}" "a.txt" "a" "feat: a"
+pushed_file="${TEST_TMPDIR}/pushed-sha-file-refused.out"
+FORGE_PUSHED_SHA_FILE="${pushed_file}" FAKE_GH_REJECT_COMMITS=1 push_in "${repo}" "${BRANCH}"
+if [ "${PUSH_RC}" -eq 0 ] || [ -e "${pushed_file}" ]; then
+  fail "pushed-sha-file-untouched-on-failure" "exit ${PUSH_RC}" "${PUSH_OUT}"
+else
+  pass "pushed-sha-file-untouched-on-failure"
+fi
+
 # --- the error body's detail reaches the caller ---------------------------
 repo="$(setup_repo error-body)"
 commit_file "${repo}" "a.txt" "a" "feat: a"
@@ -611,6 +639,18 @@ for value in unset false 1; do
   push_off "${value}" "${repo}" "${BRANCH}"
   plain_push_ok "off-${value}-is-a-plain-push" "${repo}"
 done
+
+# A plain push records the pushed local branch in FORGE_PUSHED_SHA_FILE.
+repo="$(setup_repo off-pushed-sha-file)"
+commit_file "${repo}" new.txt "new" "feat: new"
+pushed_file="${TEST_TMPDIR}/off-pushed-sha-file.out"
+FORGE_PUSHED_SHA_FILE="${pushed_file}" push_off false "${repo}" "${BRANCH}"
+if [ "${PUSH_RC}" -ne 0 ] \
+   || [ "$(cat "${pushed_file}" 2>/dev/null)" != "$(remote_rev "${repo}" "refs/heads/${BRANCH}")" ]; then
+  fail "off-pushed-sha-file-records-pushed-commit" "exit ${PUSH_RC}" "${PUSH_OUT}"
+else
+  pass "off-pushed-sha-file-records-pushed-commit"
+fi
 
 # A plain push keeps git's own non-fast-forward wording, which the
 # post-scripts match to retry with --force-with-lease.
