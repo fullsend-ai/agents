@@ -1,0 +1,246 @@
+#!/usr/bin/env bash
+# shellcheck shell=bash
+# triage-state.lib.sh — The triage state a re-triage run starts from
+# (fullsend-ai/agents#2042).
+#
+# A sufficient result carries triage_summary.open_causes and
+# triage_summary.ruled_out, each a list of {cause, evidence, verified}. The
+# post-script lists them in the comment for people and stores them as data
+# for the next run: on GitHub and GitLab as a hidden HTML comment at the end
+# of the comment body,
+#
+#   <!-- triage-state-v1:<base64 of {"open_causes":[...],"ruled_out":[...]}> -->
+#
+# and on Jira, which has no hidden text in ADF, as the comment entity
+# property fullsend.triage-state (see jira-triage-ops.lib.sh).
+#
+# The marker is not in fullsend's "<!-- fullsend:" namespace on purpose:
+# `fullsend post-comment` escapes every such marker in the body it is given,
+# so only its own marker stays live. Trust in this one comes from the
+# comment's author, which the agent checks (agents/triage.md step 2e), and
+# from triage_state_neutralize, which escapes any copy the agent wrote.
+#
+# Bundled inline by bundle-sh.sh at build time.
+
+[[ -n "${TRIAGE_STATE_SH_LOADED:-}" ]] && return 0
+TRIAGE_STATE_SH_LOADED=1
+
+# The readable comment cap from agents/triage.md. It applies to everything
+# posted except the hidden state marker: the agent's comment, the lists and
+# the footers (see triage_state_compose).
+TRIAGE_STATE_READABLE_CAP=4000
+# Jira caps an entity property value at 32768 characters of JSON
+# (Atlassian's "Set comment property" reference). The state is measured as
+# JSON with every non-ASCII character escaped (\uXXXX, a surrogate pair for
+# characters outside the BMP), which is never shorter than its character
+# count, and kept under 30000, so it fits whether Jira counts the
+# characters sent or an escaped serialisation. Only non-ASCII text can come
+# near it. TRIAGE_STATE_MAX_CHARS may lower the cap (tests do), never raise
+# it.
+if [[ "${TRIAGE_STATE_MAX_CHARS:-}" =~ ^[0-9]{1,9}$ ]] && (( 10#${TRIAGE_STATE_MAX_CHARS} <= 30000 )); then
+  TRIAGE_STATE_MAX_CHARS=$((10#${TRIAGE_STATE_MAX_CHARS}))
+else
+  TRIAGE_STATE_MAX_CHARS=30000
+fi
+# Footers other than "Next steps" (label and component reasons, unapplied
+# Jira updates) are cut to this many characters, so "Next steps" always fits.
+TRIAGE_STATE_MAX_EXTRA_FOOTER=1000
+
+# The opener of a <summary> whose text reads "Previous run" (any case, with
+# whitespace, a hyphen, &nbsp;, a numeric entity or inline tags before or
+# between the words), which is what makes a <details> block a history fold
+# to step 2e. Agent text has it escaped, so the next run never takes text
+# above the state marker for history; the post-script's own <details>
+# blocks (prerequisites, split) keep working.
+TRIAGE_STATE_FOLD_RE='(?i)<(?=summary\b[^>]*>(?:\s|&nbsp;|&#x?[0-9a-f]+;|<[^>]*>)*previous(?:\s|-|&nbsp;|&#x?[0-9a-f]+;|<[^>]*>)*run)'
+
+# triage_state_json RESULT_FILE — print the state as compact JSON, bounded
+# to the schema's limits (whitespace runs folded to one space, strings and
+# lists cut, ruled_out keeping its newest entries), or nothing when the
+# result has no open cause. Over TRIAGE_STATE_MAX_CHARS (measured escaped)
+# it never drops a cause: it empties ruled-out evidence, then open evidence,
+# then cuts cause text (whole characters only), and fails, so nothing is
+# posted, if the names alone still do not fit. The evidence of an "Other
+# open candidates" entry (agents/triage.md) names the causes past the ninth,
+# so it is never emptied or cut, not even to the 300 characters other
+# evidence keeps: those names are causes too, and the state's escaped-length
+# cap is what bounds it.
+triage_state_json() {
+  jq -c '
+    def text($n):
+      (if type == "string" then . else "" end)
+      | gsub("[\\r\\n\\t]+"; " ") | gsub("^ +| +$"; "")
+      | if $n != null and length > $n then .[0:($n - 1)] + "…" else . end;
+    def causes:
+      (if type == "array" then . else [] end)
+      | map(select(type == "object")
+            | (.cause | text(200)) as $c
+            | {cause: $c, evidence: (.evidence | text(if $c == "Other open candidates" then null else 300 end)),
+               verified: (.verified == true)}
+            | select(.cause != ""));
+    (.triage_summary | if type == "object" then . else {} end) as $s
+    | {open_causes: ($s.open_causes | causes | .[0:10]),
+       ruled_out: ($s.ruled_out | causes | if length > 25 then .[(length - 25):] else . end)}
+    | if (.open_causes | length) == 0 then empty else . end
+    # The length as JSON with non-ASCII escaped: 6 characters for a BMP
+    # character, 12 for one outside it. jq slices whole characters, so a
+    # cut never splits one.
+    | def esclen: explode | map(if . < 128 then 1 elif . < 65536 then 6 else 12 end) | add // 0;
+      def fits: (tojson | esclen) <= $max_chars;
+      def charcut($n): until(esclen <= $n; .[0:(length - 1)]);
+      if fits then . else
+        .ruled_out |= map(.evidence = "")
+        | if fits then . else
+            .open_causes |= map(if .cause == "Other open candidates" then . else .evidence = "" end)
+            | if fits then . else
+                . as $bare
+                | ([600, 400, 300, 200, 120, 80, 40]
+                   | map(. as $n | $bare | (.open_causes, .ruled_out) |= map(.cause |= charcut($n)) | select(fits))
+                   | first)
+                  // error("the triage state does not fit \($max_chars) characters of escaped JSON even with its cause names cut")
+              end
+          end
+      end
+  ' --argjson max_chars "${TRIAGE_STATE_MAX_CHARS}" "$1"
+}
+
+# triage_state_dropped RESULT_FILE STATE_JSON — print how many causes the
+# result listed that the state does not keep: entries that are not objects
+# or have an empty name, and entries past the 10 open / 25 ruled-out limits.
+triage_state_dropped() {
+  jq -r --arg s "$2" '
+    def n: if type == "array" then length else 0 end;
+    (if $s == "" then {} else ($s | fromjson) end) as $state
+    | (.triage_summary | if type == "object" then . else {} end) as $ts
+    | (($ts.open_causes | n) + ($ts.ruled_out | n))
+    - (($state.open_causes | n) + ($state.ruled_out | n))
+  ' "$1"
+}
+
+# triage_state_compose STATE_JSON AGENT_COMMENT FOOTER — print the readable
+# comment that is posted: AGENT_COMMENT, the lists, then FOOTER (the labels,
+# components and next-steps sections the post-script appended), within
+# TRIAGE_STATE_READABLE_CAP characters. The lists are one line per cause,
+# unverified causes marked, "Ruled out" left out when empty. When the whole
+# does not fit, the lists are condensed in this order: ruled-out evidence,
+# all evidence, the oldest ruled-out lines (counted in one line), then the
+# open cause names are cut to 80 characters. If it still does not fit, the
+# agent's comment is cut at a line end with a note saying so. Footers other
+# than "Next steps" are first held to TRIAGE_STATE_MAX_EXTRA_FOOTER
+# characters, so "Next steps" is never cut. The stored state always keeps
+# every entry. Every <summary> and <details> opener in the agent's comment,
+# the footers and the cause lists is escaped: this comment carries the
+# state, and step 2e reads a <details> block whose summary reads "Previous
+# run" as history, so no spelling of one may appear above the marker; and a
+# <details> left open would fold the lists and "Next steps" out of sight.
+# Every "<!--" is escaped too, so an HTML comment left open cannot hide
+# them either. None of this text holds a <details> block or an HTML
+# comment of the post-script's own.
+triage_state_compose() {
+  jq -rn --argjson state "$1" --arg agent_in "$2" --arg footer_raw "$3" \
+    --argjson cap "${TRIAGE_STATE_READABLE_CAP}" \
+    --argjson extra_max "${TRIAGE_STATE_MAX_EXTRA_FOOTER}" '
+    def nofold: gsub("(?i)<(?=(summary|details)\\b)"; "&lt;");
+    def safe: gsub("<!--"; "&lt;!--") | nofold;
+    ($agent_in | safe) as $agent | ($footer_raw | safe) as $footer_in |
+    def clip($n): if length > $n then .[0:($n - 1)] + "…" else . end;
+    def line($full; $name_max):
+      "- " + (.cause | clip($name_max) | safe)
+      + (if .verified then "" else " _(unverified)_" end)
+      + (if $full and .evidence != "" then " — " + (.evidence | clip(160) | safe) else "" end);
+    def render($o; $r; $full_open; $full_ruled; $hidden; $name_max):
+      "**Open causes:**\n" + ($o | map(line($full_open; $name_max)) | join("\n"))
+      + (if ($r | length) + $hidden > 0 then
+           "\n\n**Ruled out:**\n"
+           + ((if $hidden > 0 then ["- \($hidden) earlier ruled-out cause(s) not listed here; the triage state keeps them"] else [] end)
+              + ($r | map(line($full_ruled; $name_max))) | join("\n"))
+         else "" end);
+    def note: "\n\n_(Cut to fit the comment limit; the triage state keeps every cause.)_";
+    # The character offset of the last $d, or null. jq before 1.8.0
+    # (1.7.1, the default runner image, included) returns byte offsets from
+    # index/rindex while slices count characters (jq #3065), so they are
+    # not used.
+    def last_at($d):
+      split($d) as $p
+      | if ($p | length) < 2 then null else ($p[:-1] | join($d) | length) end;
+    # Cut to $n characters, at a line end when one is in the second half.
+    def cutline($n):
+      if length <= $n then .
+      elif $n <= 0 then ""
+      else .[0:($n - 1)] as $c
+        | ($c | last_at("\n")) as $i
+        | (if ($i // 0) > $n / 2 then $c[0:$i] else $c end) + "…"
+      end;
+    # The fence run that opens a code block on this line (``` or ~~~, up to
+    # three spaces in), or nothing. A backtick run opens one only when the
+    # rest of the line has no backtick (CommonMark): "```make test``` …" is
+    # an inline code span, not a fence.
+    def opener: (capture("^ {0,3}(?<f>`{3,})[^`]*$") // capture("^ {0,3}(?<f>~{3,})")) | .f;
+    # The fence a Markdown code block opened in this text and did not close,
+    # or null.
+    def open_fence:
+      reduce (split("\n")[]) as $l (null;
+        if . == null then ([$l | opener] | .[0] // null)
+        elif (. as $f | $l | test("^ {0,3}" + $f[0:1] + "{" + ($f | length | tostring) + ",}\\s*$")) then null
+        else . end);
+    # The longest leading backtick or tilde run in this text, plus one, so a
+    # closing fence always has room. Every such run counts, inline code
+    # spans too: a cut inside "```make test```" leaves "```make…", which
+    # does open a fence.
+    def fence_room:
+      [split("\n")[] | capture("^ {0,3}(?<f>`{3,}|~{3,})") | .f | length] | (max // 0) + 1;
+    # Cut to $n characters like cutline, then close a code block the cut
+    # left open, so the lists after it render as Markdown.
+    def cut_closed($n):
+      fence_room as $room
+      | cutline($n - $room) as $c
+      | ($c | open_fence) as $f
+      | if $f == null then $c else $c + "\n" + $f end;
+    ("\n\n---\n**Next steps:**") as $ns_head
+    | ("\n\n---\n**Not applied in Jira:**") as $na_head
+    | ($footer_in | (last_at($ns_head) // length)) as $ns_at
+    # The other footers keep "Not applied in Jira" whole where they can, and
+    # cut the label and component reasons first.
+    | ($footer_in[0:$ns_at]) as $pre
+    | ($pre | (last_at($na_head) // length)) as $na_at
+    | ($pre[$na_at:] | cutline($extra_max)) as $notice
+    | (($pre[0:$na_at] | cutline($extra_max - ($notice | length))) + $notice) as $extra
+    | ($extra + $footer_in[$ns_at:]) as $footer
+    # The agent comment with a code block it left open closed, so the lists
+    # after it render as Markdown even when nothing is cut.
+    | ($agent | open_fence) as $agent_fence
+    | ((if $agent_fence == null then $agent else $agent + "\n" + $agent_fence end) + "\n\n") as $head
+    | ($cap - ($head | length) - ($footer | length)) as $budget
+    | $state.open_causes as $o | $state.ruled_out as $r
+    | ([ render($o; $r; true; true; 0; 200),
+         render($o; $r; true; false; 0; 200),
+         render($o; $r; false; false; 0; 200),
+         (range(1; ($r | length) + 1) as $k | render($o; $r[$k:]; false; false; $k; 200)),
+         render($o; []; false; false; ($r | length); 80) ]
+       | (map(select(length <= $budget)) | first) // last) as $lists
+    | ($head + $lists + $footer) as $all
+    | if ($all | length) <= $cap then $all
+      else
+        # The lists (at most about 1200 characters) and the bounded footers
+        # leave room for the agent comment, so only it is cut.
+        ($cap - ($lists | length) - ($footer | length) - 2 - (note | length)) as $keep
+        | ($agent | cut_closed($keep)) + note + "\n\n" + $lists + $footer
+      end
+  '
+}
+
+# triage_state_marker STATE_JSON — print the hidden marker for GitHub/GitLab.
+triage_state_marker() {
+  local encoded
+  encoded="$(printf '%s' "$1" | base64 | tr -d '\n')"
+  printf '<!-- triage-state-v1:%s -->' "${encoded}"
+}
+
+# triage_state_neutralize TEXT — escape every state marker opener in TEXT
+# (any case, "<!--" with any number of extra dashes and any whitespace), so
+# the only live marker in a posted comment is the one the post-script adds,
+# and every "Previous run" fold summary (TRIAGE_STATE_FOLD_RE).
+triage_state_neutralize() {
+  jq -rn --arg t "$1" --arg fold_re "${TRIAGE_STATE_FOLD_RE}" \
+    '$t | gsub("(?i)<(?=!--+\\s*triage-state)"; "&lt;") | gsub($fold_re; "&lt;")'
+}

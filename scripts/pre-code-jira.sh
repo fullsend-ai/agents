@@ -2489,6 +2489,106 @@ _jira_post_comment() {
     --marker "${marker}" --result -
 }
 
+# _jira_own_marked_comments MARKER — print, as a JSON array, every comment
+# on the issue (all pages) that the posting account (GET /myself) wrote
+# with the comment property fullsend.sticky-marker = {"marker": MARKER},
+# each with an "_updated" sort key ([UTC seconds, nanoseconds, numeric
+# id]). `fullsend issues post-comment` sets that
+# property on the comment it posts: in fullsend v0.56.1-rc.1 (pinned in
+# go.mod) and v0.56.1 it edits that comment in place, and on
+# fullsend-ai/fullsend#9399 (head 5150c261) every run creates a new comment
+# with it (internal/tracker/jira_client.go, CreateCommentWithMarker;
+# internal/cli/issues.go, postJiraStickyComment). Jira writes times as
+# "2026-11-17T10:00:00.000+0100"; RFC 3339 "Z" and "+01:00" forms, with or
+# without fractional seconds, are accepted too (fullsend's
+# jiraTimestampFormats). A time that does not parse is an error.
+_jira_own_marked_comments() {
+  local marker="$1"
+  local self
+  self=$(_jira_api_with_status GET "/myself" | jq -r '.accountId // empty') || return 1
+  if [[ -z "${self}" ]]; then
+    echo "ERROR: GET /myself returned no accountId" >&2
+    return 1
+  fi
+  # Pages are collected in a file, never passed as arguments: a long
+  # issue's comments would overflow the argument size limit.
+  # Paging stops on an empty page, at "total" when the page gives one, and
+  # otherwise on a page shorter than its maxResults. More than 100 pages
+  # fails rather than reading part of the listing.
+  local pages page count total page_size start_at=0 n_pages=0
+  pages=$(mktemp) || return 1
+  while :; do
+    n_pages=$((n_pages + 1))
+    if [[ ${n_pages} -gt 100 ]]; then
+      echo "ERROR: the comment listing has more than 100 pages" >&2
+      rm -f "${pages}"
+      return 1
+    fi
+    if ! page=$(_jira_api_with_status GET "/issue/${ISSUE_NUMBER}/comment?expand=properties&orderBy=-created&maxResults=100&startAt=${start_at}") \
+      || ! printf '%s\n' "${page}" >> "${pages}" \
+      || ! count=$(jq -r '.comments // [] | length' <<<"${page}") \
+      || ! total=$(jq -r '.total // "" | tostring' <<<"${page}") \
+      || ! page_size=$(jq -r '.maxResults // 100' <<<"${page}"); then
+      rm -f "${pages}"
+      return 1
+    fi
+    start_at=$((start_at + count))
+    if [[ ${count} -eq 0 ]]; then
+      break
+    elif [[ "${total}" =~ ^[0-9]+$ ]]; then
+      [[ ${start_at} -lt ${total} ]] || break
+    elif [[ ${count} -lt ${page_size} ]]; then
+      break
+    fi
+  done
+  jq -cs --arg self "${self}" --arg marker "${marker}" '
+    def utc_key:
+      . as $t
+      | (capture("^(?<d>[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2})(\\.(?<f>[0-9]{1,9}))?(?<z>Z|(?<s>[+-])(?<h>[0-9]{2}):?(?<m>[0-9]{2}))$")
+         // error("unparsable Jira timestamp: \($t)"))
+      | [ ((.d + "Z") | fromdateiso8601)
+          - (if .z == "Z" then 0
+             else (if .s == "+" then 1 else -1 end) * ((.h | tonumber) * 3600 + (.m | tonumber) * 60) end),
+          (((.f // "") + "000000000")[0:9] | tonumber) ];
+    [ .[] | .comments // [] | .[] | select(.author.accountId == $self)
+      | select(any(.properties[]?; .key == "fullsend.sticky-marker" and (.value.marker? == $marker)))
+      | (.id | tostring | tonumber? // 0) as $n
+      | . + {_updated: (((.updated // .created // "") | utc_key) + [$n])} ]
+  ' "${pages}" || { rm -f "${pages}"; return 1; }
+  rm -f "${pages}"
+}
+
+# tracker_store_triage_state STATE_JSON MARKER — after the post, store the
+# triage state on the comment just posted with MARKER, as its entity
+# property fullsend.triage-state (ADF has no hidden text). `fullsend issues
+# post-comment` prints no comment id, so the comment is the own one with
+# MARKER updated last (an edit in place before fullsend-ai/fullsend#9399, a
+# new comment after it); a tie goes to the highest comment id. A run with
+# no state sets nothing. A time that does not parse, a listing that fails,
+# or no matching comment fails the run, like every other Jira write.
+tracker_store_triage_state() {
+  local state="$1"
+  local marker="$2"
+  _jira_require_vars || return 1
+  [[ -n "${state}" ]] || return 0
+  local comments comment_id
+  comments=$(_jira_own_marked_comments "${marker}") || {
+    echo "ERROR: cannot store the triage state: the comment listing or a timestamp in it could not be read" >&2
+    return 1
+  }
+  comment_id=$(jq -r 'max_by(._updated) | .id // empty' <<<"${comments}") || return 1
+  if [[ -z "${comment_id}" ]]; then
+    echo "ERROR: cannot store the triage state: no comment by this account carries ${marker}" >&2
+    return 1
+  fi
+  _jira_api_with_status PUT "/comment/${comment_id}/properties/fullsend.triage-state" \
+    --data "${state}" > /dev/null || {
+    echo "ERROR: cannot store the triage state on comment ${comment_id}; setting a comment property needs the \"Edit own comments\" project permission and, for a scoped token, the write:jira-work scope (granular: write:comment.property:jira)" >&2
+    return 1
+  }
+  echo "Stored the triage state on comment ${comment_id}"
+}
+
 # --- Issues ---
 
 tracker_close_issue() {

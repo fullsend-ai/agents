@@ -1,0 +1,60 @@
+forge: github
+fixture:
+  type: issue
+  title: "Login returns 500 for some users"
+  body: |
+    Since last week a few users get an HTTP 500 when they submit the
+    login form. Most users can log in fine. The server log shows
+    `TypeError: expected string or bytes-like object` from `re.match` in
+    `validate_email` (`src/auth/validators.py`), called from
+    `login_handler`.
+
+    Steps to reproduce: POST the login form with a password and no
+    email field. Expected a validation message, got a 500.
+
+    Environment: current main, Python 3.12.
+  # Two earlier triage runs, each with a triage-state-v1 marker. Run 1
+  # named two causes; run 2 refuted the second (the regex does accept '+').
+  # Run 1's comment and state still list the refuted cause as open, so an
+  # agent that rebuilds its causes from every old comment without applying
+  # run 2's refutation brings it back. The last comment is a human
+  # follow-up that names neither cause.
+  comments:
+    - |
+      <!-- fullsend:triage-agent -->
+      The 500 most likely comes from the login handler's email check.
+
+      **Proposed test case:**
+      ```
+      POST the login form without an email field, and with "a+b@example.com".
+      Expect: a 400 with a validation message, never a 500.
+      ```
+
+      **Open causes:**
+      - Missing email field reaches validate_email as None — login_handler passes request.params.get("email") straight through, and re.match(pattern, None) raises TypeError
+      - validate_email rejects '+' in the local part _(unverified)_ — its docstring says the regex rejects '+'
+
+      ---
+      **Next steps:**
+      - `/fs-code` — agent creates a PR to implement this issue
+      - `/fs-code <your instruction>` — agent implements with your specific guidance
+
+      <!-- triage-state-v1:eyJvcGVuX2NhdXNlcyI6W3siY2F1c2UiOiJNaXNzaW5nIGVtYWlsIGZpZWxkIHJlYWNoZXMgdmFsaWRhdGVfZW1haWwgYXMgTm9uZSIsImV2aWRlbmNlIjoibG9naW5faGFuZGxlciBwYXNzZXMgcmVxdWVzdC5wYXJhbXMuZ2V0KFwiZW1haWxcIikgc3RyYWlnaHQgdGhyb3VnaCwgYW5kIHJlLm1hdGNoKHBhdHRlcm4sIE5vbmUpIHJhaXNlcyBUeXBlRXJyb3IiLCJ2ZXJpZmllZCI6dHJ1ZX0seyJjYXVzZSI6InZhbGlkYXRlX2VtYWlsIHJlamVjdHMgJysnIGluIHRoZSBsb2NhbCBwYXJ0IiwiZXZpZGVuY2UiOiJpdHMgZG9jc3RyaW5nIHNheXMgdGhlIHJlZ2V4IHJlamVjdHMgJysnIiwidmVyaWZpZWQiOmZhbHNlfV0sInJ1bGVkX291dCI6W119 -->
+    - |
+      <!-- fullsend:triage-agent -->
+      Re-triaged after re-checking the code. The docstring in validators.py is wrong: the character class in the pattern includes '+', so plus addresses validate.
+
+      **Open causes:**
+      - Missing email field reaches validate_email as None — login_handler passes request.params.get("email") straight through, and re.match(pattern, None) raises TypeError
+
+      **Ruled out:**
+      - validate_email rejects '+' in the local part — the pattern's local-part class [a-zA-Z0-9._%+-] includes '+'; the docstring is stale
+
+      ---
+      **Next steps:**
+      - `/fs-code` — agent creates a PR to implement this issue
+      - `/fs-code <your instruction>` — agent implements with your specific guidance
+
+      <!-- triage-state-v1:eyJvcGVuX2NhdXNlcyI6W3siY2F1c2UiOiJNaXNzaW5nIGVtYWlsIGZpZWxkIHJlYWNoZXMgdmFsaWRhdGVfZW1haWwgYXMgTm9uZSIsImV2aWRlbmNlIjoibG9naW5faGFuZGxlciBwYXNzZXMgcmVxdWVzdC5wYXJhbXMuZ2V0KFwiZW1haWxcIikgc3RyYWlnaHQgdGhyb3VnaCwgYW5kIHJlLm1hdGNoKHBhdHRlcm4sIE5vbmUpIHJhaXNlcyBUeXBlRXJyb3IiLCJ2ZXJpZmllZCI6dHJ1ZX1dLCJydWxlZF9vdXQiOlt7ImNhdXNlIjoidmFsaWRhdGVfZW1haWwgcmVqZWN0cyAnKycgaW4gdGhlIGxvY2FsIHBhcnQiLCJldmlkZW5jZSI6InRoZSBwYXR0ZXJuJ3MgbG9jYWwtcGFydCBjbGFzcyBbYS16QS1aMC05Ll8lKy1dIGluY2x1ZGVzICcrJzsgdGhlIGRvY3N0cmluZyBpcyBzdGFsZSIsInZlcmlmaWVkIjp0cnVlfV19 -->
+    - |
+      Still seeing this after Monday's deploy, a handful of 500s a day. Can this be picked up?

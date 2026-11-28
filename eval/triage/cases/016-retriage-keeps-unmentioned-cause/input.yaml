@@ -1,0 +1,66 @@
+forge: github
+fixture:
+  type: issue
+  title: "Login returns 500 for some users"
+  body: |
+    Since last week a few users get an HTTP 500 when they submit the
+    login form. Most users can log in fine. The server log shows
+    `TypeError: expected string or bytes-like object` from `re.match` in
+    `validate_email` (`src/auth/validators.py`), called from
+    `login_handler`.
+
+    Steps to reproduce: POST the login form with a password and no
+    email field. Expected a validation message, got a 500.
+
+    Environment: current main, Python 3.12.
+  # Run 1 is a full analysis with three open causes and one ruled-out
+  # cause, with a state marker. Its third open cause, the authgw gateway
+  # stripping the email parameter, rests only on the log lines run 1
+  # quotes: neither the issue body, the fixture code nor the later comments
+  # mention authgw, so only a run that carries run 1's state forward can
+  # list it. A question and the reporter's answer add no evidence. A newer
+  # full analysis (run 3) keeps the other two open causes and the ruling but
+  # leaves authgw out without refuting it, so copying the newest analysis
+  # alone drops a live cause.
+  comments:
+    - |
+      <!-- fullsend:triage-agent -->
+      The TypeError is confirmed in the code, and the same handler has a
+      second path to a 500.
+
+      **Open causes:**
+      - Missing email field reaches validate_email as None — login_handler passes request.params.get("email") straight through, and re.match(pattern, None) raises TypeError
+      - Malformed address raises an unhandled ValueError — validate_email raises ValueError("invalid email format") and login_handler does not catch it, so it also becomes a 500
+      - The authgw gateway strips the email parameter before login_handler _(unverified)_ — the reporter's log shows every failing request as `authgw: POST /login fwd params=[password]`; authgw is not in this repository
+
+      **Ruled out:**
+      - validate_email rejects '+' in the local part — the pattern's local-part class [a-zA-Z0-9._%+-] includes '+'; the docstring is stale
+
+      ---
+      **Next steps:**
+      - `/fs-code` — agent creates a PR to implement this issue
+      - `/fs-code <your instruction>` — agent implements with your specific guidance
+
+      <!-- triage-state-v1:eyJvcGVuX2NhdXNlcyI6W3siY2F1c2UiOiJNaXNzaW5nIGVtYWlsIGZpZWxkIHJlYWNoZXMgdmFsaWRhdGVfZW1haWwgYXMgTm9uZSIsImV2aWRlbmNlIjoibG9naW5faGFuZGxlciBwYXNzZXMgcmVxdWVzdC5wYXJhbXMuZ2V0KFwiZW1haWxcIikgc3RyYWlnaHQgdGhyb3VnaCwgYW5kIHJlLm1hdGNoKHBhdHRlcm4sIE5vbmUpIHJhaXNlcyBUeXBlRXJyb3IiLCJ2ZXJpZmllZCI6dHJ1ZX0seyJjYXVzZSI6Ik1hbGZvcm1lZCBhZGRyZXNzIHJhaXNlcyBhbiB1bmhhbmRsZWQgVmFsdWVFcnJvciIsImV2aWRlbmNlIjoidmFsaWRhdGVfZW1haWwgcmFpc2VzIFZhbHVlRXJyb3IoXCJpbnZhbGlkIGVtYWlsIGZvcm1hdFwiKSBhbmQgbG9naW5faGFuZGxlciBkb2VzIG5vdCBjYXRjaCBpdCwgc28gaXQgYWxzbyBiZWNvbWVzIGEgNTAwIiwidmVyaWZpZWQiOnRydWV9LHsiY2F1c2UiOiJUaGUgYXV0aGd3IGdhdGV3YXkgc3RyaXBzIHRoZSBlbWFpbCBwYXJhbWV0ZXIgYmVmb3JlIGxvZ2luX2hhbmRsZXIiLCJldmlkZW5jZSI6InRoZSByZXBvcnRlcidzIGxvZyBzaG93cyBldmVyeSBmYWlsaW5nIHJlcXVlc3QgYXMgYGF1dGhndzogUE9TVCAvbG9naW4gZndkIHBhcmFtcz1bcGFzc3dvcmRdYDsgYXV0aGd3IGlzIG5vdCBpbiB0aGlzIHJlcG9zaXRvcnkiLCJ2ZXJpZmllZCI6ZmFsc2V9XSwicnVsZWRfb3V0IjpbeyJjYXVzZSI6InZhbGlkYXRlX2VtYWlsIHJlamVjdHMgJysnIGluIHRoZSBsb2NhbCBwYXJ0IiwiZXZpZGVuY2UiOiJ0aGUgcGF0dGVybidzIGxvY2FsLXBhcnQgY2xhc3MgW2EtekEtWjAtOS5fJSstXSBpbmNsdWRlcyAnKyc7IHRoZSBkb2NzdHJpbmcgaXMgc3RhbGUiLCJ2ZXJpZmllZCI6dHJ1ZX1dfQ== -->
+    - |
+      Thanks for the details. Did the 500s start with a particular
+      deploy, or were they there before last week?
+    - |
+      Not sure yet, I'll check the deploy history. Can this be picked up meanwhile?
+    - |
+      <!-- fullsend:triage-agent -->
+      Re-checked the handler after the reporter's reply.
+
+      **Open causes:**
+      - Missing email field reaches validate_email as None — login_handler passes request.params.get("email") straight through, and re.match(pattern, None) raises TypeError
+      - Malformed address raises an unhandled ValueError — validate_email raises ValueError("invalid email format") and login_handler does not catch it, so it also becomes a 500
+
+      **Ruled out:**
+      - validate_email rejects '+' in the local part — the pattern's local-part class [a-zA-Z0-9._%+-] includes '+'; the docstring is stale
+
+      ---
+      **Next steps:**
+      - `/fs-code` — agent creates a PR to implement this issue
+      - `/fs-code <your instruction>` — agent implements with your specific guidance
+
+      <!-- triage-state-v1:eyJvcGVuX2NhdXNlcyI6W3siY2F1c2UiOiJNaXNzaW5nIGVtYWlsIGZpZWxkIHJlYWNoZXMgdmFsaWRhdGVfZW1haWwgYXMgTm9uZSIsImV2aWRlbmNlIjoibG9naW5faGFuZGxlciBwYXNzZXMgcmVxdWVzdC5wYXJhbXMuZ2V0KFwiZW1haWxcIikgc3RyYWlnaHQgdGhyb3VnaCwgYW5kIHJlLm1hdGNoKHBhdHRlcm4sIE5vbmUpIHJhaXNlcyBUeXBlRXJyb3IiLCJ2ZXJpZmllZCI6dHJ1ZX0seyJjYXVzZSI6Ik1hbGZvcm1lZCBhZGRyZXNzIHJhaXNlcyBhbiB1bmhhbmRsZWQgVmFsdWVFcnJvciIsImV2aWRlbmNlIjoidmFsaWRhdGVfZW1haWwgcmFpc2VzIFZhbHVlRXJyb3IoXCJpbnZhbGlkIGVtYWlsIGZvcm1hdFwiKSBhbmQgbG9naW5faGFuZGxlciBkb2VzIG5vdCBjYXRjaCBpdCwgc28gaXQgYWxzbyBiZWNvbWVzIGEgNTAwIiwidmVyaWZpZWQiOnRydWV9XSwicnVsZWRfb3V0IjpbeyJjYXVzZSI6InZhbGlkYXRlX2VtYWlsIHJlamVjdHMgJysnIGluIHRoZSBsb2NhbCBwYXJ0IiwiZXZpZGVuY2UiOiJ0aGUgcGF0dGVybidzIGxvY2FsLXBhcnQgY2xhc3MgW2EtekEtWjAtOS5fJSstXSBpbmNsdWRlcyAnKyc7IHRoZSBkb2NzdHJpbmcgaXMgc3RhbGUiLCJ2ZXJpZmllZCI6dHJ1ZX1dfQ== -->

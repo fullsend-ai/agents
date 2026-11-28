@@ -18,7 +18,11 @@
     "environment": "Linux",
     "impact": "Users cannot authenticate",
     "recommended_fix": "Fix session token validation",
-    "proposed_test_case": "test_login_success"
+    "proposed_test_case": "test_login_success",
+    "open_causes": [
+      { "cause": "Session handling regression", "evidence": "the reproduction fails at session token validation", "verified": true }
+    ],
+    "ruled_out": []
   },
   "comment": "## Triage Summary\n\nThis issue is ready for implementation."
 }

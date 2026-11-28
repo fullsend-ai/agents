@@ -1,0 +1,73 @@
+# Re-triage over analyses written before the triage state existed
+# (fullsend-ai/agents#2042): the legacy path. Two earlier triage comments
+# carry no state marker: run 1 names two causes in prose, run 2 refutes the
+# second in prose. The agent rebuilds both lists once from them. The new
+# human comment adds no evidence, so the run must keep the open cause and
+# must not restore the ruled-out one.
+state: open
+
+labels:
+  required:
+    - ready-to-code
+    - bug
+
+# Checked by the cause_lists judge against the state marker of the run's
+# own comment.
+cause_lists:
+  seeded_comments: 3
+  open:
+    - ["none", "missing email", "email field", "no email", "typeerror"]
+  ruled_out:
+    - ["+", "plus"]
+  # A plus together with a rejection claim is the ruled-out cause back.
+  forbidden_open: [["+", "reject"], ["plus", "reject"]]
+
+max_turns: 35
+max_cost_usd: 0.50
+
+triage_expectations: |
+  The issue already has two triage analyses, both written before the
+  triage state existed (no cause lists, no state marker). Run 1 named two
+  causes (a missing email field reaches validate_email as None, and
+  re.match raises TypeError; the regex rejecting '+'). Run 2 refuted the
+  '+' cause in prose because the pattern's local-part character class
+  includes '+'. The latest human comment asks for progress and adds no
+  evidence.
+
+  The code confirms both: login_handler passes request.params.get("email")
+  to validate_email unchecked, and the pattern accepts '+'. login_handler
+  also does not catch the ValueError validate_email raises for a
+  malformed address, which is a second way to get a 500.
+
+  Where to find the agent's analysis: it is the newest comment on the
+  issue that is not one of the three seeded comments. If no such comment
+  exists, a fullsend that edits marked comments in place (before
+  fullsend-ai/fullsend#9399) wrote it into a seeded marked comment, above
+  a "Previous run" block holding that comment's old text; the agent's
+  analysis is then the text above that block. Grade only text the agent
+  wrote, never the seeded text. If the agent posted nothing, score 1.
+  The post-script, not the agent, adds the Open causes and Ruled out lists
+  and the state marker, from the result's open_causes and ruled_out.
+
+  A good triage should:
+
+  1. Rebuild both lists once from the two old analyses, applying run 2's
+     refutation to run 1's causes.
+  2. Keep the None cause open.
+  3. Keep the '+' cause ruled out with its evidence, not open or a
+     hypothesis anywhere in the comment.
+  4. Keep the comment under 4000 characters and not restate the earlier
+     analyses at length.
+  5. Ideally add the unhandled ValueError as a new open cause.
+
+  Scoring guide:
+  A score of 1 means the agent restored the '+' cause as open, or
+  dropped the None cause.
+  A score of 2 means the causes are right in the prose but the posted
+  lists disagree with it.
+  A score of 3 means the lists are right, but the comment repeats the
+  earlier analyses at length or misses the ValueError path.
+  A score of 4 means the lists are right and the comment is concise and
+  adds net-new value.
+  A score of 5 means all of the above plus the ValueError path as a new
+  open cause.
