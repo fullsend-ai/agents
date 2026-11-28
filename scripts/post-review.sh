@@ -456,11 +456,14 @@ forge_resolve_outdated_review_threads() {
 # forge_reconcile_finding_threads in review-ops.lib.sh:
 #   {id, url, resolved, can_resolve, comments_complete,
 #    comments: [{body, review_bot, own}]}
+# can_resolve is GitLab-only (whether the discussion is resolvable at all).
+# GitHub threads omit it: viewerCanResolve is an unreliable proxy for bot
+# tokens, so the resolve mutation's response decides instead.
 # review_bot: written by a trusted review-bot login (a Bot account), the same
 # logins post-review trusts for stamps. own: written by this token's own Bot
 # account, so a person's PAT never makes their replies count as the bot's.
 
-_FINDING_THREAD_FIELDS='id isResolved viewerCanResolve
+_FINDING_THREAD_FIELDS='id isResolved
   comments(first: 100) {
     pageInfo { hasNextPage }
     nodes { url body viewerDidAuthor author { __typename login } }
@@ -482,7 +485,6 @@ _github_finding_thread_jq() {
           id,
           url: ((.comments.nodes // [])[0].url // ""),
           resolved: (.isResolved == true),
-          can_resolve: (.viewerCanResolve == true),
           comments_complete: ((.comments.pageInfo.hasNextPage // false) == false),
           comments: [ (.comments.nodes // [])[] | select(type == "object")
                       | (.author.__typename // "") as $type
@@ -1188,7 +1190,7 @@ _FINDING_THREAD_CLASSIFY='
       | if ($t.comments_complete | not) then {status: "incomplete", thread: $t}
         elif $head == "" or ($live | ascii_downcase) != ($head | ascii_downcase) then {status: "changed-head", thread: $t}
         elif any($t.comments[]; (.review_bot or .own) | not) then {status: "other-comment", thread: $t}
-        elif ($t.can_resolve | not) then {status: "not-resolvable", thread: $t}
+        elif $t.can_resolve == false then {status: "not-resolvable", thread: $t}
         else {status: "ready", thread: $t}
         end
     end
@@ -1210,11 +1212,12 @@ _FINDING_THREAD_CLASSIFY='
 # Each id must map to one exact, review-bot-stamped, unresolved thread (see
 # _FINDING_THREAD_CLASSIFY). The thread is re-read just before acting and
 # left open when the PR head moved, anyone but the review bot commented in
-# it (a person, or another bot such as the fix agent), or it cannot be read
-# completely or resolved. An explanation is posted first, led by a marker
-# so a rerun at the same head never posts it twice; when the explanation
-# cannot be posted the thread stays open. A thread a concurrent run already
-# resolved counts as done.
+# it (a person, or another bot such as the fix agent), it cannot be read
+# completely, or the forge marks it not resolvable. The reply and resolve
+# mutations are attempted and their responses decide the outcome. An
+# explanation is posted first, led by a marker so a rerun at the same head
+# never posts it twice; when the explanation cannot be posted the thread
+# stays open. A thread a concurrent run already resolved counts as done.
 #
 # Prints a JSON array of {id, status, url}. Forge errors are reported per
 # thread and never fail the caller.

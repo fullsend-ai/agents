@@ -1222,7 +1222,9 @@ def apply_pr_metadata(data, repo, pr_number, schema_validated, secret_scan_passe
 # one open thread whose first comment is a trusted review-bot comment with
 # that stamp: an explanatory reply first, then resolve for fixed / declined;
 # needs_human gets the reply and stays open. Anything uncertain is left open
-# and listed in the PR summary. Outdated threads made only of outdated
+# and listed in the PR summary. A disposition's reply and resolve are always
+# attempted: viewerCanResolve is an unreliable proxy for bot tokens, so the
+# mutation response decides the outcome. Outdated threads made only of outdated
 # review-bot comments are resolved with the same conditions post-review uses.
 # Forge failures never change the exit code.
 # ---------------------------------------------------------------------------
@@ -1591,10 +1593,6 @@ def reconcile_finding_threads(data, repo, pr_number, head_sha, can_post, manifes
                     continue
         if disposition == "needs_human":
             entry("replied", thread)
-            continue
-        if not thread.get("viewerCanResolve"):
-            print(f"::warning::Cannot resolve the thread for {fid} (not permitted)", file=sys.stderr)
-            entry("resolve-failed", thread)
             continue
         if dry_run:
             print(f"  [dry-run] Would resolve the thread for {fid}")

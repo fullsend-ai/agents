@@ -6011,6 +6011,28 @@ ft_check "finding-thread-github-resolve-failure-reported" "notice explains" \
   ft_notice_has "the explanation was posted, but the thread could not be resolved"
 unset MOCK_RESOLVE_THREAD_FAIL
 
+# viewerCanResolve is unreliable for bot tokens: a false value alone does not
+# stop the reply and resolve; the mutation response decides.
+MOCK_REVIEW_THREADS_JSON="$(ft_threads "$(ft_thread T1 '<!-- finding:f_fix1 --> The sum is wrong.' | jq -c '.viewerCanResolve = false')")"
+export MOCK_REVIEW_THREADS_JSON
+ft_github_case "finding-thread-github-viewer-cannot-resolve-still-resolves" "${FT_REVIEW}" "${FT_PRIOR}" "${FT_RESOLVED_LEDGER}"
+ft_check "finding-thread-github-viewer-cannot-resolve-still-resolves" "reply posted" ft_log_has "addPullRequestReviewThreadReply"
+ft_check "finding-thread-github-viewer-cannot-resolve-still-resolves" "thread resolved" ft_log_has "resolveReviewThread(input"
+ft_check "finding-thread-github-viewer-cannot-resolve-still-resolves" "notice lists the resolved thread" \
+  ft_notice_has "resolved 1 earlier finding thread(s) this change fixed: [1](https://github.com/test-org/test-repo/pull/99#discussion_r11)"
+ft_check "finding-thread-github-viewer-cannot-resolve-still-resolves" "no not-resolvable notice" \
+  bash -c '! grep -qF "cannot resolve this thread" "$1"' _ "${TMPDIR}/last-thread-notice.txt"
+
+export MOCK_RESOLVE_THREAD_FAIL=1
+ft_github_case "finding-thread-github-viewer-cannot-resolve-failure-reported" "${FT_REVIEW}" "${FT_PRIOR}" "${FT_RESOLVED_LEDGER}"
+ft_check "finding-thread-github-viewer-cannot-resolve-failure-reported" "reply posted" ft_log_has "addPullRequestReviewThreadReply"
+ft_check "finding-thread-github-viewer-cannot-resolve-failure-reported" "resolve attempted" ft_log_has "resolveReviewThread(input"
+ft_check "finding-thread-github-viewer-cannot-resolve-failure-reported" "notice links the thread with a next step" \
+  ft_notice_has $'**Finding threads left open (1):**\n1. [Thread](https://github.com/test-org/test-repo/pull/99#discussion_r11): the explanation was posted, but the thread could not be resolved. **Next step:** resolve it manually.'
+unset MOCK_RESOLVE_THREAD_FAIL
+MOCK_REVIEW_THREADS_JSON="$(ft_threads "$(ft_thread T1 '<!-- finding:f_fix1 --> The sum is wrong.')")"
+export MOCK_REVIEW_THREADS_JSON
+
 export MOCK_REVIEW_THREAD_NODE_FAIL=1
 ft_github_case "finding-thread-github-refetch-failure-leaves-open" "${FT_REVIEW}" "${FT_PRIOR}" "${FT_RESOLVED_LEDGER}"
 ft_check "finding-thread-github-refetch-failure-leaves-open" "no reply" ft_no_reply
