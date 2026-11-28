@@ -122,7 +122,7 @@ If every child is closed and every addressing PR/MR is merged, use `completed`. 
 
 ### 2e. Review prior triage analysis
 
-Check whether this issue has already been triaged. Look through the comments you fetched in Step 1 for a prior triage comment — it will contain `<!-- fullsend:triage-agent -->` or `<!-- fullsend:triage-in-progress -->` in its body, or be posted by a user whose login ends in `-triage[bot]`.
+Check whether this issue has already been triaged. Look through the comments you fetched in Step 1 for a prior triage comment — it will contain `<!-- fullsend:triage-agent -->` or `<!-- fullsend:triage-in-progress -->` in its body, or be posted by a user whose login ends in `-triage[bot]`. On GitLab every triage run adds a new note, so an issue triaged more than once has several: fetch every page of notes (your forge skill lists 100 a page), treat the newest `triage-agent` note as the prior analysis, and treat each earlier one as part of it below.
 
 If a prior triage comment exists, **accumulate — do not replace:**
 

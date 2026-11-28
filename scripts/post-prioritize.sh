@@ -661,19 +661,6 @@ _gitlab_api() {
     "$@"
 }
 
-_GITLAB_BOT_USERNAME=""
-
-_gitlab_bot_username() {
-  if [[ -z "${_GITLAB_BOT_USERNAME}" ]]; then
-    _GITLAB_BOT_USERNAME=$(_gitlab_api GET "/user" 2>/dev/null | jq -r '.username // empty')
-    if [[ -z "${_GITLAB_BOT_USERNAME}" ]]; then
-      echo "ERROR: failed to determine GitLab token owner via GET /user" >&2
-      return 1
-    fi
-  fi
-  echo "${_GITLAB_BOT_USERNAME}"
-}
-
 # --- URL handling ---
 
 forge_validate_issue_url() {
@@ -709,66 +696,18 @@ forge_update_project_scores() {
 
 # --- Comments ---
 
+# Posts a new note whose first line is <marker>. Each run appends a new
+# note at the end of the thread; earlier marked notes are never edited
+# (fullsend-ai/fullsend#9334). The open PR fullsend-ai/fullsend#9399 makes
+# the GitHub door append the same way.
 forge_post_sticky_comment() {
   : "${GITLAB_TOKEN:?GITLAB_TOKEN must be set}"
   local body="$1"
   local marker="$2"
-  local marked_body="${marker}
-${body}"
-
-  local bot_user
-  bot_user=$(_gitlab_bot_username) || {
-    echo "::warning::Could not resolve bot username; falling back to non-sticky comment" >&2
-    _gitlab_api POST "/projects/${REPO_ENCODED}/issues/${ISSUE_NUMBER}/notes" \
-      --data-urlencode "body=${marked_body}" > /dev/null \
-      || echo "::warning::Failed to post fallback comment" >&2
-    return 0
-  }
-
-  local notes="[]"
-  local page=1 max_pages=50
-  while [[ "${page}" -le "${max_pages}" ]]; do
-    local batch
-    batch=$(_gitlab_api GET "/projects/${REPO_ENCODED}/issues/${ISSUE_NUMBER}/notes?per_page=100&sort=asc&page=${page}" 2>/dev/null) || break
-    local count
-    count=$(echo "${batch}" | jq 'length') || break
-    [[ "${count}" -eq 0 ]] && break
-    notes=$(echo "${notes}" "${batch}" | jq -s 'add')
-    page=$((page + 1))
-  done
-
-  local match
-  match=$(echo "${notes}" | jq --arg marker "${marker}" --arg user "${bot_user}" \
-    '[.[] | select(.author.username == $user and (.body | startswith($marker)))][0] // empty')
-
-  local note_id
-  note_id=$(echo "${match}" | jq -r '.id // empty')
-
-  if [[ -n "${note_id}" ]]; then
-    local old_body
-    old_body=$(echo "${match}" | jq -r '.body // empty')
-    local stripped_old
-    local escaped_marker
-    escaped_marker=$(printf '%s' "${marker}" | sed 's/[].[*^$()+?{|\\]/\\&/g; s|/|\\/|g')
-    stripped_old=$(echo "${old_body}" | sed "1{/^${escaped_marker}$/d;}")
-    if [[ -n "${stripped_old}" ]]; then
-      local history
-      history=$(printf '\n\n<details>\n<summary>Previous run</summary>\n\n%s\n\n</details>' "${stripped_old}")
-      local max_len=60000
-      if [[ ${#history} -gt ${max_len} ]]; then
-        history="${history:0:${max_len}}
-...(truncated)"
-      fi
-      marked_body="${marked_body}${history}"
-    fi
-    _gitlab_api PUT "/projects/${REPO_ENCODED}/issues/${ISSUE_NUMBER}/notes/${note_id}" \
-      --data-urlencode "body=${marked_body}" > /dev/null \
-      || { echo "::warning::Failed to update sticky comment (note ${note_id})" >&2; return 1; }
-  else
-    _gitlab_api POST "/projects/${REPO_ENCODED}/issues/${ISSUE_NUMBER}/notes" \
-      --data-urlencode "body=${marked_body}" > /dev/null \
-      || { echo "::warning::Failed to post comment" >&2; return 1; }
-  fi
+  _gitlab_api POST "/projects/${REPO_ENCODED}/issues/${ISSUE_NUMBER}/notes" \
+    --data-urlencode "body=${marker}
+${body}" > /dev/null \
+    || { echo "::warning::Failed to post comment" >&2; return 1; }
 }
 # END bundled: lib/gitlab-prioritize-ops.lib.sh
     ;;
