@@ -58,6 +58,21 @@ FOLLOWUP_FILES=$(yq -r '.fixture.followup_files // "[]"' "$INPUT")
 FIXTURE_COMMIT_MESSAGE=$(yq -r '.fixture.commit_message // "eval: fixture changes"' "$INPUT")
 PRIOR_REVIEW_BODY=$(yq -r '.prior_review.body // ""' "$INPUT")
 PRIOR_REVIEW_PROVENANCE=$(yq -r '.prior_review.provenance // "none"' "$INPUT")
+# fixture.comments is a list of comment bodies, seeded only on GitHub
+# issues; refuse anything else before anything is created.
+# An absent or null field means no comments; any other non-list value
+# (false included) is refused rather than read as an empty list.
+comments_type="$(yq -r '.fixture.comments | type' "$INPUT")"
+if [[ "$comments_type" != "!!seq" && "$comments_type" != "!!null" ]] \
+  || [[ "$(yq -r '[(.fixture.comments // [])[] | select(type != "!!str")] | length' "$INPUT")" != "0" ]]; then
+  echo "ERROR: fixture.comments must be a list of comment bodies" >&2
+  exit 1
+fi
+if [[ "$(yq -r '(.fixture.comments // []) | length' "$INPUT")" != "0" ]] \
+  && [[ "${FORGE}:${FIXTURE_TYPE}" != "github:issue" ]]; then
+  echo "ERROR: fixture.comments requires a github issue fixture" >&2
+  exit 1
+fi
 
 # --- Create ephemeral repo ---
 uuid=$(uuidgen | tr '[:upper:]' '[:lower:]' | cut -c1-8)
@@ -229,6 +244,16 @@ case "${FORGE}:${FIXTURE_TYPE}" in
       gh label create "$label" --repo "$EPHEMERAL_REPO" --force >/dev/null
       gh issue edit "$FIXTURE_NUMBER" --repo "$EPHEMERAL_REPO" --add-label "$label" >/dev/null
       echo "Labeled issue: ${label_log}"
+    done
+    # Optional fixture.comments: comments already on the issue when the agent
+    # starts, posted oldest first, e.g. earlier triage analyses for a
+    # re-triage case. They are posted by the eval account, which is not a
+    # triage bot, so the agent reads them as untrusted comments.
+    comment_count=$(yq -r '(.fixture.comments // []) | length' "$INPUT")
+    for ((i = 0; i < comment_count; i++)); do
+      yq -r ".fixture.comments[$i]" "$INPUT" \
+        | gh issue comment "$FIXTURE_NUMBER" --repo "$EPHEMERAL_REPO" --body-file - >/dev/null
+      echo "Commented on issue: comment $((i + 1)) of ${comment_count}"
     done
     ;;
   github:pull_request)

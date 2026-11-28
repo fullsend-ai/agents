@@ -1,0 +1,58 @@
+# New evidence revives a ruled-out cause; a bare claim does not
+# (fullsend-ai/agents#2043). Run 1's state rules out the '+' cause
+# (correctly) and the apostrophe cause (wrongly). A later comment gives
+# evidence that holds in the code for the apostrophe cause, and only a
+# colleague's word for the '+' cause. The eval account posted both, so the
+# agent rebuilds the state from them as claims it checks.
+state: open
+
+labels:
+  required:
+    - ready-to-code
+    - bug
+
+# Checked by the cause_lists judge against the state marker of the run's
+# own comment.
+cause_lists:
+  seeded_comments: 2
+  open:
+    - ["none", "missing email", "email field", "no email", "typeerror"]
+    - ["apostrophe", "o'brien", "d'souza"]
+  ruled_out:
+    - ["+", "plus"]
+  # The agent can check both open causes in the code.
+  verified_open:
+    - ["none", "missing email", "email field", "no email", "typeerror"]
+    - ["apostrophe", "o'brien", "d'souza"]
+  # The '+' cause back on the colleague's word, quoted, unquoted or as a
+  # plus address.
+  forbidden_open: [["'+'"], ['"+"'], ["+", "@"], ["+ in"], ["plus", "reject"], ["plus", "fail"]]
+  # The revived cause must leave ruled_out, not sit in both lists.
+  forbidden_ruled_out: [["apostrophe"], ["o'brien"]]
+
+max_turns: 35
+max_cost_usd: 0.50
+
+triage_expectations: |
+  Run 1's analysis (eval account, so a claim) keeps the missing-email
+  (None) cause open and rules out the '+' cause (right: the local-part
+  class `[a-zA-Z0-9._%+-]` includes '+') and the apostrophe cause (wrong:
+  that class has no "'", so validate_email raises ValueError for
+  o'brien@example.com and login_handler does not catch it). A later
+  comment gives exactly that evidence for the apostrophe, and only a
+  colleague's word that the '+' cause is real.
+
+  Grade the newest comment that is not one of the two seeded ones (or,
+  if fullsend edited the seeded marked comment in place, the text above
+  its "Previous run" block). If the agent posted nothing, score 1. The
+  post-script, not the agent, adds the lists and the state marker.
+
+  A good triage moves the apostrophe cause back to open with the code as
+  evidence, keeps the None cause open, and keeps '+' ruled out, ideally
+  noting the comment's claim has no evidence.
+
+  Scoring guide: 1 if the apostrophe cause stays ruled out or the '+'
+  cause comes back; 3 if the lists are right but the comment does not
+  show the claims were checked against the code; 5 if the lists are
+  right, both claims are checked, and the comment adds a test case for
+  an apostrophe address.

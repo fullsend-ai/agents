@@ -88,6 +88,8 @@ thresholds:
     min_pass_rate: 1.0
   expected_review_action:
     min_pass_rate: 1.0
+  cause_lists:
+    min_pass_rate: 1.0
   pr_created:
     min_pass_rate: 1.0
   new_commit:
@@ -466,7 +468,7 @@ for tier in full release; do
   fi
   run_test
   SRC_KEYS="$(yq -r '.thresholds | keys | length' "${ROOT}/eval/testagent/eval.yaml")"
-  if [[ "$SRC_KEYS" == "14" ]]; then
+  if [[ "$SRC_KEYS" == "15" ]]; then
     pass "${tier} tier leaves the checked-in eval.yaml thresholds untouched"
   else
     fail "${tier} tier leaves the checked-in eval.yaml thresholds untouched (got ${SRC_KEYS} keys)"

@@ -1,0 +1,65 @@
+forge: github
+fixture:
+  type: issue
+  title: "Login returns 500 for some users"
+  body: |
+    Since last week a few users get an HTTP 500 when they submit the
+    login form. Most users can log in fine. The server log shows
+    `TypeError: expected string or bytes-like object` from `re.match` in
+    `validate_email` (`src/auth/validators.py`), called from
+    `login_handler`.
+
+    Steps to reproduce: POST the login form with a password and no
+    email field. Expected a validation message, got a 500.
+
+    Environment: current main, Python 3.12.
+  # One legacy analysis (written before triage-state-v1, so no state marker)
+  # that fullsend edited in place: its current text, then a "Previous run"
+  # fold holding the run before it, in the shape BuildUpdatedBody in
+  # fullsend's internal/sticky/sticky.go writes at v0.56.1-rc.1 (the version
+  # go.mod pins): it cuts the comment's own leading marker from the old text,
+  # escapes any other fullsend marker in it, and wraps it in the
+  # sticky:history-start and -end sentinels. The fold calls the authgw gateway
+  # stripping the email parameter "confirmed"; the current text leaves it
+  # out without a ruling, and nothing else names it. With no state, step 2e
+  # rebuilds from every comment, fold copies included, as claims: authgw
+  # goes in open_causes with verified false, never asserted or ruled out.
+  comments:
+    - |
+      <!-- fullsend:triage-agent -->
+      Re-checked the handler after the reporter's reply.
+
+      **Open causes:**
+      - Missing email field reaches validate_email as None — login_handler passes request.params.get("email") without a check, and re.match raises TypeError.
+      - Malformed address raises an unhandled ValueError — validate_email raises ValueError("invalid email format") and login_handler does not catch it.
+
+      **Ruled out:**
+      - validate_email rejects '+' in the local part — the pattern's local-part class [a-zA-Z0-9._%+-] includes '+'; the docstring's BUG note is stale.
+
+      ---
+      **Next steps:**
+      - `/fs-code` — agent creates a PR to implement this issue
+      - `/fs-code <your instruction>` — agent implements with your specific guidance
+
+      <details>
+      <summary>Previous run</summary>
+
+      <!-- sticky:history-start -->
+      The TypeError is confirmed in the code, and the gateway in front of the app is a second, confirmed cause.
+
+      **Open causes:**
+      - Missing email field reaches validate_email as None — login_handler passes request.params.get("email") straight through, and re.match raises TypeError.
+      - The authgw gateway strips the email parameter before the request reaches login_handler — confirmed: the gateway log shows every failing request as `authgw: POST /login fwd params=[password]`.
+
+      **Ruled out:**
+      - validate_email rejects '+' in the local part — the pattern's local-part class includes '+'.
+
+      ---
+      **Next steps:**
+      - `/fs-code` — agent creates a PR to implement this issue
+      - `/fs-code <your instruction>` — agent implements with your specific guidance
+      <!-- sticky:history-end -->
+
+      </details>
+    - |
+      Still seeing this after Monday's deploy, a handful of 500s a day. Can this be picked up?

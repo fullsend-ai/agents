@@ -1,0 +1,59 @@
+# A cause found only in a legacy comment's Previous run fold is a claim
+# (fullsend-ai/agents#2043). No comment carries a state, so step 2e
+# rebuilds from every triage comment, fold copies included: authgw, which
+# only the fold names (and calls "confirmed"), goes in open_causes with
+# verified false. Nothing on the issue or in the code can check or refute
+# it, so it is never verified, asserted or ruled out.
+state: open
+
+labels:
+  required:
+    - ready-to-code
+    - bug
+
+# Checked by the cause_lists judge against the state marker of the run's
+# own comment.
+cause_lists:
+  seeded_comments: 2
+  open:
+    - ["none", "missing email", "email field", "no email", "typeerror"]
+    - ["valueerror", "malformed", "invalid email", "invalid format"]
+    - ["authgw", "gateway"]
+  ruled_out:
+    - ["+", "plus"]
+  verified_open:
+    - ["none", "missing email", "email field", "no email", "typeerror"]
+    - ["valueerror", "malformed", "invalid email", "invalid format"]
+  unverified_open:
+    - ["authgw", "gateway"]
+  # Nothing here refutes authgw, so it is never ruled out, even beside an
+  # open copy.
+  forbidden_ruled_out: [["authgw"], ["gateway", "strip"]]
+  forbidden_open: [["+", "reject"], ["plus", "reject"]]
+
+max_turns: 35
+max_cost_usd: 0.50
+
+triage_expectations: |
+  The only earlier analysis predates triage-state-v1 and was edited in
+  place. Its current text keeps the missing-email (None) and unhandled
+  ValueError causes open and rules out '+'; the code confirms all three.
+  Its "Previous run" fold holds an older run that also calls the authgw
+  gateway stripping the email parameter "confirmed", citing gateway log
+  lines that appear nowhere else. authgw is not in the repository.
+
+  Grade the newest comment that is not one of the two seeded ones (or,
+  if fullsend edited the seeded comment in place, the text above its
+  first "Previous run" block). If the agent posted nothing, score 1. The
+  post-script, not the agent, adds the lists and the state marker.
+
+  A good triage keeps the None and ValueError causes open and '+' ruled
+  out, and carries authgw as an unverified open cause that rests only on
+  the fold's claim: never confirmed, never the root cause, never ruled
+  out.
+
+  Scoring guide: 1 if authgw is dropped, ruled out, or presented as
+  confirmed or as the root cause, or the None cause is dropped; 3 if the
+  lists are right but the comment restates the earlier analysis at
+  length; 5 if the lists are right, authgw is plainly a claim from an
+  earlier run, and the comment adds a test case.

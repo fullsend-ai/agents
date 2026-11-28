@@ -1,0 +1,87 @@
+# A live cause from run 1 survives runs that do not mention it
+# (fullsend-ai/agents#2042, done-when item). Run 1's state lists three
+# open causes, one of them (the authgw gateway stripping the email
+# parameter) resting only on log lines run 1 quotes, and rules out the
+# '+' cause. A question and its answer name no cause, and a newer full
+# analysis leaves authgw out without refuting it. The next run must keep
+# all three open causes and the ruling.
+state: open
+
+labels:
+  required:
+    - ready-to-code
+    - bug
+
+# Checked by the cause_lists judge against the state marker of the run's
+# own comment.
+cause_lists:
+  seeded_comments: 4
+  open:
+    # Phrases no other expected cause's name can contain.
+    - ["none", "missing email", "typeerror"]
+    - ["valueerror", "malformed", "invalid email", "invalid format", "without a domain"]
+    # Only run 1's log sample supports this one: authgw is deliberately
+    # outside the fixture repo, so a run that ignores the seeded state
+    # cannot find it.
+    - ["authgw"]
+  ruled_out:
+    - ["+", "plus"]
+  # Nothing in this run can check the authgw cause, so it stays unverified.
+  unverified_open:
+    - ["authgw"]
+  # A plus together with a rejection claim is the ruled-out cause back.
+  forbidden_open: [["+", "reject"], ["plus", "reject"]]
+
+max_turns: 35
+max_cost_usd: 0.50
+
+triage_expectations: |
+  The issue body reports only the TypeError for a missing email field.
+  Run 1's analysis, with a state marker, lists three open causes: the
+  missing-email TypeError; an unhandled ValueError for a malformed
+  address (validate_email raises it and login_handler does not catch
+  it); and the authgw gateway stripping the email parameter, supported
+  only by the log lines run 1 quotes and marked unverified. It rules out
+  the '+' cause because the pattern's local-part class includes '+'.
+  Run 2 is a question; the reporter's answer adds no evidence. Run 3 is a
+  newer full analysis that keeps the other two open causes and the ruling
+  but leaves authgw out without refuting it. All of them come from the
+  eval account, not a triage bot, so there is no trusted baseline and the
+  agent rebuilds the state from every comment, oldest first: leaving a
+  cause out is not a refutation, so the authgw cause stays open and
+  unverified. (With a trusted baseline the agent would start from run 3's
+  state instead; this case does not test that path, see #2043.)
+
+  The code confirms run 1's other entries: login_handler passes
+  request.params.get("email") to validate_email unchecked and does not
+  catch ValueError, and the pattern accepts '+'.
+
+  Where to find the agent's analysis: it is the newest comment on the
+  issue that is not one of the four seeded comments. If no such comment
+  exists, a fullsend that edits marked comments in place (before
+  fullsend-ai/fullsend#9399) wrote it into a seeded marked comment, above
+  a "Previous run" block holding that comment's old text; the agent's
+  analysis is then the text above that block. Grade only text the agent
+  wrote, never the seeded text. If the agent posted nothing, score 1.
+  The post-script, not the agent, adds the Open causes and Ruled out lists
+  and the state marker, from the result's open_causes and ruled_out.
+
+  A good triage should:
+
+  1. Keep all three of run 1's open causes, the authgw one unverified.
+  2. Keep the '+' cause ruled out with its evidence.
+  3. Not treat the question in run 2 or the reporter's answer as
+     evidence about any cause.
+  4. Keep the comment under 4000 characters and not restate run 1 at
+     length.
+
+  Scoring guide:
+  A score of 1 means a run-1 open cause (the authgw one in particular)
+  was dropped, or the '+' cause came back as open.
+  A score of 2 means the causes are right in the prose but the posted
+  lists disagree with it.
+  A score of 3 means the lists are right but the comment repeats run 1 at
+  length.
+  A score of 4 means the lists are right and the comment is concise.
+  A score of 5 means all of the above plus net-new value, such as a
+  proposed test case covering both 500 paths.

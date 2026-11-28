@@ -10,6 +10,14 @@ labels:
     - ready-to-code
     - bug
 
+# The run's state (cause_lists judge): the reporter's cause is the open
+# cause. The post-script lists it under the comment; that line is not
+# restating.
+cause_lists:
+  seeded_comments: 0
+  open:
+    - ["none", "missing email", "email field", "no email", "absent", "blank", "empty", "typeerror"]
+
 max_turns: 35
 max_cost_usd: 0.50
 
@@ -41,6 +49,12 @@ triage_expectations: |
      handling for ValueError from validate_email — invalid emails
      cause 500 instead of 400 (same pattern as the reported bug, but
      for a different input class).
+
+  Every sufficient result carries open_causes, which the post-script
+  lists under the comment as **Open causes** (here one short line naming
+  the reporter's cause). That list is required and is not restating;
+  restating means repeating the reporter's explanation, files, steps or
+  fix in the agent's own text.
 
   Scoring guide:
   A score of 1 means the agent fundamentally misunderstood the issue.

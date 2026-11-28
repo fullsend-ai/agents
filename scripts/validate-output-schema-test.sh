@@ -59,19 +59,56 @@ run_test "valid-insufficient" \
   "true"
 
 run_test "valid-sufficient" \
-  '{"action":"sufficient","reasoning":"clear","clarity_scores":{"symptom":0.9,"cause":0.8,"reproduction":0.9,"impact":0.7,"overall":0.85},"triage_summary":{"title":"Bug","severity":"high","category":"bug","problem":"crash","root_cause_hypothesis":"null ptr","reproduction_steps":["step 1"],"impact":"all users","recommended_fix":"fix ptr","proposed_test_case":"test_fix"},"comment":"Triage complete."}' \
+  '{"action":"sufficient","reasoning":"clear","clarity_scores":{"symptom":0.9,"cause":0.8,"reproduction":0.9,"impact":0.7,"overall":0.85},"triage_summary":{"title":"Bug","severity":"high","category":"bug","problem":"crash","root_cause_hypothesis":"null ptr","reproduction_steps":["step 1"],"impact":"all users","recommended_fix":"fix ptr","proposed_test_case":"test_fix","open_causes":[{"cause":"null ptr","evidence":"crash trace","verified":true}],"ruled_out":[]},"comment":"Triage complete."}' \
   "true"
 
 run_test "valid-sufficient-promote-true" \
-  '{"action":"sufficient","reasoning":"clear","clarity_scores":{"symptom":0.9,"cause":0.8,"reproduction":0.9,"impact":0.7,"overall":0.85},"triage_summary":{"title":"Bug","severity":"high","category":"bug","problem":"crash","root_cause_hypothesis":"null ptr","reproduction_steps":["step 1"],"impact":"all users","recommended_fix":"fix ptr","proposed_test_case":"test_fix","promote_to_ready_to_code":true},"comment":"Triage complete."}' \
+  '{"action":"sufficient","reasoning":"clear","clarity_scores":{"symptom":0.9,"cause":0.8,"reproduction":0.9,"impact":0.7,"overall":0.85},"triage_summary":{"title":"Bug","severity":"high","category":"bug","problem":"crash","root_cause_hypothesis":"null ptr","reproduction_steps":["step 1"],"impact":"all users","recommended_fix":"fix ptr","proposed_test_case":"test_fix","open_causes":[{"cause":"null ptr","evidence":"crash trace","verified":true}],"ruled_out":[],"promote_to_ready_to_code":true},"comment":"Triage complete."}' \
   "true"
 
 run_test "valid-sufficient-promote-false" \
-  '{"action":"sufficient","reasoning":"clear","clarity_scores":{"symptom":0.9,"cause":0.8,"reproduction":0.9,"impact":0.7,"overall":0.85},"triage_summary":{"title":"Bug","severity":"high","category":"bug","problem":"crash","root_cause_hypothesis":"null ptr","reproduction_steps":["step 1"],"impact":"all users","recommended_fix":"fix ptr","proposed_test_case":"test_fix","promote_to_ready_to_code":false},"comment":"Triage complete."}' \
+  '{"action":"sufficient","reasoning":"clear","clarity_scores":{"symptom":0.9,"cause":0.8,"reproduction":0.9,"impact":0.7,"overall":0.85},"triage_summary":{"title":"Bug","severity":"high","category":"bug","problem":"crash","root_cause_hypothesis":"null ptr","reproduction_steps":["step 1"],"impact":"all users","recommended_fix":"fix ptr","proposed_test_case":"test_fix","open_causes":[{"cause":"null ptr","evidence":"crash trace","verified":true}],"ruled_out":[],"promote_to_ready_to_code":false},"comment":"Triage complete."}' \
   "true"
 
 run_test "invalid-promote-not-boolean" \
-  '{"action":"sufficient","reasoning":"clear","clarity_scores":{"symptom":0.9,"cause":0.8,"reproduction":0.9,"impact":0.7,"overall":0.85},"triage_summary":{"title":"Bug","severity":"high","category":"bug","problem":"crash","root_cause_hypothesis":"null ptr","reproduction_steps":["step 1"],"impact":"all users","recommended_fix":"fix ptr","proposed_test_case":"test_fix","promote_to_ready_to_code":"yes"},"comment":"Triage complete."}' \
+  '{"action":"sufficient","reasoning":"clear","clarity_scores":{"symptom":0.9,"cause":0.8,"reproduction":0.9,"impact":0.7,"overall":0.85},"triage_summary":{"title":"Bug","severity":"high","category":"bug","problem":"crash","root_cause_hypothesis":"null ptr","reproduction_steps":["step 1"],"impact":"all users","recommended_fix":"fix ptr","proposed_test_case":"test_fix","open_causes":[{"cause":"null ptr","evidence":"crash trace","verified":true}],"ruled_out":[],"promote_to_ready_to_code":"yes"},"comment":"Triage complete."}' \
+  "false"
+
+# Cause lists: required on sufficient, open_causes non-empty, ruled_out may be empty.
+run_test "valid-sufficient-with-ruled-out" \
+  '{"action":"sufficient","reasoning":"clear","clarity_scores":{"symptom":0.9,"cause":0.8,"reproduction":0.9,"impact":0.7,"overall":0.85},"triage_summary":{"title":"Bug","severity":"high","category":"bug","problem":"crash","root_cause_hypothesis":"null ptr","reproduction_steps":["step 1"],"impact":"all users","recommended_fix":"fix ptr","proposed_test_case":"test_fix","open_causes":[{"cause":"null ptr","evidence":"crash trace","verified":true}],"ruled_out":[{"cause":"regex rejects +","evidence":"the class includes +","verified":true}]},"comment":"Triage complete."}' \
+  "true"
+
+run_test "sufficient-missing-open-causes" \
+  '{"action":"sufficient","reasoning":"clear","clarity_scores":{"symptom":0.9,"cause":0.8,"reproduction":0.9,"impact":0.7,"overall":0.85},"triage_summary":{"title":"Bug","severity":"high","category":"bug","problem":"crash","root_cause_hypothesis":"null ptr","reproduction_steps":["step 1"],"impact":"all users","recommended_fix":"fix ptr","proposed_test_case":"test_fix","ruled_out":[]},"comment":"Triage complete."}' \
+  "false"
+
+run_test "sufficient-empty-open-causes" \
+  '{"action":"sufficient","reasoning":"clear","clarity_scores":{"symptom":0.9,"cause":0.8,"reproduction":0.9,"impact":0.7,"overall":0.85},"triage_summary":{"title":"Bug","severity":"high","category":"bug","problem":"crash","root_cause_hypothesis":"null ptr","reproduction_steps":["step 1"],"impact":"all users","recommended_fix":"fix ptr","proposed_test_case":"test_fix","open_causes":[],"ruled_out":[]},"comment":"Triage complete."}' \
+  "false"
+
+run_test "sufficient-missing-ruled-out" \
+  '{"action":"sufficient","reasoning":"clear","clarity_scores":{"symptom":0.9,"cause":0.8,"reproduction":0.9,"impact":0.7,"overall":0.85},"triage_summary":{"title":"Bug","severity":"high","category":"bug","problem":"crash","root_cause_hypothesis":"null ptr","reproduction_steps":["step 1"],"impact":"all users","recommended_fix":"fix ptr","proposed_test_case":"test_fix","open_causes":[{"cause":"null ptr","evidence":"crash trace","verified":true}]},"comment":"Triage complete."}' \
+  "false"
+
+run_test "cause-missing-verified" \
+  '{"action":"sufficient","reasoning":"clear","clarity_scores":{"symptom":0.9,"cause":0.8,"reproduction":0.9,"impact":0.7,"overall":0.85},"triage_summary":{"title":"Bug","severity":"high","category":"bug","problem":"crash","root_cause_hypothesis":"null ptr","reproduction_steps":["step 1"],"impact":"all users","recommended_fix":"fix ptr","proposed_test_case":"test_fix","open_causes":[{"cause":"null ptr","evidence":"crash trace"}],"ruled_out":[]},"comment":"Triage complete."}' \
+  "false"
+
+run_test "cause-extra-field" \
+  '{"action":"sufficient","reasoning":"clear","clarity_scores":{"symptom":0.9,"cause":0.8,"reproduction":0.9,"impact":0.7,"overall":0.85},"triage_summary":{"title":"Bug","severity":"high","category":"bug","problem":"crash","root_cause_hypothesis":"null ptr","reproduction_steps":["step 1"],"impact":"all users","recommended_fix":"fix ptr","proposed_test_case":"test_fix","open_causes":[{"cause":"null ptr","evidence":"crash trace","verified":true,"note":"x"}],"ruled_out":[]},"comment":"Triage complete."}' \
+  "false"
+
+run_test "evidence-whitespace-only" \
+  '{"action":"sufficient","reasoning":"clear","clarity_scores":{"symptom":0.9,"cause":0.8,"reproduction":0.9,"impact":0.7,"overall":0.85},"triage_summary":{"title":"Bug","severity":"high","category":"bug","problem":"crash","root_cause_hypothesis":"null ptr","reproduction_steps":["step 1"],"impact":"all users","recommended_fix":"fix ptr","proposed_test_case":"test_fix","open_causes":[{"cause":"null ptr","evidence":"   ","verified":true}],"ruled_out":[]},"comment":"Triage complete."}' \
+  "false"
+
+run_test "cause-too-long" \
+  '{"action":"sufficient","reasoning":"clear","clarity_scores":{"symptom":0.9,"cause":0.8,"reproduction":0.9,"impact":0.7,"overall":0.85},"triage_summary":{"title":"Bug","severity":"high","category":"bug","problem":"crash","root_cause_hypothesis":"null ptr","reproduction_steps":["step 1"],"impact":"all users","recommended_fix":"fix ptr","proposed_test_case":"test_fix","open_causes":[{"cause":"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx","evidence":"crash trace","verified":true}],"ruled_out":[]},"comment":"Triage complete."}' \
+  "false"
+
+run_test "open-causes-over-ten" \
+  '{"action":"sufficient","reasoning":"clear","clarity_scores":{"symptom":0.9,"cause":0.8,"reproduction":0.9,"impact":0.7,"overall":0.85},"triage_summary":{"title":"Bug","severity":"high","category":"bug","problem":"crash","root_cause_hypothesis":"null ptr","reproduction_steps":["step 1"],"impact":"all users","recommended_fix":"fix ptr","proposed_test_case":"test_fix","open_causes":[{"cause":"null ptr","evidence":"crash trace","verified":true},{"cause":"null ptr","evidence":"crash trace","verified":true},{"cause":"null ptr","evidence":"crash trace","verified":true},{"cause":"null ptr","evidence":"crash trace","verified":true},{"cause":"null ptr","evidence":"crash trace","verified":true},{"cause":"null ptr","evidence":"crash trace","verified":true},{"cause":"null ptr","evidence":"crash trace","verified":true},{"cause":"null ptr","evidence":"crash trace","verified":true},{"cause":"null ptr","evidence":"crash trace","verified":true},{"cause":"null ptr","evidence":"crash trace","verified":true},{"cause":"null ptr","evidence":"crash trace","verified":true}],"ruled_out":[]},"comment":"Triage complete."}' \
   "false"
 
 run_test "valid-duplicate" \
@@ -451,7 +488,7 @@ run_test "invalid-json" \
   "false"
 
 run_test "additional-properties-rejected" \
-  '{"action":"sufficient","reasoning":"ok","clarity_scores":{"symptom":0.9,"cause":0.8,"reproduction":0.9,"impact":0.7,"overall":0.85},"triage_summary":{"title":"Bug","severity":"high","category":"bug","problem":"crash","root_cause_hypothesis":"null ptr","reproduction_steps":["step 1"],"impact":"all users","recommended_fix":"fix","proposed_test_case":"test"},"comment":"Done.","injected_field":"malicious"}' \
+  '{"action":"sufficient","reasoning":"ok","clarity_scores":{"symptom":0.9,"cause":0.8,"reproduction":0.9,"impact":0.7,"overall":0.85},"triage_summary":{"title":"Bug","severity":"high","category":"bug","problem":"crash","root_cause_hypothesis":"null ptr","reproduction_steps":["step 1"],"impact":"all users","recommended_fix":"fix","proposed_test_case":"test","open_causes":[{"cause":"null ptr","evidence":"crash trace","verified":true}],"ruled_out":[]},"comment":"Done.","injected_field":"malicious"}' \
   "false"
 
 # --- Allowed-properties output tests ---
@@ -496,12 +533,12 @@ run_test_output() {
 }
 
 run_test_output "additional-properties-shows-allowed" \
-  '{"action":"sufficient","reasoning":"ok","clarity_scores":{"symptom":0.9,"cause":0.8,"reproduction":0.9,"impact":0.7,"overall":0.85},"triage_summary":{"title":"Bug","severity":"high","category":"bug","problem":"crash","root_cause_hypothesis":"null ptr","reproduction_steps":["step 1"],"impact":"all users","recommended_fix":"fix","proposed_test_case":"test"},"comment":"Done.","injected_field":"malicious"}' \
+  '{"action":"sufficient","reasoning":"ok","clarity_scores":{"symptom":0.9,"cause":0.8,"reproduction":0.9,"impact":0.7,"overall":0.85},"triage_summary":{"title":"Bug","severity":"high","category":"bug","problem":"crash","root_cause_hypothesis":"null ptr","reproduction_steps":["step 1"],"impact":"all users","recommended_fix":"fix","proposed_test_case":"test","open_causes":[{"cause":"null ptr","evidence":"crash trace","verified":true}],"ruled_out":[]},"comment":"Done.","injected_field":"malicious"}' \
   "false" \
   "allowed properties:"
 
 run_test_output "additional-properties-lists-known-keys" \
-  '{"action":"sufficient","reasoning":"ok","clarity_scores":{"symptom":0.9,"cause":0.8,"reproduction":0.9,"impact":0.7,"overall":0.85},"triage_summary":{"title":"Bug","severity":"high","category":"bug","problem":"crash","root_cause_hypothesis":"null ptr","reproduction_steps":["step 1"],"impact":"all users","recommended_fix":"fix","proposed_test_case":"test"},"comment":"Done.","injected_field":"malicious"}' \
+  '{"action":"sufficient","reasoning":"ok","clarity_scores":{"symptom":0.9,"cause":0.8,"reproduction":0.9,"impact":0.7,"overall":0.85},"triage_summary":{"title":"Bug","severity":"high","category":"bug","problem":"crash","root_cause_hypothesis":"null ptr","reproduction_steps":["step 1"],"impact":"all users","recommended_fix":"fix","proposed_test_case":"test","open_causes":[{"cause":"null ptr","evidence":"crash trace","verified":true}],"ruled_out":[]},"comment":"Done.","injected_field":"malicious"}' \
   "false" \
   "action, clarity_scores, comment, component_actions, duplicate_of, label_actions, move_to, prerequisites, pull_requests, reasoning, sub_issues, triage_summary"
 
@@ -511,7 +548,7 @@ run_test_output "valid-output-no-allowed-line" \
   ""
 
 run_test "invalid-category-rejected" \
-  '{"action":"sufficient","reasoning":"ok","clarity_scores":{"symptom":0.9,"cause":0.8,"reproduction":0.9,"impact":0.7,"overall":0.85},"triage_summary":{"title":"Bug","severity":"high","category":"invented-category","problem":"crash","root_cause_hypothesis":"null ptr","reproduction_steps":["step 1"],"impact":"all users","recommended_fix":"fix","proposed_test_case":"test"},"comment":"Done."}' \
+  '{"action":"sufficient","reasoning":"ok","clarity_scores":{"symptom":0.9,"cause":0.8,"reproduction":0.9,"impact":0.7,"overall":0.85},"triage_summary":{"title":"Bug","severity":"high","category":"invented-category","problem":"crash","root_cause_hypothesis":"null ptr","reproduction_steps":["step 1"],"impact":"all users","recommended_fix":"fix","proposed_test_case":"test","open_causes":[{"cause":"null ptr","evidence":"crash trace","verified":true}],"ruled_out":[]},"comment":"Done."}' \
   "false"
 
 # --- fix-result.schema.json conditional allOf/if/then rules ---
