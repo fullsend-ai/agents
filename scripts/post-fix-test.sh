@@ -7838,6 +7838,142 @@ run_graph_gitleaks_test() {
 }
 run_graph_gitleaks_test
 
+# Issue #2195: on a push run the processor compares the live PR head with the
+# commit the push published. The PR reports the head the push replaced for the
+# first STALE_READS thread reads (GitHub moves the PR head some seconds after a
+# push); after that it reports the remote branch. With signed commits, a failed
+# final fetch leaves the local branch on the unsigned commit, so HEAD is not
+# the published commit.
+# run_finding_threads_push_postfix <name> <signed: true|false> <stale-reads>
+run_finding_threads_push_postfix() {
+  local test_name="$1" signed="$2" stale_reads="$3"
+  local base="${PUSH_REBASE_TMPDIR}/${test_name}"
+  local mock_bin="${base}/mock-bin" pre_push_head
+  mkdir -p "${base}/runner-temp" "${base}/validated-output" "${mock_bin}"
+
+  git init -q --bare -b main "${base}/remote.git"
+  git init -q -b main "${base}/seed"
+  push_rebase_ident "${base}/seed"
+  echo "base" > "${base}/seed/file.txt"
+  git -C "${base}/seed" add file.txt
+  git -C "${base}/seed" commit -q -m "init"
+  git -C "${base}/seed" remote add origin "${base}/remote.git"
+  git -C "${base}/seed" push -q -u origin main
+  git -C "${base}/seed" checkout -q -b agent/99-test-fix
+  echo "pr-a" > "${base}/seed/file.txt"
+  git -C "${base}/seed" add file.txt
+  git -C "${base}/seed" commit -q -m "pr A"
+  git -C "${base}/seed" push -q -u origin agent/99-test-fix
+  pre_push_head="$(git -C "${base}/seed" rev-parse HEAD)"
+
+  git clone -q "${base}/remote.git" "${base}/repo"
+  push_rebase_ident "${base}/repo"
+  git -C "${base}/repo" checkout -q agent/99-test-fix
+  echo "fixed" > "${base}/repo/file.txt"
+  git -C "${base}/repo" add file.txt
+  git -C "${base}/repo" commit -q -m "fix: agent change"
+
+  jq -n '{pr_number: 99, trigger_source: "bot", summary: "Fixed it.", tests_passed: true, files_changed: ["file.txt"],
+    actions: [{type: "fix", finding: "Null input", finding_id: "f_aaa", disposition: "fixed",
+               description: "Rejected null input."}]}' > "${base}/validated-output/agent-result.json"
+
+  cp "${PUSH_REBASE_MOCK_BIN}/gitleaks" "${mock_bin}/"
+  cat > "${mock_bin}/gh" <<MOCKEOF
+#!/usr/bin/env bash
+if [ "\$1 \$2" = "api graphql" ]; then
+  case "\$*" in
+    *reviewThreads*)
+      reads=\$(( \$(cat "${base}/reads" 2>/dev/null || echo 0) + 1 ))
+      echo "\${reads}" > "${base}/reads"
+      if [ "\${reads}" -le "${stale_reads}" ]; then
+        head="${pre_push_head}"
+      else
+        head="\$(${PUSH_REBASE_REAL_GIT} --git-dir="${base}/remote.git" rev-parse refs/heads/agent/99-test-fix)"
+      fi
+      jq -n --arg head "\${head}" '{data: {repository: {pullRequest: {headRefOid: \$head, reviewThreads: {
+        pageInfo: {hasNextPage: false, endCursor: null},
+        nodes: [{id: "T1", isResolved: false, isOutdated: false, viewerCanResolve: true,
+          comments: {pageInfo: {hasNextPage: false}, nodes: [
+            {databaseId: 1, url: "https://github.com/test-org/test-repo/pull/99#discussion_r1",
+             body: "Bug.\n<!-- finding:f_aaa -->", outdated: false, viewerDidAuthor: false,
+             author: {__typename: "Bot", login: "test-org-review"}}]}}]}}}}}' ;;
+    *addPullRequestReviewThreadReply*) printf '%s\n' "\$@" >> "${base}/reply.log"; echo '{"data":{}}' ;;
+    *resolveReviewThread*) printf '%s\n' "\$@" >> "${base}/resolve.log"; echo '{"data":{}}' ;;
+  esac
+  exit 0
+fi
+if [ "\$1 \$2" = "pr comment" ]; then
+  cat > "${base}/comment.log"
+  exit 0
+fi
+exec "${PUSH_REBASE_MOCK_BIN}/gh" "\$@"
+MOCKEOF
+  # The signed push's final fetch (`git fetch -q`) fails; post-fix's own
+  # fetches do not pass -q.
+  cat > "${mock_bin}/git" <<MOCKEOF
+#!/usr/bin/env bash
+if [ "\$1" = "remote" ] && [ "\$2" = "set-url" ]; then
+  exit 0
+fi
+if [ "\$1" = "fetch" ] && [ "\$2" = "-q" ]; then
+  echo "fatal: unable to access remote" >&2
+  exit 128
+fi
+exec ${PUSH_REBASE_REAL_GIT} "\$@"
+MOCKEOF
+  chmod +x "${mock_bin}/gh" "${mock_bin}/git"
+
+  local exit_code=0
+  # shellcheck disable=SC2030,SC2031
+  (
+    export GITHUB_SIGNED_COMMITS="${signed}"
+    export RUNNER_TEMP="${base}/runner-temp"
+    export FULLSEND_VALIDATED_ITERATION_DIR="${base}/validated-output"
+    run_push_rebase_postfix "${base}" "${base}/stdout.log" "${mock_bin}" "test-org-review[bot]"
+  ) || exit_code=$?
+  FTP_RUN_DIR="${base}"
+  FTP_LOCAL_HEAD="$(git -C "${base}/repo" rev-parse HEAD)"
+  FTP_PUBLISHED="$(git --git-dir="${base}/remote.git" rev-parse refs/heads/agent/99-test-fix)"
+  if [ "${exit_code}" -ne 0 ]; then
+    echo "FAIL: ${test_name} — exit code ${exit_code}"
+    cat "${base}/stdout.log"
+    FAILURES=$((FAILURES + 1))
+    return 1
+  fi
+}
+
+ftp_fail() {
+  echo "FAIL: $1 — $2"
+  cat "${FTP_RUN_DIR}/stdout.log"
+  FAILURES=$((FAILURES + 1))
+}
+
+# fullsend#9891: the PR still reported the run-start head right after the push.
+if run_finding_threads_push_postfix "finding-threads-push-head-catches-up" false 1; then
+  name="finding-threads-push-head-catches-up"
+  if ! grep -qx 'threadId=T1' "${FTP_RUN_DIR}/resolve.log" 2>/dev/null; then
+    ftp_fail "${name}" "thread not resolved once the PR head reached the pushed commit"
+  elif ! grep -qF "head=${FTP_PUBLISHED}" "${FTP_RUN_DIR}/reply.log"; then
+    ftp_fail "${name}" "reply does not name the pushed commit"
+  elif ! grep -qF '`f_aaa` (fixed): replied and resolved' "${FTP_RUN_DIR}/comment.log" 2>/dev/null; then
+    ftp_fail "${name}" "PR summary missing the thread outcome"
+  else
+    echo "PASS: ${name}"
+  fi
+fi
+
+if run_finding_threads_push_postfix "finding-threads-signed-push-local-branch-not-moved" true 0; then
+  name="finding-threads-signed-push-local-branch-not-moved"
+  if [ "${FTP_LOCAL_HEAD}" = "${FTP_PUBLISHED}" ]; then
+    ftp_fail "${name}" "setup: the local branch was moved onto the published commit"
+  elif ! grep -qx 'threadId=T1' "${FTP_RUN_DIR}/resolve.log" 2>/dev/null \
+    || ! grep -qF "head=${FTP_PUBLISHED}" "${FTP_RUN_DIR}/reply.log"; then
+    ftp_fail "${name}" "thread not reconciled against the published commit"
+  else
+    echo "PASS: ${name}"
+  fi
+fi
+
 rm -rf "${PUSH_REBASE_TMPDIR}"
 
 # ---------------------------------------------------------------------------

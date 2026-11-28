@@ -2127,6 +2127,9 @@ GITHUB_CODE_OPS_SH_LOADED=1
 #   PUSH_TOKEN     — GitHub App installation token (GH_TOKEN as fallback)
 #   GIT_BOT_EMAIL  — the App bot's noreply address; only a commit it
 #                    authored keeps an existing Authored-by trailer
+#   FORGE_PUSHED_SHA_FILE — optional; after a successful push, receives the
+#                    commit origin/BRANCH was published at, which can differ
+#                    from HEAD when the local branch could not be moved
 # origin must carry push credentials (forge_set_push_remote) for the final
 # fetch.
 
@@ -2312,6 +2315,11 @@ _signed_push_repo_id() {
   echo "${id}"
 }
 
+# _forge_record_pushed SHA — writes SHA to FORGE_PUSHED_SHA_FILE when set.
+_forge_record_pushed() {
+  [ -z "${FORGE_PUSHED_SHA_FILE:-}" ] || printf '%s\n' "$1" > "${FORGE_PUSHED_SHA_FILE}"
+}
+
 # _signed_push_update_ref BRANCH BEFORE AFTER FORCE — moves refs/heads/BRANCH
 # from BEFORE (all zeros: create) to AFTER. updateRefs applies it only while
 # the ref is still at BEFORE, the compare-and-swap --force-with-lease needs,
@@ -2360,10 +2368,12 @@ forge_push_branch() {
         echo "error: no remote-tracking ref origin/${branch} to lease on; refusing the non-fast-forward update" >&2
         return 1
       }
-      git push --force-with-lease="refs/heads/${branch}:${lease}" -u origin -- "${branch}"
+      git push --force-with-lease="refs/heads/${branch}:${lease}" -u origin -- "${branch}" || return
+      _forge_record_pushed "$(git rev-parse "refs/heads/${branch}")"
       return
     fi
-    git push "$@" -u origin -- "${branch}"
+    git push "$@" -u origin -- "${branch}" || return
+    _forge_record_pushed "$(git rev-parse "refs/heads/${branch}")"
     return
   fi
   _SIGNED_PUSH_DIR="$(mktemp -d)"
@@ -2412,6 +2422,7 @@ _forge_push_branch() {
   else
     _signed_push_update_ref "${branch}" "${remote_sha:-${_SIGNED_PUSH_ZERO}}" "${tip}" false || return 1
   fi
+  _forge_record_pushed "${tip}"
 
   # The push is complete once the ref moved; failing to move the local
   # branch is a warning, not a failed push.

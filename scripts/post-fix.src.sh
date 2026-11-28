@@ -1196,6 +1196,11 @@ ${REBASE_OUTPUT}"
   # or reset — the agent rewrote history so the remote branch diverged.
   # force-with-lease is safe: it still rejects if someone else pushed in
   # the meantime.
+  #
+  # Finding threads (issue #2195) need the commit the push published and the
+  # PR head it replaced: GitHub moves the PR head some seconds after a push.
+  FIX_PRE_PUSH_HEAD_SHA="$(git rev-parse -q --verify "refs/remotes/origin/${BRANCH}" 2>/dev/null || true)"
+  FORGE_PUSHED_SHA_FILE="$(mktemp)"
   echo "Pushing branch ${BRANCH}..."
   PUSH_OUTPUT="$(forge_push_branch "${BRANCH}" 2>&1)" && PUSH_RC=0 || PUSH_RC=$?
   print_sanitized_gha_log "${PUSH_OUTPUT}"
@@ -1298,11 +1303,20 @@ else
   # Finding threads (GitHub, issue #2187): the processor replies to and
   # resolves review-bot finding threads only while the live PR head is the
   # commit this run left behind, and compares thread replies with the
-  # manifest pre-fix gave the agent.
+  # manifest pre-fix gave the agent. After a push that is the commit the push
+  # published (issue #2195), not HEAD: a signed push can leave the local
+  # branch on the unsigned commits.
   FIX_PUBLISHED_HEAD_SHA=""
   FIX_FINDING_THREADS_MANIFEST=""
   if [ "${FULLSEND_FORGE}" = "github" ]; then
-    FIX_PUBLISHED_HEAD_SHA="$(git rev-parse HEAD 2>/dev/null || true)"
+    if [ "${NO_PUSH}" = "true" ]; then
+      FIX_PUBLISHED_HEAD_SHA="$(git rev-parse HEAD 2>/dev/null || true)"
+    else
+      FIX_PUBLISHED_HEAD_SHA="$(cat "${FORGE_PUSHED_SHA_FILE}" 2>/dev/null || true)"
+      rm -f "${FORGE_PUSHED_SHA_FILE}"
+      [ -n "${FIX_PUBLISHED_HEAD_SHA}" ] \
+        || gha_echo warning "Could not tell which commit the push published — finding threads are not reconciled"
+    fi
     FIX_FINDING_THREADS_MANIFEST="$(finding_threads_manifest_path || true)"
   fi
 
@@ -1311,6 +1325,7 @@ else
   SIGNOFF_STRIPPED_COUNT="${SIGNOFF_STRIPPED_COUNT}" \
   FIX_RESULT_SECRET_SCAN="${FIX_RESULT_SECRET_SCAN}" \
   FIX_PUBLISHED_HEAD_SHA="${FIX_PUBLISHED_HEAD_SHA}" \
+  FIX_PRE_PUSH_HEAD_SHA="${FIX_PRE_PUSH_HEAD_SHA:-}" \
   FIX_FINDING_THREADS_MANIFEST="${FIX_FINDING_THREADS_MANIFEST}" \
     python3 "${PROCESS_SCRIPT}" "${RESULT_FILE}" "${REPO_FULL_NAME}" "${PR_NUMBER}" || PROCESS_EXIT=$?
   if [ "${PROCESS_EXIT}" -eq 1 ]; then

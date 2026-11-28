@@ -150,7 +150,10 @@ The post-script leaves a thread open and changes nothing in it when:
 - no open review-bot thread carries the id, or several do;
 - the stamp is only in a thread a human started;
 - the threads or the thread's comments could not be read completely;
-- the PR head is no longer the commit this run pushed;
+- the PR head is no longer the commit this run pushed. GitHub moves the PR
+  head a few seconds after a push, so while the PR still shows the head the
+  push replaced, the post-script reads the threads again for up to 30 seconds
+  before it gives up;
 - a human replied after the pre-script built the manifest, or edited a reply
   after it (the live text no longer matches the manifest), so the agent never
   saw that text;
