@@ -289,9 +289,26 @@ If this agent needs to reach hosts beyond the defaults, see the
 
 ## Runtime support
 
-Supported runtimes: **claude** (stable default), **pi** (experimental). On pi, sub-agents run with the agent model, see [Fullsend pi docs](https://fullsend.sh/docs/runtimes/pi) on how to define a different model for sub-agents.
+Supported runtimes: **claude** (stable default), **pi** (experimental), **codex** (experimental). On pi, sub-agents run with the agent model, see [Fullsend pi docs](https://fullsend.sh/docs/runtimes/pi) on how to define a different model for sub-agents.
 
-**Codex** is not a supported runtime for retro yet. Retro dispatches native Codex children only when the runtime note lists registered sub-agent roles, which depends on [fullsend #6970](https://github.com/fullsend-ai/fullsend/issues/6970); this section changes after a live retro run on Codex is linked here. Retro passes no `model`: the runner binds each child's model from `agents[].subagents`, or its run-level default.
+On codex, retro's sub-agents run as [native Codex children](https://fullsend.sh/docs/runtimes/codex#sub-agents), at most four at once, when both of these hold:
+
+- harness security is on (`security.enabled`, the default);
+- Codex resolves the parent model to [collaboration V1 or V2](https://fullsend.sh/docs/runtimes/codex#sub-agents) at its pinned version.
+
+Even then, they do not in these cases:
+
+- the parent model is a `gateway/` model;
+- the parent is on V2 and a child model selects V2.
+
+In every other case, the parent does the sub-agents' work itself, in one context.
+
+Retro passes no `model`: every child runs on the run-level child model ([child models](https://fullsend.sh/docs/runtimes/codex#child-models)). The GitHub fleet workflows do not pass `FULLSEND_CODEX_SUBAGENT_MODEL`, so on that path set the run-level child model with `subagents.default` on the agent's `agents:` entry.
+
+Retro has run this way only locally, not through the fleet workflows:
+
+- On a V1 parent, once on macOS ([fullsend #6970](https://github.com/fullsend-ai/fullsend/issues/6970#issuecomment-6606379606)) and once on Fedora ([fullsend #6970](https://github.com/fullsend-ai/fullsend/issues/6970#issuecomment-6609114516)). In the Fedora run the parent passed `agent_type: "explore"` to all five children, where `agents/retro.md` says to pass none, so they ran the `explore` role's instructions instead of the `default` role's. The same parent sent overlapping waits to one child, fetched the PR's comments, reviews and files itself instead of in a child, and had the duplicate-search child judge overlap, which the retro-analysis skill leaves to the parent ([fullsend #9657](https://github.com/fullsend-ai/fullsend/issues/9657)).
+- On a V2 parent, once on macOS ([fullsend #9085](https://github.com/fullsend-ai/fullsend/issues/9085#issuecomment-6920231259)).
 
 Effort: `high` (explicit in the harness; override per run with `fullsend run --effort` or `FULLSEND_EFFORT`, values `low`–`max`).
 
